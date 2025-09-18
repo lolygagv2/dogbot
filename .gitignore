@@ -7,3 +7,9 @@ hailoRTsuite/artifacts/hailo_dataflow_compiler-3.32.0-py3-none-linux_x86_64.whl
 dist/
 build/
 *.egg-info/
+env/
+hailoRTsuite/
+*.so
+*.whl
+env/lib/python3.11/site-packages/jaxlib/libjax_common.so
+hailoRTsuite/artifacts/hailo_dataflow_compiler-3.32.0-py3-none-linux_x86_64.whl
