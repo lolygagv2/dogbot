@@ -1,3 +1,9 @@
 ./.git/objects/pack/pack-daa45039b81b2d28060fe71ac94cbc63c48a6bfc.pack
 ./hailoRTsuite/artifacts/hailo_dataflow_compiler-3.32.0-py3-none-linux_x86_64.whl
 hailoRTsuite/artifacts/hailo_dataflow_compiler-3.32.0-py3-none-linux_x86_64.whl
+*.whl
+*.tar.gz
+*.deb
+dist/
+build/
+*.egg-info/
