@@ -1,0 +1,21 @@
+base:
+- base/mobilenet.yaml
+network:
+  network_name: mobilenet_v3
+paths:
+  network_path:
+  - models_files/Classification/mobilenet_v3/pretrained/2023-07-18/mobilenet_v3_edgetpu.tflite
+  url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/Classification/mobilenet_v3/pretrained/2023-07-18/mobilenet_v3.zip
+  alls_script: mobilenet_v3.alls
+info:
+  task: classification
+  input_shape: 224x224x3
+  output_shape: '1001'
+  operations: 2G
+  parameters: 4.07M
+  framework: tensorflow
+  training_data: imagenet train
+  validation_data: imagenet val
+  eval_metric: Accuracy (top1)
+  full_precision_result: 72.21
+  source: https://github.com/tensorflow/models/tree/master/research/slim/nets/mobilenet

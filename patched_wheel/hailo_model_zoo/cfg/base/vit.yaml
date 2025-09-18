@@ -1,0 +1,18 @@
+base:
+- base/imagenet.yaml
+preprocessing:
+  meta_arch: vit
+parser:
+  normalization_params:
+    normalize_in_net: true
+    mean_list:
+    - 127.5
+    - 127.5
+    - 127.5
+    std_list:
+    - 127.5
+    - 127.5
+    - 127.5
+info:
+  license_url: https://github.com/huggingface/pytorch-image-models/blob/main/LICENSE
+  license_name: Apache-2.0

@@ -1,0 +1,29 @@
+base:
+- base/fcn.yaml
+inference:
+  emulator_batch_size: 4
+network:
+  network_name: fcn8_resnet_v1_18
+parser:
+  nodes:
+  - null
+  - ArgMax_82
+paths:
+  alls_script: fcn8_resnet_v1_18.alls
+  network_path:
+  - models_files/Segmentation/Cityscapes/fcn8_resnet_v1_18/pretrained/2023-06-22/fcn8_resnet_v1_18.onnx
+  url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/Segmentation/Cityscapes/fcn8_resnet_v1_18/pretrained/2023-06-22/fcn8_resnet_v1_18.zip
+info:
+  task: semantic segmentation
+  input_shape: 1024x1920x3
+  output_shape: 1024x1920x1
+  operations: 142.82G
+  parameters: 11.20M
+  framework: pytorch
+  training_data: cityscapes train
+  validation_data: cityscapes val
+  eval_metric: mIoU
+  full_precision_result: 69.4
+  source: https://mmsegmentation.readthedocs.io/en/latest
+  license_url: https://www.apache.org/licenses/LICENSE-2.0
+  license_name: Apache-2.0

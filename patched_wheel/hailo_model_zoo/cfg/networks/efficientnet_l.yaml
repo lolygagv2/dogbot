@@ -1,0 +1,20 @@
+base:
+- base/efficientnet.yaml
+network:
+  network_name: efficientnet_l
+paths:
+  alls_script: efficientnet_l.alls
+  network_path:
+  - models_files/Classification/efficientnet_l/pretrained/2023-07-18/efficientnet-L.tflite
+  url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/Classification/efficientnet_l/pretrained/2023-07-18/efficientnet_l.zip
+info:
+  task: classification
+  input_shape: 300x300x3
+  output_shape: '1001'
+  operations: 19.4G
+  parameters: 10.55M
+  framework: tensorflow
+  training_data: imagenet train
+  validation_data: imagenet val
+  eval_metric: Accuracy (top1)
+  full_precision_result: 80.46

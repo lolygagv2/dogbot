@@ -1,0 +1,35 @@
+base:
+- base/base.yaml
+info:
+  source: internal
+quantization:
+  calib_set:
+  - models_files/cityscapes/2022-05-15/cityscapes_calib.tfrecord
+preprocessing:
+  network_type: segmentation
+  meta_arch: fcn_resnet
+postprocessing:
+  device_pre_post_layers:
+    softmax: false
+    argmax: true
+    bilinear: true
+    nms: false
+  ext_upsample: 8
+parser:
+  nodes:
+  - zero_padding2d/Pad
+  - ArgMax
+  normalization_params:
+    normalize_in_net: true
+    std_list:
+    - 58.395
+    - 57.12
+    - 57.375
+    mean_list:
+    - 123.675
+    - 116.28
+    - 103.53
+evaluation:
+  classes: 19
+  dataset_name: cityscapes
+  data_set: models_files/cityscapes/2022-05-15/cityscapes_val.tfrecord
