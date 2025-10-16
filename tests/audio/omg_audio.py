@@ -13,12 +13,12 @@ print('Volume set response:', ser.read(100))
 ser.write(b'AT+LED=OFF\r\n')
 
 # Play modes: 1 is repeat one song, 2 is repeart all, 3 play one song and pause, 4 randoml lay 5 repeat all in folder, ? query mode
-ser.write(b'AT+PLAYMODE=2\r\n')
+ser.write(b'AT+PLAYMODE=5\r\n')
 time.sleep(2)
 
 # Play first file
-ser.write(b'AT+PLAYNUM=5\r\n')
-time.sleep(2)
+ser.write(b'\r\n')
+time.sleep(5)
 print('Play response:', ser.read(100))
 
 print("Should be playing audio now - do you hear anything?")
