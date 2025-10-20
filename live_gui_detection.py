@@ -23,7 +23,19 @@ try:
 except ImportError:
     PICAMERA2_AVAILABLE = False
 
+# OpenCV GUI is now working - removed headless fallback
+print("[INFO] OpenCV GUI support enabled")
+
 from core.ai_controller_3stage_fixed import AI3StageControllerFixed
+
+# Try to import servo control (optional for testing without hardware)
+try:
+    from servo_control_module import ServoController
+    SERVO_AVAILABLE = True
+    print("[INFO] Servo control available")
+except ImportError as e:
+    SERVO_AVAILABLE = False
+    print(f"[WARNING] Servo control not available: {e}")
 
 class LiveDetectionGUI:
     """Real-time GUI for dog detection with visual feedback"""
@@ -54,10 +66,25 @@ class LiveDetectionGUI:
         self.ai = AI3StageControllerFixed()
         self.camera = None
 
+        # Servo control
+        self.servo_controller = None
+        if SERVO_AVAILABLE:
+            try:
+                self.servo_controller = ServoController()
+                if self.servo_controller.initialize():
+                    print("[INFO] Servo controller initialized")
+                else:
+                    print("[WARNING] Servo controller failed to initialize")
+                    self.servo_controller = None
+            except Exception as e:
+                print(f"[WARNING] Failed to initialize servo controller: {e}")
+                self.servo_controller = None
+
         # Frame processing
         self.frame_queue = queue.Queue(maxsize=2)
         self.result_queue = queue.Queue(maxsize=2)
         self.running = False
+        self.last_frame = None  # Keep last frame to avoid "Initializing" flash
 
         # Statistics
         self.stats = {
@@ -313,23 +340,39 @@ class LiveDetectionGUI:
         if key == ord('q') or key == ord('Q'):
             return False  # Quit
         elif key == ord('w') or key == ord('W'):
-            self.tilt_angle = max(0, self.tilt_angle - 5)  # Tilt up
+            self.tilt_angle = min(180, self.tilt_angle + 5)  # Tilt up
         elif key == ord('s') or key == ord('S'):
-            self.tilt_angle = min(180, self.tilt_angle + 5)  # Tilt down
+            self.tilt_angle = max(0, self.tilt_angle - 5)  # Tilt down
         elif key == ord('a') or key == ord('A'):
-            self.pan_angle = max(0, self.pan_angle - 5)  # Pan left
+            self.pan_angle = min(180, self.pan_angle + 5)  # Pan left
         elif key == ord('d') or key == ord('D'):
-            self.pan_angle = min(180, self.pan_angle + 5)  # Pan right
+            self.pan_angle = max(0, self.pan_angle - 5)  # Pan right
         elif key == ord('r') or key == ord('R'):
             self.pan_angle = 90   # Reset to center
             self.tilt_angle = 90
         elif key == ord(' '):  # Space for screenshot
             self._save_screenshot()
 
-        # TODO: Send pan/tilt commands to servo hardware
-        # self._update_camera_position(self.pan_angle, self.tilt_angle)
+        # Send pan/tilt commands to servo hardware
+        self._update_camera_position(self.pan_angle, self.tilt_angle)
 
         return True  # Continue
+
+    def _update_camera_position(self, pan_angle, tilt_angle):
+        """Update camera servo positions"""
+        if self.servo_controller:
+            try:
+                # Convert 0-180 range to servo's -90 to +90 range
+                servo_pan = pan_angle - 90  # 90 becomes 0 (center)
+                servo_tilt = tilt_angle - 90
+
+                self.servo_controller.set_servo_angle('pan', servo_pan)
+                self.servo_controller.set_servo_angle('tilt', servo_tilt)
+                print(f"🎥 Camera position: Pan={servo_pan}°, Tilt={servo_tilt}°")
+            except Exception as e:
+                print(f"❌ Servo control error: {e}")
+        else:
+            print(f"🎥 Camera position (simulated): Pan={pan_angle}°, Tilt={tilt_angle}°")
 
     def _save_screenshot(self):
         """Save current frame as screenshot"""
@@ -368,11 +411,14 @@ class LiveDetectionGUI:
                 try:
                     result = self.result_queue.get(timeout=0.1)
                 except queue.Empty:
-                    # Show blank frame if no results yet
-                    blank_frame = np.zeros((self.display_height, self.display_width, 3), dtype=np.uint8)
-                    cv2.putText(blank_frame, "Initializing...", (self.display_width//2 - 100, self.display_height//2),
-                               self.font, 1.0, self.colors['stats_text'], 2)
-                    cv2.imshow('TreatSensei DogBot - Live Detection', blank_frame)
+                    # Show last frame if available, or initializing message
+                    if self.last_frame is not None:
+                        cv2.imshow('TreatSensei DogBot - Live Detection', self.last_frame)
+                    else:
+                        blank_frame = np.zeros((self.display_height, self.display_width, 3), dtype=np.uint8)
+                        cv2.putText(blank_frame, "Initializing...", (self.display_width//2 - 100, self.display_height//2),
+                                   self.font, 1.0, self.colors['stats_text'], 2)
+                        cv2.imshow('TreatSensei DogBot - Live Detection', blank_frame)
 
                     key = cv2.waitKey(1) & 0xFF
                     if key != 255:
@@ -402,8 +448,9 @@ class LiveDetectionGUI:
                 self._draw_stats_overlay(display_frame)
                 self._draw_controls_help(display_frame)
 
-                # Display frame
+                # Display frame on HDMI
                 cv2.imshow('TreatSensei DogBot - Live Detection', display_frame)
+                self.last_frame = display_frame.copy()  # Save for next iteration
 
                 # Handle keyboard input
                 key = cv2.waitKey(1) & 0xFF

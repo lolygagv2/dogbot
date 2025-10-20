@@ -1,0 +1,36 @@
+base:
+- base/resnet.yaml
+network:
+  network_name: resnet_v1_50
+allocation:
+  allocation_timeout: 1200
+paths:
+  alls_script: resnet_v1_50.alls
+  network_path:
+  - models_files/Classification/resnet_v1_50/pretrained/2025-01-15/resnet_v1_50.tflite
+  url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/Classification/resnet_v1_50/pretrained/2025-01-15/resnet_v1_50.zip
+parser:
+  nodes:
+  - resnet_v1_50/conv1/Pad
+  - resnet_v1_50/predictions/Softmax
+  normalization_params:
+    normalize_in_net: true
+    mean_list:
+    - 123.68
+    - 116.78
+    - 103.94
+    std_list:
+    - 1.0
+    - 1.0
+    - 1.0
+info:
+  task: classification
+  input_shape: 224x224x3
+  output_shape: '1000'
+  operations: 6.98G
+  parameters: 25.53M
+  framework: tensorflow
+  training_data: imagenet train
+  validation_data: imagenet val
+  eval_metric: Accuracy (top1)
+  full_precision_result: 75.13

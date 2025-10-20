@@ -1,0 +1,56 @@
+base:
+- base/coco.yaml
+preprocessing:
+  network_type: detection
+  input_shape:
+  - 640
+  - 640
+  - 3
+  meta_arch: yolo_v5
+  padding_color: 114
+postprocessing:
+  nms_iou_thresh: 0.45
+  score_threshold: 0.01
+  meta_arch: yolo_v5
+  anchors:
+    strides:
+    - 8
+    - 16
+    - 32
+    sizes:
+    - - 10
+      - 13
+      - 16
+      - 30
+      - 33
+      - 23
+    - - 30
+      - 61
+      - 62
+      - 45
+      - 59
+      - 119
+    - - 116
+      - 90
+      - 156
+      - 198
+      - 373
+      - 326
+  hpp: false
+info:
+  source: https://github.com/ultralytics/yolov5/releases/tag/v2.0
+parser:
+  normalization_params:
+    normalize_in_net: true
+    mean_list:
+    - 0.0
+    - 0.0
+    - 0.0
+    std_list:
+    - 255.0
+    - 255.0
+    - 255.0
+evaluation:
+  labels_offset: 1
+  classes: 80
+  dataset_name: coco_2017_detection

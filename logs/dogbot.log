@@ -1,0 +1,223 @@
+2025-09-28 02:36:49,590 - TreatDispenserRobot - INFO - Initializing TreatDispenser Robot...
+2025-09-28 02:36:49,599 - TreatDispenserRobot - INFO - Configuration loaded from /home/morgan/dogbot/config/robot_config.yaml
+2025-09-28 02:36:49,600 - TreatDispenserRobot - INFO - Initializing motor controller...
+2025-09-28 02:36:49,600 - TreatDispenserRobot - INFO - Initializing audio controller...
+2025-09-28 02:36:57,111 - TreatDispenserRobot - INFO - Initializing LED controller...
+2025-09-28 02:36:57,124 - TreatDispenserRobot - INFO - Initializing servo controller...
+2025-09-28 02:36:57,138 - TreatDispenserRobot - INFO - motors controller ready
+2025-09-28 02:36:57,139 - TreatDispenserRobot - INFO - audio controller ready
+2025-09-28 02:36:57,139 - TreatDispenserRobot - INFO - leds controller ready
+2025-09-28 02:36:57,139 - TreatDispenserRobot - INFO - servos controller ready
+2025-09-28 02:36:57,139 - TreatDispenserRobot - INFO - Initializing camera and vision system...
+2025-09-28 02:36:57,140 - CameraManager - INFO - Initializing Picamera2...
+2025-09-28 02:36:57,160 - picamera2.picamera2 - INFO - Initialization successful.
+2025-09-28 02:36:57,160 - picamera2.picamera2 - INFO - Camera now open.
+2025-09-28 02:36:57,164 - picamera2.picamera2 - INFO - Camera configuration has been adjusted!
+2025-09-28 02:36:57,166 - picamera2.picamera2 - INFO - Configuration successful!
+2025-09-28 02:36:57,192 - CameraManager - INFO - Picamera2 initialized successfully
+2025-09-28 02:36:57,193 - HailoDetector - WARNING - Hailo platform not available
+2025-09-28 02:36:57,193 - CameraManager - INFO - Hailo detector initialized successfully
+2025-09-28 02:36:57,193 - OpenCVDetector - INFO - Downloading yolov4-tiny.weights...
+2025-09-28 02:36:58,352 - OpenCVDetector - INFO - Downloaded yolov4-tiny.weights
+2025-09-28 02:36:58,352 - OpenCVDetector - INFO - Downloading yolov4-tiny.cfg...
+2025-09-28 02:36:58,428 - OpenCVDetector - INFO - Downloaded yolov4-tiny.cfg
+2025-09-28 02:36:58,459 - OpenCVDetector - INFO - OpenCV YOLO detector initialized successfully
+2025-09-28 02:36:58,459 - CameraManager - INFO - OpenCV detector available as fallback
+2025-09-28 02:36:58,459 - CameraManager - WARNING - ArUco detector failed: module 'cv2.aruco' has no attribute 'Dictionary_get'
+2025-09-28 02:36:58,459 - BehaviorAnalyzer - INFO - Behavior analyzer initialized
+2025-09-28 02:36:58,459 - RewardSystem - INFO - Reward system initialized - cooldown: 30s, max treats: 10
+2025-09-28 02:36:58,460 - TreatDispenserRobot - INFO - TreatDispenser Robot initialization complete!
+2025-09-28 02:37:00,018 - TreatDispenserRobot - INFO - Robot set to safe initial state
+2025-09-28 02:37:00,022 - root - ERROR - Application error: EOF when reading a line
+2025-09-28 02:37:00,022 - TreatDispenserRobot - INFO - Shutting down TreatDispenser Robot...
+2025-09-28 02:37:00,022 - TreatDispenserRobot - INFO - Stopping robot...
+2025-09-28 02:37:00,022 - TreatDispenserRobot - INFO - Changing mode: manual -> stopped
+2025-09-28 02:37:00,224 - TreatDispenserRobot - INFO - motors cleaned up
+2025-09-28 02:37:01,328 - TreatDispenserRobot - INFO - audio cleaned up
+2025-09-28 02:37:01,481 - TreatDispenserRobot - INFO - leds cleaned up
+2025-09-28 02:37:01,483 - TreatDispenserRobot - INFO - servos cleaned up
+2025-09-28 02:37:01,483 - HailoDetector - INFO - Hailo detector cleaned up
+2025-09-28 02:37:01,484 - OpenCVDetector - INFO - OpenCV detector cleaned up
+2025-09-28 02:37:01,484 - CameraManager - INFO - Camera manager cleaned up
+2025-09-28 02:37:01,484 - TreatDispenserRobot - INFO - Vision system cleaned up
+2025-09-28 02:37:01,484 - TreatDispenserRobot - INFO - Robot shutdown complete
+2025-09-28 02:37:01,576 - picamera2.picamera2 - INFO - Camera closed successfully.
+2025-09-28 02:38:28,520 - TreatDispenserRobot - INFO - Initializing TreatDispenser Robot...
+2025-09-28 02:38:28,526 - TreatDispenserRobot - INFO - Configuration loaded from /home/morgan/dogbot/config/robot_config.yaml
+2025-09-28 02:38:28,526 - TreatDispenserRobot - INFO - Initializing motor controller...
+2025-09-28 02:38:28,527 - TreatDispenserRobot - INFO - Initializing audio controller...
+2025-09-28 02:38:36,035 - TreatDispenserRobot - INFO - Initializing LED controller...
+2025-09-28 02:38:36,042 - TreatDispenserRobot - INFO - Initializing servo controller...
+2025-09-28 02:38:36,053 - TreatDispenserRobot - INFO - motors controller ready
+2025-09-28 02:38:36,053 - TreatDispenserRobot - INFO - audio controller ready
+2025-09-28 02:38:36,053 - TreatDispenserRobot - INFO - leds controller ready
+2025-09-28 02:38:36,053 - TreatDispenserRobot - INFO - servos controller ready
+2025-09-28 02:38:36,053 - TreatDispenserRobot - INFO - Initializing camera and vision system...
+2025-09-28 02:38:36,054 - CameraManager - INFO - Initializing Picamera2...
+2025-09-28 02:38:36,083 - picamera2.picamera2 - INFO - Initialization successful.
+2025-09-28 02:38:36,083 - picamera2.picamera2 - INFO - Camera now open.
+2025-09-28 02:38:36,086 - picamera2.picamera2 - INFO - Camera configuration has been adjusted!
+2025-09-28 02:38:36,086 - picamera2.picamera2 - INFO - Configuration successful!
+2025-09-28 02:38:36,090 - CameraManager - INFO - Picamera2 initialized successfully
+2025-09-28 02:38:36,091 - HailoDetector - WARNING - Hailo platform not available
+2025-09-28 02:38:36,091 - CameraManager - INFO - Hailo detector initialized successfully
+2025-09-28 02:38:36,105 - OpenCVDetector - INFO - OpenCV YOLO detector initialized successfully
+2025-09-28 02:38:36,105 - CameraManager - INFO - OpenCV detector available as fallback
+2025-09-28 02:38:36,105 - CameraManager - WARNING - ArUco detector failed: module 'cv2.aruco' has no attribute 'Dictionary_get'
+2025-09-28 02:38:36,105 - BehaviorAnalyzer - INFO - Behavior analyzer initialized
+2025-09-28 02:38:36,105 - RewardSystem - INFO - Reward system initialized - cooldown: 30s, max treats: 10
+2025-09-28 02:38:36,105 - TreatDispenserRobot - INFO - TreatDispenser Robot initialization complete!
+2025-09-28 02:38:37,664 - TreatDispenserRobot - INFO - Robot set to safe initial state
+2025-09-28 03:33:15,220 - TreatDispenserRobot - INFO - Shutting down TreatDispenser Robot...
+2025-09-28 03:33:15,220 - TreatDispenserRobot - INFO - Stopping robot...
+2025-09-28 03:33:15,220 - TreatDispenserRobot - INFO - Changing mode: manual -> stopped
+2025-09-28 03:33:15,423 - TreatDispenserRobot - INFO - motors cleaned up
+2025-09-28 03:33:16,526 - TreatDispenserRobot - INFO - audio cleaned up
+2025-09-28 03:33:16,678 - TreatDispenserRobot - INFO - leds cleaned up
+2025-09-28 03:33:16,681 - TreatDispenserRobot - INFO - servos cleaned up
+2025-09-28 03:33:16,681 - HailoDetector - INFO - Hailo detector cleaned up
+2025-09-28 03:33:16,682 - OpenCVDetector - INFO - OpenCV detector cleaned up
+2025-09-28 03:33:16,682 - CameraManager - INFO - Camera manager cleaned up
+2025-09-28 03:33:16,682 - TreatDispenserRobot - INFO - Vision system cleaned up
+2025-09-28 03:33:16,682 - TreatDispenserRobot - INFO - Robot shutdown complete
+2025-09-28 03:33:16,880 - picamera2.picamera2 - INFO - Camera closed successfully.
+2025-09-28 03:35:11,405 - TreatDispenserRobot - INFO - Initializing TreatDispenser Robot...
+2025-09-28 03:35:11,411 - TreatDispenserRobot - INFO - Configuration loaded from /home/morgan/dogbot/config/robot_config.yaml
+2025-09-28 03:35:11,411 - TreatDispenserRobot - INFO - Initializing motor controller...
+2025-09-28 03:35:11,412 - TreatDispenserRobot - INFO - Motor controller ready
+2025-09-28 03:35:11,412 - TreatDispenserRobot - INFO - Initializing audio controller...
+2025-09-28 03:35:18,921 - TreatDispenserRobot - INFO - Audio controller ready
+2025-09-28 03:35:18,921 - TreatDispenserRobot - INFO - Initializing LED controller...
+2025-09-28 03:35:18,927 - TreatDispenserRobot - INFO - LED controller ready
+2025-09-28 03:35:18,927 - TreatDispenserRobot - INFO - Initializing servo controller...
+2025-09-28 03:35:18,938 - TreatDispenserRobot - INFO - Servo controller ready
+2025-09-28 03:35:18,938 - TreatDispenserRobot - INFO - Initializing camera and vision system...
+2025-09-28 03:35:18,938 - CameraManager - INFO - Initializing Picamera2...
+2025-09-28 03:35:18,966 - picamera2.picamera2 - INFO - Initialization successful.
+2025-09-28 03:35:18,966 - picamera2.picamera2 - INFO - Camera now open.
+2025-09-28 03:35:18,969 - picamera2.picamera2 - INFO - Camera configuration has been adjusted!
+2025-09-28 03:35:18,970 - picamera2.picamera2 - INFO - Configuration successful!
+2025-09-28 03:35:18,974 - CameraManager - INFO - Picamera2 initialized successfully
+2025-09-28 03:35:18,974 - HailoDetector - WARNING - Hailo platform not available
+2025-09-28 03:35:18,974 - CameraManager - INFO - Hailo detector initialized successfully
+2025-09-28 03:35:18,990 - OpenCVDetector - INFO - OpenCV YOLO detector initialized successfully
+2025-09-28 03:35:18,990 - CameraManager - INFO - OpenCV detector available as fallback
+2025-09-28 03:35:18,990 - CameraManager - WARNING - ArUco detector failed: module 'cv2.aruco' has no attribute 'Dictionary_get'
+2025-09-28 03:35:18,990 - BehaviorAnalyzer - INFO - Behavior analyzer initialized
+2025-09-28 03:35:18,990 - RewardSystem - INFO - Reward system initialized - cooldown: 30s, max treats: 10
+2025-09-28 03:35:18,990 - TreatDispenserRobot - INFO - TreatDispenser Robot initialization complete!
+2025-09-28 03:35:20,549 - TreatDispenserRobot - INFO - Robot set to safe initial state
+2025-09-28 03:58:12,732 - TreatDispenserRobot - INFO - Changing mode: manual -> tracking
+2025-09-28 03:58:12,798 - picamera2.picamera2 - INFO - Camera started
+2025-09-28 03:58:12,801 - CameraManager - INFO - Camera detection started
+2025-09-28 03:58:12,806 - TreatDispenserRobot - INFO - Robot started in tracking mode
+2025-09-28 04:02:12,935 - TreatDispenserRobot - INFO - Changing mode: tracking -> training
+2025-09-28 04:02:12,935 - CameraManager - INFO - Stopping camera detection...
+2025-09-28 04:02:12,947 - picamera2.picamera2 - INFO - Camera stopped
+2025-09-28 04:02:12,947 - CameraManager - INFO - Camera detection stopped
+2025-09-28 04:06:45,627 - TreatDispenserRobot - INFO - Changing mode: training -> manual
+2025-09-28 05:06:46,852 - TreatDispenserRobot - INFO - Shutting down TreatDispenser Robot...
+2025-09-28 05:06:46,852 - TreatDispenserRobot - INFO - Stopping robot...
+2025-09-28 05:06:46,852 - TreatDispenserRobot - INFO - Changing mode: manual -> stopped
+2025-09-28 05:06:47,055 - TreatDispenserRobot - INFO - motors cleaned up
+2025-09-28 05:06:48,158 - TreatDispenserRobot - INFO - audio cleaned up
+2025-09-28 05:06:48,311 - TreatDispenserRobot - INFO - leds cleaned up
+2025-09-28 05:06:48,313 - TreatDispenserRobot - INFO - servos cleaned up
+2025-09-28 05:06:48,313 - HailoDetector - INFO - Hailo detector cleaned up
+2025-09-28 05:06:48,314 - OpenCVDetector - INFO - OpenCV detector cleaned up
+2025-09-28 05:06:48,314 - CameraManager - INFO - Camera manager cleaned up
+2025-09-28 05:06:48,314 - TreatDispenserRobot - INFO - Vision system cleaned up
+2025-09-28 05:06:48,315 - TreatDispenserRobot - INFO - Robot shutdown complete
+2025-09-28 05:06:48,714 - picamera2.picamera2 - INFO - Camera closed successfully.
+2025-09-28 05:06:59,997 - TreatDispenserRobot - INFO - Initializing TreatDispenser Robot...
+2025-09-28 05:07:00,004 - TreatDispenserRobot - INFO - Configuration loaded from /home/morgan/dogbot/config/robot_config.yaml
+2025-09-28 05:07:00,004 - TreatDispenserRobot - INFO - Initializing motor controller...
+2025-09-28 05:07:00,005 - TreatDispenserRobot - INFO - Motor controller ready
+2025-09-28 05:07:00,005 - TreatDispenserRobot - INFO - Initializing audio controller...
+2025-09-28 05:07:07,513 - TreatDispenserRobot - INFO - Audio controller ready
+2025-09-28 05:07:07,513 - TreatDispenserRobot - INFO - Initializing LED controller...
+2025-09-28 05:07:07,519 - TreatDispenserRobot - INFO - LED controller ready
+2025-09-28 05:07:07,519 - TreatDispenserRobot - INFO - Initializing servo controller...
+2025-09-28 05:07:07,529 - TreatDispenserRobot - INFO - Servo controller ready
+2025-09-28 05:07:07,529 - TreatDispenserRobot - INFO - Initializing camera and vision system...
+2025-09-28 05:07:07,529 - CameraManager - INFO - Initializing Picamera2...
+2025-09-28 05:07:07,549 - picamera2.picamera2 - INFO - Initialization successful.
+2025-09-28 05:07:07,549 - picamera2.picamera2 - INFO - Camera now open.
+2025-09-28 05:07:07,551 - picamera2.picamera2 - INFO - Camera configuration has been adjusted!
+2025-09-28 05:07:07,552 - picamera2.picamera2 - INFO - Configuration successful!
+2025-09-28 05:07:07,557 - CameraManager - INFO - Picamera2 initialized successfully
+2025-09-28 05:07:07,557 - HailoDetector - WARNING - Hailo platform not available
+2025-09-28 05:07:07,557 - CameraManager - INFO - Hailo detector initialized successfully
+2025-09-28 05:07:07,567 - OpenCVDetector - INFO - OpenCV YOLO detector initialized successfully
+2025-09-28 05:07:07,567 - CameraManager - INFO - OpenCV detector available as fallback
+2025-09-28 05:07:07,567 - CameraManager - WARNING - ArUco detector failed: module 'cv2.aruco' has no attribute 'Dictionary_get'
+2025-09-28 05:07:07,567 - BehaviorAnalyzer - INFO - Behavior analyzer initialized
+2025-09-28 05:07:07,567 - RewardSystem - INFO - Reward system initialized - cooldown: 30s, max treats: 10
+2025-09-28 05:07:07,567 - TreatDispenserRobot - INFO - TreatDispenser Robot initialization complete!
+2025-09-28 05:07:09,125 - TreatDispenserRobot - INFO - Robot set to safe initial state
+2025-09-28 05:07:35,990 - TreatDispenserRobot - INFO - Changing mode: manual -> tracking
+2025-09-28 05:07:36,003 - picamera2.picamera2 - INFO - Camera started
+2025-09-28 05:07:36,004 - CameraManager - INFO - Camera detection started
+2025-09-28 05:07:36,007 - TreatDispenserRobot - INFO - Robot started in tracking mode
+2025-09-28 05:07:52,247 - TreatDispenserRobot - INFO - Shutting down TreatDispenser Robot...
+2025-09-28 05:07:52,247 - TreatDispenserRobot - INFO - Stopping robot...
+2025-09-28 05:07:52,247 - TreatDispenserRobot - INFO - Changing mode: tracking -> stopped
+2025-09-28 05:07:52,247 - CameraManager - INFO - Stopping camera detection...
+2025-09-28 05:07:52,293 - picamera2.picamera2 - INFO - Camera stopped
+2025-09-28 05:07:52,293 - CameraManager - INFO - Camera detection stopped
+2025-09-28 05:07:52,505 - TreatDispenserRobot - INFO - motors cleaned up
+2025-09-28 05:07:53,608 - TreatDispenserRobot - INFO - audio cleaned up
+2025-09-28 05:07:53,761 - TreatDispenserRobot - INFO - leds cleaned up
+2025-09-28 05:07:53,763 - TreatDispenserRobot - INFO - servos cleaned up
+2025-09-28 05:07:53,763 - HailoDetector - INFO - Hailo detector cleaned up
+2025-09-28 05:07:53,764 - OpenCVDetector - INFO - OpenCV detector cleaned up
+2025-09-28 05:07:53,764 - CameraManager - INFO - Camera manager cleaned up
+2025-09-28 05:07:53,764 - TreatDispenserRobot - INFO - Vision system cleaned up
+2025-09-28 05:07:53,764 - TreatDispenserRobot - INFO - Robot shutdown complete
+2025-09-28 05:07:54,163 - picamera2.picamera2 - INFO - Camera closed successfully.
+2025-09-28 05:46:07,037 - TreatDispenserRobot - INFO - Initializing TreatDispenser Robot...
+2025-09-28 05:46:07,044 - TreatDispenserRobot - INFO - Configuration loaded from /home/morgan/dogbot/config/robot_config.yaml
+2025-09-28 05:46:07,044 - TreatDispenserRobot - INFO - Initializing motor controller...
+2025-09-28 05:46:07,045 - TreatDispenserRobot - INFO - Motor controller ready
+2025-09-28 05:46:07,045 - TreatDispenserRobot - INFO - Initializing audio controller...
+2025-09-28 05:46:14,552 - TreatDispenserRobot - INFO - Audio controller ready
+2025-09-28 05:46:14,552 - TreatDispenserRobot - INFO - Initializing LED controller...
+2025-09-28 05:46:14,559 - TreatDispenserRobot - INFO - LED controller ready
+2025-09-28 05:46:14,559 - TreatDispenserRobot - INFO - Initializing servo controller...
+2025-09-28 05:46:14,570 - TreatDispenserRobot - INFO - Servo controller ready
+2025-09-28 05:46:14,570 - TreatDispenserRobot - INFO - Initializing camera and vision system...
+2025-09-28 05:46:14,570 - CameraManager - INFO - Initializing Picamera2...
+2025-09-28 05:46:14,598 - picamera2.picamera2 - INFO - Initialization successful.
+2025-09-28 05:46:14,598 - picamera2.picamera2 - INFO - Camera now open.
+2025-09-28 05:46:14,602 - picamera2.picamera2 - INFO - Camera configuration has been adjusted!
+2025-09-28 05:46:14,603 - picamera2.picamera2 - INFO - Configuration successful!
+2025-09-28 05:46:14,608 - CameraManager - INFO - Picamera2 initialized successfully
+2025-09-28 05:46:14,609 - HailoDetector - WARNING - Hailo platform not available
+2025-09-28 05:46:14,609 - CameraManager - INFO - Hailo detector initialized successfully
+2025-09-28 05:46:14,625 - OpenCVDetector - INFO - OpenCV YOLO detector initialized successfully
+2025-09-28 05:46:14,625 - CameraManager - INFO - OpenCV detector available as fallback
+2025-09-28 05:46:14,625 - CameraManager - WARNING - ArUco detector failed: module 'cv2.aruco' has no attribute 'Dictionary_get'
+2025-09-28 05:46:14,626 - BehaviorAnalyzer - INFO - Behavior analyzer initialized
+2025-09-28 05:46:14,626 - RewardSystem - INFO - Reward system initialized - cooldown: 30s, max treats: 10
+2025-09-28 05:46:14,626 - TreatDispenserRobot - INFO - TreatDispenser Robot initialization complete!
+2025-09-28 05:46:16,184 - TreatDispenserRobot - INFO - Robot set to safe initial state
+2025-09-28 05:46:29,828 - TreatDispenserRobot - INFO - Changing mode: manual -> tracking
+2025-09-28 05:46:29,837 - picamera2.picamera2 - INFO - Camera started
+2025-09-28 05:46:29,838 - CameraManager - INFO - Camera detection started
+2025-09-28 05:46:29,841 - TreatDispenserRobot - INFO - Robot started in tracking mode
+2025-09-28 06:30:11,680 - TreatDispenserRobot - INFO - Shutting down TreatDispenser Robot...
+2025-09-28 06:30:11,680 - TreatDispenserRobot - INFO - Stopping robot...
+2025-09-28 06:30:11,681 - TreatDispenserRobot - INFO - Changing mode: tracking -> stopped
+2025-09-28 06:30:11,681 - CameraManager - INFO - Stopping camera detection...
+2025-09-28 06:30:11,722 - picamera2.picamera2 - INFO - Camera stopped
+2025-09-28 06:30:11,722 - CameraManager - INFO - Camera detection stopped
+2025-09-28 06:30:11,997 - TreatDispenserRobot - INFO - motors cleaned up
+2025-09-28 06:30:13,100 - TreatDispenserRobot - INFO - audio cleaned up
+2025-09-28 06:30:13,253 - TreatDispenserRobot - INFO - leds cleaned up
+2025-09-28 06:30:13,255 - TreatDispenserRobot - INFO - servos cleaned up
+2025-09-28 06:30:13,255 - HailoDetector - INFO - Hailo detector cleaned up
+2025-09-28 06:30:13,256 - OpenCVDetector - INFO - OpenCV detector cleaned up
+2025-09-28 06:30:13,256 - CameraManager - INFO - Camera manager cleaned up
+2025-09-28 06:30:13,256 - TreatDispenserRobot - INFO - Vision system cleaned up
+2025-09-28 06:30:13,256 - TreatDispenserRobot - INFO - Robot shutdown complete
+2025-09-28 06:30:13,526 - picamera2.picamera2 - INFO - Camera closed successfully.

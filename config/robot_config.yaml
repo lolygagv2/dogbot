@@ -1,0 +1,115 @@
+# TreatDispenser Robot Configuration
+# Runtime configurable parameters
+
+# Hardware Settings
+hardware:
+  motors:
+    default_speed: 50
+    max_speed: 100
+    timeout_seconds: 10
+
+  servos:
+    pan_range: [10, 200]
+    tilt_range: [60, 120]
+    center_pan: 90
+    center_tilt: 90
+
+  camera:
+    resolution: [640, 480]
+    fps: 30
+    auto_exposure: true
+
+# AI Detection Settings
+detection:
+  # Available backends: hailo, opencv_yolo, mediapipe
+  preferred_backend: "hailo"
+  fallback_backend: "opencv_yolo"
+
+  confidence_threshold: 0.7
+  nms_threshold: 0.4
+
+  # Classes to detect (COCO format)
+  target_classes:
+    - 16  # dog
+    - 15  # cat (optional)
+
+# Behavior Recognition
+behavior:
+  # Behaviors that trigger rewards
+  reward_behaviors:
+    sitting:
+      duration_required: 2.0  # seconds
+      confidence_required: 0.8
+    lying:
+      duration_required: 3.0
+      confidence_required: 0.8
+    staying:
+      duration_required: 5.0
+      confidence_required: 0.7
+    spinning:
+      duration_required: 1.0
+      confidence_required: 0.9
+
+  # Cooldown between treats (per dog)
+  treat_cooldown_seconds: 30
+
+  # Maximum treats per session
+  max_treats_per_session: 10
+
+# Audio Settings
+audio:
+  default_volume: 23
+  sound_mappings:
+    reward: "good_dog"
+    startup: "door_scan"
+    dog_detected: "hi_scan"
+    no_dog: "busy_scan"
+
+# LED Settings
+leds:
+  brightness: 0.3
+  modes:
+    idle: [30, 30, 30]          # dim white
+    searching: [0, 255, 255]    # cyan
+    dog_detected: [0, 255, 0]   # green
+    treat_launch: [255, 255, 255] # bright white
+    error: [255, 0, 0]          # red
+
+# Mission System
+missions:
+  # Auto-start behavior
+  auto_start: true
+
+  # Operating modes
+  modes:
+    - "manual"      # Manual control only
+    - "tracking"    # Track and reward automatically
+    - "training"    # Interactive training mode
+    - "patrol"      # Autonomous patrol mode
+
+  default_mode: "tracking"
+
+# Safety Settings
+safety:
+  emergency_stop_timeout: 0.5
+  max_continuous_runtime: 3600  # 1 hour
+  health_check_interval: 5.0
+
+  # Auto-stop conditions
+  auto_stop:
+    low_battery: true
+    hardware_fault: true
+    no_dog_timeout: 300  # 5 minutes
+
+# Logging
+logging:
+  level: "INFO"
+  file_path: "/var/log/treatdispenser.log"
+  max_file_size: "10MB"
+  backup_count: 5
+
+  # What to log
+  log_detections: true
+  log_behaviors: true
+  log_rewards: true
+  log_hardware_status: true

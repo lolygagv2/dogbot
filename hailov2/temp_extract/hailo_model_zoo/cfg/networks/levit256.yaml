@@ -1,0 +1,15 @@
+base:
+- base/levit.yaml
+paths:
+  alls_script: levit256.alls
+  network_path:
+  - models_files/Classification/levit_256/pretrained/2024-05-13/levit-256.onnx
+  url: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/Classification/levit_256/2024-05-13/levit-256.zip
+network:
+  network_name: levit256
+info:
+  input_shape: 224x224x3
+  output_shape: '1000'
+  operations: 2.3G
+  parameters: 18.9M
+  full_precision_result: 81.4

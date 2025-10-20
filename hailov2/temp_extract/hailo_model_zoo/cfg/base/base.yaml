@@ -1,0 +1,97 @@
+inference:
+  full_precision_batch_size: 8
+  emulator_batch_size: 8
+quantization:
+  calib_set_name: ${evaluation.dataset_name}
+hn_editor:
+  yuv2rgb: false
+  yuy2: false
+  nv12: false
+  rgbx: false
+  input_resize:
+    enabled: false
+  channels_remove:
+    enabled: false
+  flip: false
+  bgr2rgb: false
+  output_scheme:
+    change_activations:
+      enabled: false
+    integrated_postprocessing:
+      enabled: false
+      chains: []
+    split_output: false
+paths:
+  alls_script: null
+preprocessing:
+  meta_arch: null
+  centered: true
+  input_shape: null
+  max_pad: 100
+  padding_color: 0
+  preprocess_config_file: null
+allocation:
+  allocation_timeout: null
+  legacy: false
+parser:
+  nodes:
+  - null
+  - null
+  start_node_shapes: null
+  is_tf2_saved_model: false
+  normalization_params:
+    normalize_in_net: false
+    fold_normalization: false
+    mean_list: null
+    std_list: null
+postprocessing:
+  anchors:
+    scale_factors:
+    - 10.0
+    - 10.0
+    - 5.0
+    - 5.0
+    sizes: null
+    type: default
+  meta_arch: null
+  score_threshold: null
+  nms_iou_thresh: null
+  nms_max_output_per_class: null
+  mask_threshold: null
+  ext_upsample: null
+  device_pre_post_layers:
+    softmax: false
+    argmax: false
+    bilinear: false
+    nms: false
+    max_finder: false
+    sigmoid: false
+  hpp: false
+  bbox_decoding_only: false
+  postprocess_config_file: null
+evaluation:
+  data_set: null
+  validation_data_set: ${evaluation.data_set}
+  labels_offset: 0
+  limit_num_images: 1000000000.0
+  infer_type: model_infer
+  classes: 1
+  two_stage_arch: false
+  network_type: ${preprocessing.network_type}
+  gt_json_path: null
+  labels_map: null
+  meta_arch: null
+  data_count_offset: 0
+info:
+  task: N/A
+  input_shape: N/A
+  output_shape: N/A
+  operations: N/A
+  parameters: N/A
+  framework: N/A
+  training_data: N/A
+  validation_data: N/A
+  eval_metric: N/A
+  full_precision_result: null
+  source: N/A
+  license_url: N/A

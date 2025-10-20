@@ -1,0 +1,2 @@
+hailo-model-zoo==2.15.0
+hailort @ file:///home/morgan/dogbot/hailov2/hailort-4.21.0-cp311-cp311-linux_aarch64.whl

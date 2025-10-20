@@ -17,6 +17,10 @@ from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
 
+# Set up logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 try:
     import hailo_platform as hpf
     HAILO_AVAILABLE = True
@@ -91,8 +95,12 @@ class AI3StageControllerFixed:
         self.pose_output_infos = None
 
         # Stage 3: Behavior (CPU)
-        self.behavior_history = deque(maxlen=16)  # T=16 frames
+        self.behavior_history = deque(maxlen=30)  # T=30 frames (~1 second at 30fps)
         self.behavior_cooldowns = {}
+        self.last_stable_behavior = None
+        self.behavior_confidence_threshold = 0.4  # Lowered to 40% confidence
+        self.min_consecutive_frames = 10  # Lowered to 10 frames (1/3 second)
+        self.cooldown_duration = 3.0  # 3 seconds between same behavior recognition
 
         # Camera settings
         self.camera_rotation = 0  # Fixed at 0 as per your notes
@@ -309,6 +317,8 @@ class AI3StageControllerFixed:
             detections = []
 
             try:
+                if not self.detection_network_group:
+                    raise RuntimeError("Detection network group not available")
                 with self.detection_network_group.activate(self.detection_network_group_params):
                     with hpf.InferVStreams(self.detection_network_group,
                                           self.detection_input_vstreams_params,
@@ -367,6 +377,8 @@ class AI3StageControllerFixed:
             keypoints = None
 
             try:
+                if not self.pose_network_group:
+                    raise RuntimeError("Pose network group not available")
                 with self.pose_network_group.activate(self.pose_network_group_params):
                     with hpf.InferVStreams(self.pose_network_group,
                                           self.pose_input_vstreams_params,
@@ -621,9 +633,15 @@ class AI3StageControllerFixed:
                 for i in range(h):
                     for j in range(w):
                         conf_raw = conf_out[0, i, j, 0]
+                        # Prevent overflow in exp function
+                        conf_raw = np.clip(conf_raw, -500, 500)
                         conf = 1.0 / (1.0 + np.exp(-conf_raw))  # Sigmoid
 
-                        if conf < 0.3:  # Confidence threshold
+                        # Debug: Print confidence levels to understand what we're getting (disabled for cleaner output)
+                        # if conf > 0.1:  # Only show meaningful confidences
+                        #     print(f"🔍 Pose confidence: {conf:.3f} at ({i},{j})")
+
+                        if conf < 0.3:  # Confidence threshold (lowered back for better detection)
                             continue
 
                         if conf > best_conf:
@@ -653,30 +671,140 @@ class AI3StageControllerFixed:
             return None
 
     def _analyze_single_pose_sequence(self, current_pose: PoseKeypoints, pose_index: int) -> Optional[str]:
-        """Analyze behavior for a single pose over time"""
+        """Analyze behavior for a single pose over time with temporal smoothing"""
         try:
-            # Simple placeholder behavior analysis
             keypoints = current_pose.keypoints
+            if len(keypoints) < 10:
+                return None
 
-            # Example: detect if dog is lying down based on y-coordinates
-            if len(keypoints) >= 10:
-                body_points = keypoints[:10]  # First 10 keypoints assumed to be body
-                avg_y = np.mean(body_points[:, 1])
+            # Add current pose to history
+            self.behavior_history.append(keypoints)
 
-                # Simple heuristic - if body points are low, might be lying
-                frame_height = 640  # Known from our input size
-                if avg_y > frame_height * 0.7:
-                    return "lie"
-                elif avg_y < frame_height * 0.3:
-                    return "stand"
-                else:
-                    return "sit"
+            # Need enough history for stable detection
+            if len(self.behavior_history) < self.min_consecutive_frames:
+                return self.last_stable_behavior
 
-            return None
+            # Analyze current pose with improved heuristics
+            raw_behavior = self._classify_pose(keypoints)
+            print(f"🐕 Raw behavior detected: {raw_behavior}")
+
+            # Check if behavior has been consistent
+            recent_behaviors = []
+            for historical_pose in list(self.behavior_history)[-self.min_consecutive_frames:]:
+                behavior = self._classify_pose(historical_pose)
+                if behavior:
+                    recent_behaviors.append(behavior)
+
+            print(f"📊 Recent behaviors: {recent_behaviors} (need {max(4, int(self.min_consecutive_frames * 0.4))} for detection)")
+
+            # Require majority consensus for stability (non-consecutive)
+            if len(recent_behaviors) >= self.min_consecutive_frames * 0.4:  # 40% of frames need behavior
+                from collections import Counter
+                behavior_counts = Counter(recent_behaviors)
+                most_common_behavior, count = behavior_counts.most_common(1)[0]
+
+                # Check if this behavior is confident enough and not in cooldown
+                # Allow non-consecutive detection (e.g., 4 out of 10 frames = 40%)
+                if count >= max(4, self.min_consecutive_frames * 0.4):
+                    if self._check_behavior_cooldown(most_common_behavior):
+                        self.last_stable_behavior = most_common_behavior
+                        self._trigger_behavior_cooldown(most_common_behavior)
+                        print(f"🎯 BEHAVIOR DETECTED: {most_common_behavior.upper()} (confidence: {count}/{len(recent_behaviors)})")
+                        return most_common_behavior
+
+            return self.last_stable_behavior
 
         except Exception as e:
             logger.error(f"Error analyzing pose sequence: {e}")
             return None
+
+    def _classify_pose(self, keypoints: np.ndarray) -> Optional[str]:
+        """Classify a single pose based on keypoint positions"""
+        try:
+            # Ensure keypoints is a numpy array
+            if not isinstance(keypoints, np.ndarray):
+                return None
+
+            # Improved pose classification with better thresholds
+            frame_height = 640
+            frame_width = 640
+
+            # Get body keypoints (adjust indices based on your model)
+            if len(keypoints) < 12:
+                return None
+
+            body_points = keypoints[:12]  # First 12 keypoints for body
+
+            # Fix: Properly filter by confidence (handle shape correctly)
+            if body_points.ndim == 2 and body_points.shape[1] >= 3:
+                confidence_mask = body_points[:, 2] > 0.3
+                valid_points = body_points[confidence_mask]
+
+                # Ensure valid_points is still a 2D array
+                if len(valid_points) == 0 or valid_points.ndim != 2:
+                    return None
+            else:
+                # Handle 1D case - assume it's flattened x,y,conf triplets
+                if body_points.ndim == 1 and len(body_points) >= 36:  # 12 points * 3 values each
+                    reshaped = body_points[:36].reshape(12, 3)
+                    confidence_mask = reshaped[:, 2] > 0.3
+                    valid_points = reshaped[confidence_mask]
+                    if len(valid_points) == 0:
+                        return None
+                else:
+                    return None
+
+            if len(valid_points) < 4:
+                return None
+
+            # Now safe to use slicing since we know valid_points is 2D
+            avg_y = np.mean(valid_points[:, 1])
+            avg_x = np.mean(valid_points[:, 0])
+
+            # Calculate pose characteristics
+            y_ratio = avg_y / frame_height
+
+            # Get limb positions for better classification
+            limb_spread = np.std(valid_points[:, 0]) if len(valid_points) > 1 else 0
+
+            # Debug logging to understand why poses aren't detected
+            print(f"🔍 Pose analysis: y_ratio={y_ratio:.3f}, limb_spread={limb_spread:.1f}, valid_points={len(valid_points)}")
+
+            # Improved classification logic - better lie detection
+            if y_ratio > 0.72:  # Lower threshold for lie detection (was 0.80)
+                # Additional check: low limb spread indicates lying down
+                if limb_spread < frame_width * 0.06:  # Very compact for lie
+                    return "lie"
+                elif y_ratio > 0.78:  # Very low in frame, definitely lying
+                    return "lie"
+                else:
+                    return "sit"  # High y_ratio but spread out might be sitting
+            elif y_ratio < 0.35:  # High in frame (more generous for stand)
+                return "stand"
+            elif 0.45 <= y_ratio <= 0.68:  # Narrower range for sit (was 0.50-0.75)
+                # Additional checks for sit vs other behaviors
+                if limb_spread < frame_width * 0.10:  # Compact pose required for sit (relaxed from 0.08)
+                    return "sit"
+                else:
+                    return "stand"  # Default to stand
+            else:
+                return "stand"  # Default behavior is always "stand"
+
+        except Exception as e:
+            logger.error(f"Error classifying pose: {e}")
+            return None
+
+    def _check_behavior_cooldown(self, behavior: str) -> bool:
+        """Check if behavior is not in cooldown"""
+        current_time = time.time()
+        if behavior in self.behavior_cooldowns:
+            time_since_last = current_time - self.behavior_cooldowns[behavior]
+            return time_since_last >= self.cooldown_duration
+        return True
+
+    def _trigger_behavior_cooldown(self, behavior: str):
+        """Start cooldown for a behavior"""
+        self.behavior_cooldowns[behavior] = time.time()
 
     def cleanup(self):
         """Clean up resources"""

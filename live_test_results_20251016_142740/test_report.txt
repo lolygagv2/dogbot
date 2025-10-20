@@ -1,0 +1,12 @@
+Live Dog Testing Report
+==============================
+
+Duration: 0.0 seconds
+Total Frames: 0
+Average FPS: 0.0
+Detection Rate: 0.0%
+Pose Rate: 0.0%
+Behavior Rate: 0.0%
+Total Detections: 0
+Total Poses: 0
+Avg Inference Time: 0.0ms

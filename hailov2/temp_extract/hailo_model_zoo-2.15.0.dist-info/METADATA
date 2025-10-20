@@ -1,0 +1,27 @@
+Metadata-Version: 2.1
+Name: hailo-model-zoo
+Version: 2.15.0
+Summary: Hailo machine learning utilities and examples
+Home-page: https://hailo.ai/
+Author: Hailo team
+Author-email: hailo_model_zoo@hailo.ai
+License: MIT
+License-File: LICENSE
+Requires-Dist: numba==0.58.1
+Requires-Dist: imageio==2.22.4
+Requires-Dist: matplotlib
+Requires-Dist: numpy
+Requires-Dist: opencv-python
+Requires-Dist: scipy
+Requires-Dist: scikit-learn
+Requires-Dist: termcolor
+Requires-Dist: tqdm
+Requires-Dist: pycocotools
+Requires-Dist: lap==0.4.0
+Requires-Dist: motmetrics==1.2.5
+Requires-Dist: omegaconf==2.3.0
+Requires-Dist: pillow<=9.3.0
+Requires-Dist: detection-tools==0.3
+Requires-Dist: scikit-image==0.19.3
+Requires-Dist: nuscenes-devkit==1.1.10
+
