@@ -1,0 +1,33 @@
+{
+    "ConfigVersion": 11,
+    "Checksum": "bf0eb284b6c5b96168a604595d488609f35476d4d1d973db02c73b2e9a225658",
+    "DEVICE": [
+        {
+            "DeviceType": "HAILO8",
+            "RuntimeAgent": "HAILORT",
+            "SupportedDeviceTypes": "HAILORT/HAILO8",
+            "EagerBatchSize": 1
+        }
+    ],
+    "PRE_PROCESS": [
+        {
+            "InputN": 1,
+            "InputH": 640,
+            "InputW": 640,
+            "InputC": 3,
+            "InputQuantEn": true
+        }
+    ],
+    "MODEL_PARAMETERS": [
+        {
+            "ModelPath": "dogdetector_14.hef"
+        }
+    ],
+    "POST_PROCESS": [
+        {
+            "OutputPostprocessType": "DetectionYoloHailo",
+            "OutputNumClasses": 1,
+            "LabelsPath": "labels_dogdetector_14.json"
+        }
+    ]
+}

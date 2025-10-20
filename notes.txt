@@ -1,0 +1,189 @@
+Do not delete this is a manual list of commands and ideas and hints about the project to use. 
+
+If there's issues with VS CODE: 
+Simple Step-by-Step Recovery
+1. Open a terminal to your Pi (e.g., PuTTY or Windows Terminal with SSH):
+
+Log in using SSH as you normally would outside of VS Code.
+
+2. Delete VS Code Server files (safe, they will be auto-reinstalled):
+
+text
+rm -rf ~/.vscode-server
+
+
+
+CLAUDE START COMMANDS:   
+
+-------------------------------------------------------------------------------
+
+SESSION START - Initialize TreatBot Project
+
+1. Read .claude/CLAUDE.md and confirm you understand the rules
+2. Search project knowledge for "TreatBot Project Directory Structure"
+3. Verify protected files exist:
+   - notes.txt (READ ONLY)
+   - config.yaml
+   - /docs/ contents
+
+4. Show me:
+   - Current git branch
+   - Uncommitted changes count
+   - Last 3 commits summary
+
+5. Ask me: "What are we working on today?"
+
+DO NOT make any changes yet. Just initialize context.
+```
+---------------------------------------------------------------------## **🔴 EXIT: End of Session Prompt**
+
+Use this **before closing** Claude Code:
+```
+SESSION END - Safe Shutdown Protocol
+
+PHASE 1 - INVENTORY (show, don't execute):
+- List any new files created this session
+- List any files modified (exclude .git/)
+- Identify any files outside proper directories per CLAUDE.md
+
+PHASE 2 - VERIFICATION:
+- Verify notes.txt still exists and unmodified
+- Verify no test files in root or main directories
+- Check if any files should be moved to proper locations
+
+PHASE 3 - COMMIT PLAN:
+If uncommitted changes exist:
+- Show me a proposed commit message
+- List what will be committed
+- Wait for my approval
+
+PHASE 4 - DOCUMENTATION UPDATE:
+Only if I changed major functionality:
+- Ask me: "Should I update any documentation?"
+- Wait for my specific answer
+
+DO NOT automatically clean up, refactor, or reorganize. 
+Just show me what happened this session.
+```
+
+**Why this is better than "update everything":**
+- Shows you what changed instead of assuming
+- Has explicit verification steps
+- Doesn't trigger cleanup automatically
+- Separates commit from documentation
+- Gives you control at each step
+
+---
+---
+
+## **🎯 Quick Reference Card**
+
+Save this somewhere visible:
+```
+═══════════════════════════════════════
+TREATBOT - CLAUDE CODE SESSION PROTOCOL
+═══════════════════════════════════════
+
+📥 OPENING:
+"SESSION START - Initialize TreatBot Project"
+(paste full entry prompt above)
+
+📤 CLOSING:
+"SESSION END - Safe Shutdown Protocol"  
+(paste full exit prompt above)
+
+🚨 IF THINGS GO WRONG:
+"STOP. Show me what you changed in the last 5 minutes."
+git status
+git diff (to see changes before committing)
+
+🔒 PROTECTED FILES:
+- notes.txt (never modify)
+- config.yaml (ask first)
+- /docs/** (reference only)
+```
+
+---
+
+## **🔧 Advanced: Session-Specific Entry**
+
+If you're doing a **specific task** (not general development), modify the entry:
+
+**For debugging only:**
+```
+SESSION START - Debug Mode
+
+1. Load CLAUDE.md rules
+2. Today's task: Debug [SPECIFIC ISSUE]
+3. Working directory: /tests/ ONLY
+4. DO NOT modify production code in /hardware/ or /ai/
+5. All new files go in /tests/debug_[date]/
+
+Confirm you understand these constraints.
+```
+
+**For documentation only:**
+```
+SESSION START - Documentation Mode
+
+1. Load CLAUDE.md rules
+2. Today's task: Update documentation only
+3. READONLY mode for all code files
+4. Only modify files in /docs/
+5. No code changes, no file moves, no cleanup
+
+Confirm read-only mode is active.
+
+
+/project:session-start
+```
+*(Or paste session-start.md content if command not working yet)*
+ 
+**What it does:**
+1. ✅ Loads CLAUDE.md rules
+2. ✅ Searches project knowledge automatically
+3. ✅ Verifies notes.txt, config.yaml untouched
+4. ✅ Shows git status (uncommitted changes)
+5. ✅ **Asks you:** "What are we working on today?"
+6. ❌ **Does NOT** auto-cleanup or assume tasks
+
+### **🔴 Closing Claude Code:**
+```
+/project:session-end
+
+
+Save this somewhere visible:
+```
+═══════════════════════════════════════════════════
+TREATBOT CLAUDE CODE CHEAT SHEET
+═══════════════════════════════════════════════════
+
+📥 START SESSION:
+   /project:session-start
+   (Loads rules, checks git, asks goal)
+
+📤 END SESSION:
+   /project:session-end  
+   (Shows changes, proposes commit, cleanup)
+
+🚨 EMERGENCY UNDO:
+   git status
+   git diff  
+   git checkout HEAD -- filename.py  # Undo one file
+   git checkout HEAD -- .            # Undo everything
+
+🔒 NEVER TOUCH:
+   - notes.txt (your notes)
+   - config.yaml (ask first)
+   - /docs/ (reference only)
+
+📂 FILE ORGANIZATION:
+   Tests → /tests/ ONLY
+   Production → /hardware/, /ai/, /missions/
+   Temp files → /tests/temp/
+
+📚 DOCUMENTATION:
+   PRODUCT_ROADMAP.md - What we're building
+   DEVELOPMENT_TODOS.md - What to work on
+   HARDWARE_SPECS.md - Current hardware
+   IR_DOCKING_SYSTEM.md - IR beacon guide

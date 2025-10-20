@@ -9,6 +9,7 @@ build/
 *.egg-info/
 env/
 hailoRTsuite/
+Unused/
 *.so
 *.whl
 env/lib/python3.11/site-packages/jaxlib/libjax_common.so

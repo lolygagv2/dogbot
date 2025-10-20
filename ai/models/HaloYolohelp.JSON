@@ -1,0 +1,36 @@
+{
+  "ConfigVersion": 10,
+  "DEVICE": [
+    {
+      "DeviceType": "HAILO8L",
+      "RuntimeAgent": "HAILORT",
+      "SupportedDeviceTypes": "HAILORT/HAILO8L"
+    }
+  ],
+  "PRE_PROCESS": [
+    {
+      "InputType": "Image",
+      "ImageBackend": "opencv",
+      "InputPadMethod": "letterbox",
+      "InputResizeMethod": "bilinear",
+      "InputN": 1,
+      "InputH": 640,
+      "InputW": 640,
+      "InputC": 3,
+      "InputQuantEn": true
+    }
+  ],
+  "MODEL_PARAMETERS": [
+    {
+      "ModelPath": "custom.hef"
+    }
+  ],
+  "POST_PROCESS": [
+    {
+      "OutputPostprocessType": "DetectionYoloV8",
+      "PythonFile": "HailoDetectionYolo.py",
+      "OutputNumClasses": 1,
+      "LabelsPath": "labels.json"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+[2025-09-19 18:45:18.402] [3779] [HailoRT] [error] [driver_os_specific.cpp:44] [list_devices] Can't find hailort driver class. Can happen if the driver is not installed, if the kernel was updated or on some driver failure (then read driver dmesg log)
+[2025-09-19 18:45:18.402] [3779] [HailoRT] [error] [driver_os_specific.cpp:69] [scan_devices] CHECK_SUCCESS failed with status=HAILO_DRIVER_NOT_INSTALLED(64) - Failed listing hailo devices
+[2025-09-19 18:45:18.402] [3779] [HailoRT] [error] [driver_os_specific.cpp:97] [scan_nnc_devices] CHECK_SUCCESS failed with status=HAILO_DRIVER_NOT_INSTALLED(64)
+[2025-09-19 18:45:18.402] [3779] [HailoRT] [error] [hailort_driver.cpp:322] [scan_all_devices] CHECK_SUCCESS failed with status=HAILO_DRIVER_NOT_INSTALLED(64)
+[2025-09-19 18:45:18.402] [3779] [HailoRT] [error] [pcie_device.cpp:36] [scan] CHECK_SUCCESS failed with status=HAILO_DRIVER_NOT_INSTALLED(64)
+[2025-09-19 18:45:18.402] [3779] [HailoRT] [error] [device.cpp:66] [scan] CHECK_SUCCESS failed with status=HAILO_DRIVER_NOT_INSTALLED(64)
+[2025-09-19 19:06:42.534] [3965] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2025-09-19 19:06:42.534] [3965] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2025-09-19 19:06:42.535] [3965] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2025-09-19 19:12:07.492] [4004] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2025-09-19 19:12:07.493] [4004] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2025-09-19 19:12:07.493] [4004] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2025-09-19 19:25:35.135] [4107] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2025-09-19 19:25:35.135] [4107] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2025-09-19 19:25:35.136] [4107] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0

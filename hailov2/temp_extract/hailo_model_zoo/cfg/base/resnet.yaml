@@ -1,0 +1,19 @@
+base:
+- base/imagenet.yaml
+preprocessing:
+  meta_arch: basic_resnet
+info:
+  source: https://github.com/tensorflow/models/tree/master/research/slim
+  license_url: https://www.apache.org/licenses/LICENSE-2.0
+  license_name: Apache-2.0
+parser:
+  normalization_params:
+    normalize_in_net: true
+    mean_list:
+    - 123.675
+    - 116.28
+    - 103.53
+    std_list:
+    - 58.395
+    - 57.12
+    - 57.375
