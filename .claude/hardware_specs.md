@@ -1,26 +1,51 @@
 # TreatBot Hardware Specifications
 
-## ⚠️ CRITICAL: Carousel Servo (Modified Hardware)
+## 🔧 SERVO SYSTEM - 3 Servos Total
 
+### ⚠️ CRITICAL: Treat Carousel (Continuous Rotation)
 **Servo:** Hacked MG996R (originally 180° position servo)
 **Modification:** Converted to continuous rotation servo
 **Channel:** 2 (PCA9685)
+**Function:** **TREAT DISPENSING** - rotates to dispense treats
 **Control Method:** `kit.continuous_servo[2].throttle` (NOT `kit.servo[2].angle`)
+
+**Treat Dispensing Specifications:**
+- **Treat Positions:** 6 compartments around carousel
+- **Rotation per treat:** 60° (360° ÷ 6 positions)
+- **Dispensing method:** Brief rotation to advance to next treat slot
+- **Duration:** 0.08 seconds per treat (80ms) - CALIBRATED
+- **Pulse Width:** 1700μs (forward rotation) - CALIBRATED
+- **Control:** `winch.duty_cycle = pulse_to_duty(1700)` for exactly 1 treat
 
 **Safe Control:**
 ```python
-# ✅ CORRECT
-controller.set_carousel_speed(0.5)      # Forward rotation
-controller.set_carousel_speed(-0.5)     # Reverse rotation
-controller.stop_carousel(gradual=True)  # Safe stop with ramp-down
+# ✅ CORRECT - Treat Dispensing (CALIBRATED VALUES)
+def dispense_one_treat():
+    winch.duty_cycle = pulse_to_duty(1700)  # 1700μs pulse
+    time.sleep(0.08)                        # 80ms duration
+    controller.stop_carousel(gradual=True)  # Safe stop with ramp-down
 
 # ❌ NEVER DO THIS
 controller.set_servo_angle('carousel', angle)  # Will spin continuously!
 kit.continuous_servo[2].throttle = 0.0  # Abrupt stop causes screech
 ```
 
-**Why the screech:** Switching control methods abruptly causes mechanical stress.
-*Updated: October 2025 - Audio System Revision*
+### 📹 Camera Pan Servo
+**Servo:** Standard position servo
+**Channel:** 0 (PCA9685)
+**Function:** Left/right camera movement
+**Range:** -90° to +90°
+**Control Method:** `kit.servo[0].angle`
+
+### 📹 Camera Pitch Servo
+**Servo:** Standard position servo
+**Channel:** 1 (PCA9685)
+**Function:** Up/down camera movement
+**Range:** -45° to +45°
+**Control Method:** `kit.servo[1].angle`
+
+**⚠️ NO LAUNCHER SERVO EXISTS - Carousel handles all treat dispensing**
+*Updated: October 2025 - Hardware Clarification*
 
 ## 🤖 System Overview
 

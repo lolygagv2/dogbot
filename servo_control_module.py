@@ -20,11 +20,10 @@ class ServoController:
     
     def __init__(self):
         """Initialize servo controller"""
-        # PCA9685 channels
+        # PCA9685 channels - ONLY 3 SERVOS TOTAL
         self.CHANNEL_PAN = 0      # Pan servo (left/right)
-        self.CHANNEL_TILT = 1     # Tilt servo (up/down)  
-        self.CHANNEL_CAROUSEL = 2 # Treat carousel rotation
-        self.CHANNEL_LAUNCHER = 3 # Treat launcher
+        self.CHANNEL_TILT = 1     # Tilt servo (up/down)
+        self.CHANNEL_CAROUSEL = 2 # Treat carousel rotation (continuous servo)
         
         # Servo configurations (adjustable)
         self.servo_config = {
@@ -58,18 +57,6 @@ class ServoController:
                 'current_angle': 0,
                 'positions': 6,  # 6 treat compartments
                 'speed': 30
-            },
-            'launcher': {
-                'channel': self.CHANNEL_LAUNCHER,
-                'min_angle': 0,
-                'max_angle': 90,
-                'center': 0,
-                'min_pulse': 500,
-                'max_pulse': 2500,
-                'current_angle': 0,
-                'launch_angle': 90,
-                'reset_angle': 0,
-                'speed': 100
             }
         }
         
@@ -109,7 +96,7 @@ class ServoController:
         Set servo to specific angle
 
         Args:
-            servo_name: Name of servo ('pan', 'tilt', 'carousel', 'launcher')
+            servo_name: Name of servo ('pan', 'tilt', 'carousel')
             angle: Target angle in degrees
             smooth: Use smooth movement
         """
@@ -251,26 +238,39 @@ class ServoController:
     def rotate_carousel(self, steps: int = 1):
         """
         Rotate treat carousel by number of steps
-        
+
         Args:
-            steps: Number of compartments to rotate
+            steps: Number of compartments to rotate (1 step = 1 treat dispensed)
         """
-        config = self.servo_config['carousel']
-        degrees_per_step = 360 / config['positions']
-        
-        new_angle = (config['current_angle'] + degrees_per_step * steps) % 360
-        self.set_servo_angle('carousel', new_angle, smooth=True)
-        
-    def activate_launcher(self):
-        """Activate treat launcher"""
-        config = self.servo_config['launcher']
-        
-        # Move to launch position
-        self.set_servo_angle('launcher', config['launch_angle'], smooth=False)
-        time.sleep(0.3)
-        
-        # Return to reset position
-        self.set_servo_angle('launcher', config['reset_angle'], smooth=False)
+        try:
+            config = self.servo_config['carousel']
+
+            # Calculate rotation time based on steps
+            # Each step = 60° (360° / 6 positions)
+            # CALIBRATED VALUES: pulse=1700μs, duration=80ms per treat
+            # Based on: winch.duty_cycle = pulse_to_duty(1700)
+            rotation_duration = 0.08 * steps  # 80ms per step (CALIBRATED)
+            rotation_speed = 0.5  # Equivalent to 1700μs pulse (CALIBRATED)
+
+            print(f"🔄 Rotating carousel {steps} step(s)...")
+
+            # Start rotation
+            self.set_carousel_speed(rotation_speed)
+            time.sleep(rotation_duration)
+
+            # Stop rotation gradually
+            self.stop_carousel(gradual=True)
+
+            # Update position tracking
+            degrees_per_step = 360 / config['positions']
+            config['current_angle'] = (config['current_angle'] + degrees_per_step * steps) % 360
+
+            print(f"✅ Carousel rotated to position {config['current_angle']:.1f}°")
+            return True
+
+        except Exception as e:
+            logger.error(f"Carousel rotation failed: {e}")
+            return False
         
     def calibrate_servo(self, servo_name: str):
         """
@@ -450,9 +450,9 @@ def test_servos():
             controller.rotate_carousel(1)
             time.sleep(0.5)
             
-        # Test launcher
-        print("Testing launcher...")
-        controller.activate_launcher()
+        # Test treat dispensing
+        print("Testing treat dispensing...")
+        controller.rotate_carousel(1)  # Dispense one treat
         
         controller.cleanup()
         print("Test complete!")
