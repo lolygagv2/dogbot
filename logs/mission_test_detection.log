@@ -1,0 +1,74 @@
+2025-10-20 03:42:16,015 - mission.test_detection - INFO - Mission 'test_detection' started (ID: 4)
+2025-10-20 03:42:16,015 - mission.test_detection - INFO - Event: mission_start - {'mission_name': 'test_detection', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 03:46:03,869 - mission.test_detection - INFO - Mission 'test_detection' started (ID: 5)
+2025-10-20 03:46:03,869 - mission.test_detection - INFO - Event: mission_start - {'mission_name': 'test_detection', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 03:46:14,042 - mission.test_detection - INFO - Mission 'test_detection' ended - Success: False, Duration: 10.2s
+2025-10-20 03:46:14,043 - mission.test_detection - INFO - Event: mission_end - {'success': False, 'duration': 10.17591643333435, 'total_events': 1}
+2025-10-20 17:00:35,057 - mission.test_detection - INFO - Mission 'test_detection' started (ID: 6)
+2025-10-20 17:00:35,058 - mission.test_detection - INFO - Event: mission_start - {'mission_name': 'test_detection', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:04:11,064 - mission.test_detection - INFO - Mission 'test_detection' started (ID: 7)
+2025-10-20 17:04:11,064 - mission.test_detection - INFO - Event: mission_start - {'mission_name': 'test_detection', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:04:21,121 - mission.test_detection - INFO - Mission 'test_detection' ended - Success: False, Duration: 10.1s
+2025-10-20 17:04:21,122 - mission.test_detection - INFO - Event: mission_end - {'success': False, 'duration': 10.055311918258667, 'total_events': 1}
+2025-10-20 17:04:53,754 - mission.test_detection - INFO - Mission 'test_detection' started (ID: 8)
+2025-10-20 17:04:53,754 - mission.test_detection - INFO - Event: mission_start - {'mission_name': 'test_detection', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:04:56,240 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.773559033870697, 'box': [985, 0, 1920, 138]}
+2025-10-20 17:04:56,734 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8674375414848328, 'box': [1027, 0, 1920, 135]}
+2025-10-20 17:04:57,179 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8111104369163513, 'box': [1052, 0, 1920, 120]}
+2025-10-20 17:04:57,980 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8486618399620056, 'box': [1258, 0, 1920, 268]}
+2025-10-20 17:04:58,448 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.34547296166419983, 'box': [1205, 0, 1915, 312]}
+2025-10-20 17:04:59,587 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.7998449802398682, 'box': [1099, 0, 1920, 467]}
+2025-10-20 17:05:00,070 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.7059664726257324, 'box': [1037, 3, 1920, 641]}
+2025-10-20 17:05:00,551 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.5858019590377808, 'box': [589, 0, 1919, 601]}
+2025-10-20 17:05:01,131 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.5820468068122864, 'box': [900, 2, 1919, 621]}
+2025-10-20 17:05:01,142 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.4543720483779907, 'box': [170, 0, 1920, 624]}
+2025-10-20 17:05:01,637 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.773559033870697, 'box': [1041, 154, 1920, 553]}
+2025-10-20 17:05:02,144 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.6308636665344238, 'box': [1232, 210, 1920, 561]}
+2025-10-20 17:05:02,599 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.30041125416755676, 'box': [1154, 0, 1920, 220]}
+2025-10-20 17:05:03,086 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.6045776605606079, 'box': [1203, 0, 1920, 233]}
+2025-10-20 17:05:03,564 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8373963832855225, 'box': [1203, 0, 1920, 233]}
+2025-10-20 17:05:04,049 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.495678573846817, 'box': [1205, 0, 1920, 226]}
+2025-10-20 17:05:04,527 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.3980449140071869, 'box': [1215, 0, 1920, 238]}
+2025-10-20 17:05:05,009 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.3604935109615326, 'box': [1216, 0, 1920, 243]}
+2025-10-20 17:05:05,490 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.5820468068122864, 'box': [1211, 0, 1920, 248]}
+2025-10-20 17:05:05,975 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.47314774990081787, 'box': [1219, 0, 1915, 252]}
+2025-10-20 17:05:06,459 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.570781409740448, 'box': [1223, 0, 1920, 249]}
+2025-10-20 17:05:06,778 - mission.test_detection - INFO - Mission 'test_detection' ended - Success: True, Duration: 13.0s
+2025-10-20 17:05:06,779 - mission.test_detection - INFO - Event: mission_end - {'success': True, 'duration': 13.02385425567627, 'total_events': 22}
+2025-10-20 17:36:22,740 - mission.test_detection - INFO - Mission 'test_detection' started (ID: 13)
+2025-10-20 17:36:22,740 - mission.test_detection - INFO - Event: mission_start - {'mission_name': 'test_detection', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:36:22,927 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8636823892593384, 'box': [1078, 53, 1920, 465]}
+2025-10-20 17:36:23,394 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8561720848083496, 'box': [1081, 48, 1920, 466]}
+2025-10-20 17:36:23,890 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8636823892593384, 'box': [1080, 29, 1919, 470]}
+2025-10-20 17:36:24,353 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.7960898280143738, 'box': [1352, 11, 1920, 451]}
+2025-10-20 17:36:24,797 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.3830243647098541, 'box': [1375, 3, 1920, 449]}
+2025-10-20 17:36:25,267 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.7998449802398682, 'box': [1348, 31, 1919, 461]}
+2025-10-20 17:36:25,735 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.7510281801223755, 'box': [1366, 12, 1920, 470]}
+2025-10-20 17:36:26,206 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8111104369163513, 'box': [1357, 16, 1919, 444]}
+2025-10-20 17:36:26,671 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.773559033870697, 'box': [1361, 14, 1920, 447]}
+2025-10-20 17:36:27,138 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.7547833323478699, 'box': [1366, 2, 1920, 453]}
+2025-10-20 17:56:33,737 - mission.test_detection - INFO - Mission 'test_detection' started (ID: 17)
+2025-10-20 17:56:33,737 - mission.test_detection - INFO - Event: mission_start - {'mission_name': 'test_detection', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:56:34,274 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8148655295372009, 'box': [1444, 0, 1920, 272]}
+2025-10-20 17:56:34,743 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8937234878540039, 'box': [1242, 0, 1920, 327]}
+2025-10-20 17:56:35,213 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.6008225083351135, 'box': [1131, 2, 1919, 376]}
+2025-10-20 17:56:35,677 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.5369851589202881, 'box': [1133, 2, 1920, 394]}
+2025-10-20 17:56:36,153 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.7773141264915466, 'box': [1143, 2, 1920, 400]}
+2025-10-20 17:56:36,619 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8411515355110168, 'box': [1151, 2, 1920, 428]}
+2025-10-20 17:56:37,084 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8937234878540039, 'box': [1118, 4, 1920, 600]}
+2025-10-20 17:56:37,559 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8336412906646729, 'box': [1098, 0, 1919, 666]}
+2025-10-20 17:56:39,041 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.5069440007209778, 'box': [1122, 0, 1920, 233]}
+2025-10-20 17:56:39,493 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.570781409740448, 'box': [1065, 0, 1920, 234]}
+2025-10-20 17:56:39,963 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.34547296166419983, 'box': [1073, 0, 1920, 239]}
+2025-10-20 17:56:40,433 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.7960898280143738, 'box': [1050, 0, 1919, 233]}
+2025-10-20 17:56:40,898 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8711926937103271, 'box': [1054, 0, 1920, 219]}
+2025-10-20 17:56:41,704 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.8524169921875, 'box': [1313, 0, 1920, 465]}
+2025-10-20 17:56:42,173 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.33420753479003906, 'box': [868, 0, 1920, 457]}
+2025-10-20 17:56:43,315 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.7134767770767212, 'box': [1124, 1, 1919, 550]}
+2025-10-20 17:56:43,778 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.5407402515411377, 'box': [1011, 1, 1920, 558]}
+2025-10-20 17:56:44,257 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.368003785610199, 'box': [1108, 250, 1919, 558]}
+2025-10-20 17:56:44,719 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.5182094573974609, 'box': [812, 2, 1919, 627]}
+2025-10-20 17:56:45,851 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.5182094573974609, 'box': [1142, 274, 1919, 558]}
+2025-10-20 17:56:46,320 - mission.test_detection - INFO - Event: dog_detected - {'confidence': 0.5294748544692993, 'box': [1121, 271, 1919, 564]}
+2025-10-20 17:56:46,639 - mission.test_detection - INFO - Mission 'test_detection' ended - Success: True, Duration: 12.9s
+2025-10-20 17:56:46,639 - mission.test_detection - INFO - Event: mission_end - {'success': True, 'duration': 12.90353775024414, 'total_events': 22}

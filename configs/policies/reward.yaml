@@ -1,0 +1,110 @@
+# Reward policies for different behaviors
+# Controls when and how treats are dispensed
+
+policies:
+  default:
+    description: "Standard reward policy for basic training"
+
+    behaviors:
+      sit:
+        min_duration: 10        # seconds dog must maintain position
+        require_quiet: true     # no barking or excessive movement
+        cooldown: 20           # seconds between rewards for this behavior
+        treat_probability: 0.6  # 60% chance of treat (variable ratio)
+        max_daily_rewards: 8   # maximum treats per day for sitting
+        confidence_threshold: 0.8  # minimum detection confidence
+        sounds: ["good_dog", "excellent", "well_done"]
+        led_pattern: "celebration"
+        sequence: "celebrate"
+
+      down:
+        min_duration: 15
+        require_quiet: true
+        cooldown: 30
+        treat_probability: 0.5  # Slightly harder to earn
+        max_daily_rewards: 6
+        confidence_threshold: 0.8
+        sounds: ["excellent", "well_done", "great_job"]
+        led_pattern: "pulse_green"
+        sequence: "celebrate"
+
+      stay:
+        min_duration: 20       # Longest duration requirement
+        require_quiet: true
+        cooldown: 45
+        treat_probability: 0.7  # Higher reward for difficult behavior
+        max_daily_rewards: 5
+        confidence_threshold: 0.85
+        sounds: ["great_job", "excellent"]
+        led_pattern: "rainbow"
+        sequence: "celebrate"
+
+      spin:
+        min_duration: 1.0      # Quick action
+        require_quiet: false   # Movement behavior
+        cooldown: 60          # Longer cooldown for trick
+        treat_probability: 0.8
+        max_daily_rewards: 3   # Limited daily tricks
+        confidence_threshold: 0.9
+        sounds: ["excellent", "amazing"]
+        led_pattern: "spinning_dot"
+        sequence: "celebrate"
+
+  training:
+    description: "Intensive training mode with higher rewards"
+
+    behaviors:
+      sit:
+        min_duration: 8
+        require_quiet: true
+        cooldown: 15
+        treat_probability: 0.8  # Higher during training
+        max_daily_rewards: 12
+        confidence_threshold: 0.7
+        sounds: ["good_dog", "yes", "excellent"]
+        led_pattern: "celebration"
+        sequence: "celebrate"
+
+  maintenance:
+    description: "Established behavior maintenance with lower rewards"
+
+    behaviors:
+      sit:
+        min_duration: 12
+        require_quiet: true
+        cooldown: 30
+        treat_probability: 0.4  # Lower to maintain behavior
+        max_daily_rewards: 5
+        confidence_threshold: 0.85
+        sounds: ["good_dog"]
+        led_pattern: "pulse_green"
+        sequence: "celebrate"
+
+# Global reward settings
+global_settings:
+  max_treats_per_day: 20      # Total daily limit
+  quiet_detection_method: "motion_analysis"  # How to detect quiet behavior
+  quiet_threshold: 0.2        # Motion threshold for "quiet"
+  bark_detection: false       # Enable bark detection (requires audio analysis)
+
+  # Emergency limits
+  max_treats_per_hour: 8
+  emergency_stop_on_overfeed: true
+
+  # Learning adaptation
+  adapt_probabilities: true    # Adjust probabilities based on success
+  success_rate_target: 0.7    # Target training success rate
+  adaptation_rate: 0.1        # How quickly to adapt
+
+# Time-based modifiers
+time_modifiers:
+  morning_boost: 1.2          # Multiply probabilities 6-10 AM
+  evening_boost: 1.1          # Multiply probabilities 5-8 PM
+  late_night_reduction: 0.5   # Reduce probabilities 10 PM - 6 AM
+
+# Multi-dog settings
+multi_dog:
+  individual_tracking: true
+  fair_distribution: true     # Ensure all dogs get equal opportunities
+  dominant_dog_detection: true
+  sharing_behavior_bonus: 1.5 # Bonus for dogs that share space nicely

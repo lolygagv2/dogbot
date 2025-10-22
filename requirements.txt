@@ -1,3 +1,5 @@
+# TreatBot Dependencies - EXISTING WORKING VERSIONS
+# Core packages already installed and working
 absl-py==2.3.1
 Adafruit-Blinka==8.62.0
 adafruit-circuitpython-busdevice==5.2.13
@@ -74,3 +76,8 @@ urllib3==2.5.0
 vosk==0.3.45
 websockets==15.0.1
 Werkzeug==3.1.3
+
+# ADDITIONAL for TreatBot unified architecture:
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+PyYAML==6.0.1

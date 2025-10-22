@@ -12,7 +12,7 @@
 ### 2. Verify Protected Files
 Check that these files exist and are unmodified:
 - `notes.txt` (user notes - READ ONLY)
-- `config.yaml` (system configuration)
+- `config/robot_config.yaml` (system configuration)
 - `/docs/` directory contents
 - `HARDWARE_SPECS.md`
 - `PRODUCT_ROADMAP.md`

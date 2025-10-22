@@ -1,5 +1,10 @@
 Do not delete this is a manual list of commands and ideas and hints about the project to use. 
 
+-------------------------------
+
+--------------------
+
+
 If there's issues with VS CODE: 
 Simple Step-by-Step Recovery
 1. Open a terminal to your Pi (e.g., PuTTY or Windows Terminal with SSH):

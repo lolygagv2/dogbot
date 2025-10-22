@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TreatBot Remote Control</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 20px;
+            color: white;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        h1 {
+            color: #fff;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            margin-bottom: 30px;
+        }
+
+        .control-panel {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            margin-bottom: 20px;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            max-width: 300px;
+            margin: 0 auto 20px;
+        }
+
+        .control-btn {
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(5px);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .control-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .control-btn:active {
+            transform: translateY(0);
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        .control-btn.forward { grid-column: 2; }
+        .control-btn.left { grid-column: 1; grid-row: 2; }
+        .control-btn.stop { grid-column: 2; grid-row: 2; background: rgba(255, 0, 0, 0.3); }
+        .control-btn.right { grid-column: 3; grid-row: 2; }
+        .control-btn.backward { grid-column: 2; grid-row: 3; }
+
+        .speed-control {
+            margin: 20px 0;
+        }
+
+        .speed-slider {
+            width: 200px;
+            margin: 0 10px;
+        }
+
+        .status {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            font-family: monospace;
+            text-align: left;
+        }
+
+        .camera-controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .camera-btn {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .camera-btn:hover {
+            background: rgba(255, 255, 255, 0.25);
+        }
+
+        .api-status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        .connected { color: #4CAF50; }
+        .disconnected { color: #f44336; }
+
+        @media (max-width: 600px) {
+            .controls {
+                max-width: 250px;
+                gap: 10px;
+            }
+
+            .control-btn {
+                padding: 12px;
+                font-size: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 TreatBot Remote Control</h1>
+
+        <div class="control-panel">
+            <h3>Vehicle Controls</h3>
+
+            <div class="controls">
+                <button class="control-btn forward" onclick="sendCommand('forward')">
+                    ⬆️<br>Forward<br>(W)
+                </button>
+                <button class="control-btn left" onclick="sendCommand('left')">
+                    ⬅️<br>Left<br>(A)
+                </button>
+                <button class="control-btn stop" onclick="sendCommand('stop')">
+                    🛑<br>STOP<br>(SPACE)
+                </button>
+                <button class="control-btn right" onclick="sendCommand('right')">
+                    ➡️<br>Right<br>(D)
+                </button>
+                <button class="control-btn backward" onclick="sendCommand('backward')">
+                    ⬇️<br>Backward<br>(S)
+                </button>
+            </div>
+
+            <div class="speed-control">
+                <label>Speed: </label>
+                <input type="range" id="speedSlider" class="speed-slider" min="20" max="100" value="60" step="10">
+                <span id="speedDisplay">60%</span>
+            </div>
+
+            <div class="camera-controls">
+                <button class="camera-btn" onclick="setCameraMode('photography')">📸 Photo</button>
+                <button class="camera-btn" onclick="setCameraMode('detection')">🤖 AI Detection</button>
+                <button class="camera-btn" onclick="setCameraMode('vigilant')">👁️ Vigilant</button>
+                <button class="camera-btn" onclick="setCameraMode('idle')">💤 Idle</button>
+                <button class="camera-btn" onclick="takeScreenshot()">📷 Screenshot</button>
+            </div>
+        </div>
+
+        <div class="control-panel">
+            <h3>System Status</h3>
+            <div id="status" class="status">
+                <div>Status: <span id="connectionStatus" class="disconnected">Disconnected</span></div>
+                <div>Last Command: <span id="lastCommand">None</span></div>
+                <div>Motor Status: <span id="motorStatus">Unknown</span></div>
+                <div>Speed: <span id="currentSpeed">0%</span></div>
+                <div>Direction: <span id="currentDirection">stop</span></div>
+            </div>
+
+            <div class="api-status">
+                <div>API Server: <span id="apiStatus">Checking...</span></div>
+                <div>Manual Mode: <span id="manualMode">Unknown</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        let currentSpeed = 60;
+        let isConnected = false;
+
+        // Update speed display
+        document.getElementById('speedSlider').addEventListener('input', function() {
+            currentSpeed = this.value;
+            document.getElementById('speedDisplay').textContent = currentSpeed + '%';
+        });
+
+        // Keyboard controls
+        document.addEventListener('keydown', function(event) {
+            const key = event.key.toLowerCase();
+            const keyMap = {
+                'w': 'forward',
+                'a': 'left',
+                's': 'backward',
+                'd': 'right',
+                ' ': 'stop'
+            };
+
+            if (keyMap[key]) {
+                event.preventDefault();
+                sendCommand(keyMap[key]);
+            }
+        });
+
+        // Send movement command
+        async function sendCommand(direction) {
+            try {
+                const response = await fetch(`${API_BASE}/manual/drive`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        direction: direction,
+                        speed: currentSpeed,
+                        duration: direction === 'stop' ? 0 : 0.5
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    document.getElementById('lastCommand').textContent =
+                        `${direction} @ ${currentSpeed}%`;
+                    updateConnectionStatus(true);
+                } else {
+                    console.error('Command failed:', result);
+                    updateConnectionStatus(false);
+                }
+            } catch (error) {
+                console.error('Error sending command:', error);
+                updateConnectionStatus(false);
+            }
+        }
+
+        // Set camera mode
+        async function setCameraMode(mode) {
+            try {
+                // This would need to be implemented in the API
+                console.log('Setting camera mode:', mode);
+                document.getElementById('lastCommand').textContent = `Camera: ${mode}`;
+            } catch (error) {
+                console.error('Error setting camera mode:', error);
+            }
+        }
+
+        // Take screenshot
+        async function takeScreenshot() {
+            try {
+                // This would need to be implemented in the API
+                console.log('Taking screenshot');
+                document.getElementById('lastCommand').textContent = 'Screenshot taken';
+            } catch (error) {
+                console.error('Error taking screenshot:', error);
+            }
+        }
+
+        // Update connection status
+        function updateConnectionStatus(connected) {
+            isConnected = connected;
+            const statusElement = document.getElementById('connectionStatus');
+            statusElement.textContent = connected ? 'Connected' : 'Disconnected';
+            statusElement.className = connected ? 'connected' : 'disconnected';
+        }
+
+        // Get status updates
+        async function updateStatus() {
+            try {
+                // Check API health
+                const healthResponse = await fetch(`${API_BASE}/health`);
+                if (healthResponse.ok) {
+                    document.getElementById('apiStatus').textContent = 'Online';
+                    document.getElementById('apiStatus').className = 'connected';
+                } else {
+                    throw new Error('API not responding');
+                }
+
+                // Get manual control status
+                const statusResponse = await fetch(`${API_BASE}/manual/status`);
+                if (statusResponse.ok) {
+                    const status = await statusResponse.json();
+
+                    document.getElementById('motorStatus').textContent =
+                        status.initialized ? 'Ready' : 'Not Ready';
+                    document.getElementById('currentSpeed').textContent =
+                        status.current_speed + '%';
+                    document.getElementById('currentDirection').textContent =
+                        status.current_direction || 'stop';
+                    document.getElementById('manualMode').textContent =
+                        status.movement_mode;
+
+                    updateConnectionStatus(true);
+                }
+            } catch (error) {
+                console.error('Status update failed:', error);
+                document.getElementById('apiStatus').textContent = 'Offline';
+                document.getElementById('apiStatus').className = 'disconnected';
+                updateConnectionStatus(false);
+            }
+        }
+
+        // Initialize manual mode
+        async function initializeManualMode() {
+            try {
+                await fetch(`${API_BASE}/manual/mode/manual`, {
+                    method: 'POST'
+                });
+            } catch (error) {
+                console.error('Failed to set manual mode:', error);
+            }
+        }
+
+        // Emergency stop on page unload
+        window.addEventListener('beforeunload', function() {
+            if (isConnected) {
+                navigator.sendBeacon(`${API_BASE}/manual/emergency_stop`, '{}');
+            }
+        });
+
+        // Start status updates
+        initializeManualMode();
+        updateStatus();
+        setInterval(updateStatus, 2000);
+
+        console.log('TreatBot Remote Control Interface Loaded');
+        console.log('Use WASD keys or click buttons to control the robot');
+    </script>
+</body>
+</html>

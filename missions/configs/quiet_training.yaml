@@ -1,0 +1,35 @@
+# Quiet Training Mission Configuration
+mission_type: "quiet_training"
+timeout_minutes: 10
+max_rewards_per_session: 5
+cooldown_between_rewards: 20
+
+# Detection criteria
+pose_detection:
+  target_pose: "sit"
+  duration_required: 2.0
+  confidence_threshold: 0.5
+
+# Audio criteria
+audio_detection:
+  silence_duration: 10.0
+  bark_threshold_db: 60
+  background_noise_threshold: 40
+
+# Reward configuration
+reward:
+  treat: true
+  audio: "good_quiet.mp3"
+  lights: "blue_pulse"
+  delay_after_reward: 3.0
+
+# Success criteria
+success_criteria:
+  min_successful_quiet_periods: 3
+  max_bark_incidents: 2
+
+# Schedule
+schedule:
+  frequency: "5x per day"
+  active_hours: [7, 22]  # 7 AM - 10 PM
+  priority_times: [12, 14, 18]  # Lunch, afternoon, evening

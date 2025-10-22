@@ -1,0 +1,55 @@
+# System startup sequence
+# Initializes all systems and provides visual/audio feedback
+
+name: startup
+description: "System initialization sequence with status feedback"
+version: "1.0"
+
+steps:
+  - type: parallel
+    description: "Initialize hardware and play startup sound"
+    actions:
+      - service: audio
+        command: play
+        params:
+          sound: "startup"
+          volume: 20
+        description: "Play startup sound"
+
+      - service: led
+        command: pattern
+        params:
+          pattern: "searching"
+          duration: 5
+          color: "blue"
+        description: "Show initialization pattern"
+
+  - type: action
+    service: motion
+    command: center
+    description: "Center camera to neutral position"
+
+  - type: wait
+    duration: 2.0
+    description: "Allow initialization to complete"
+
+  - type: action
+    service: led
+    command: pattern
+    params:
+      pattern: "idle"
+    description: "Set to idle state"
+
+  - type: action
+    service: audio
+    command: play
+    params:
+      sound: "dog_detected"  # "Ready" sound
+      volume: 18
+    description: "Signal ready state"
+
+metadata:
+  duration_estimate: 8.0
+  interrupt_safe: false
+  priority: system
+  category: "system"
