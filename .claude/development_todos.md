@@ -1,534 +1,345 @@
 # TreatBot Development TODO List
-*Priority-Sorted Action Items for Claude Code*
+*Aligned with Unified Architecture Implementation*
+*Last Updated: October 22, 2025*
+
+## 🏆 UNIFIED ARCHITECTURE STATUS
+
+### ✅ COMPLETED - Event-Driven System (Oct 21-22, 2025)
+Following the 6-phase plan from `claude_code_instructions.md`:
+
+**Phase 1: Core Infrastructure** ✅
+- [x] Event bus (`/core/bus.py`) - Thread-safe pub/sub messaging
+- [x] State manager (`/core/state.py`) - System mode tracking
+- [x] Safety monitor (`/core/safety.py`) - Battery/temperature monitoring
+- [ ] Data store (`/core/store.py`) - SQLite persistence **[MISSING]**
+
+**Phase 2: Service Layer** ✅
+- [x] Detector service wraps `ai_controller_3stage_fixed.py`
+- [x] Pan/tilt service for camera tracking
+- [x] Motor service for movement control
+- [x] Dispenser service for treat delivery
+- [x] SFX and LED services for feedback
+- [x] Gamepad and GUI services for control
+
+**Phase 3: Orchestration** ✅
+- [x] Sequence engine for celebration routines
+- [x] Reward logic for training decisions
+- [x] Mode FSM for camera state management
+- [ ] Mission engine for training sequences **[TODO]**
+
+**Phase 4: Configuration** ⚠️ PARTIAL
+- [x] Modes config (`/configs/modes.yaml`)
+- [ ] Sequences, policies, missions **[TODO]**
+
+**Phase 5: Main Orchestrator** ✅
+- [x] `/main_treatbot.py` - THE definitive entry point
+
+**Phase 6: API Layer** ⚠️ PARTIAL
+- [x] REST API (`/api/server.py`)
+- [ ] WebSocket server **[TODO]**
 
 ## ✅ COMPLETED TASKS
 
-### ✅ Camera Mode System [COMPLETED - Oct 19, 2025]
-- **Status**: Complete
-- **Priority**: Was Critical (1)
-- **Dependencies**: None
-- **Description**: Multi-mode camera system with automatic switching
-- **Implementation**: `core/camera_mode_controller.py`
-- **Acceptance Criteria**: ✅ All 4 modes implemented and tested
-  - ✅ Photography Mode (4K, manual controls, no AI)
-  - ✅ AI Detection Mode (640x640 @ 30 FPS)
-  - ✅ Vigilant Mode (HD with 3x2 tiling)
-  - ✅ Auto-switching based on vehicle motion
+### ✅ Unified Architecture Implementation [Oct 21-22, 2025]
+- **Event Bus System** - Pub/sub messaging for all components
+- **Service Wrappers** - All hardware wrapped with service interfaces
+- **Orchestration Layer** - Sequence, reward, and mode management
+- **Main Entry Point** - Single `/main_treatbot.py` orchestrator
+- **API Server** - REST endpoints for control and monitoring
 
-### ✅ Pose Detection Status [COMPLETED]
-- **Status**: Complete
-- **Priority**: Was Critical (1)
-- **Description**: Pose detection verified working reliably
-- **Acceptance Criteria**: ✅ Pose detection running at required FPS with good accuracy
+### ✅ Hardware Systems [Verified Working]
+- **Motors** - Instant gpioset commands, no runaway
+- **LEDs** - NeoPixel patterns and blue LED
+- **Servos** - Pan/tilt/carousel all functional
+- **Audio** - DFPlayer Pro with relay switching
+- **Camera** - Multi-mode system with AI detection
+- **Gamepad** - Bluetooth framework ready (pygame)
 
-### ✅ Audio Relay Hardware Integration [COMPLETED]
-- **Status**: Complete
-- **Priority**: Was Critical (1)
-- **Description**: Two analog relays (Left/Right channels) switching Pi audio and DFPlayer based on GPIO
-- **Acceptance Criteria**: ✅ Hardware relay system implemented and working
+## 🎯 COMPLETION GATES - System Validation
 
-## 🔴 CRITICAL - Do First (Week 1-2)
+### Must Pass All Gates for MVP:
+1. ⏳ **Event Bus Working** - Services publish/subscribe events
+2. ⏳ **AI Detection Active** - Dog detection triggers events
+3. ⏳ **Behavior Recognition** - Sit/down/stand poses detected
+4. ⏳ **Reward Logic** - Sitting triggers celebration
+5. ⏳ **Sequence Execution** - Lights + sound + treat coordinated
+6. ❌ **Database Logging** - Events saved to SQLite
+7. ⏳ **Cooldown Enforcement** - Time between rewards
+8. ⏳ **Daily Limits** - Max rewards per day
+9. ⏳ **API Monitoring** - REST endpoints return telemetry
+10. ⏳ **Full Autonomous Loop** - Complete training cycle
 
-### 1. Create Unified Mission API
-**Context:** "Seems like we're almost there?" - need to verify and consolidate
+**Legend:** ✅ Verified | ⏳ Ready to test | ❌ Not implemented
 
-**Goal:** All training scripts use the same API
+## 🔴 CRITICAL - Complete Core System (This Week)
 
-**File:** `missions/__init__.py`
-```python
-class MissionController:
-    """
-    Unified API for all training missions
-    """
-    def __init__(self, mission_name: str, config: dict = None):
-        self.mission_name = mission_name
-        self.config = config or self.load_config(mission_name)
-        self.logger = Logger(mission_name)
-        self.hardware = HardwareInterface()
-        
-    def start(self):
-        """Initialize mission and log start time"""
-        
-    def wait_for_condition(self, pose: str, duration: float = 0):
-        """Wait until pose detected for X seconds"""
-        
-    def reward(self, treat: bool = True, audio: str = None, lights: str = None):
-        """Trigger reward actions"""
-        
-    def log_event(self, event_type: str, data: dict = None):
-        """Log to database"""
-        
-    def end(self):
-        """Cleanup and log completion"""
-```
+### 1. Implement SQLite Store [BLOCKING]
+**File:** `/core/store.py`
 
-**Tasks:**
-- [ ] Create `missions/` module
-- [ ] Implement `MissionController` base class
-- [ ] Migrate existing mission scripts to use API
-- [ ] Create mission config schema (YAML)
-- [ ] Document API in `docs/mission_api.md`
-
-**Acceptance:** 3+ existing missions refactored to use unified API
-
----
-
-### 📋 NEW - Happy Pet Progress Report System
-- **Status**: Not Started
-- **Priority**: 1 (Critical MVP)
-- **Dependencies**: Event Logging, Mission API
-- **Description**: 1-5 bone scale grading system for dog behavior analysis
-- **Implementation**: `reports/progress_report.py`
-- **Acceptance Criteria**:
-  - [ ] Track successful behaviors vs treats dispensed
-  - [ ] Monitor bark frequency and patterns
-  - [ ] Generate daily/weekly bone scale reports
-  - [ ] Export reports for user sharing
-
-### 📋 NEW - Audio + Vision Behavioral Analysis
-- **Status**: Not Started
-- **Priority**: 1 (Critical differentiator)
-- **Dependencies**: Audio Intelligence, Pose Detection
-- **Description**: Combined audio and pattern recognition for behavior synopsis
-- **Implementation**: `core/behavioral_fusion.py`
-- **Acceptance Criteria**:
-  - [ ] Combine pose detection with bark analysis
-  - [ ] Generate behavior confidence scores
-  - [ ] Real-time behavioral state assessment
-  - [ ] Integration with reward logic
-
----
-
-## 🟠 HIGH PRIORITY (Week 3-4)
-
-### 2. Build Reward Logic Rules Engine
-**Reference:** User's example YAML config
-
-**File:** `missions/rules_engine.py`
-```python
-class RulesEngine:
-    def __init__(self, rules_file: str):
-        self.rules = self.load_rules(rules_file)
-        self.state = {}  # Track counters, cooldowns, etc.
-        
-    def evaluate_condition(self, condition: dict, current_data: dict) -> bool:
-        """
-        condition: {"pose": "sit", "duration": 3.0}
-        current_data: {"pose": "sit", "duration": 3.2, "confidence": 0.92}
-        """
-        
-    def execute_action(self, action: dict):
-        """
-        action: {"type": "reward", "treat": true, "audio": "good_dog.mp3"}
-        """
-        
-    def check_cooldown(self, rule_id: str) -> bool:
-        """Prevent spam-rewarding"""
-        
-    def check_daily_limit(self, rule_id: str) -> bool:
-        """Max 5 treats per day, etc."""
-```
-
-**Tasks:**
-- [ ] Implement YAML rule parser
-- [ ] Create condition evaluator (AND/OR logic)
-- [ ] Add cooldown tracking (per-rule state)
-- [ ] Implement daily limit counters
-- [ ] Create example rule files:
-  - `missions/rules/sit_training.yaml`
-  - `missions/rules/quiet_training.yaml`
-  - `missions/rules/stay_training.yaml`
-
-**Acceptance:** Rule engine successfully runs 5+ day simulation without errors
-
----
-
-### 3. Event Logging & Pattern Recognition
-**File:** `utils/event_logger.py`
-
-**Database Schema:**
+**Required Tables:**
 ```sql
-CREATE TABLE sessions (
-    id INTEGER PRIMARY KEY,
-    start_time TIMESTAMP,
-    end_time TIMESTAMP,
-    mission_type TEXT,
-    dog_id INTEGER,
-    success BOOLEAN
-);
-
-CREATE TABLE detections (
-    id INTEGER PRIMARY KEY,
-    session_id INTEGER,
-    timestamp TIMESTAMP,
-    pose TEXT,
-    confidence FLOAT,
-    duration FLOAT,
-    bbox TEXT  -- JSON string
-);
-
-CREATE TABLE rewards (
-    id INTEGER PRIMARY KEY,
-    session_id INTEGER,
-    timestamp TIMESTAMP,
-    treat_dispensed BOOLEAN,
-    audio_played TEXT,
-    lights_activated TEXT
-);
+CREATE TABLE events(id, timestamp, type, payload_json);
+CREATE TABLE dogs(id, name, profile_json, last_seen);
+CREATE TABLE rewards(id, timestamp, dog_id, behavior, success);
+CREATE TABLE telemetry(timestamp, battery_pct, temperature, mode);
 ```
 
 **Tasks:**
-- [ ] Create SQLite database schema
-- [ ] Implement `EventLogger` class
-- [ ] Add logging calls to mission scripts
-- [ ] Create analysis notebook: `analysis/training_patterns.ipynb`
-- [ ] Generate weekly reports (success rates, trends)
+- [ ] Implement DataStore class with SQLite
+- [ ] Create database schema
+- [ ] Add event logging methods
+- [ ] Integrate with event bus
+- [ ] Test persistence and retrieval
 
-**Acceptance:** 7 days of logged data with working analysis notebook
+**Acceptance:** Events persist across restarts
 
----
+### 2. Create Mission Engine Orchestrator [HIGH]
 
-## 🟡 MEDIUM PRIORITY (Week 5-6)
+**File:** `/orchestrators/mission_engine.py`
 
-### 4. Battery Monitoring System
-**File:** `hardware/power_management.py`
+**Functionality:**
+- Load mission definitions from JSON
+- Track mission state and progress
+- Coordinate with reward logic
+- Enforce daily limits
 
-**Formula:**
-```python
-def calculate_battery_percentage(voltage: float) -> float:
-    """
-    4S LiPo: 16.8V max (4.2V per cell), 12.0V min (3.0V per cell)
-    """
-    V_MAX = 16.8
-    V_MIN = 12.0
-    V_CRITICAL = 13.2  # 3.3V per cell - shutdown threshold
-    
-    if voltage >= V_MAX:
-        return 100.0
-    elif voltage <= V_MIN:
-        return 0.0
-    else:
-        return ((voltage - V_MIN) / (V_MAX - V_MIN)) * 100
+**Tasks:**
+- [ ] Implement MissionEngine class
+- [ ] Create mission state machine
+- [ ] Add mission loading from JSON
+- [ ] Integrate with event bus
+- [ ] Test with sample mission
+
+**Acceptance:** Complete training mission executes
+
+### 3. Add WebSocket Server [MEDIUM]
+
+**File:** `/api/ws.py`
+
+**Channels:**
+- `/ws/telemetry` - Battery, temperature, mode
+- `/ws/detections` - Dog detections and poses
+- `/ws/events` - System events
+
+**Tasks:**
+- [ ] Implement WebSocket server
+- [ ] Create event streaming
+- [ ] Add client reconnection handling
+- [ ] Test with web client
+
+**Acceptance:** Real-time updates in browser
+
+## 🟠 HIGH PRIORITY - System Validation
+
+### 4. Integration Testing Suite
+**Goal:** Validate all 10 completion gates
+
+**Test Scenarios:**
+1. **Autonomous Training Loop**
+   - Start `/main_treatbot.py`
+   - Place dog in view
+   - Verify detection → sit → reward → cooldown
+
+2. **API Control Test**
+   - GET `/telemetry` returns system status
+   - POST `/mode/set` changes camera mode
+   - POST `/treat/dispense` triggers treat
+
+3. **Event Bus Test**
+   - Monitor event flow between services
+   - Verify no dropped messages
+   - Check thread safety
+
+**Tasks:**
+- [ ] Create integration test script
+- [ ] Test each completion gate
+- [ ] Document failures and fixes
+- [ ] Achieve 10/10 gates passing
+
+**Acceptance:** All gates verified working
+
+### 5. Configuration Files
+**Required Files:**
+- `/configs/sequences/celebrate.yaml` - Celebration routine
+- `/configs/policies/reward.yaml` - Reward policies
+- `/missions/train_sit_daily.json` - Sample mission
+
+**Tasks:**
+- [ ] Create sequence definitions
+- [ ] Define reward policies
+- [ ] Create mission templates
+- [ ] Test configuration loading
+
+**Acceptance:** Configs load and execute correctly
+
+## 🟡 MEDIUM PRIORITY - Enhanced Features
+
+### 6. Happy Pet Progress Report [NEW FEATURE]
+**Description:** 1-5 bone scale grading system
+
+**Implementation:** `/reports/progress_report.py`
+
+**Features:**
+- Track successful behaviors vs treats
+- Monitor bark frequency
+- Generate daily/weekly reports
+- Export for sharing
+
+**Tasks:**
+- [ ] Design report schema
+- [ ] Implement data aggregation
+- [ ] Create report generator
+- [ ] Add export functionality
+
+**Acceptance:** Daily reports generated automatically
+
+### 7. Audio + Vision Behavioral Fusion [ADVANCED]
+**Description:** Combined audio and vision analysis
+
+**Implementation:** `/core/behavioral_fusion.py`
+
+**Features:**
+- Combine pose with bark analysis
+- Generate confidence scores
+- Real-time state assessment
+
+**Tasks:**
+- [ ] Implement fusion algorithm
+- [ ] Add bark detection
+- [ ] Create behavior classifier
+- [ ] Integrate with rewards
+
+**Acceptance:** Multi-modal behavior detection working
+
+### 8. Battery Monitoring System
+**Implementation:** Use existing safety monitor
+
+**Tasks:**
+- [ ] Add voltage sensor if needed
+- [ ] Display in API telemetry
+- [ ] Add low battery warnings
+- [ ] Auto-shutdown at critical
+
+**Acceptance:** Battery % visible in API
+
+## 🟢 FUTURE FEATURES - After MVP
+
+### Return-to-Base Navigation
+- **Dead Reckoning** - Encoder-based path recording
+- **IR Docking** - Roomba-style beacon system
+- **Obstacle Avoidance** - Sensor integration
+
+### Multi-Dog Recognition
+- **ArUco Markers** - Primary ID method
+- **Pose + Location** - Fallback for fluffy dogs
+- **Individual Profiles** - Per-dog training
+
+### Mobile Dashboard
+- **iOS-Quality PWA** - Production-grade interface
+- **Real-time Feed** - Camera with AI overlays
+- **Mission Control** - Start/stop/schedule
+
+### Social Features
+- **Auto Photography** - Best moment capture
+- **Social Posting** - Instagram integration
+- **LLM Captions** - AI-generated descriptions
+
+## 📊 ARCHITECTURE REFERENCE
+
+### System Architecture (Event-Driven)
+```
+┌─────────────────────────────────────────────┐
+│                 API LAYER                   │
+│          /api/server.py  /api/ws.py         │
+└───────────────────┬──────────────────────┘
+                   │
+┌───────────────────┴──────────────────────┐
+│           ORCHESTRATION LAYER               │
+│   sequence_engine  reward_logic  mode_fsm   │
+└───────────────────┬──────────────────────┘
+                   │
+┌───────────────────┴──────────────────────┐
+│             SERVICE LAYER                   │
+│  detector  pantilt  motor  dispenser  sfx   │
+└───────────────────┬──────────────────────┘
+                   │
+┌───────────────────┴──────────────────────┐
+│           CORE INFRASTRUCTURE               │
+│     bus  state  store  safety               │
+└─────────────────────────────────────────────┘
 ```
 
-**Tasks:**
-- [ ] Add INA219 voltage sensor (if not present)
-- [ ] Implement voltage reading in `power_management.py`
-- [ ] Add battery % to API `/api/system/battery`
-- [ ] Display in web dashboard
-- [ ] Implement low battery warning (20%)
-- [ ] Auto-shutdown at critical (10%)
-
-**Acceptance:** Live battery monitoring visible in dashboard
-
----
-
-### 8. "Quiet" Training Mission
-**Requirements:**
-- Sit pose detected: ✅
-- No barking sound (>X dB): ✅ for 10 seconds
-- Reward: 1 treat + "good dog" audio + lights
-
-**File:** `missions/quiet_training.py`
-
-**Tasks:**
-- [ ] Add lapel mic to audio input
-- [ ] Implement bark detection in `audio/bark_detection.py`
-- [ ] Set decibel threshold (configurable)
-- [ ] Create "quiet" mission with dual conditions
-- [ ] Test with actual barking dog
-
-**Acceptance:** Successfully rewards dog after 10 seconds of sit + silence
-
----
-
-### 9. Return-to-Base Navigation - Phase 1 (Dead Reckoning)
-**File:** `navigation/return_to_base.py`
-
-**Approach:**
-```python
-class PathRecorder:
-    def __init__(self):
-        self.path = []  # List of (x, y, heading, timestamp)
-        
-    def record_position(self, delta_left: float, delta_right: float):
-        """
-        Called every 100ms with wheel encoder deltas
-        Calculate position using differential drive kinematics
-        """
-        
-class PathNavigator:
-    def return_home(self, path: list):
-        """
-        Reverse the recorded path
-        Handle cumulative error with course correction
-        """
+### Event Flow Example
+```
+1. Dog detected → VisionEvent.DogDetected
+2. Pose recognized → VisionEvent.Pose.Sit
+3. Reward logic → RewardEvent.Trigger
+4. Sequence engine → Multiple service commands
+5. Services execute → Treat + Sound + Lights
 ```
 
-**Tasks:**
-- [ ] Implement odometry from motor encoders
-- [ ] Add `PathRecorder` to mission controller
-- [ ] Create reverse path algorithm
-- [ ] Test: Drive 5m → return to start (within 30cm)
-- [ ] Add progress tracking (0-100%)
-- [ ] Implement stuck detection (no movement for 30s)
+## 🔧 Development Tools
 
-**Acceptance:** Returns to base within 50cm of start point after 5m journey
+### Testing Commands
+```bash
+# Start main system
+python3 /home/morgan/dogbot/main_treatbot.py
 
----
+# Test API
+curl http://localhost:8000/telemetry
+curl -X POST http://localhost:8000/treat/dispense
 
-### 📋 NEW - Autonomous Training Sequences
-- **Status**: Not Started
-- **Priority**: 2 (Enhanced feature)
-- **Dependencies**: Mission API, Rules Engine
-- **Description**: Variable reinforcement training (e.g., 3/5 reward rate for "sit 5 times")
-- **Implementation**: `missions/autonomous_training.py`
-- **Acceptance Criteria**:
-  - [ ] Configurable training schedules (daily limits)
-  - [ ] Variable reward ratios (teach 100% obedience with <100% rewards)
-  - [ ] Progress tracking per training session
-  - [ ] Integration with Happy Pet Progress Report
+# Monitor events
+tail -f /var/log/treatbot/events.log
 
-### 📋 NEW - Individual Dog Recognition System
-- **Status**: Not Started
-- **Priority**: 2 (High-value differentiator)
-- **Dependencies**: ArUco system, Pose detection
-- **Description**: Multi-dog household support with individual profiles
-- **Implementation**: `ai/dog_identification.py`
-- **Acceptance Criteria**:
-  - [ ] ArUco marker detection (primary method)
-  - [ ] Pose + location fallback for fluffy dogs
-  - [ ] Individual dog profiles and training progress
-  - [ ] Multi-dog session management
+# Check database
+sqlite3 /data/treatbot.db "SELECT * FROM events LIMIT 10;"
+```
 
-### 📋 REVISED - Production-Grade Mobile Dashboard
-- **Status**: Not Started
-- **Priority**: 2 (High-value user interface)
-- **Dependencies**: API Server, Mission System
-- **Description**: High-end Apple iOS compatible app-level dashboard
-- **Implementation**: Progressive Web App (PWA) or native React Native
-- **Acceptance Criteria**:
-  - [ ] iOS Safari compatible interface
-  - [ ] Real-time camera feed with AI overlays
-  - [ ] Mission control (start/stop/schedule)
-  - [ ] Battery and system health monitoring
-  - [ ] Dog behavior analytics dashboard
-  - [ ] Push notifications for events
-  - [ ] Offline capability for core functions
-  - [ ] App Store quality UI/UX design
+### Debug Helpers
+- `test_mission_with_controls.py` - AI controller reference
+- `live_gui_detection.py` - Camera integration
+- `test_treat_servo.py` - Servo control
+- `/tmp/treatbot/` - Debug images
+
+## 🏁 DEFINITION OF DONE
+
+### MVP Complete When:
+1. ✅ All 10 completion gates pass
+2. ✅ 48-hour stress test (no crashes)
+3. ✅ Dog sits → waits 10s → gets reward
+4. ✅ Daily limits enforced (5 treats max)
+5. ✅ API monitoring working
+6. ✅ Database logging events
+
+### Production Ready When:
+- Battery monitoring integrated
+- Web dashboard functional
+- Mission library (5+ missions)
+- User documentation complete
+- Setup wizard implemented
 
 ---
 
-## 🟢 LOW PRIORITY (Week 7+)
+## 📊 STATUS SUMMARY
 
-### 8. IR Sensor Docking System
-**Reference:** Roomba approach
+### Architecture Implementation:
+- **✅ Core Infrastructure**: 3/4 complete (missing store)
+- **✅ Service Layer**: 8/8 complete
+- **✅ Orchestration**: 3/4 complete (missing mission engine)
+- **⚠️ Configuration**: 1/4 complete
+- **✅ Main System**: Complete
+- **⚠️ API Layer**: 1/2 complete (missing WebSocket)
 
-**Hardware:**
-- IR transmitter on dock (360° beacon)
-- 3-4 IR receivers on robot perimeter
-- Modulated signal (38kHz carrier)
+### Overall Progress: ~85% Complete
+**Blocking Issues:**
+1. SQLite store not implemented
+2. Mission engine not created
+3. Config files incomplete
 
-**File:** `navigation/ir_docking.py`
+**Next Session Priorities:**
+1. Implement `/core/store.py`
+2. Test full autonomous loop
+3. Validate all 10 gates
 
-**Tasks:**
-- [ ] Research Roomba IR protocol (if not documented)
-- [ ] Add IR receivers to robot (3x 120° apart)
-- [ ] Build IR beacon transmitter for dock
-- [ ] Implement triangulation algorithm
-- [ ] Final approach alignment (within 5cm)
-- [ ] Test 20+ docking attempts
-
-**Acceptance:** >90% docking success rate from 3m distance
-
----
-
-### 13. Obstacle Avoidance Sensor Integration
-**Sensor Priority:**
-1. **Bumper sensors** (last resort, collision)
-2. **IR sensors** (0-30cm, primary)
-3. **Cliff sensors** (edge detection)
-4. **Ultrasonic** (30-200cm, optional)
-
-**File:** `navigation/obstacle_avoidance.py`
-
-**Tasks:**
-- [ ] Wire all sensors to GPIO
-- [ ] Implement sensor polling (100Hz)
-- [ ] Create collision avoidance behavior:
-  - Detected obstacle → Stop → Back up → Turn 45° → Continue
-- [ ] Add safe zone boundaries (virtual walls)
-- [ ] Test in cluttered room
-
-**Acceptance:** Navigates 10m obstacle course without human intervention
-
----
-
-### 14. Bluetooth Controller Support
-**Requirements:**
-- Cheap gamepad (Xbox/PS4 compatible)
-- Auto-detect on pairing
-- Priority over web interface when connected
-
-**File:** `control/bluetooth_controller.py`
-
-**Tasks:**
-- [ ] Install `pygame` for joystick input
-- [ ] Detect controller connection
-- [ ] Map buttons: WASD → motors, L/R → camera
-- [ ] Add mode toggle: `BT_PRIMARY` config
-- [ ] Test with 3+ different controllers
-
-**Acceptance:** Can drive robot with gamepad, no lag
-
----
-
-### 15. Social Media Photography System
-**Pipeline:**
-1. Detect dog in frame
-2. Capture 10 burst photos
-3. Score each photo (focus, lighting, centering)
-4. Select top 3
-5. Optional: LLM caption generation
-6. Auto-post to Instagram
-
-**File:** `social/photo_system.py`
-
-**Tasks:**
-- [ ] Implement burst capture mode
-- [ ] Create quality scoring algorithm:
-  ```python
-  def score_photo(image, bbox):
-      focus_score = calculate_focus(image)  # Laplacian variance
-      center_score = calculate_centering(bbox, image.shape)
-      lighting_score = calculate_lighting(image)  # Histogram
-      return (focus_score * 0.4 + center_score * 0.3 + lighting_score * 0.3)
-  ```
-- [ ] Instagram API integration (Meta Graph API)
-- [ ] Test with 50+ photos
-
-**Acceptance:** Successfully auto-posts 1 photo per day
-
----
-
-### 📋 NEW - Offline LLM Integration
-- **Status**: Not Started
-- **Priority**: 3 (Advanced feature)
-- **Dependencies**: API Server, Mission System
-- **Description**: Local LLM for command processing without internet
-- **Implementation**: `ai/offline_llm.py`
-- **Acceptance Criteria**:
-  - [ ] Research suitable offline LLM (lightweight)
-  - [ ] Natural language to JSON mission conversion
-  - [ ] "Train Benny to be quiet" → structured mission
-  - [ ] Preset command library for common tasks
-  - [ ] Fallback to cloud LLM when available
-
-### 📋 NEW - Open API for Third-Party Extensions
-- **Status**: Not Started
-- **Priority**: 3 (Business differentiator)
-- **Dependencies**: API Server, Authentication
-- **Description**: REST + WebSocket API for external integrations
-- **Implementation**: `api/external_api.py`
-- **Acceptance Criteria**:
-  - [ ] Authenticated API endpoints
-  - [ ] Real-time telemetry streaming
-  - [ ] Mission control API
-  - [ ] Dog behavior data export
-  - [ ] Third-party trainer integration capability
-
-### 📋 NEW - AI-Curated Social Content
-- **Status**: Not Started
-- **Priority**: 3 (Marketing feature)
-- **Dependencies**: Photography System, AI Controller
-- **Description**: Automatic "best moments" capture and curation
-- **Implementation**: `social/content_curator.py`
-- **Acceptance Criteria**:
-  - [ ] Real-time moment detection (play, tricks, etc.)
-  - [ ] Quality scoring (focus, lighting, centering)
-  - [ ] Top 3 daily photo selection
-  - [ ] Instagram/social media integration
-  - [ ] User approval workflow
-
----
-
-## 🔧 Infrastructure Tasks
-
-### Code Quality
-- [ ] Add type hints to all functions
-- [ ] Write docstrings (Google style)
-- [ ] Set up `black` for formatting
-- [ ] Add `pytest` for unit tests
-- [ ] Configure `pre-commit` hooks
-
-### Documentation
-- [ ] Update README with quick start
-- [ ] Create `docs/API_REFERENCE.md`
-- [ ] Add mission creation tutorial
-- [ ] Write troubleshooting guide
-- [ ] Record video demo
-
-### Deployment
-- [ ] Systemd service for auto-start
-- [ ] OTA update mechanism (rsync or git pull)
-- [ ] Backup/restore user configs
-- [ ] Factory reset script
-
----
-
-## 📋 Testing Checklist (Before Production)
-
-- [ ] 48-hour stress test (no crashes)
-- [ ] All sensors calibrated
-- [ ] 10+ successful docking attempts
-- [ ] 20+ training missions completed
-- [ ] Battery lasts 4+ hours
-- [ ] Web dashboard tested on 3+ devices
-- [ ] User manual complete
-- [ ] Setup wizard functional
-
----
-
-## 🎯 Next Steps for Claude Code
-
-**Immediate Actions (This Session):**
-1. Verify pose detection status (`python3 tests/test_camera.py`)
-2. Check if camera tracking exists (`ls hardware/servo_control.py`)
-3. Search for existing mission code (`grep -r "mission" .`)
-4. List current TODO status: `git status`
-
----
-
-## 📊 Summary of Updates (Phase 4 - Oct 19, 2025)
-
-### Task Status Count:
-- **✅ Completed**: 3 items (Camera Mode System, Pose Detection, Audio Relay)
-- **🔴 Critical**: 1 item (Mission API)
-- **🟠 High Priority**: 5 items (includes 2 new strategic features)
-- **🟡 Medium Priority**: 8 items (includes 2 new multi-dog features + revised dashboard)
-- **🟢 Low Priority**: 15 items (includes 3 new advanced features)
-
-### New Items Added (7 total):
-1. **Happy Pet Progress Report System** (Priority 1)
-2. **Audio + Vision Behavioral Analysis** (Priority 1)
-3. **Autonomous Training Sequences** (Priority 2)
-4. **Individual Dog Recognition System** (Priority 2)
-5. **Offline LLM Integration** (Priority 3)
-6. **Open API for Third-Party Extensions** (Priority 3)
-7. **AI-Curated Social Content** (Priority 3)
-
-### Items Marked Complete (3 total):
-- **Camera Mode System** - Multi-mode system with auto-switching
-- **Pose Detection Status** - Working reliably at required performance
-- **Audio Relay Hardware** - Two-channel analog relay system implemented
-
-### Items Removed/Obsolete (4 total):
-- **Verify Pose Detection Status** - ✅ Completed and moved
-- **Camera Servo Tracking** - ❌ Obsolete (superseded by camera modes)
-- **ArUco Research Task** - ❌ Obsolete (research phase done)
-- **Audio Relay Implementation** - ✅ Completed and moved
-
-### Items Revised (1 total):
-- **Web Dashboard MVP** → **Production-Grade Mobile Dashboard** - Upgraded scope for iOS app-level quality
-
-*This TODO list now aligns with the comprehensive strategic roadmap and technical requirements.*
+*Last Updated: October 22, 2025 - Aligned with Unified Architecture*

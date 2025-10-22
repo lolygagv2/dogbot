@@ -54,9 +54,9 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 - **Premium Build Quality:** Dyson-level trust with dog-centric design
 - **Safety Certified:** Professional-grade power electronics
 
-## 📊 Current Status: Phase 2 - Software Integration
+## 📊 Current Status: Unified Architecture Implementation
 
-### ✅ COMPLETED (Phase 1 - MVP Hardware)
+### ✅ COMPLETED - Hardware Foundation (Original Phase 1)
 - [x] Devastator chassis with 2x DC motors
 - [x] Raspberry Pi 5 + Hailo-8 (26 TOPS HAT)
 - [x] IMX500 camera with pan/tilt servos (2x)
@@ -68,6 +68,45 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 - [x] 4S2P 21700 battery pack with BMS
 - [x] Power distribution (3x buck converters)
 - [x] Basic motor/servo control tested
+
+### ✅ COMPLETED - Unified Architecture (Oct 21-22, 2025)
+
+#### Phase 1: Core Infrastructure ✅
+- [x] Event bus (`/core/bus.py`) - Pub/sub messaging
+- [x] State manager (`/core/state.py`) - System mode tracking
+- [x] Safety monitor (`/core/safety.py`) - Battery/temp monitoring
+- [ ] Data store (`/core/store.py`) - SQLite persistence [MISSING]
+
+#### Phase 2: Service Layer ✅
+- [x] Perception service (`/services/perception/detector.py`)
+- [x] Pan/tilt service (`/services/motion/pan_tilt.py`)
+- [x] Motor service (`/services/motion/motor.py`)
+- [x] Dispenser service (`/services/reward/dispenser.py`)
+- [x] SFX service (`/services/media/sfx.py`)
+- [x] LED service (`/services/media/led.py`)
+- [x] Gamepad service (`/services/input/gamepad.py`)
+- [x] GUI service (`/services/ui/gui.py`)
+
+#### Phase 3: Orchestration Layer ✅
+- [x] Sequence engine (`/orchestrators/sequence_engine.py`)
+- [x] Reward logic (`/orchestrators/reward_logic.py`)
+- [x] Mode FSM (`/orchestrators/mode_fsm.py`)
+- [ ] Mission engine (`/orchestrators/mission_engine.py`) [TODO]
+
+#### Phase 4: Configuration ⚠️ PARTIAL
+- [x] Modes config (`/configs/modes.yaml`)
+- [ ] Sequences config (`/configs/sequences/*.yaml`)
+- [ ] Policies config (`/configs/policies/*.yaml`)
+- [ ] Mission definitions (`/missions/*.json`)
+
+#### Phase 5: Main Orchestrator ✅
+- [x] Main entry point (`/main_treatbot.py`)
+- [x] Startup/shutdown sequences
+- [x] Service coordination
+
+#### Phase 6: API Layer ⚠️ PARTIAL
+- [x] REST API (`/api/server.py`)
+- [ ] WebSocket server (`/api/ws.py`)
 
 ### 🔄 UPDATED HARDWARE SPECS
 **Audio System Changes:**
@@ -86,62 +125,68 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 
 ---
 
-## 🚀 Development Phases
+## 🎯 System Completion Gates
 
-### **PHASE 2: Software Integration (Current - Nov 2025)**
+### Critical Gates for MVP (Must Pass All):
+1. **Event Bus Working** ⏳ - Services can publish/subscribe events
+2. **AI Detection Active** ⏳ - Dog detection triggers VisionEvent.DogDetected
+3. **Behavior Recognition** ⏳ - Detects sit/down/stand poses reliably
+4. **Reward Logic** ⏳ - Sitting behavior triggers celebration sequence
+5. **Sequence Execution** ⏳ - Coordinated lights + sound + treat
+6. **Database Logging** ❌ - Events saved to SQLite store
+7. **Cooldown Enforcement** ⏳ - Time between rewards enforced
+8. **Daily Limits** ⏳ - Max rewards per day working
+9. **API Monitoring** ⏳ - REST endpoints return telemetry
+10. **Full Autonomous Loop** ⏳ - Complete training cycle works
 
-#### ✅ 2.0 Camera Mode System [COMPLETED]
-- [x] **Photography Mode** - 4K resolution (4056x3040), manual controls, no AI
-- [x] **AI Detection Mode** - 640x640 real-time inference @ 30 FPS
-- [x] **Vigilant Mode** - Full HD with automatic tiling (3x2 grid)
-- [x] **Auto-switching** - Vehicle motion triggers mode changes
-- [x] Implementation in `core/camera_mode_controller.py`
+**Status Legend:** ✅ Verified | ⏳ Implemented, needs testing | ❌ Not implemented
 
-#### 2.1 Core Systems Integration [Priority: CRITICAL]
-- [ ] **Unified API Server Architecture**
-  - [ ] RESTful API for all hardware control
-  - [ ] WebSocket server for real-time updates
-  - [ ] Centralized config management
-  - [ ] System health monitoring endpoint
-  
-- [ ] **Camera Servo Tracking System**
-  - [ ] Object-following pan/tilt control
-  - [ ] Smooth servo interpolation
-  - [ ] Auto-framing for detected dogs
-  - [ ] Lost-target recovery behavior
+## 🚀 Remaining Development Tasks
 
-- [ ] **Mission Control Module**
-  - [ ] Mission scheduler with cron support
-  - [ ] Training sequence library (JSON-based)
+### **IMMEDIATE: Complete Core System (This Week)**
+
+#### Priority 1: Missing Components [CRITICAL]
+- [ ] **SQLite Store** (`/core/store.py`) - Event persistence
+- [ ] **Mission Engine** (`/orchestrators/mission_engine.py`) - Training sequences
+- [ ] **WebSocket Server** (`/api/ws.py`) - Real-time updates
+- [ ] **Config Files** - Sequences, policies, missions
+- [ ] **Integration Tests** - Verify all 10 completion gates
+
+#### Priority 2: System Validation [HIGH]
+- [ ] **Test Autonomous Training Loop**
+  - [ ] Dog detection → pose recognition → reward
+  - [ ] Cooldown and daily limit enforcement
   - [ ] Mission state persistence
-  - [ ] Emergency stop protocol
 
-#### 2.2 AI Enhancement [Priority: HIGH]
-- [ ] **Pose Detection Refinement**
-  - [ ] Tune detection thresholds for reliability
-  - [ ] Add pose confidence scoring
-  - [ ] Implement pose duration tracking
-  - [ ] Multi-dog pose differentiation
+- [ ] **Hardware Integration Testing**
+  - [ ] Motors respond to events
+  - [ ] Servos track detected dogs
+  - [ ] Treat dispenser accurate
+  - [ ] LED patterns synchronized
 
-- [ ] **Bark Detection System**
-  - [ ] Audio preprocessing (noise filtering)
-  - [ ] Bark vs background noise classifier
-  - [ ] Decibel threshold configuration
-  - [ ] "Quiet" command logic (10-sec silence)
+- [ ] **API Validation**
+  - [ ] All REST endpoints functional
+  - [ ] WebSocket streaming works
+  - [ ] Remote control via API
+  - [ ] Telemetry reporting accurate
 
-#### 2.3 Hardware Integration [Priority: HIGH]
-- [ ] **Audio Relay Control**
-  - [ ] GPIO switching for audio sources
-  - [ ] Smooth transitions (no pops/clicks)
-  - [ ] Testing: DFPlayer ↔ Pi Audio Out
-  
-- [ ] **Power Management**
-  - [ ] Voltage monitoring (14.8V max)
-  - [ ] Battery % calculation + display
-  - [ ] Low battery warnings
-  - [ ] Auto-shutdown at critical level
+### **NEXT PHASE: Enhanced Features (After MVP)**
+#### Advanced AI Features
+- [ ] **Multi-dog Recognition** - ArUco markers or pose-based ID
+- [ ] **Bark Detection** - Audio analysis for "quiet" training
+- [ ] **Behavioral Patterns** - Learning curves and analytics
 
-### **PHASE 3: Behavioral Intelligence (Dec 2025)**
+#### Navigation & Autonomy
+- [ ] **Return-to-Base** - IR beacon docking system
+- [ ] **Obstacle Avoidance** - Sensor integration
+- [ ] **Path Recording** - Dead reckoning with encoders
+
+#### User Interface
+- [ ] **Mobile Dashboard** - iOS-quality PWA
+- [ ] **Remote Control** - Bluetooth gamepad support
+- [ ] **Social Features** - Auto photo capture and sharing
+
+### **FUTURE: Production Features**
 
 #### 3.1 Reward Logic System [Priority: HIGH]
 **Goal:** Rules-based training system with configurable parameters
