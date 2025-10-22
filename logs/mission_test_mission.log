@@ -1,0 +1,11 @@
+2025-10-20 02:47:38,385 - mission.test_mission - INFO - Mission 'test_mission' started (ID: 1)
+2025-10-20 02:47:38,385 - mission.test_mission - INFO - Event: mission_start - {'mission_name': 'test_mission', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 02:47:38,396 - mission.test_mission - INFO - Event: dog_detected - {'confidence': 0.85}
+2025-10-20 02:47:39,408 - mission.test_mission - INFO - Event: pose_detected - {'pose': 'sit', 'confidence': 0.75}
+2025-10-20 02:47:40,429 - mission.test_mission - INFO - Event: reward_given - {'treat': True, 'audio': 'good_dog.mp3', 'lights': 'celebration', 'actions_taken': [], 'success': True}
+2025-10-20 02:47:40,451 - mission.test_mission - INFO - Waiting for pose 'sit' for 1.0s (timeout: 2.0s)
+2025-10-20 02:47:40,451 - mission.test_mission - INFO - Event: pose_detected - {'pose': 'sit', 'timestamp': 1760942860.451406}
+2025-10-20 02:47:41,462 - mission.test_mission - INFO - Pose condition met: sit for 1.0s
+2025-10-20 02:47:41,462 - mission.test_mission - INFO - Event: pose_condition_met - {'pose': 'sit', 'duration': 1.0107808113098145}
+2025-10-20 02:47:41,479 - mission.test_mission - INFO - Mission 'test_mission' ended - Success: True, Duration: 3.1s
+2025-10-20 02:47:41,479 - mission.test_mission - INFO - Event: mission_end - {'success': True, 'duration': 3.0942490100860596, 'total_events': 6}

@@ -1,0 +1,24 @@
+2025-10-20 17:23:31,644 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' started (ID: 9)
+2025-10-20 17:23:31,644 - mission.white_pomeranian_test - INFO - Event: mission_start - {'mission_name': 'white_pomeranian_test', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:24:39,090 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' started (ID: 10)
+2025-10-20 17:24:39,090 - mission.white_pomeranian_test - INFO - Event: mission_start - {'mission_name': 'white_pomeranian_test', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:28:26,217 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' started (ID: 11)
+2025-10-20 17:28:26,217 - mission.white_pomeranian_test - INFO - Event: mission_start - {'mission_name': 'white_pomeranian_test', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:28:35,578 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' ended - Success: True, Duration: 9.4s
+2025-10-20 17:28:35,578 - mission.white_pomeranian_test - INFO - Event: mission_end - {'success': True, 'duration': 9.37098479270935, 'total_events': 1}
+2025-10-20 17:32:03,262 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' started (ID: 12)
+2025-10-20 17:32:03,263 - mission.white_pomeranian_test - INFO - Event: mission_start - {'mission_name': 'white_pomeranian_test', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:32:33,387 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' ended - Success: True, Duration: 30.1s
+2025-10-20 17:32:33,387 - mission.white_pomeranian_test - INFO - Event: mission_end - {'success': True, 'duration': 30.148650884628296, 'total_events': 1}
+2025-10-20 17:39:33,331 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' started (ID: 14)
+2025-10-20 17:39:33,331 - mission.white_pomeranian_test - INFO - Event: mission_start - {'mission_name': 'white_pomeranian_test', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:40:03,399 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' ended - Success: True, Duration: 30.1s
+2025-10-20 17:40:03,399 - mission.white_pomeranian_test - INFO - Event: mission_end - {'success': True, 'duration': 30.068559646606445, 'total_events': 1}
+2025-10-20 17:42:46,913 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' started (ID: 15)
+2025-10-20 17:42:46,913 - mission.white_pomeranian_test - INFO - Event: mission_start - {'mission_name': 'white_pomeranian_test', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:42:57,072 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' ended - Success: True, Duration: 10.2s
+2025-10-20 17:42:57,072 - mission.white_pomeranian_test - INFO - Event: mission_end - {'success': True, 'duration': 10.157174587249756, 'total_events': 1}
+2025-10-20 17:43:26,909 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' started (ID: 16)
+2025-10-20 17:43:26,909 - mission.white_pomeranian_test - INFO - Event: mission_start - {'mission_name': 'white_pomeranian_test', 'config': {'timeout_minutes': 10, 'max_rewards_per_session': 5, 'cooldown_between_rewards': 15, 'success_criteria': {'min_successful_detections': 3}}}
+2025-10-20 17:43:37,065 - mission.white_pomeranian_test - INFO - Mission 'white_pomeranian_test' ended - Success: True, Duration: 10.1s
+2025-10-20 17:43:37,066 - mission.white_pomeranian_test - INFO - Event: mission_end - {'success': True, 'duration': 10.14835262298584, 'total_events': 1}

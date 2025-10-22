@@ -1,0 +1,72 @@
+# Camera mode configurations for TreatBot
+# Defines resolution, FPS, and AI settings for each mode
+
+modes:
+  photography:
+    description: "High-quality photography mode with manual controls"
+    resolution: [4056, 3040]  # Full resolution
+    fps: 10
+    ai_enabled: false
+    manual_controls: true
+    auto_focus: true
+    image_stabilization: true
+    file_format: "jpeg"
+    quality: 95
+    burst_mode: false
+
+  ai_detection:
+    description: "Real-time AI detection optimized for speed"
+    resolution: [640, 640]   # Square format for AI models
+    fps: 30
+    ai_enabled: true
+    single_frame: true
+    auto_exposure: true
+    gain_control: "auto"
+    detection_threshold: 0.7
+    pose_threshold: 0.6
+    behavior_threshold: 0.8
+
+  vigilant:
+    description: "Wide area monitoring with tiled display"
+    resolution: [1920, 1080]  # HD resolution
+    fps: 15
+    ai_enabled: true
+    tiling: true
+    tiles: 4  # 2x2 grid
+    pan_scan: true
+    scan_pattern: "sweep"
+    scan_speed: "slow"
+    detection_overlay: true
+
+  idle:
+    description: "Low power standby mode"
+    resolution: [640, 480]   # Minimal resolution
+    fps: 5
+    ai_enabled: false
+    power_saving: true
+    preview_only: true
+
+  manual:
+    description: "Manual control for testing and calibration"
+    resolution: [1280, 720]  # 720p for testing
+    fps: 20
+    ai_enabled: false
+    manual_controls: true
+    debug_overlay: true
+    raw_access: true
+
+# Mode transition settings
+transitions:
+  auto_mode_switching: true
+  motion_detection_threshold: 0.3
+  no_motion_timeout: 10.0      # seconds before switching to vigilant
+  vigilant_timeout: 30.0       # seconds before switching to idle
+  detection_timeout: 5.0       # seconds without dogs before vigilant
+
+# Performance settings
+performance:
+  max_ai_fps: 30
+  buffer_frames: 3
+  processing_threads: 2
+  gpu_acceleration: true
+  memory_limit_mb: 512

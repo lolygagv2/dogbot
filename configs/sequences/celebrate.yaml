@@ -1,0 +1,73 @@
+# Celebration sequence for successful behaviors
+# Coordinates LED, audio, and treat dispensing
+
+name: celebrate
+description: "Standard celebration sequence for rewarded behaviors"
+version: "1.0"
+
+# Context variables available:
+# $dog_id - ID of the dog being rewarded
+# $behavior - The behavior that was rewarded
+# $confidence - Detection confidence (0.0-1.0)
+# $sound - Sound to play (from reward policy)
+
+steps:
+  - type: parallel
+    description: "Stop motion and start celebration effects"
+    actions:
+      - service: motion
+        command: stop
+        description: "Stop camera tracking during celebration"
+
+      - service: audio
+        command: play
+        params:
+          sound: "$sound"        # Use sound from context
+          volume: 25
+        description: "Play celebration sound"
+
+      - service: led
+        command: pattern
+        params:
+          pattern: "celebration"
+          duration: 3
+          color: "rainbow"
+        description: "Start LED celebration pattern"
+
+  - type: wait
+    description: "Brief pause before treat"
+    duration: 0.5
+
+  - type: action
+    service: treat
+    command: dispense
+    params:
+      count: 1
+      dog_id: "$dog_id"
+      reason: "behavior_reward"
+    description: "Dispense treat"
+
+  - type: wait
+    description: "Let celebration complete"
+    duration: 2.0
+
+  - type: parallel
+    description: "Resume normal operation"
+    actions:
+      - service: led
+        command: pattern
+        params:
+          pattern: "dog_detected"
+          duration: 1
+        description: "Set LEDs to detected state"
+
+      - service: motion
+        command: track
+        description: "Resume camera tracking"
+
+# Sequence metadata
+metadata:
+  duration_estimate: 6.0      # seconds
+  interrupt_safe: false       # Don't interrupt this sequence
+  priority: high
+  category: "reward"

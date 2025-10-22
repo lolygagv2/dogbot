@@ -1,0 +1,167 @@
+{
+  "name": "train_sit_daily",
+  "description": "Daily sit training with progressive difficulty and limits",
+  "version": "1.0",
+  "enabled": true,
+
+  "schedule": {
+    "type": "daily",
+    "start_time": "08:00",
+    "end_time": "20:00",
+    "auto_start": true,
+    "days_of_week": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  },
+
+  "limits": {
+    "max_rewards": 5,
+    "max_duration_minutes": 30,
+    "cooldown_between_attempts": 60,
+    "max_failed_attempts": 10
+  },
+
+  "progression": {
+    "week_1": {
+      "sit_duration": 8,
+      "reward_probability": 0.8
+    },
+    "week_2": {
+      "sit_duration": 10,
+      "reward_probability": 0.7
+    },
+    "week_3": {
+      "sit_duration": 12,
+      "reward_probability": 0.6
+    },
+    "maintenance": {
+      "sit_duration": 15,
+      "reward_probability": 0.5
+    }
+  },
+
+  "stages": [
+    {
+      "name": "startup",
+      "description": "Initialize training session",
+      "timeout": 30,
+      "actions": [
+        {
+          "type": "sequence",
+          "name": "startup"
+        },
+        {
+          "type": "mode",
+          "mode": "detection"
+        }
+      ],
+      "success_condition": "sequence_complete"
+    },
+
+    {
+      "name": "detect_dog",
+      "description": "Wait for dog to be detected",
+      "timeout": 120,
+      "success_event": "VisionEvent.DogDetected",
+      "retry_count": 3,
+      "on_timeout": "end_mission"
+    },
+
+    {
+      "name": "wait_for_sit",
+      "description": "Wait for dog to sit for required duration",
+      "timeout": 180,
+      "success_event": "VisionEvent.Behavior.Sit",
+      "min_duration": 10,
+      "min_confidence": 0.8,
+      "retry_on_fail": true,
+      "max_retries": 5
+    },
+
+    {
+      "name": "evaluate_reward",
+      "description": "Determine if reward should be given",
+      "type": "decision",
+      "logic": "reward_policy",
+      "policy": "training"
+    },
+
+    {
+      "name": "reward",
+      "description": "Give reward for successful behavior",
+      "condition": "reward_approved",
+      "sequence": "celebrate",
+      "context": {
+        "behavior": "sit",
+        "mission": "train_sit_daily"
+      }
+    },
+
+    {
+      "name": "cooldown",
+      "description": "Wait before next attempt",
+      "duration": 60,
+      "allow_early_exit": false
+    },
+
+    {
+      "name": "check_completion",
+      "description": "Check if mission goals are met",
+      "type": "decision",
+      "conditions": [
+        "rewards_given >= max_rewards",
+        "elapsed_time >= max_duration",
+        "failed_attempts >= max_failed_attempts"
+      ],
+      "on_complete": "end_mission",
+      "on_continue": "wait_for_sit"
+    }
+  ],
+
+  "completion": {
+    "success_criteria": [
+      "rewards_given >= target_rewards",
+      "success_rate >= 0.6"
+    ],
+    "on_success": {
+      "actions": [
+        "log_training_success",
+        "update_dog_profile",
+        "sequence:celebration"
+      ]
+    },
+    "on_max_rewards": {
+      "actions": [
+        "log_daily_limit_reached",
+        "end_mission"
+      ]
+    },
+    "on_timeout": {
+      "actions": [
+        "log_training_timeout",
+        "pause_and_retry_later"
+      ]
+    },
+    "on_failure": {
+      "actions": [
+        "log_training_failure",
+        "reduce_difficulty",
+        "retry_tomorrow"
+      ]
+    }
+  },
+
+  "logging": {
+    "log_all_attempts": true,
+    "log_detection_events": true,
+    "log_behavior_events": true,
+    "log_reward_decisions": true,
+    "session_summary": true
+  },
+
+  "adaptive_settings": {
+    "adjust_difficulty": true,
+    "success_rate_target": 0.7,
+    "difficulty_adjustment_rate": 0.1,
+    "min_sit_duration": 5,
+    "max_sit_duration": 30
+  }
+}

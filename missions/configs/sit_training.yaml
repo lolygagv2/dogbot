@@ -1,0 +1,47 @@
+# Sit Training Mission Configuration
+mission_type: "sit_training"
+timeout_minutes: 5
+max_rewards_per_session: 3
+cooldown_between_rewards: 15
+
+# Training Protocol - Command Sequence
+training_protocol:
+  # Step 1: Get dog's attention
+  attention_phase:
+    dog_name_audio: "/talks/0003.mp3"  # "Elsa"
+    repeat_delay: 10.0  # Wait 10 seconds then repeat
+    max_repeats: 2  # Say name max 2 times
+    wait_for_detection: true  # Wait for dog to be detected first
+
+  # Step 2: Give command
+  command_phase:
+    command_audio: "/talks/0015.mp3"  # "Sit"
+    wait_after_command: 2.0  # Give dog time to process
+    repeat_command_delay: 8.0  # Repeat command if no response
+    max_command_repeats: 3
+
+  # Step 3: Monitor for compliance
+  compliance_phase:
+    target_pose: "sit"
+    duration_required: 3.0  # Hold sit for 3 seconds
+    confidence_threshold: 0.6
+    compliance_timeout: 15.0  # Max time to wait for sit
+
+# Reward configuration (after successful compliance)
+reward:
+  treat: true
+  audio: "/talks/0008.mp3"  # "GOOD" (GOOD_DOG)
+  lights: "celebration"
+  delay_after_reward: 2.0
+
+# Success criteria
+success_criteria:
+  min_successful_detections: 2
+  max_failed_attempts: 5
+  require_command_compliance: true  # Must follow command, not random sit
+
+# Schedule (optional)
+schedule:
+  frequency: "3x per day"
+  active_hours: [8, 20]  # 8 AM - 8 PM
+  days_of_week: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]

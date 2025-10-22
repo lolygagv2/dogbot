@@ -1,0 +1,54 @@
+# System shutdown sequence
+# Safely stops all systems with visual/audio feedback
+
+name: shutdown
+description: "Safe system shutdown sequence"
+version: "1.0"
+
+steps:
+  - type: parallel
+    description: "Begin shutdown sequence"
+    actions:
+      - service: audio
+        command: play
+        params:
+          sound: "shutdown"
+          volume: 18
+        description: "Play shutdown sound"
+
+      - service: led
+        command: pattern
+        params:
+          pattern: "error"     # Red flashing to indicate shutdown
+          duration: 3
+        description: "Show shutdown pattern"
+
+  - type: action
+    service: motion
+    command: center
+    description: "Return camera to safe position"
+
+  - type: action
+    service: treat
+    command: stop
+    description: "Ensure treat dispenser is stopped"
+
+  - type: wait
+    duration: 1.0
+    description: "Allow systems to settle"
+
+  - type: action
+    service: led
+    command: off
+    description: "Turn off all LEDs"
+
+  - type: action
+    service: audio
+    command: stop
+    description: "Stop all audio"
+
+metadata:
+  duration_estimate: 5.0
+  interrupt_safe: false
+  priority: system
+  category: "system"

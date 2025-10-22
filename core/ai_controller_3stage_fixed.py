@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 # Set up logging
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 try:
     import hailo_platform as hpf
@@ -73,26 +73,22 @@ class AI3StageControllerFixed:
         self.config_path = config_path
         self.config = None
 
-        # Shared VDevice for both models (Hailo8 has only one physical device)
+        # VDevice for sequential model loading
         self.vdevice = None
+        self.current_model = None  # "detection" or "pose"
 
-        # Stage 1: Detection (using shared VDevice)
-        self.detection_hef = None
-        self.detection_network_group = None
-        self.detection_network_group_params = None
-        self.detection_input_vstreams_params = None
-        self.detection_output_vstreams_params = None
-        self.detection_input_info = None
-        self.detection_output_infos = None
+        # Model paths (store paths, load on demand)
+        self.detection_model_path = None
+        self.pose_model_path = None
 
-        # Stage 2: Pose (using shared VDevice)
-        self.pose_hef = None
-        self.pose_network_group = None
-        self.pose_network_group_params = None
-        self.pose_input_vstreams_params = None
-        self.pose_output_vstreams_params = None
-        self.pose_input_info = None
-        self.pose_output_infos = None
+        # Currently active model components
+        self.active_hef = None
+        self.active_network_group = None
+        self.active_network_group_params = None
+        self.active_input_vstreams_params = None
+        self.active_output_vstreams_params = None
+        self.active_input_info = None
+        self.active_output_infos = None
 
         # Stage 3: Behavior (CPU)
         self.behavior_history = deque(maxlen=30)  # T=30 frames (~1 second at 30fps)
@@ -137,137 +133,125 @@ class AI3StageControllerFixed:
             }
 
     def initialize(self) -> bool:
-        """Initialize all 3 stages"""
+        """Initialize AI controller - prepare model paths only"""
         if not HAILO_AVAILABLE:
             logger.error("Hailo platform not available")
             return False
 
         try:
-            # Initialize shared VDevice first
-            logger.info("Creating shared VDevice for Hailo8")
+            # Create initial VDevice
+            logger.info("Creating VDevice for sequential model loading")
             self.vdevice = hpf.VDevice()
-            logger.info("Shared VDevice created successfully")
+            logger.info("VDevice created successfully")
 
-            # Initialize Stage 1: Detection
-            if not self._init_detection():
+            # Set up model paths (don't load yet)
+            self.detection_model_path = Path("ai/models") / self.config["detect_path"]
+            self.pose_model_path = Path("ai/models") / self.config["hef_path"]
+
+            # Verify models exist
+            if not self.detection_model_path.exists():
+                logger.error(f"Detection model not found: {self.detection_model_path}")
                 return False
 
-            # Initialize Stage 2: Pose
-            if not self._init_pose():
+            if not self.pose_model_path.exists():
+                logger.error(f"Pose model not found: {self.pose_model_path}")
                 return False
+
+            logger.info(f"Models ready: detection={self.detection_model_path.name}, pose={self.pose_model_path.name}")
 
             # Stage 3: Behavior (CPU-based, no init needed)
             logger.info("Stage 3: Behavior analysis ready (CPU)")
 
             self.initialized = True
-            logger.info("3-Stage AI Controller initialized successfully")
+            logger.info("AI Controller initialized - models will load on-demand")
             return True
 
         except Exception as e:
             logger.error(f"Failed to initialize AI controller: {e}")
             return False
 
-    def _init_detection(self) -> bool:
-        """Initialize Stage 1: Dog Detection using shared VDevice"""
+    def _ensure_model_released(self):
+        """Completely release current model to free core-ops"""
+        if self.current_model:
+            pass  # Removed verbose logging
+
+            # Clear all model references
+            self.active_hef = None
+            self.active_network_group = None
+            self.active_network_group_params = None
+            self.active_input_vstreams_params = None
+            self.active_output_vstreams_params = None
+            self.active_input_info = None
+            self.active_output_infos = None
+
+            # CRITICAL: Reset VDevice to clear core-ops
+            if self.vdevice:
+                self.vdevice = None
+                # Create fresh VDevice to reset core-op count
+                self.vdevice = hpf.VDevice()
+                pass  # Removed verbose logging
+
+            self.current_model = None
+
+    def _load_model(self, model_type: str) -> bool:
+        """Load specific model (detection or pose)"""
+        if self.current_model == model_type:
+            return True  # Already loaded
+
         try:
-            model_path = Path("ai/models") / self.config["detect_path"]
-            if not model_path.exists():
-                logger.error(f"Detection model not found: {model_path}")
+            # Release any current model first
+            self._ensure_model_released()
+
+            # Select model path
+            if model_type == "detection":
+                model_path = self.detection_model_path
+            elif model_type == "pose":
+                model_path = self.pose_model_path
+            else:
+                logger.error(f"Unknown model type: {model_type}")
                 return False
 
-            # Load HEF and configure with shared VDevice
-            self.detection_hef = hpf.HEF(str(model_path))
+            pass  # Removed verbose logging
 
+            # Load HEF
+            self.active_hef = hpf.HEF(str(model_path))
+
+            # Configure VDevice
             params = hpf.ConfigureParams.create_from_hef(
-                hef=self.detection_hef,
+                hef=self.active_hef,
                 interface=hpf.HailoStreamInterface.PCIe
             )
 
-            network_groups = self.vdevice.configure(self.detection_hef, params)
-            self.detection_network_group = network_groups[0]
+            network_groups = self.vdevice.configure(self.active_hef, params)
+            self.active_network_group = network_groups[0]
 
             # Get stream info
-            self.detection_input_info = self.detection_hef.get_input_vstream_infos()[0]
-            self.detection_output_infos = self.detection_hef.get_output_vstream_infos()
+            self.active_input_info = self.active_hef.get_input_vstream_infos()[0]
+            self.active_output_infos = self.active_hef.get_output_vstream_infos()
 
-            logger.info(f"Detection model loaded: {self.detection_input_info.name}, shape: {self.detection_input_info.shape}")
-            logger.info(f"Detection outputs: {len(self.detection_output_infos)} outputs")
-            for i, output in enumerate(self.detection_output_infos):
-                logger.info(f"  Output {i}: {output.name}, shape: {output.shape}")
+            # Create parameters
+            self.active_network_group_params = self.active_network_group.create_params()
 
-            # Create network group parameters and vstream parameters
-            self.detection_network_group_params = self.detection_network_group.create_params()
-
-            self.detection_input_vstreams_params = hpf.InputVStreamParams.make_from_network_group(
-                self.detection_network_group,
+            self.active_input_vstreams_params = hpf.InputVStreamParams.make_from_network_group(
+                self.active_network_group,
                 quantized=True,
                 format_type=hpf.FormatType.UINT8
             )
 
-            self.detection_output_vstreams_params = hpf.OutputVStreamParams.make_from_network_group(
-                self.detection_network_group,
+            self.active_output_vstreams_params = hpf.OutputVStreamParams.make_from_network_group(
+                self.active_network_group,
                 quantized=False,
                 format_type=hpf.FormatType.FLOAT32
             )
 
+            self.current_model = model_type
+            pass  # Removed verbose logging
             return True
 
         except Exception as e:
-            logger.error(f"Failed to initialize detection model: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Failed to load {model_type} model: {e}")
             return False
 
-    def _init_pose(self) -> bool:
-        """Initialize Stage 2: Pose Estimation using shared VDevice"""
-        try:
-            model_path = Path("ai/models") / self.config["hef_path"]
-            if not model_path.exists():
-                logger.error(f"Pose model not found: {model_path}")
-                return False
-
-            # Load HEF and configure with shared VDevice
-            self.pose_hef = hpf.HEF(str(model_path))
-
-            params = hpf.ConfigureParams.create_from_hef(
-                hef=self.pose_hef,
-                interface=hpf.HailoStreamInterface.PCIe
-            )
-
-            network_groups = self.vdevice.configure(self.pose_hef, params)
-            self.pose_network_group = network_groups[0]
-
-            # Get stream info
-            self.pose_input_info = self.pose_hef.get_input_vstream_infos()[0]
-            self.pose_output_infos = self.pose_hef.get_output_vstream_infos()
-
-            logger.info(f"Pose model loaded: {self.pose_input_info.name}, shape: {self.pose_input_info.shape}")
-            logger.info(f"Pose outputs: {len(self.pose_output_infos)} outputs")
-            for i, output in enumerate(self.pose_output_infos):
-                logger.info(f"  Output {i}: {output.name}, shape: {output.shape}")
-
-            # Create network group parameters and vstream parameters
-            self.pose_network_group_params = self.pose_network_group.create_params()
-
-            self.pose_input_vstreams_params = hpf.InputVStreamParams.make_from_network_group(
-                self.pose_network_group,
-                quantized=True,
-                format_type=hpf.FormatType.UINT8
-            )
-
-            self.pose_output_vstreams_params = hpf.OutputVStreamParams.make_from_network_group(
-                self.pose_network_group,
-                quantized=False,
-                format_type=hpf.FormatType.FLOAT32
-            )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to initialize pose model: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
 
     def process_frame(self, frame_4k: np.ndarray) -> Tuple[List[Detection], List[PoseKeypoints], List[BehaviorResult]]:
         """
@@ -303,30 +287,35 @@ class AI3StageControllerFixed:
     def _stage1_detect_dogs(self, frame_4k: np.ndarray) -> List[Detection]:
         """Stage 1: Dog detection on downsampled frame"""
         try:
+            # Load detection model
+            if not self._load_model("detection"):
+                logger.error("Failed to load detection model")
+                return []
+
             # Downsample 4K to 640x640 for detection
             h_4k, w_4k = frame_4k.shape[:2]
             frame_640 = cv2.resize(frame_4k, self.input_size)
 
-            # Prepare input (BGR format gives best results - 0.85 confidence vs 0.55 for RGB)
-            # Keep the original BGR format from OpenCV
+            # Prepare input (BGR format gives best results)
             frame_bgr = frame_640
 
-            logger.debug(f"Stage 1: Processing frame {frame_4k.shape} -> {frame_640.shape}")
+            pass  # Removed verbose logging
 
-            # Run actual HEF inference using working VDevice pattern
+            # Run inference using active model
             detections = []
 
             try:
-                if not self.detection_network_group:
-                    raise RuntimeError("Detection network group not available")
-                with self.detection_network_group.activate(self.detection_network_group_params):
-                    with hpf.InferVStreams(self.detection_network_group,
-                                          self.detection_input_vstreams_params,
-                                          self.detection_output_vstreams_params) as infer_pipeline:
+                if not self.active_network_group:
+                    raise RuntimeError("No active network group")
+
+                with self.active_network_group.activate(self.active_network_group_params):
+                    with hpf.InferVStreams(self.active_network_group,
+                                          self.active_input_vstreams_params,
+                                          self.active_output_vstreams_params) as infer_pipeline:
 
                         # Prepare input - ensure UINT8 and correct shape
                         input_tensor = np.expand_dims(frame_bgr, axis=0).astype(np.uint8)
-                        input_name = list(self.detection_input_vstreams_params.keys())[0]
+                        input_name = list(self.active_input_vstreams_params.keys())[0]
                         input_data = {input_name: input_tensor}
 
                         # Run inference
@@ -334,7 +323,7 @@ class AI3StageControllerFixed:
 
                         # Parse detections and scale back to 4K coordinates
                         detections = self._parse_detection_output(output_data, w_4k, h_4k)
-                        logger.debug(f"Stage 1: Found {len(detections)} dogs")
+                        pass  # Removed verbose logging
 
             except Exception as e:
                 logger.error(f"Stage 1 inference error: {e}")
@@ -358,6 +347,11 @@ class AI3StageControllerFixed:
     def _stage2_estimate_pose(self, frame_4k: np.ndarray, detection: Detection) -> Optional[PoseKeypoints]:
         """Stage 2: Pose estimation on cropped region"""
         try:
+            # Load pose model
+            if not self._load_model("pose"):
+                logger.error("Failed to load pose model")
+                return None
+
             # Extract crop from 4K frame with padding
             crop_4k = self._extract_crop_with_padding(frame_4k, detection, padding=0.1)
 
@@ -371,22 +365,23 @@ class AI3StageControllerFixed:
             else:
                 crop_rgb = crop_640
 
-            logger.debug(f"Stage 2: Processing crop {crop_4k.shape} -> {crop_640.shape}")
+            pass  # Removed verbose logging
 
-            # Run actual HEF inference using working VDevice pattern
+            # Run inference using active model
             keypoints = None
 
             try:
-                if not self.pose_network_group:
-                    raise RuntimeError("Pose network group not available")
-                with self.pose_network_group.activate(self.pose_network_group_params):
-                    with hpf.InferVStreams(self.pose_network_group,
-                                          self.pose_input_vstreams_params,
-                                          self.pose_output_vstreams_params) as infer_pipeline:
+                if not self.active_network_group:
+                    raise RuntimeError("No active network group")
+
+                with self.active_network_group.activate(self.active_network_group_params):
+                    with hpf.InferVStreams(self.active_network_group,
+                                          self.active_input_vstreams_params,
+                                          self.active_output_vstreams_params) as infer_pipeline:
 
                         # Prepare input - ensure UINT8 and correct shape
                         input_tensor = np.expand_dims(crop_rgb, axis=0).astype(np.uint8)
-                        input_name = list(self.pose_input_vstreams_params.keys())[0]
+                        input_name = list(self.active_input_vstreams_params.keys())[0]
                         input_data = {input_name: input_tensor}
 
                         # Run inference
@@ -394,7 +389,7 @@ class AI3StageControllerFixed:
 
                         # Parse keypoints from pose output
                         keypoints = self._parse_pose_output(output_data)
-                        logger.debug(f"Stage 2: Parsed pose keypoints")
+                        pass  # Removed verbose logging
 
             except Exception as e:
                 logger.error(f"Stage 2 inference error: {e}")
@@ -469,16 +464,16 @@ class AI3StageControllerFixed:
 
         try:
             # Handle actual inference output format
-            logger.debug(f"Detection output keys: {list(output_data.keys())}")
+            pass  # Removed verbose logging
             for output_name, output_tensor in output_data.items():
-                logger.debug(f"Parsing detection output {output_name}: type={type(output_tensor)}")
+                pass  # Removed verbose logging
 
                 # Convert list to numpy array if needed
                 if isinstance(output_tensor, list):
                     if len(output_tensor) > 0:
                         if isinstance(output_tensor[0], list):
                             # Handle nested list format: [[numpy_array]]
-                            logger.debug(f"  Found nested list, depth 2, inner length: {len(output_tensor[0])}")
+                            pass  # Removed verbose logging
                             if len(output_tensor[0]) > 0:
                                 # Extract the actual numpy array from nested structure
                                 if isinstance(output_tensor[0][0], np.ndarray):
@@ -495,10 +490,10 @@ class AI3StageControllerFixed:
                         continue
 
                 if not isinstance(output_tensor, np.ndarray):
-                    logger.debug(f"Skipping non-array output: {type(output_tensor)}")
+                    pass  # Removed verbose logging
                     continue
 
-                logger.debug(f"Processing output {output_name}: shape={output_tensor.shape}")
+                pass  # Removed verbose logging
 
                 # Handle NMS postprocessed format - multiple possible shapes
                 if len(output_tensor.shape) == 3 and output_tensor.shape[1] == 5:
@@ -516,7 +511,7 @@ class AI3StageControllerFixed:
                     detections_data = output_tensor
 
                 else:
-                    logger.debug(f"Unexpected detection output shape: {output_tensor.shape}")
+                    pass  # Removed verbose logging
                     continue
 
                 for detection in detections_data:
@@ -550,7 +545,7 @@ class AI3StageControllerFixed:
                         if x2_scaled > x1_scaled and y2_scaled > y1_scaled:
                             detections.append(Detection(x1_scaled, y1_scaled, x2_scaled, y2_scaled, float(conf)))
 
-                logger.debug(f"Parsed {len(detections)} valid detections from {output_name}")
+                pass  # Removed verbose logging
                 break  # Use first valid output
 
             return detections
@@ -564,11 +559,11 @@ class AI3StageControllerFixed:
     def _parse_pose_output(self, outputs: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
         """Parse dogpose_14.hef outputs (9 tensors, 72 channels) format"""
         try:
-            logger.debug(f"Parsing pose output: {len(outputs)} tensors")
+            pass  # Removed verbose logging
 
             # Debug output shapes
             for key, output in outputs.items():
-                logger.debug(f"  {key}: shape={output.shape}, dtype={output.dtype}")
+                pass  # Removed verbose logging
 
             # Group outputs by scale for 640x640 input
             # Expected scales for 640x640: 80x80, 40x40, 20x20
@@ -606,7 +601,7 @@ class AI3StageControllerFixed:
 
                 if scale_name and output_type:
                     scales[scale_name][output_type] = output
-                    logger.debug(f"  Mapped {layer_name} -> {scale_name} {output_type}")
+                    pass  # Removed verbose logging
 
             # Find the best detection across all scales
             best_detection = None
@@ -658,10 +653,10 @@ class AI3StageControllerFixed:
                             best_conf = conf
 
             if best_detection is not None:
-                logger.debug(f"Found pose keypoints with confidence {best_conf:.3f}")
+                pass  # Removed verbose logging
                 return best_detection
             else:
-                logger.debug("No valid pose detection found")
+                pass  # Removed verbose logging
                 return None
 
         except Exception as e:
@@ -809,23 +804,14 @@ class AI3StageControllerFixed:
     def cleanup(self):
         """Clean up resources"""
         try:
-            # Clean up shared VDevice
+            # Release any active model
+            self._ensure_model_released()
+
+            # Final VDevice cleanup
             if self.vdevice:
                 self.vdevice = None
 
-            # Clear all model references
-            self.detection_hef = None
-            self.detection_network_group = None
-            self.detection_network_group_params = None
-            self.detection_input_vstreams_params = None
-            self.detection_output_vstreams_params = None
-
-            self.pose_hef = None
-            self.pose_network_group = None
-            self.pose_network_group_params = None
-            self.pose_input_vstreams_params = None
-            self.pose_output_vstreams_params = None
-
+            self.initialized = False
             logger.info("AI Controller cleaned up")
 
         except Exception as e:
@@ -838,9 +824,9 @@ class AI3StageControllerFixed:
             "hailo_available": HAILO_AVAILABLE,
             "detection_model": self.config.get("detect_path", "N/A") if self.config else "N/A",
             "pose_model": self.config.get("hef_path", "N/A") if self.config else "N/A",
+            "current_model": self.current_model,
             "input_size": self.input_size,
             "behavior_history_length": len(self.behavior_history),
-            "detection_loaded": self.detection_hef is not None,
-            "pose_loaded": self.pose_hef is not None,
-            "vdevice_ready": self.vdevice is not None
+            "vdevice_ready": self.vdevice is not None,
+            "active_model_loaded": self.active_hef is not None
         }

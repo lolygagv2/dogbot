@@ -186,24 +186,28 @@ class CameraModeController:
     def _configure_mode(self, mode: CameraMode) -> bool:
         """
         Configure camera for specific mode
-        
+
         Args:
             mode: Target mode
-            
+
         Returns:
             Success status
         """
         if not self.camera:
             return False
-            
+
         config = self.MODE_CONFIGS[mode]
-        
+
         try:
             # Stop camera if running
-            if self.camera.is_open:
-                self.camera.stop()
-                self.camera.close()
-            
+            try:
+                if hasattr(self.camera, 'is_open') and self.camera.is_open:
+                    self.camera.stop()
+                    self.camera.close()
+            except Exception:
+                # Camera might not be started yet, ignore
+                pass
+
             # Configure for new mode
             if mode != CameraMode.IDLE:
                 camera_config = self.camera.create_still_configuration(
@@ -211,13 +215,16 @@ class CameraModeController:
                 )
                 self.camera.configure(camera_config)
                 self.camera.start()
-                
+
+                # Small delay for camera to stabilize
+                time.sleep(0.5)
+
                 # Apply manual controls for photography mode
                 if mode == CameraMode.PHOTOGRAPHY and config.manual_controls:
                     self._apply_manual_controls()
-                    
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Mode configuration failed: {e}")
             return False
@@ -240,13 +247,20 @@ class CameraModeController:
     def capture_frame(self) -> Optional[np.ndarray]:
         """
         Capture frame based on current mode
-        
+
         Returns:
             Frame array or None
         """
-        if not self.camera or not self.camera.is_open:
+        if not self.camera:
             return None
-            
+
+        # Check if camera is properly started
+        try:
+            if not hasattr(self.camera, 'is_open') or not self.camera.is_open:
+                return None
+        except Exception:
+            return None
+
         try:
             frame = self.camera.capture_array()
             return frame
