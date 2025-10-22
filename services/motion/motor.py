@@ -28,7 +28,14 @@ except ImportError:
     ALT_MOTOR_AVAILABLE = False
     print("[WARNING] Alternative motor controller not available")
 
-from core.bus import get_bus, VehicleEvent
+try:
+    from core.hardware.motor_controller_gpioset import MotorControllerGpioset, MotorDirection as GpiosetDirection
+    GPIOSET_MOTOR_AVAILABLE = True
+except ImportError:
+    GPIOSET_MOTOR_AVAILABLE = False
+    print("[WARNING] Gpioset motor controller not available")
+
+from core.bus import get_bus, MotionEvent
 from core.state import get_state
 
 class MovementMode(Enum):
@@ -88,6 +95,15 @@ class MotorService:
                 else:
                     self.motor_controller = None
 
+            # Final fallback to gpioset controller (most reliable)
+            if not self.motor_controller and GPIOSET_MOTOR_AVAILABLE:
+                self.motor_controller = MotorControllerGpioset()
+                if self.motor_controller.initialize():
+                    self.controller_type = "gpioset"
+                    print("✅ Motor service using gpioset controller (safe fallback)")
+                else:
+                    self.motor_controller = None
+
             if not self.motor_controller:
                 print("❌ No motor controllers available")
                 return False
@@ -120,11 +136,11 @@ class MotorService:
             self.state.hardware.motor_enabled = (mode != MovementMode.DISABLED)
 
             # Publish event
-            self.bus.publish('vehicle.mode_changed', {
+            from core.bus import MotionEvent
+            self.bus.publish(MotionEvent('mode_changed', {
                 'old_mode': old_mode.value,
-                'new_mode': mode.value,
-                'timestamp': time.time()
-            })
+                'new_mode': mode.value
+            }))
 
             print(f"🚗 Movement mode changed: {old_mode.value} → {mode.value}")
             return True
@@ -192,6 +208,24 @@ class MotorService:
                     print(f"❌ Invalid direction: {direction}")
                     return False
                 success = True
+
+            elif self.controller_type == "gpioset":
+                # Use gpioset controller (most reliable fallback)
+                direction_map = {
+                    'forward': GpiosetDirection.FORWARD,
+                    'backward': GpiosetDirection.BACKWARD,
+                    'left': GpiosetDirection.LEFT,
+                    'right': GpiosetDirection.RIGHT,
+                    'stop': GpiosetDirection.STOP
+                }
+
+                if direction not in direction_map:
+                    print(f"❌ Invalid direction: {direction}")
+                    return False
+
+                motor_direction = direction_map[direction]
+                success = self.motor_controller.tank_steering(motor_direction)
+
             else:
                 print("❌ No motor controller available")
                 return False
@@ -210,13 +244,12 @@ class MotorService:
                     self.auto_stop_timer.start()
 
                 # Publish movement event
-                self.bus.publish('vehicle.movement', {
+                self.bus.publish(MotionEvent('movement', {
                     'direction': direction,
                     'speed': speed,
                     'duration': duration,
-                    'manual': True,
-                    'timestamp': time.time()
-                })
+                    'manual': True
+                }))
 
                 print(f"🚗 Manual drive: {direction} at {speed}% for {duration}s")
                 return True
@@ -287,10 +320,9 @@ class MotorService:
             self.is_moving = False
 
             # Publish emergency stop event
-            self.bus.publish('vehicle.emergency_stop', {
-                'reason': 'manual_emergency_stop',
-                'timestamp': time.time()
-            })
+            self.bus.publish(MotionEvent('emergency_stop', {
+                'reason': 'manual_emergency_stop'
+            }))
 
             print("🛑 Emergency stop activated")
 

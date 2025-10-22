@@ -89,7 +89,11 @@ class LEDController:
             print(f"NeoPixel initialization failed: {e}")
             self.pixels = None
             return False
-    
+
+    def is_initialized(self) -> bool:
+        """Check if LED system is properly initialized"""
+        return (self.blue_chip is not None) or (self.pixels is not None)
+
     def blue_on(self):
         """Turn blue LED on using proven method"""
         if not self.blue_chip:
