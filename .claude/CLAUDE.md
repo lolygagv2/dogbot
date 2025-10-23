@@ -3,11 +3,11 @@
 ## NEVER DELETE OR MODIFY
 - notes.txt (user's personal notes - IGNORE)
 - /docs/ folder (reference documentation only)
-- robot_config.yaml (requires explicit permission)
+- config/robot_config.yaml (requires explicit permission)
 - Any file with "KEEPME" or "NOTES" in filename
 
 ## Project Structure - MUST MAINTAIN
-Follow the structure defined in "TreatBot Project Directory Structure.md"
+Follow the structure defined in  `.claude/TreatBot_Project_Directory_Structure.md` keep this reference to files in mind to not recreate, duplicate or misunderstand progress
 
 /hardware/ - Hardware control modules ONLY
 /ai/ - AI/computer vision ONLY  
@@ -15,9 +15,9 @@ Follow the structure defined in "TreatBot Project Directory Structure.md"
 /utils/ - Shared utilities only
 
 ## Project Documentation
-- PRODUCT_ROADMAP.md - Development timeline and phases
-- DEVELOPMENT_TODOS.md - Priority-sorted tasks
-- HARDWARE_SPECS.md - Hardware configuration (AUTHORITATIVE)
+- .claude/product_roadmap.md - Development timeline and phases
+- .claude/development_todos.md - Priority-sorted tasks
+- .claude/hardware_specs.md - Hardware configuration (AUTHORITATIVE)
 - docs/IR_DOCKING_SYSTEM.md - IR beacon docking guide
 
 ## Session Protocol

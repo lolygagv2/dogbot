@@ -5,7 +5,7 @@
 ### 1. Load Project Context
 - Read `.claude/CLAUDE.md` for development rules
 - **Check `.claude/resume_chat.md` for previous session history**
-- Search project knowledge: "TreatBot Project Directory Structure"
+- Reference Directory Knowledge: `.claude/TreatBot_Project_Directory_Structure.md` keep this reference to files in mind to not recreate, duplicate or misunderstand progress
 - Review `.claude/product_roadmap.md` for current phase
 - Check `.claude/development_todos.md` for active tasks
 
