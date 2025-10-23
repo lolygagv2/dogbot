@@ -1,6 +1,55 @@
 # Resume Chat Context - TreatBot Session Log
 
-## Session: 2025-10-22 17:30 [Latest]
+## Session: 2025-01-22 Evening [Latest]
+**Goal:** Fix LED GPIO conflicts and add control APIs
+**Status:** ✅ Complete
+
+### Work Completed:
+- Fixed GPIO busy error by implementing singleton LED controller
+- Added 14 DFPlayer audio control API endpoints
+- Added 15 LED control API endpoints
+- Updated API_REFERENCE.md with comprehensive documentation
+
+### Key Solutions:
+- **GPIO Conflict Fix:** Changed from creating new `LEDController()` instances on each API request to using a singleton pattern with thread safety
+- **Implementation:** Added `get_led_controller()` function with threading.Lock() to ensure single instance
+- **Cleanup:** Added atexit handler to properly cleanup GPIO on server shutdown
+
+### Critical Code Changes:
+```python
+# api/server.py - Added singleton pattern:
+_led_controller = None
+_led_lock = threading.Lock()
+
+def get_led_controller():
+    global _led_controller
+    with _led_lock:
+        if _led_controller is None:
+            _led_controller = LEDController()
+        return _led_controller
+```
+
+### Files Modified:
+- api/server.py (35 lines added, 10 removed)
+- API_REFERENCE.md (156 lines added)
+
+### Commit: 059b1b64 - fix: Fix LED GPIO conflicts and add comprehensive control APIs
+
+### Next Session Tasks:
+1. Test all LED endpoints with physical hardware
+2. Consider WebSocket support for real-time LED control
+3. Add LED pattern scheduling/sequencing capabilities
+4. Monitor for any remaining GPIO conflicts
+
+### Important Notes/Warnings:
+- **LED Controller is now singleton** - Only one instance exists per API server session
+- **Server restart required** if LEDs get stuck in a state
+- **GPIO cleanup** happens automatically on server shutdown via atexit
+- User reported terminal freezing issues - fixed with singleton pattern
+
+---
+
+## Session: 2025-10-22 17:30
 **Goal:** Reconcile documentation with unified architecture implementation
 **Status:** ✅ Complete - All docs aligned, progress preserved
 

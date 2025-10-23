@@ -31,6 +31,16 @@ class RewardPolicy:
     sequence_name: str = "celebrate"
 
 
+@dataclass
+class RewardDecision:
+    """Result of reward decision logic"""
+    should_dispense: bool
+    reason: str
+    dog_id: Optional[str] = None
+    behavior: Optional[str] = None
+    confidence: Optional[float] = None
+
+
 class RewardLogic:
     """
     Reward decision engine
@@ -274,6 +284,91 @@ class RewardLogic:
         }, 'reward_logic')
 
         self.logger.info(f"🎉 REWARD GRANTED: {dog_id} for {behavior} (conf: {confidence:.2f}, dur: {duration:.1f}s)")
+
+    def should_dispense(self, dog_id: str, behavior: str, confidence: float) -> RewardDecision:
+        """
+        Evaluate if a reward should be dispensed
+        Public API method for checking reward eligibility
+        """
+        # Map common behavior names
+        behavior_map = {
+            'sitting': 'sit',
+            'lying_down': 'down',
+            'standing': 'stay'
+        }
+        behavior = behavior_map.get(behavior, behavior)
+
+        # Check if we have a policy for this behavior
+        if behavior not in self.policies:
+            return RewardDecision(
+                should_dispense=False,
+                reason=f"No reward policy for behavior: {behavior}",
+                dog_id=dog_id,
+                behavior=behavior,
+                confidence=confidence
+            )
+
+        policy = self.policies[behavior]
+
+        # Check confidence threshold
+        if confidence < 0.7:
+            return RewardDecision(
+                should_dispense=False,
+                reason=f"Confidence too low: {confidence:.2f} < 0.7",
+                dog_id=dog_id,
+                behavior=behavior,
+                confidence=confidence
+            )
+
+        # Check cooldown
+        if not self._check_cooldown(dog_id, policy.cooldown):
+            time_remaining = policy.cooldown - (time.time() - self.last_rewards.get(dog_id, 0))
+            return RewardDecision(
+                should_dispense=False,
+                reason=f"Cooldown active: {time_remaining:.1f}s remaining",
+                dog_id=dog_id,
+                behavior=behavior,
+                confidence=confidence
+            )
+
+        # Check daily limit
+        if not self._check_daily_limit(dog_id, behavior, policy.max_daily_rewards):
+            return RewardDecision(
+                should_dispense=False,
+                reason=f"Daily limit reached for {behavior}",
+                dog_id=dog_id,
+                behavior=behavior,
+                confidence=confidence
+            )
+
+        # Check quiet requirement
+        if policy.require_quiet and not self._check_quiet_requirement():
+            return RewardDecision(
+                should_dispense=False,
+                reason="Dog not quiet (barking or motion detected)",
+                dog_id=dog_id,
+                behavior=behavior,
+                confidence=confidence
+            )
+
+        # Variable ratio schedule
+        if random.random() > policy.treat_probability:
+            return RewardDecision(
+                should_dispense=False,
+                reason=f"Variable ratio schedule (probability {policy.treat_probability:.2f})",
+                dog_id=dog_id,
+                behavior=behavior,
+                confidence=confidence
+            )
+
+        # All checks passed!
+        return RewardDecision(
+            should_dispense=True,
+            reason=f"Reward approved for {behavior}",
+            dog_id=dog_id,
+            behavior=behavior,
+            confidence=confidence
+        )
 
     def force_reward(self, dog_id: str, behavior: str = "manual",
                     confidence: float = 1.0) -> bool:
