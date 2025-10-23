@@ -6,16 +6,16 @@
 - Read `.claude/CLAUDE.md` for development rules
 - **Check `.claude/resume_chat.md` for previous session history**
 - Search project knowledge: "TreatBot Project Directory Structure"
-- Review `.claude/PRODUCT_ROADMAP.md` for current phase
-- Check `.claude/DEVELOPMENT_TODOS.md` for active tasks
+- Review `.claude/product_roadmap.md` for current phase
+- Check `.claude/development_todos.md` for active tasks
 
 ### 2. Verify Protected Files
 Check that these files exist and are unmodified:
 - `notes.txt` (user notes - READ ONLY)
 - `config/robot_config.yaml` (system configuration)
 - `/docs/` directory contents
-- `HARDWARE_SPECS.md`
-- `PRODUCT_ROADMAP.md`
+- `.claude/hardware_specs.md`
+- `.claude/product_roadmap.md`
 
 ### 3. Review Previous Session
 **Previous Session Summary:**
