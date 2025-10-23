@@ -12,8 +12,8 @@ from typing import List, Tuple
 from datetime import datetime
 
 # Import both AI controllers
-from core.ai_controller_3stage_fixed import AI3StageControllerFixed
-from core.ai_controller_3stage_temporal import AI3StageControllerTemporal
+from ...core.ai_controller_3stage_fixed import AI3StageControllerFixed
+from ...core.ai_controller_3stage_temporal import AI3StageControllerTemporal
 
 # Setup logging
 logging.basicConfig(
