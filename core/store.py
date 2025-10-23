@@ -438,6 +438,36 @@ class TreatBotStore:
             finally:
                 conn.close()
 
+    def get_today_reward_count(self, dog_id: str = None) -> int:
+        """Get today's reward count for a specific dog or all dogs"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+
+                # Get today's start timestamp (midnight)
+                from datetime import datetime, time as datetime_time
+                today_start = datetime.combine(datetime.today(), datetime_time.min).timestamp()
+
+                if dog_id:
+                    cursor.execute('''
+                        SELECT COUNT(*) FROM rewards
+                        WHERE dog_id = ? AND timestamp >= ? AND success = 1
+                    ''', (dog_id, today_start))
+                else:
+                    cursor.execute('''
+                        SELECT COUNT(*) FROM rewards
+                        WHERE timestamp >= ? AND success = 1
+                    ''', (today_start,))
+
+                return cursor.fetchone()[0]
+
+            except Exception as e:
+                self.logger.error(f"Failed to get today's reward count: {e}")
+                return 0
+            finally:
+                conn.close()
+
     def get_database_stats(self) -> Dict[str, Any]:
         """Get database statistics"""
         with self._lock:

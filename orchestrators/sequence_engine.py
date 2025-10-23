@@ -47,6 +47,20 @@ class SequenceEngine:
             'error': self._builtin_error_sequence
         }
 
+    def list_sequences(self) -> List[str]:
+        """List available sequences"""
+        sequences = list(self.builtin_sequences.keys())
+
+        # Check for YAML sequence files
+        sequence_dir = Path('/home/morgan/dogbot/configs/sequences')
+        if sequence_dir.exists():
+            for yaml_file in sequence_dir.glob('*.yaml'):
+                sequence_name = yaml_file.stem
+                if sequence_name not in sequences:
+                    sequences.append(sequence_name)
+
+        return sequences
+
     def load_sequence(self, sequence_path: str) -> Optional[Dict[str, Any]]:
         """Load sequence from YAML file"""
         try:

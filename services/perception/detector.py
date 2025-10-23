@@ -60,6 +60,10 @@ class DetectorService:
             self.logger.error(f"AI controller initialization error: {e}")
             return False
 
+    def is_initialized(self) -> bool:
+        """Check if detector service is initialized"""
+        return self.ai_initialized
+
     def start_detection(self) -> bool:
         """Start detection loop"""
         if not self.ai_initialized:
