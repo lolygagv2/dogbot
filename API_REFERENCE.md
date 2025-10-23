@@ -221,6 +221,184 @@ curl http://localhost:8000/events/stats
 
 ---
 
+### 🎵 **DFPlayer Audio Control**
+
+#### `GET /audio/status`
+Get DFPlayer and audio relay status
+```bash
+curl http://localhost:8000/audio/status
+```
+
+#### `GET /audio/files`
+Get list of available audio files
+```bash
+curl http://localhost:8000/audio/files
+```
+
+#### `POST /audio/play/file`
+Play audio file by path
+```bash
+curl -X POST http://localhost:8000/audio/play/file \
+  -H "Content-Type: application/json" \
+  -d '{"filepath": "/talks/0008.mp3"}'
+```
+
+#### `POST /audio/play/number`
+Play audio file by number
+```bash
+curl -X POST http://localhost:8000/audio/play/number \
+  -H "Content-Type: application/json" \
+  -d '{"number": 1}'
+```
+
+#### `POST /audio/play/sound`
+Play audio by sound name (from AudioFiles)
+```bash
+curl -X POST http://localhost:8000/audio/play/sound \
+  -H "Content-Type: application/json" \
+  -d '{"sound_name": "good_dog"}'
+```
+
+#### `POST /audio/volume`
+Set DFPlayer volume (0-30)
+```bash
+curl -X POST http://localhost:8000/audio/volume \
+  -H "Content-Type: application/json" \
+  -d '{"volume": 20}'
+```
+
+#### `POST /audio/pause`
+Pause/resume audio playback
+```bash
+curl -X POST http://localhost:8000/audio/pause
+```
+
+#### `POST /audio/next`
+Play next track
+```bash
+curl -X POST http://localhost:8000/audio/next
+```
+
+#### `POST /audio/previous`
+Play previous track
+```bash
+curl -X POST http://localhost:8000/audio/previous
+```
+
+#### `POST /audio/relay/pi`
+Switch audio relay to Pi USB audio
+```bash
+curl -X POST http://localhost:8000/audio/relay/pi
+```
+
+#### `POST /audio/relay/dfplayer`
+Switch audio relay to DFPlayer
+```bash
+curl -X POST http://localhost:8000/audio/relay/dfplayer
+```
+
+#### `GET /audio/relay/status`
+Get audio relay status
+```bash
+curl http://localhost:8000/audio/relay/status
+```
+
+#### `POST /audio/test`
+Test audio system (relay switching)
+```bash
+curl -X POST http://localhost:8000/audio/test
+```
+
+---
+
+### 💡 **LED Control**
+
+#### `GET /leds/status`
+Get LED system status
+```bash
+curl http://localhost:8000/leds/status
+```
+
+#### `GET /leds/colors`
+Get list of available LED colors
+```bash
+curl http://localhost:8000/leds/colors
+```
+
+#### `GET /leds/modes`
+Get available LED modes
+```bash
+curl http://localhost:8000/leds/modes
+```
+
+#### `POST /leds/color`
+Set LEDs to solid color
+```bash
+curl -X POST http://localhost:8000/leds/color \
+  -H "Content-Type: application/json" \
+  -d '{"color": "blue"}'
+```
+
+#### `POST /leds/custom_color`
+Set LEDs to custom RGB color
+```bash
+curl -X POST http://localhost:8000/leds/custom_color \
+  -H "Content-Type: application/json" \
+  -d '{"red": 255, "green": 100, "blue": 50}'
+```
+
+#### `POST /leds/brightness`
+Set LED brightness (0.1 to 1.0)
+```bash
+curl -X POST http://localhost:8000/leds/brightness \
+  -H "Content-Type: application/json" \
+  -d '{"brightness": 0.5}'
+```
+
+#### `POST /leds/mode`
+Set LED mode with animations
+```bash
+curl -X POST http://localhost:8000/leds/mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "searching"}'
+```
+**Available modes:** `off`, `idle`, `searching`, `dog_detected`, `treat_launching`, `error`, `charging`
+
+#### `POST /leds/animation`
+Start custom LED animation
+```bash
+curl -X POST http://localhost:8000/leds/animation \
+  -H "Content-Type: application/json" \
+  -d '{"animation": "pulse_color", "color": "green", "delay": 0.05, "steps": 20}'
+```
+**Available animations:** `spinning_dot`, `pulse_color`, `rainbow_cycle`
+
+#### `POST /leds/stop`
+Stop all LED animations
+```bash
+curl -X POST http://localhost:8000/leds/stop
+```
+
+#### `POST /leds/blue/on`
+Turn blue LED on
+```bash
+curl -X POST http://localhost:8000/leds/blue/on
+```
+
+#### `POST /leds/blue/off`
+Turn blue LED off
+```bash
+curl -X POST http://localhost:8000/leds/blue/off
+```
+
+#### `POST /leds/off`
+Turn all LEDs off
+```bash
+curl -X POST http://localhost:8000/leds/off
+```
+
+---
+
 ### 🚨 **Emergency Control**
 
 #### `POST /emergency/stop`
@@ -283,7 +461,51 @@ curl -X POST http://localhost:8000/manual/keyboard \
   -d '{"key": "space", "pressed": true}'
 ```
 
-### 4. **Monitor System**
+### 4. **DFPlayer Audio Control**
+```bash
+# 1. Check available sounds
+curl http://localhost:8000/audio/files | jq .
+
+# 2. Play a predefined sound
+curl -X POST http://localhost:8000/audio/play/sound \
+  -d '{"sound_name": "good_dog"}'
+
+# 3. Set volume
+curl -X POST http://localhost:8000/audio/volume \
+  -d '{"volume": 25}'
+
+# 4. Test relay switching
+curl -X POST http://localhost:8000/audio/test
+```
+
+### 5. **LED Light Show Control**
+```bash
+# 1. Check available colors and modes
+curl http://localhost:8000/leds/colors | jq .
+curl http://localhost:8000/leds/modes | jq .
+
+# 2. Set solid color
+curl -X POST http://localhost:8000/leds/color \
+  -d '{"color": "purple"}'
+
+# 3. Custom RGB color
+curl -X POST http://localhost:8000/leds/custom_color \
+  -d '{"red": 255, "green": 165, "blue": 0}'
+
+# 4. Start spinning animation
+curl -X POST http://localhost:8000/leds/animation \
+  -d '{"animation": "spinning_dot", "color": "cyan", "delay": 0.1}'
+
+# 5. Set brightness
+curl -X POST http://localhost:8000/leds/brightness \
+  -d '{"brightness": 0.8}'
+
+# 6. Dog detected mode
+curl -X POST http://localhost:8000/leds/mode \
+  -d '{"mode": "dog_detected"}'
+```
+
+### 6. **Monitor System**
 ```bash
 # Real-time monitoring
 watch -n 2 'curl -s http://localhost:8000/telemetry | jq .'
@@ -350,6 +572,74 @@ All endpoints return standard HTTP status codes:
 {
   "key": "w",          // w, a, s, d, space
   "pressed": true      // true = press, false = release
+}
+```
+
+### **DFPlayerPlayRequest**
+```json
+{
+  "filepath": "/talks/0008.mp3"    // Path to audio file
+}
+```
+
+### **DFPlayerVolumeRequest**
+```json
+{
+  "volume": 20         // Volume level 0-30
+}
+```
+
+### **DFPlayerNumberRequest**
+```json
+{
+  "number": 1          // File number to play
+}
+```
+
+### **DFPlayerSoundRequest**
+```json
+{
+  "sound_name": "good_dog"    // Predefined sound name
+}
+```
+
+### **LEDColorRequest**
+```json
+{
+  "color": "blue"             // Color name from available colors
+}
+```
+
+### **LEDCustomColorRequest**
+```json
+{
+  "red": 255,                 // RGB red value (0-255)
+  "green": 165,               // RGB green value (0-255)
+  "blue": 0                   // RGB blue value (0-255)
+}
+```
+
+### **LEDBrightnessRequest**
+```json
+{
+  "brightness": 0.5           // Brightness level (0.1-1.0)
+}
+```
+
+### **LEDModeRequest**
+```json
+{
+  "mode": "searching"         // LED mode from available modes
+}
+```
+
+### **LEDAnimationRequest**
+```json
+{
+  "animation": "pulse_color", // Animation type
+  "color": "green",           // Color for animation (optional)
+  "delay": 0.05,              // Animation delay (optional)
+  "steps": 20                 // Steps for pulse animation (optional)
 }
 ```
 
