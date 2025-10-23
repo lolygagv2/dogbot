@@ -259,8 +259,8 @@ class TreatBotMain:
 
             # Start detection (will be controlled by mode FSM)
             if self.detector.ai_initialized:
-                # Don't start detection yet - let mode FSM control it
-                pass
+                # Subscribe to detection events for LED feedback
+                self.bus.subscribe('vision', self._on_detection_for_feedback)
 
             self.logger.info("✅ All subsystems started")
             return True
@@ -268,6 +268,32 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"Subsystem startup failed: {e}")
             return False
+
+    def _on_detection_for_feedback(self, event) -> None:
+        """Provide visual feedback for detection events"""
+        try:
+            if event.subtype == 'dog_detected':
+                # Green LED for dog detected
+                if self.led:
+                    self.led.set_pattern('dog_detected')
+                self.logger.info(f"🐕 Dog detected: {event.data.get('dog_id', 'unknown')}")
+
+            elif event.subtype == 'dog_lost':
+                # Blue LED for searching
+                if self.led:
+                    self.led.set_pattern('searching')
+                self.logger.info("👀 Dog lost, searching...")
+
+            elif event.subtype == 'pose':
+                behavior = event.data.get('behavior')
+                if behavior:
+                    self.logger.info(f"🎯 Behavior detected: {behavior}")
+                    # Pulse for behavior detection
+                    if self.led:
+                        self.led.pulse_color('yellow')
+
+        except Exception as e:
+            self.logger.error(f"Detection feedback error: {e}")
 
     def _run_startup_sequence(self) -> None:
         """Run startup sequence"""
@@ -382,9 +408,13 @@ class TreatBotMain:
         self.running = False
         self._stop_event.set()
 
-        # Wait for main loop to stop
+        # Wait for main loop to stop with shorter timeout
         if self.main_thread and self.main_thread.is_alive():
-            self.main_thread.join(timeout=5.0)
+            self.main_thread.join(timeout=2.0)
+            if self.main_thread.is_alive():
+                self.logger.warning("Main thread still running, forcing stop")
+                # Force stop by setting emergency flag
+                self.shutdown_requested = True
 
         # Execute shutdown sequence
         self._run_shutdown_sequence()

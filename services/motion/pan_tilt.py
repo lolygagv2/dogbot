@@ -245,16 +245,42 @@ class PanTiltService:
         return max(-max_output, min(max_output, output))
 
     def _scan_for_target(self) -> None:
-        """Execute scan pattern"""
-        # Simple time-based scanning
-        scan_time = time.time() % (len(self.scan_positions) * self.scan_delay)
-        scan_index = int(scan_time / self.scan_delay)
+        """Execute smooth sweep scan pattern"""
+        # Smooth continuous scanning instead of jumping between positions
+        current_time = time.time()
 
-        if scan_index != self.scan_index:
-            self.scan_index = scan_index
-            pan, tilt = self.scan_positions[scan_index]
-            self._move_to_position(pan, tilt)
-            self.logger.debug(f"Scanning to position {scan_index}: ({pan}, {tilt})")
+        # Create a smooth sweep pattern
+        # Period of 10 seconds for full sweep
+        sweep_period = 10.0
+        sweep_phase = (current_time % sweep_period) / sweep_period
+
+        # Sweep back and forth
+        if sweep_phase < 0.5:
+            # Sweep left to right
+            normalized_pos = sweep_phase * 2  # 0 to 1
+        else:
+            # Sweep right to left
+            normalized_pos = 2 - (sweep_phase * 2)  # 1 to 0
+
+        # Convert to pan angle (60 to 120 degrees)
+        target_pan = 60 + (normalized_pos * 60)
+
+        # Keep tilt steady at 75 degrees for scanning
+        target_tilt = 75
+
+        # Smooth movement - only update if significant change
+        pan_diff = abs(target_pan - self.current_pan)
+        if pan_diff > 2:  # Only move if > 2 degrees difference
+            # Limit speed for smooth motion
+            max_step = 3.0  # degrees per update
+            if pan_diff > max_step:
+                if target_pan > self.current_pan:
+                    target_pan = self.current_pan + max_step
+                else:
+                    target_pan = self.current_pan - max_step
+
+            self._move_to_position(target_pan, target_tilt)
+            self.logger.debug(f"Smooth scan: pan={target_pan:.1f}°")
 
     def _move_to_position(self, pan: float, tilt: float) -> None:
         """Move servos to specified position with limits"""

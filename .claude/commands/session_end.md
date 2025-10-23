@@ -188,6 +188,9 @@ What should I update? (1/2/3/4/all/none)
 4. Scattered test files (not in /tests/):
    - None found ✅
 
+5. - Summarize and update the directory structure knowledge with any changes for files, folders etc
+   -`.claude/TreatBot_Project_Directory_Structure.md`
+
 Execute cleanup? (yes/no/review)
 ```
 
