@@ -14,8 +14,8 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 # Import modules (adjust paths as needed)
-from vision.camera_interface import CameraInterface
-from ai.dog_detection import DogDetector
+from ...vision.camera_interface import CameraInterface
+from ...ai.dog_detection import DogDetector
 
 # Configure logging
 logging.basicConfig(

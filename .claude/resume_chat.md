@@ -1,6 +1,67 @@
 # Resume Chat Context - TreatBot Session Log
 
-## Session: 2025-01-22 Evening [Latest]
+## Session: 2025-01-23 Morning [Latest]
+**Goal:** Fix jerky camera movement, integrate behavior_14.ts, create parallel AI controllers
+**Status:** ✅ Complete
+
+### Work Completed:
+- Integrated behavior_14.ts temporal behavior model (LSTM-based)
+- Created ai_controller_3stage_temporal.py for neural network behavior analysis
+- Fixed smooth camera scanning in pan_tilt.py (continuous sweep pattern)
+- Created test_behavior_comparison.py for side-by-side model comparison
+- Fixed LSTM input dimensions (24 dog keypoints × 2 values = 48 features)
+- Archived obsolete AI and vision modules
+- Created comprehensive project structure documentation
+
+### Key Solutions:
+- **Temporal Model Integration:** Successfully loaded behavior_14.ts TorchScript model
+- **Input Format Fix:** Model expects 24 dog keypoints (not 17 human), drops confidence values to get 48 features
+- **Smooth Scanning:** Replaced jerky position jumping with sine-wave based continuous sweep
+- **Parallel Architecture:** Two AI controllers can run simultaneously for comparison
+
+### Critical Code Changes:
+```python
+# core/ai_controller_3stage_temporal.py - Correct input reshaping:
+# Take all 24 keypoints but only x,y (drop confidence)
+pose_data = frame_poses[i][:, :2]  # 24 keypoints, x,y only
+
+# Reshape for LSTM: (T, num_dogs, 24, 2) to (num_dogs, T, 48)
+tensor_input = tensor_input.transpose(0, 1)
+tensor_input = tensor_input.reshape(num_dogs, T, -1)
+
+# services/motion/pan_tilt.py - Smooth sweep pattern:
+sweep_phase = (current_time % sweep_period) / sweep_period
+if sweep_phase < 0.5:
+    normalized_pos = sweep_phase * 2  # 0 to 1
+else:
+    normalized_pos = 2 - (sweep_phase * 2)  # 1 to 0
+target_pan = 60 + (normalized_pos * 60)
+```
+
+### Files Modified:
+- core/ai_controller_3stage_temporal.py (new - 548 lines)
+- services/motion/pan_tilt.py (modified - smooth scanning)
+- tests/vision/test_behavior_comparison.py (new - 310 lines)
+- .claude/TreatBot_Project_Directory_Structure.md (new - documentation)
+- Archived 9 obsolete files to Archive/
+
+### Commit: 825e48ab - feat: Integrate temporal behavior model with parallel AI controllers
+
+### Next Session Tasks:
+1. Test with real Hailo hardware for full detection pipeline
+2. Integrate temporal controller into main_treatbot.py
+3. Fine-tune behavior detection confidence thresholds
+4. Add behavior-specific reward logic
+
+### Important Notes/Warnings:
+- **Temporal model working:** Successfully detecting behaviors (e.g., "spin" with 77% confidence)
+- **Input dimensions critical:** 24 dog keypoints × 2 (x,y) = 48 features, T=16 frames
+- **Visual comparison working:** Side-by-side display of heuristic vs temporal models
+- **CPU mode functional:** Both models can run without Hailo for testing
+
+---
+
+## Session: 2025-01-22 Evening
 **Goal:** Fix LED GPIO conflicts and add control APIs
 **Status:** ✅ Complete
 
