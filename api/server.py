@@ -1000,6 +1000,84 @@ async def clear_emergency():
         "message": "Emergency cleared"
     }
 
+# Bark Detection endpoints
+@app.get("/bark/status")
+async def get_bark_status():
+    """Get bark detection status and statistics"""
+    try:
+        from services.perception.bark_detector import get_bark_detector_service
+        bark_detector = get_bark_detector_service()
+        return bark_detector.get_status()
+    except Exception as e:
+        logger.error(f"Failed to get bark detector status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/bark/enable")
+async def enable_bark_detection():
+    """Enable bark detection"""
+    try:
+        from services.perception.bark_detector import get_bark_detector_service
+        bark_detector = get_bark_detector_service()
+        bark_detector.set_enabled(True)
+        return {"success": True, "message": "Bark detection enabled"}
+    except Exception as e:
+        logger.error(f"Failed to enable bark detection: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/bark/disable")
+async def disable_bark_detection():
+    """Disable bark detection"""
+    try:
+        from services.perception.bark_detector import get_bark_detector_service
+        bark_detector = get_bark_detector_service()
+        bark_detector.set_enabled(False)
+        return {"success": True, "message": "Bark detection disabled"}
+    except Exception as e:
+        logger.error(f"Failed to disable bark detection: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class BarkThresholdRequest(BaseModel):
+    threshold: float  # 0.0 to 1.0
+
+@app.post("/bark/threshold")
+async def set_bark_threshold(request: BarkThresholdRequest):
+    """Set bark detection confidence threshold"""
+    try:
+        from services.perception.bark_detector import get_bark_detector_service
+        bark_detector = get_bark_detector_service()
+        bark_detector.set_confidence_threshold(request.threshold)
+        return {"success": True, "threshold": request.threshold}
+    except Exception as e:
+        logger.error(f"Failed to set bark threshold: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class BarkEmotionsRequest(BaseModel):
+    emotions: List[str]  # List of emotion names
+
+@app.post("/bark/reward_emotions")
+async def set_reward_emotions(request: BarkEmotionsRequest):
+    """Set which bark emotions trigger rewards"""
+    try:
+        from services.perception.bark_detector import get_bark_detector_service
+        bark_detector = get_bark_detector_service()
+        bark_detector.set_reward_emotions(request.emotions)
+        return {"success": True, "reward_emotions": request.emotions}
+    except Exception as e:
+        logger.error(f"Failed to set reward emotions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/bark/reset_stats")
+async def reset_bark_statistics():
+    """Reset bark detection statistics"""
+    try:
+        from services.perception.bark_detector import get_bark_detector_service
+        bark_detector = get_bark_detector_service()
+        bark_detector.reset_statistics()
+        return {"success": True, "message": "Bark statistics reset"}
+    except Exception as e:
+        logger.error(f"Failed to reset bark statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # System endpoints
 @app.get("/system/status")
 async def get_system_status():
@@ -1017,6 +1095,7 @@ async def get_system_status():
     # Add service status if available
     try:
         from services.perception.detector import get_detector_service
+        from services.perception.bark_detector import get_bark_detector_service
         from services.motion.pan_tilt import get_pantilt_service
         from services.reward.dispenser import get_dispenser_service
         from services.media.sfx import get_sfx_service
@@ -1024,6 +1103,7 @@ async def get_system_status():
 
         status["services"] = {
             "detector": get_detector_service().get_status(),
+            "bark_detector": get_bark_detector_service().get_status(),
             "pantilt": get_pantilt_service().get_status(),
             "dispenser": get_dispenser_service().get_status(),
             "sfx": get_sfx_service().get_status(),

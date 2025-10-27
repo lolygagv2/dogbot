@@ -1,8 +1,8 @@
-# TreatBot Session End Command
+# WIM-Z Session End Command
 
 ## Safe Shutdown Protocol
 
-### PHASE 0: Save Chat History
+### PHASE 0: Save Chat History & Update Structure
 **Update Resume Chat Log:**
 - Save last 1000 lines of conversation to `.claude/resume_chat.md`
 - Include:
@@ -13,6 +13,12 @@
 - Format as markdown with timestamps
 - Keep most recent entries at top
 
+**Update Project Structure:**
+- Review `.claude/WIM-Z_Project_Directory_Structure.md`
+- Add any new files created this session
+- Mark deprecated files for cleanup
+- Note any structural issues found
+
 ### PHASE 1: Inventory (Show Only, Don't Execute)
 
 #### New Files Created This Session
@@ -22,12 +28,16 @@ List all files created with timestamps:
 find . -type f -newer /tmp/session_start_marker -not -path './.git/*'
 ```
 
-Group by directory:
-- `/hardware/` - Production code
+Group by directory (per WIM-Z structure):
+- `/core/` - Core system components
+- `/services/` - Service layer modules
+- `/orchestrators/` - High-level coordination
+- `/modes/` - Autonomous operation modes
 - `/tests/` - Test scripts
-- `/missions/` - Training sequences
+- `/ai/` - AI models and classifiers
 - `/docs/` - Documentation
 - **ROOT or other** - ⚠️ Files in wrong location!
+- **Duplicates** - Check for vision/, hardware/ duplicates
 
 #### Modified Files
 ```bash

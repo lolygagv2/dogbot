@@ -1,11 +1,14 @@
-# TreatBot Session Start Command
+# WIM-Z Session Start Command
 
 ## Initialization Protocol
 
 ### 1. Load Project Context
 - Read `.claude/CLAUDE.md` for development rules
+- Read `.claude/DEVELOPMENT_PROTOCOL.md` for development protocol when working and completing.
 - **Check `.claude/resume_chat.md` for previous session history**
-- Reference Directory Knowledge: `.claude/TreatBot_Project_Directory_Structure.md` keep this reference to files in mind to not recreate, duplicate or misunderstand progress
+
+- Read Directory Knowledge: `.claude/WIM-Z_Project_Directory_Structure.md` - ALWAYS check the structure document first and verify actual file existence before claiming something doesn't exist. to not recreate, duplicate or misunderstand progress
+
 - Review `.claude/product_roadmap.md` for current phase
 - Check `.claude/development_todos.md` for active tasks
 

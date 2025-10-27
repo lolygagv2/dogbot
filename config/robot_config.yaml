@@ -113,3 +113,24 @@ logging:
   log_behaviors: true
   log_rewards: true
   log_hardware_status: true
+
+  # Bark Detection Configuration
+bark_detection:
+  enabled: true
+  model_path: "/home/pi/dogbot/ai/models/dog_bark_classifier.tflite"
+  emotion_mapping_path: "/home/pi/dogbot/ai/models/emotion_mapping.json"
+  
+  # Audio settings
+  sample_rate: 22050
+  duration: 3.0
+  n_mels: 128
+  
+  # Detection settings
+  confidence_threshold: 0.55  # Minimum confidence for valid bark
+  reward_emotions:  # Emotions that trigger treat dispensing
+    - alert
+    - attention
+  
+  # Processing
+  check_interval: 0.5  # Seconds between bark checks
+  cooldown_period: 5.0  # Seconds to wait between treats

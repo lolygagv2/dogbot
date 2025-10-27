@@ -1,8 +1,8 @@
-# TreatBot Product Roadmap
+# WIM-Z (Watchful Intelligent Mobile Zen) Product Roadmap
 *Last Updated: October 2025*
 
 ## 🎯 Mission Statement
-Build the world's first autonomous AI-powered dog training robot that combines mobility, edge AI inference, and behavioral learning to create a premium pet care experience.
+Build the world's first autonomous AI-powered pet training robot - the WIM-Z (Watchful Intelligent Mobile Zen) - that combines mobility, edge AI inference, and behavioral learning to create a premium pet care experience.
 
 ## 🏆 Strategic Positioning
 
@@ -44,11 +44,11 @@ Build the world's first autonomous AI-powered dog training robot that combines m
 | **Treat&Train** | Stationary trainer | No mobility, no AI, manual only | Autonomous + mobile |
 | **Robot vacuums** | Mobility + sensors | No pet interaction purpose | Purpose-built for pets |
 
-**Our Positioning:** "First autonomous AI dog trainer that moves, learns, and trains multiple dogs independently"
+**Our Positioning:** "WIM-Z - The first autonomous AI companion that moves, learns, and trains multiple pets independently"
 
 ## 🎯 Market Gap Analysis
 
-Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for humans. TreatBot's hybrid vision-audio reinforcement loop creates the first true **AI companion for animals**, not just humans.
+Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for humans. WIM-Z's hybrid vision-audio reinforcement loop creates the first true **AI companion for animals**, not just humans.
 
 - **Precision AI Focus:** Vision + sound fusion via Hailo-8 + IMX500
 - **Premium Build Quality:** Dyson-level trust with dog-centric design
@@ -187,6 +187,21 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 - [ ] **Social Features** - Auto photo capture and sharing
 
 ### **FUTURE: Production Features**
+
+#### Navigation Enhancements [Optional]
+- [ ] **Waypoint Mapping System**
+  - [ ] Visual landmark recognition
+  - [ ] GPS integration for outdoor mode
+  - [ ] Patrol route definition
+  - [ ] Auto-exploration mapping
+
+- [ ] **Human Detection Mode** [Security Feature]
+  - [ ] YOLOv8 person detection model
+  - [ ] Stranger vs family member recognition
+  - [ ] Alert notifications
+  - [ ] Security patrol mode
+
+### **Additional WIM-Z Features**
 
 #### 3.1 Reward Logic System [Priority: HIGH]
 **Goal:** Rules-based training system with configurable parameters

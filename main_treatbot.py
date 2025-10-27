@@ -23,6 +23,7 @@ from core.safety import get_safety_monitor
 
 # Services
 from services.perception.detector import get_detector_service
+from services.perception.bark_detector import get_bark_detector_service
 from services.motion.pan_tilt import get_pantilt_service
 from services.motion.motor import get_motor_service
 from services.reward.dispenser import get_dispenser_service
@@ -169,6 +170,14 @@ class TreatBotMain:
             self.logger.error(f"Detector service failed: {e}")
             services_status['detector'] = False
 
+        # Bark detector service
+        try:
+            self.bark_detector = get_bark_detector_service()
+            services_status['bark_detector'] = self.bark_detector.initialize()
+        except Exception as e:
+            self.logger.error(f"Bark detector service failed: {e}")
+            services_status['bark_detector'] = False
+
         # Pan/tilt service
         try:
             self.pantilt = get_pantilt_service()
@@ -262,6 +271,13 @@ class TreatBotMain:
                 # Subscribe to detection events for LED feedback
                 self.bus.subscribe('vision', self._on_detection_for_feedback)
 
+            # Start bark detection if enabled
+            if self.bark_detector.enabled:
+                self.bark_detector.start()
+                # Subscribe to bark events for feedback
+                self.bus.subscribe('audio', self._on_bark_for_feedback)
+                self.logger.info("🎤 Bark detection started")
+
             self.logger.info("✅ All subsystems started")
             return True
 
@@ -294,6 +310,38 @@ class TreatBotMain:
 
         except Exception as e:
             self.logger.error(f"Detection feedback error: {e}")
+
+    def _on_bark_for_feedback(self, event) -> None:
+        """Provide feedback for bark detection events"""
+        try:
+            if event.subtype == 'bark_detected':
+                emotion = event.data.get('emotion', 'unknown')
+                confidence = event.data.get('confidence', 0)
+
+                # Log bark detection
+                self.logger.info(f"🐕 Bark detected: {emotion} (conf: {confidence:.2f})")
+
+                # Visual feedback - flash LED based on emotion
+                if self.led:
+                    if emotion in ['alert', 'attention']:
+                        self.led.pulse_color('green')
+                    elif emotion in ['anxious', 'scared']:
+                        self.led.pulse_color('yellow')
+                    elif emotion == 'aggressive':
+                        self.led.pulse_color('red')
+                    elif emotion == 'playful':
+                        self.led.pulse_color('cyan')
+
+            elif event.subtype == 'bark_rewarded':
+                emotion = event.data.get('emotion', 'unknown')
+                self.logger.info(f"🎁 Bark reward triggered for: {emotion}")
+
+                # Celebration feedback
+                if self.led:
+                    self.led.set_pattern('celebrate')
+
+        except Exception as e:
+            self.logger.error(f"Bark feedback error: {e}")
 
     def _run_startup_sequence(self) -> None:
         """Run startup sequence"""
@@ -443,6 +491,8 @@ class TreatBotMain:
             # Stop services
             if self.detector:
                 self.detector.stop_detection()
+            if self.bark_detector:
+                self.bark_detector.stop()
             if self.pantilt:
                 self.pantilt.stop_tracking()
             if self.mode_fsm:
@@ -451,7 +501,7 @@ class TreatBotMain:
                 self.safety.stop_monitoring()
 
             # Cleanup services
-            services = [self.detector, self.pantilt, self.motor, self.dispenser, self.sfx, self.led]
+            services = [self.detector, self.bark_detector, self.pantilt, self.motor, self.dispenser, self.sfx, self.led]
             for service in services:
                 if service and hasattr(service, 'cleanup'):
                     service.cleanup()
