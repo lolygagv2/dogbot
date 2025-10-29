@@ -6,6 +6,7 @@ Integrates bark emotion classifier with event-driven architecture
 import threading
 import time
 import logging
+import numpy as np
 from typing import Dict, Optional, Any
 from datetime import datetime, timedelta
 
@@ -98,7 +99,7 @@ class BarkDetectorService:
 
             # Initialize audio buffer
             self.audio_buffer = BarkAudioBuffer(
-                sample_rate=self.config.get('sample_rate', 22050),
+                sample_rate=self.config.get('sample_rate', 48000),
                 chunk_duration=self.config.get('duration', 3.0)
             )
 
@@ -172,6 +173,7 @@ class BarkDetectorService:
     def _detection_loop(self):
         """Main detection loop running in background thread"""
         logger.info("Bark detection loop started")
+        detection_count = 0
 
         while self.is_running:
             try:
@@ -179,14 +181,26 @@ class BarkDetectorService:
                 audio_chunk = self.audio_buffer.get_audio_chunk(timeout=self.check_interval)
 
                 if audio_chunk is not None:
-                    # Classify bark emotion
-                    result = self.classifier.predict(
-                        audio_chunk,
-                        confidence_threshold=self.confidence_threshold
-                    )
+                    detection_count += 1
+                    # Log every 10th chunk to avoid spam
+                    if detection_count % 10 == 0:
+                        logger.debug(f"Processing audio chunk #{detection_count}, shape: {audio_chunk.shape}")
 
-                    if result['is_confident'] and result['emotion'] != 'notbark':
-                        self._handle_bark_detected(result)
+                    # Check audio energy level
+                    audio_energy = np.mean(np.abs(audio_chunk))
+                    if audio_energy > 0.01:  # Only process if there's significant audio
+                        logger.info(f"Significant audio detected, energy: {audio_energy:.4f}")
+
+                        # Classify bark emotion
+                        result = self.classifier.predict(
+                            audio_chunk,
+                            confidence_threshold=self.confidence_threshold
+                        )
+
+                        logger.debug(f"Classification result: {result['emotion']} (conf: {result['confidence']:.2f})")
+
+                        if result['is_confident'] and result['emotion'] != 'notbark':
+                            self._handle_bark_detected(result)
 
                 # Brief pause
                 time.sleep(0.1)

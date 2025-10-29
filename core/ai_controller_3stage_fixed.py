@@ -16,6 +16,10 @@ from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
+from core.dog_tracker import DogTracker
+from core.event_publisher import DogEventPublisher
+from core.dog_database import DogDatabase
+from core.bus import EventBus
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -104,6 +108,14 @@ class AI3StageControllerFixed:
 
         # Load configuration
         self._load_config()
+
+        # Initialize dog tracker with persistence rules
+        self.dog_tracker = DogTracker(self.config) if self.config else None
+
+        # Initialize event system and database
+        self.event_bus = EventBus()
+        self.event_publisher = DogEventPublisher(self.event_bus)
+        self.dog_database = DogDatabase()
 
     def _load_config(self):
         """Load configuration from JSON"""
@@ -252,6 +264,69 @@ class AI3StageControllerFixed:
             logger.error(f"Failed to load {model_type} model: {e}")
             return False
 
+
+    def process_frame_with_dogs(self, frame_4k: np.ndarray, aruco_markers: List[Tuple[int, float, float]] = None) -> Dict:
+        """
+        Process frame with dog identification using ArUco markers
+
+        Args:
+            frame_4k: Input frame
+            aruco_markers: List of (marker_id, cx, cy) tuples from ArUco detection
+
+        Returns:
+            Dict with detections, poses, behaviors, and dog assignments
+        """
+        # Get basic detections
+        detections, poses, behaviors = self.process_frame(frame_4k)
+
+        result = {
+            'detections': detections,
+            'poses': poses,
+            'behaviors': behaviors,
+            'dog_assignments': {}
+        }
+
+        # Apply dog tracking if available
+        if self.dog_tracker and aruco_markers is not None:
+            assignments = self.dog_tracker.process_frame(detections, aruco_markers)
+            result['dog_assignments'] = assignments
+
+            # Add dog names to behaviors and publish events
+            for idx, behavior in enumerate(behaviors):
+                if idx in assignments:
+                    behavior.dog_name = assignments[idx]
+                    dog_name = assignments[idx]
+
+                    # Get marker ID from dog name
+                    marker_id = self.dog_tracker.dog_names.get(dog_name, 832)
+
+                    # Publish behavior detection event
+                    if behavior.behavior and behavior.confidence > self.behavior_confidence_threshold:
+                        self.event_publisher.publish_behavior_detected(
+                            dog_name=dog_name,
+                            dog_id=marker_id,
+                            behavior=behavior.behavior,
+                            confidence=behavior.confidence
+                        )
+
+                        # Record in database
+                        self.dog_database.record_behavior(marker_id, behavior.behavior, behavior.confidence)
+
+                        # If it's a successful "sit", dispense reward and record it
+                        if behavior.behavior == "sit" and behavior.confidence > 0.7:
+                            self.event_publisher.publish_reward_dispensed(
+                                dog_name=dog_name,
+                                dog_id=marker_id,
+                                behavior="sit",
+                                treat_count=1
+                            )
+                            self.dog_database.record_reward(marker_id, "sit", 1)
+
+        return result
+
+    def get_dog_progress_report(self, marker_id: int) -> str:
+        """Generate progress report for a specific dog"""
+        return self.dog_database.generate_progress_report(marker_id)
 
     def process_frame(self, frame_4k: np.ndarray) -> Tuple[List[Detection], List[PoseKeypoints], List[BehaviorResult]]:
         """

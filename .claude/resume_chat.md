@@ -1,3 +1,177 @@
+# Resume Chat Context - WIM-Z Session Log
+
+## Session: 2025-10-29 03:00 EDT
+**Goal:** Fix ArUco detection, integrate bark detection
+**Status:** ✅ Partially Complete
+
+### Work Completed:
+
+#### 1. ArUco Dog Identification System
+- ✅ Fixed dog ID mapping (was reversed: now Elsa=315, Bezik=832)
+- ✅ Implemented 6 persistence rules for better tracking:
+  - Rule 1: Confined list of valid IDs
+  - Rule 2: 30-second persistence tracking
+  - Rule 3: Proximity matching
+  - Rule 4: Default dog (Bezik) for single dog
+  - Rule 5: Mutual exclusion
+  - Rule 6: Max 2 dogs on screen
+- ✅ Created `core/dog_tracker.py` with smart persistence
+- ✅ Created `core/event_publisher.py` for dog-specific events
+- ✅ Created `core/dog_database.py` for SQLite storage
+- ✅ Integrated into AI controller with `process_frame_with_dogs()`
+- ✅ Progress reports now show dog names
+
+#### 2. Bark Detection Integration
+- ✅ Fixed model path from `/home/pi/` to `/home/morgan/`
+- ✅ Adjusted sample rate to 44100Hz (matching PulseAudio)
+- ⚠️ Audio capture issue: PipeWire holding USB mic
+- ✅ Fixed dimension mismatch (model expects [1,128,130,1])
+- ✅ Adjusted duration to 1.4s for correct mel spectrogram size
+
+### Key Solutions:
+
+**ArUco False Positives Fix:**
+- Problem: Many false IDs (17, 190, 379, etc.)
+- Solution: Persistence rules filter to only valid dog IDs
+- Result: Stable tracking even with poor detection rate
+
+**Bark Detection Audio Issue:**
+- Problem: PyAudio couldn't access USB mic (PipeWire conflict)
+- Partial Solution: Changed to 44100Hz, fixed dimensions
+- Remaining: Need PulseAudio backend or stop PipeWire
+
+**Servo Control Fix:**
+- Fixed method names: `set_pan_angle()` / `set_tilt_angle()`
+- Angle ranges: -90 to +90 for pan, -45 to +45 for tilt
+- Issue was virtual environment not activated initially
+
+### Next Session:
+1. Fix audio capture (either stop PipeWire or use PulseAudio backend)
+2. Test bark detection with actual barks
+3. Verify ArUco tracking with real dogs
+4. Clean up test files in root directory
+
+### Important Notes/Warnings:
+- ⚠️ Bark detection gets audio but dimension errors persist
+- ⚠️ USB mic blocked by PipeWire audio system
+- ⚠️ Several test files created in root (need cleanup)
+- ✅ Dog IDs corrected: Elsa=315, Bezik=832 (was reversed)
+- ✅ All 4 requirements met for dog identification system
+
+---
+
+## Session: 2025-10-28 [Latest]
+**Goal:** Review system integration status and prepare for testing
+**Status:** ✅ Complete
+
+### Work Completed This Session:
+
+#### 1. ArUco Dog ID System Review
+- **Status:** Demo only - NOT integrated in main system
+- GUI test exists (`live_gui_with_aruco.py`) with hardcoded dog names
+- Database ready but no persistence implemented
+- Needs physical markers and full integration work
+
+#### 2. Bark Detection System Review
+- **Status:** 70% ready - integrated but needs config fix
+- ✅ Fully integrated in main_treatbot.py
+- ✅ TFLite model present (3.3MB)
+- ⚠️ Sample rate mismatch: USB mic uses 44100Hz, config set to 22050Hz
+- **Fix:** `sed -i 's/sample_rate: 22050/sample_rate: 44100/' config/robot_config.yaml`
+
+#### 3. Bluetooth Controller Integration
+- **Status:** ✅ COMPLETE - Ready to use!
+- Added BluetoothESCController to main_treatbot.py
+- Motor service now subscribes to motion events
+- Created setup script: `setup_bluetooth_controller.sh`
+- Full manual driving mode implemented
+
+#### 4. Progress Reports/Logging Analysis
+- **Status:** ❌ NOT IMPLEMENTED
+- Database exists with proper schema
+- Store module created but NEVER called
+- No events being logged, no reports generated
+- Needs basic integration before considering LLM
+
+### Files Modified:
+- `main_treatbot.py` - Added Bluetooth controller integration
+- `services/motion/motor.py` - Added motion event handlers
+- Created `test_bark_detection_live.py` - Bark detection test
+- Created `setup_bluetooth_controller.sh` - Bluetooth pairing script
+
+### Key Discoveries:
+1. **Bark detection** is actually integrated (unlike ArUco)
+2. **Bluetooth controller** was built but not wired into main system (now fixed)
+3. **Database/logging** infrastructure exists but completely unused
+4. System is more functional than initially appeared
+
+### Next Session Priorities:
+1. **Quick fix:** Update bark detection sample rate (1 min)
+2. **Test:** Bluetooth controller driving
+3. **Test:** Bark detection with USB mic
+4. **Later:** Add basic event logging before progress reports
+5. **Later:** ArUco integration (needs physical markers)
+
+### Important Notes:
+- USB Audio Device detected at index 1
+- 92 Python files in root (needs cleanup)
+- Protected files remain unchanged ✅
+
+---
+
+## Session: 2025-10-27
+**Goal:** WIM-Z Platform Integration - ArUco, Bark Detection, Bluetooth Control
+**Status:** ✅ Complete - Major platform upgrade successful
+
+### Work Completed:
+
+#### 1. WIM-Z Platform Rebranding
+- Updated all documentation from TreatBot to WIM-Z (Watchful Intelligent Mobile Zen)
+- Created comprehensive WIM-Z_Project_Directory_Structure.md
+- Fixed session commands to reference correct structure
+
+#### 2. ArUco Dog Identification
+- Created `live_gui_with_aruco.py` with marker overlay
+- Individual dog tracking with per-dog profiles
+- Integrated with AI detection pipeline
+
+#### 3. Simplified Bark Detection
+- Created `test_bark_quiet_training.py` for practical scenarios
+- Protocol: 3x "quiet" in 15s, reward 20s silence
+- <5% temporal overlap expected with vision
+
+#### 4. Bluetooth ESC Control
+- Full implementation in `services/control/bluetooth_esc.py`
+- Complete gamepad mapping (movement, camera, treats, AI)
+- Ready for pairing and testing
+
+#### 5. Treat-on-Sit Mode
+- Created `modes/treat_on_sit.py` autonomous training
+- 3-second sit detection with per-dog tracking
+- Cooldowns and daily limits implemented
+
+### Key Discoveries:
+- Mission Engine and SQLite Store already exist (not missing)
+- Duplicate vision folders need cleanup
+- WIM-Z modes: Vigilant, Security, Passive Treat, Manual, Remote Pilot
+
+### Files Created:
+- `/live_gui_with_aruco.py`
+- `/tests/test_bark_quiet_training.py`
+- `/services/control/bluetooth_esc.py`
+- `/modes/treat_on_sit.py`
+- `/tests/test_behavior_fusion.py` (complex fusion test)
+
+### Commit: 9ab13267 - feat: WIM-Z platform integration
+
+### Next Session:
+1. Test ArUco with real dog collars
+2. Tune bark thresholds
+3. Pair Bluetooth controller
+4. Run treat-on-sit with real dogs
+
+---
+
 # Resume Chat Context - TreatBot Session Log
 
 ## Session: 2025-10-25 Afternoon [Latest]

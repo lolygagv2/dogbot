@@ -50,6 +50,10 @@ class BarkAudioBuffer:
         self.audio_queue = queue.Queue(maxsize=10)
         self.record_thread = None
         
+    def start_recording(self):
+        """Start recording audio"""
+        return self.start()
+
     def start(self):
         """Start recording audio"""
         if self.is_recording:
@@ -78,6 +82,10 @@ class BarkAudioBuffer:
             logger.error(f"Failed to start audio recording: {e}")
             raise
     
+    def stop_recording(self):
+        """Stop recording audio"""
+        return self.stop()
+
     def stop(self):
         """Stop recording audio"""
         self.is_recording = False
