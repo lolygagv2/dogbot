@@ -24,8 +24,8 @@ class SystemSettings:
     
     # Servo Configuration
     SERVO_FREQUENCY = 50  # Standard servo PWM frequency
-    SERVO_MIN_PULSE = 1000  # Microseconds
-    SERVO_MAX_PULSE = 2000  # Microseconds
+    SERVO_MIN_PULSE = 500   # Extended range for wider movement
+    SERVO_MAX_PULSE = 2500  # Extended range for wider movement
     SERVO_CENTER_PULSE = 1500  # Microseconds
     
     # Camera Configuration (future)

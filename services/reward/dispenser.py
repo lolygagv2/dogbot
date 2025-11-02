@@ -259,4 +259,7 @@ def get_dispenser_service() -> DispenserService:
         with _dispenser_lock:
             if _dispenser_instance is None:
                 _dispenser_instance = DispenserService()
+                # Auto-initialize the dispenser hardware
+                if not _dispenser_instance.servo_initialized:
+                    _dispenser_instance.initialize()
     return _dispenser_instance

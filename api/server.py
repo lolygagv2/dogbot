@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
@@ -20,6 +20,8 @@ import threading
 from core.state import get_state, SystemMode
 from core.store import get_store
 from services.reward.dispenser import get_dispenser_service
+from services.motion.motor import get_motor_service
+from services.motion.pan_tilt import get_pantilt_service
 from orchestrators.sequence_engine import get_sequence_engine
 from orchestrators.reward_logic import get_reward_logic
 from orchestrators.mode_fsm import get_mode_fsm
@@ -56,6 +58,28 @@ class SequenceRequest(BaseModel):
     sequence_name: str
     context: Optional[Dict[str, Any]] = None
     interrupt: bool = False
+
+class MotorControlRequest(BaseModel):
+    """Motor control for iPhone app"""
+    left_speed: int  # -100 to 100
+    right_speed: int  # -100 to 100
+    duration: Optional[float] = None  # seconds, None = continuous
+
+class PanTiltRequest(BaseModel):
+    """Camera pan/tilt control"""
+    pan: Optional[int] = None  # -90 to 270 degrees with extended PWM
+    tilt: Optional[int] = None  # 0-180 degrees
+    speed: Optional[int] = 5  # movement speed
+    smooth: Optional[bool] = False  # use smooth movement
+
+class JoystickRequest(BaseModel):
+    """Virtual joystick input from app"""
+    x: float  # -1.0 to 1.0 (left/right)
+    y: float  # -1.0 to 1.0 (forward/back)
+
+class EmergencyStopRequest(BaseModel):
+    """Emergency stop all motors"""
+    reason: str = "emergency_stop"
 
 # DFPlayer models
 class DFPlayerPlayRequest(BaseModel):
@@ -321,6 +345,62 @@ async def stop_all_sequences():
         "sequences_stopped": count
     }
 
+# Bark Detection endpoints
+@app.get("/bark/status")
+async def get_bark_detection_status():
+    """Get bark detection service status"""
+    bark_detector = get_bark_detector_service()
+    return bark_detector.get_status()
+
+@app.post("/bark/enable")
+async def enable_bark_detection():
+    """Enable bark detection"""
+    bark_detector = get_bark_detector_service()
+    bark_detector.set_enabled(True)
+    return {"success": True, "enabled": True}
+
+@app.post("/bark/disable")
+async def disable_bark_detection():
+    """Disable bark detection"""
+    bark_detector = get_bark_detector_service()
+    bark_detector.set_enabled(False)
+    return {"success": True, "enabled": False}
+
+@app.post("/bark/config")
+async def configure_bark_detection(
+    confidence_threshold: float = None,
+    reward_emotions: list = None,
+    audio_gain: float = None
+):
+    """Configure bark detection parameters"""
+    bark_detector = get_bark_detector_service()
+
+    updates = {}
+    if confidence_threshold is not None:
+        bark_detector.set_confidence_threshold(confidence_threshold)
+        updates["confidence_threshold"] = confidence_threshold
+
+    if reward_emotions is not None:
+        bark_detector.set_reward_emotions(reward_emotions)
+        updates["reward_emotions"] = reward_emotions
+
+    if audio_gain is not None:
+        # Would need to restart audio buffer with new gain
+        updates["audio_gain"] = audio_gain
+        updates["note"] = "Audio gain change requires restart"
+
+    return {
+        "success": True,
+        "updated": updates
+    }
+
+@app.post("/bark/reset_stats")
+async def reset_bark_statistics():
+    """Reset bark detection statistics"""
+    bark_detector = get_bark_detector_service()
+    bark_detector.reset_statistics()
+    return {"success": True, "message": "Statistics reset"}
+
 # Telemetry endpoints
 @app.get("/telemetry")
 async def get_telemetry():
@@ -523,12 +603,293 @@ async def set_manual_mode(mode: str):
         logger.error(f"Set manual mode error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# iPhone App Motor Control endpoints
+@app.post("/motor/control")
+async def motor_control(request: MotorControlRequest):
+    """Direct motor control for iPhone app"""
+    try:
+        motor_service = get_motor_service()
+
+        # Set individual motor speeds
+        success = motor_service.set_motor_speeds(
+            left_speed=request.left_speed,
+            right_speed=request.right_speed,
+            duration=request.duration
+        )
+
+        return {
+            "success": success,
+            "left_speed": request.left_speed,
+            "right_speed": request.right_speed,
+            "duration": request.duration
+        }
+    except Exception as e:
+        logger.error(f"Motor control error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/motor/joystick")
+async def joystick_control(request: JoystickRequest):
+    """Virtual joystick control from iPhone app"""
+    try:
+        motor_service = get_motor_service()
+
+        # Convert joystick input to motor speeds
+        # Forward/back is y, left/right is x
+        left_speed = int((request.y + request.x) * 100)
+        right_speed = int((request.y - request.x) * 100)
+
+        # Clamp to valid range
+        left_speed = max(-100, min(100, left_speed))
+        right_speed = max(-100, min(100, right_speed))
+
+        success = motor_service.set_motor_speeds(
+            left_speed=left_speed,
+            right_speed=right_speed
+        )
+
+        return {
+            "success": success,
+            "joystick": {"x": request.x, "y": request.y},
+            "motors": {"left": left_speed, "right": right_speed}
+        }
+    except Exception as e:
+        logger.error(f"Joystick control error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/motor/stop")
+async def motor_stop(request: Optional[EmergencyStopRequest] = None):
+    """Emergency stop all motors"""
+    try:
+        motor_service = get_motor_service()
+        motor_service.emergency_stop()
+
+        reason = request.reason if request else "emergency_stop"
+        logger.warning(f"Motor emergency stop: {reason}")
+
+        return {
+            "success": True,
+            "message": f"Motors stopped: {reason}"
+        }
+    except Exception as e:
+        logger.error(f"Motor stop error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Camera Control endpoints
+@app.post("/camera/photo")
+async def capture_photo_imx500():
+    """Capture photo using IMX500 PCIe camera via rpicam-still"""
+    import subprocess
+    from datetime import datetime
+    import os
+
+    try:
+        # Create captures directory if needed
+        os.makedirs("/home/morgan/dogbot/captures", exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"photo_{timestamp}.jpg"
+        filepath = f"/home/morgan/dogbot/captures/{filename}"
+
+        # Use rpicam-still for IMX500 camera
+        # --width 4056 --height 3040 : Full resolution
+        # --quality 95 : JPEG quality
+        # --timeout 1000 : 1 second timeout
+        # --nopreview : No preview window
+        # --immediate : Capture immediately
+        cmd = [
+            "rpicam-still",
+            "--width", "4056",
+            "--height", "3040",
+            "--quality", "95",
+            "--timeout", "1000",
+            "--nopreview",
+            "--immediate",
+            "-o", filepath
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+
+        if result.returncode == 0 and os.path.exists(filepath):
+            # Get file size for verification
+            file_size = os.path.getsize(filepath)
+            logger.info(f"IMX500 photo captured: {filepath} ({file_size} bytes)")
+
+            return {
+                "success": True,
+                "filename": filename,
+                "filepath": filepath,
+                "resolution": "4056x3040",
+                "size_bytes": file_size,
+                "method": "rpicam-still",
+                "camera": "IMX500 PCIe"
+            }
+        else:
+            error_msg = result.stderr if result.stderr else "Unknown rpicam-still error"
+            raise Exception(f"rpicam-still failed: {error_msg}")
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="Camera capture timeout")
+    except Exception as e:
+        logger.error(f"Photo capture error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/camera/photo_opencv")
+async def capture_photo_opencv():
+    """Capture a high-resolution photo"""
+    import cv2
+    from datetime import datetime
+    import os
+
+    try:
+        # Try different camera devices and backends
+        # Try /dev/video0 and /dev/video19 which aren't held by PipeWire
+        camera_options = [
+            (0, cv2.CAP_V4L2),  # video0 with V4L2 backend
+            (19, cv2.CAP_V4L2),  # video19 with V4L2 backend
+            ("/dev/video0", cv2.CAP_V4L2),  # Direct device path
+            ("/dev/video19", cv2.CAP_V4L2),  # Direct device path
+            (0, cv2.CAP_ANY),  # Let OpenCV choose
+            (1, cv2.CAP_ANY),
+            (2, cv2.CAP_ANY)
+        ]
+
+        for cam_source, backend in camera_options:
+            try:
+                logger.info(f"Trying camera: {cam_source} with backend {backend}")
+                cap = cv2.VideoCapture(cam_source, backend)
+
+                if not cap.isOpened():
+                    continue
+
+                # Check if we actually got the camera
+                test_ret, test_frame = cap.read()
+                if not test_ret or test_frame is None:
+                    cap.release()
+                    continue
+
+                # Try to set high resolution (but don't fail if it doesn't work)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+
+                # Get actual resolution
+                actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                logger.info(f"Camera resolution: {actual_width}x{actual_height}")
+
+                # Warm up camera with a few reads
+                for _ in range(3):
+                    cap.read()
+
+                # Capture frame
+                ret, frame = cap.read()
+                cap.release()
+
+                if ret and frame is not None:
+                    # Save photo with high quality
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"photo_{timestamp}.jpg"
+                    filepath = f"/home/morgan/dogbot/captures/{filename}"
+
+                    # Create captures directory if needed
+                    os.makedirs("/home/morgan/dogbot/captures", exist_ok=True)
+
+                    cv2.imwrite(filepath, frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                    logger.info(f"Photo saved: {filepath}")
+
+                    return {
+                        "success": True,
+                        "filename": filename,
+                        "filepath": filepath,
+                        "resolution": f"{frame.shape[1]}x{frame.shape[0]}",
+                        "camera_source": str(cam_source)
+                    }
+            except Exception as cam_error:
+                logger.warning(f"Camera {cam_source} failed: {cam_error}")
+                continue
+
+        raise Exception("No camera available for capture")
+
+    except Exception as e:
+        logger.error(f"Photo capture error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Camera Pan/Tilt Control endpoints
+@app.post("/camera/pantilt")
+async def camera_pantilt(request: PanTiltRequest):
+    """Control camera pan/tilt servos"""
+    try:
+        pantilt_service = get_pantilt_service()
+
+        # Initialize if not already done
+        if not pantilt_service.servo_initialized:
+            if not pantilt_service.initialize():
+                raise HTTPException(status_code=500, detail="Failed to initialize servos")
+
+        # Move servos with optional smooth movement
+        if pantilt_service.servo:
+            if request.pan is not None:
+                # Use smooth parameter if provided
+                pantilt_service.servo.set_camera_pan(request.pan, smooth=request.smooth)
+                pantilt_service.current_pan = request.pan
+
+            if request.tilt is not None:
+                # Use smooth parameter if provided
+                pantilt_service.servo.set_camera_pitch(request.tilt, smooth=request.smooth)
+                pantilt_service.current_tilt = request.tilt
+
+            return {
+                "success": True,
+                "pan": request.pan,
+                "tilt": request.tilt,
+                "current_position": {
+                    "pan": pantilt_service.current_pan,
+                    "tilt": pantilt_service.current_tilt
+                }
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Servo controller not available")
+
+    except Exception as e:
+        logger.error(f"Pan/tilt control error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/camera/position")
+async def get_camera_position():
+    """Get current camera pan/tilt position"""
+    try:
+        pantilt_service = get_pantilt_service()
+        position = pantilt_service.get_position()
+
+        return {
+            "success": True,
+            "position": position
+        }
+    except Exception as e:
+        logger.error(f"Get camera position error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/camera/center")
+async def camera_center():
+    """Center camera to default position"""
+    try:
+        pantilt_service = get_pantilt_service()
+        pantilt_service.center()
+
+        return {
+            "success": True,
+            "message": "Camera centered",
+            "position": pantilt_service.get_position()
+        }
+    except Exception as e:
+        logger.error(f"Camera center error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # DFPlayer Control endpoints
 @app.get("/audio/status")
 async def get_audio_status():
     """Get DFPlayer and audio relay status"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         status = audio.get_status()
         return {
             "success": True,
@@ -563,11 +924,20 @@ async def get_audio_files():
         logger.error(f"Audio files listing error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+_audio_controller = None
+
+def get_audio_controller():
+    """Get singleton audio controller"""
+    global _audio_controller
+    if _audio_controller is None:
+        _audio_controller = AudioController()
+    return _audio_controller
+
 @app.post("/audio/play/file")
 async def play_audio_file(request: DFPlayerPlayRequest):
     """Play audio file by path"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.play_file_by_path(request.filepath)
 
         return {
@@ -583,7 +953,7 @@ async def play_audio_file(request: DFPlayerPlayRequest):
 async def play_audio_number(request: DFPlayerNumberRequest):
     """Play audio file by number"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.play_file_by_number(request.number)
 
         return {
@@ -599,7 +969,7 @@ async def play_audio_number(request: DFPlayerNumberRequest):
 async def play_audio_sound(request: DFPlayerSoundRequest):
     """Play audio by sound name (from AudioFiles)"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.play_sound(request.sound_name)
 
         return {
@@ -618,7 +988,7 @@ async def set_audio_volume(request: DFPlayerVolumeRequest):
         if not 0 <= request.volume <= 30:
             raise HTTPException(status_code=400, detail="Volume must be between 0 and 30")
 
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.set_volume(request.volume)
 
         return {
@@ -634,7 +1004,7 @@ async def set_audio_volume(request: DFPlayerVolumeRequest):
 async def pause_audio():
     """Pause/resume audio playback"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.play_pause_toggle()
 
         return {
@@ -649,7 +1019,7 @@ async def pause_audio():
 async def next_audio():
     """Play next track"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.play_next()
 
         return {
@@ -664,7 +1034,7 @@ async def next_audio():
 async def previous_audio():
     """Play previous track"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.play_previous()
 
         return {
@@ -679,7 +1049,7 @@ async def previous_audio():
 async def switch_to_pi_audio():
     """Switch audio relay to Pi USB audio"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.switch_to_pi_audio()
 
         return {
@@ -695,7 +1065,7 @@ async def switch_to_pi_audio():
 async def switch_to_dfplayer_audio():
     """Switch audio relay to DFPlayer"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.switch_to_dfplayer()
 
         return {
@@ -711,7 +1081,7 @@ async def switch_to_dfplayer_audio():
 async def get_relay_status():
     """Get audio relay status"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         status = audio.get_relay_status()
 
         return {
@@ -726,7 +1096,7 @@ async def get_relay_status():
 async def test_audio_system():
     """Test audio system (relay switching)"""
     try:
-        audio = AudioController()
+        audio = get_audio_controller()
         success = audio.test_relay_switching()
 
         return {
@@ -1077,6 +1447,115 @@ async def reset_bark_statistics():
     except Exception as e:
         logger.error(f"Failed to reset bark statistics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# WebSocket for real-time control (iPhone app)
+@app.websocket("/ws/control")
+async def websocket_control(websocket: WebSocket):
+    """WebSocket endpoint for real-time robot control from iPhone app"""
+    await websocket.accept()
+    motor_service = None
+    pantilt_service = None
+
+    try:
+        # Get services
+        motor_service = get_motor_service()
+        pantilt_service = get_pantilt_service()
+
+        logger.info("WebSocket control connection established")
+
+        while True:
+            # Receive control commands
+            data = await websocket.receive_json()
+
+            command = data.get("command")
+
+            if command == "motor":
+                # Motor control
+                left = data.get("left", 0)
+                right = data.get("right", 0)
+                motor_service.set_motor_speeds(left, right)
+
+                await websocket.send_json({
+                    "type": "motor_ack",
+                    "left": left,
+                    "right": right
+                })
+
+            elif command == "joystick":
+                # Virtual joystick
+                x = data.get("x", 0)
+                y = data.get("y", 0)
+
+                # Convert to motor speeds
+                left = int((y + x) * 100)
+                right = int((y - x) * 100)
+                left = max(-100, min(100, left))
+                right = max(-100, min(100, right))
+
+                motor_service.set_motor_speeds(left, right)
+
+                await websocket.send_json({
+                    "type": "joystick_ack",
+                    "motors": {"left": left, "right": right}
+                })
+
+            elif command == "camera":
+                # Camera pan/tilt
+                pan = data.get("pan")
+                tilt = data.get("tilt")
+
+                if pan is not None:
+                    pantilt_service.set_pan(pan)
+                if tilt is not None:
+                    pantilt_service.set_tilt(tilt)
+
+                await websocket.send_json({
+                    "type": "camera_ack",
+                    "position": pantilt_service.get_position()
+                })
+
+            elif command == "stop":
+                # Emergency stop
+                motor_service.emergency_stop()
+                await websocket.send_json({
+                    "type": "stop_ack",
+                    "message": "Motors stopped"
+                })
+
+            elif command == "treat":
+                # Dispense treat
+                dispenser = get_dispenser_service()
+                dispenser.dispense_treat(reason="websocket_command")
+
+                await websocket.send_json({
+                    "type": "treat_ack",
+                    "message": "Treat dispensed"
+                })
+
+            elif command == "ping":
+                # Keep-alive ping
+                await websocket.send_json({
+                    "type": "pong",
+                    "timestamp": data.get("timestamp")
+                })
+
+            else:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Unknown command: {command}"
+                })
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket control connection closed")
+        if motor_service:
+            motor_service.emergency_stop()
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        await websocket.send_json({
+            "type": "error",
+            "message": str(e)
+        })
+        await websocket.close()
 
 # System endpoints
 @app.get("/system/status")

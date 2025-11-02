@@ -70,10 +70,12 @@ class ServoController:
         return int((pulse_us / 20000.0) * 0xFFFF)
     
     def _angle_to_pulse(self, angle):
-        """Convert angle (0-180 degrees) to pulse width (proven conversion)"""
-        # Map 0-180 degrees to servo pulse range
+        """Convert angle to pulse width - extended range for full servo movement"""
+        # Map wider angle range to extended pulse range
         pulse_range = self.settings.SERVO_MAX_PULSE - self.settings.SERVO_MIN_PULSE
-        angle_normalized = max(0, min(200, angle)) / 200.0
+        # Allow -90 to 270 degree range (360 degree span)
+        angle_normalized = max(-90, min(270, angle)) / 360.0  # Normalize to 0-1
+        angle_normalized = (angle_normalized + 90.0/360.0)  # Shift to positive range
         return self.settings.SERVO_MIN_PULSE + (pulse_range * angle_normalized)
     
     def set_camera_pitch(self, angle, smooth=False):
@@ -83,7 +85,7 @@ class ServoController:
             return False
         
         try:
-            angle = max(0, min(200, angle))
+            angle = max(-90, min(270, angle))  # Extended range
             
             if smooth and abs(angle - self.current_pitch) > 10:
                 # Smooth movement for large angle changes
@@ -107,7 +109,7 @@ class ServoController:
             return False
             
         try:
-            angle = max(0, min(200, angle))
+            angle = max(-90, min(270, angle))  # Extended range
             
             if smooth and abs(angle - self.current_pan) > 10:
                 # Smooth movement for large angle changes
