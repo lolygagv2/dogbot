@@ -2,7 +2,7 @@ Do not delete this is a manual list of commands and ideas and hints about the pr
 
 -------------------------------
 
---------------------
+-------------
 
 
 If there's issues with VS CODE: 

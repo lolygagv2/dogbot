@@ -29,6 +29,9 @@ from services.motion.motor import get_motor_service
 from services.reward.dispenser import get_dispenser_service
 from services.media.sfx import get_sfx_service
 from services.media.led import get_led_service
+from services.control.bluetooth_esc import BluetoothESCController
+from services.control.xbox_controller import get_xbox_service
+from api.server import run_server
 
 # Orchestrators
 from orchestrators.sequence_engine import get_sequence_engine
@@ -65,6 +68,9 @@ class TreatBotMain:
         self.dispenser = None
         self.sfx = None
         self.led = None
+        self.bluetooth_controller = None
+        self.xbox_controller = None
+        self.api_server = None
 
         # Orchestrators
         self.sequence_engine = None
@@ -186,10 +192,12 @@ class TreatBotMain:
             self.logger.error(f"Pan/tilt service failed: {e}")
             services_status['pantilt'] = False
 
-        # Motor service (manual control)
+        # Motor service - DISABLED (Xbox controller has direct motor control)
         try:
-            self.motor = get_motor_service()
-            services_status['motor'] = self.motor.initialize()
+            # self.motor = get_motor_service()
+            # services_status['motor'] = self.motor.initialize()
+            services_status['motor'] = False  # Disabled to prevent GPIO conflicts
+            self.logger.info("🚗 Main motor service disabled (Xbox controller has direct control)")
         except Exception as e:
             self.logger.error(f"Motor service failed: {e}")
             services_status['motor'] = False
@@ -218,6 +226,35 @@ class TreatBotMain:
             self.logger.error(f"LED service failed: {e}")
             services_status['led'] = False
 
+        # Bluetooth controller service - DISABLED (conflicts with Xbox controller)
+        try:
+            # self.bluetooth_controller = BluetoothESCController()
+            # services_status['bluetooth'] = self.bluetooth_controller.initialize()
+            services_status['bluetooth'] = False  # Disabled
+            self.logger.info("🎮 Bluetooth ESC controller disabled (Xbox controller active)")
+        except Exception as e:
+            self.logger.error(f"Bluetooth controller failed: {e}")
+            services_status['bluetooth'] = False
+
+        # Xbox controller service
+        try:
+            self.xbox_controller = get_xbox_service()
+            services_status['xbox_controller'] = self.xbox_controller.start()
+            if services_status['xbox_controller']:
+                self.logger.info("🎮 Xbox controller service started")
+        except Exception as e:
+            self.logger.error(f"Xbox controller service failed: {e}")
+            services_status['xbox_controller'] = False
+
+        # API Server service
+        try:
+            self.api_server = self._start_api_server()
+            services_status['api_server'] = True
+            self.logger.info("🌐 API server started on port 8000")
+        except Exception as e:
+            self.logger.error(f"API server failed: {e}")
+            services_status['api_server'] = False
+
         # Check critical services
         critical_services = ['detector', 'dispenser']
         for service in critical_services:
@@ -231,6 +268,18 @@ class TreatBotMain:
             self.logger.info(f"{status_msg} {service}: {'Ready' if status else 'Failed'}")
 
         return True
+
+    def _start_api_server(self) -> threading.Thread:
+        """Start API server in background thread"""
+        def run_api():
+            try:
+                run_server(host="0.0.0.0", port=8000, debug=False)
+            except Exception as e:
+                self.logger.error(f"API server error: {e}")
+
+        api_thread = threading.Thread(target=run_api, daemon=True, name="APIServer")
+        api_thread.start()
+        return api_thread
 
     def _initialize_orchestrators(self) -> bool:
         """Initialize orchestration layer"""
@@ -277,6 +326,12 @@ class TreatBotMain:
                 # Subscribe to bark events for feedback
                 self.bus.subscribe('audio', self._on_bark_for_feedback)
                 self.logger.info("🎤 Bark detection started")
+
+            # Start Bluetooth controller if available
+            if self.bluetooth_controller and self.bluetooth_controller.is_connected:
+                self.bluetooth_controller.start()
+                self.logger.info("🎮 Bluetooth controller active - Press START to enter MANUAL mode")
+                self.state.set_mode(SystemMode.MANUAL, "Bluetooth controller ready")
 
             self.logger.info("✅ All subsystems started")
             return True
@@ -499,9 +554,15 @@ class TreatBotMain:
                 self.mode_fsm.stop_fsm()
             if self.safety:
                 self.safety.stop_monitoring()
+            if self.xbox_controller:
+                self.xbox_controller.stop()
 
             # Cleanup services
-            services = [self.detector, self.bark_detector, self.pantilt, self.motor, self.dispenser, self.sfx, self.led]
+            services = [self.detector, self.bark_detector, self.pantilt, self.motor, self.dispenser, self.sfx, self.led, self.xbox_controller]
+
+            # Stop API server (it's a daemon thread, will stop when main process stops)
+            if self.api_server and self.api_server.is_alive():
+                self.logger.info("API server will stop with main process")
             for service in services:
                 if service and hasattr(service, 'cleanup'):
                     service.cleanup()

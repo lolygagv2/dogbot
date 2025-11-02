@@ -24,6 +24,8 @@ class ModeTransition(Enum):
     USER_OVERRIDE = "user_override"
     TIMEOUT = "timeout"
     EMERGENCY = "emergency"
+    MANUAL_INPUT = "manual_input"
+    MANUAL_TIMEOUT = "manual_timeout"
 
 
 class ModeFSM:
@@ -43,6 +45,7 @@ class ModeFSM:
         self.mode_start_time = time.time()
         self.last_motion_time = 0.0
         self.last_detection_time = 0.0
+        self.last_manual_input_time = 0.0
         self.override_mode = None
         self.override_until = 0.0
 
@@ -51,6 +54,7 @@ class ModeFSM:
             'no_motion_timeout': 10.0,      # DETECTION -> VIGILANT
             'vigilant_timeout': 30.0,       # VIGILANT -> IDLE
             'detection_timeout': 5.0,       # No dogs -> VIGILANT
+            'manual_timeout': 120.0,        # MANUAL -> AUTO (2 minutes)
             'override_timeout': 300.0       # Max override duration (5 min)
         }
 
@@ -156,6 +160,9 @@ class ModeFSM:
             # Photography mode should be manually controlled
             pass
 
+        elif current_state_mode == SystemMode.MANUAL:
+            self._evaluate_manual_transitions(now)
+
     def _evaluate_idle_transitions(self, time_since_motion: float, time_since_detection: float) -> None:
         """Evaluate transitions from IDLE mode"""
         # Motion detected -> DETECTION
@@ -191,6 +198,28 @@ class ModeFSM:
         # Long time in vigilant -> IDLE
         elif time_in_mode > self.timeouts['vigilant_timeout']:
             self._transition_to(SystemMode.IDLE, ModeTransition.TIMEOUT)
+
+    def _evaluate_manual_transitions(self, now: float) -> None:
+        """Evaluate transitions from MANUAL mode"""
+        if self.last_manual_input_time == 0:
+            return  # No manual input recorded yet
+
+        time_since_manual = now - self.last_manual_input_time
+
+        # Manual timeout -> return to appropriate autonomous mode
+        if time_since_manual > self.timeouts['manual_timeout']:
+            # Choose autonomous mode based on recent activity
+            time_since_motion = now - self.last_motion_time if self.last_motion_time > 0 else 999
+            time_since_detection = now - self.last_detection_time if self.last_detection_time > 0 else 999
+
+            if time_since_detection < 10.0:
+                target_mode = SystemMode.DETECTION
+            elif time_since_motion < 30.0:
+                target_mode = SystemMode.VIGILANT
+            else:
+                target_mode = SystemMode.IDLE
+
+            self._transition_to(target_mode, ModeTransition.MANUAL_TIMEOUT)
 
     def _transition_to(self, new_mode: SystemMode, trigger: ModeTransition) -> None:
         """Execute mode transition"""
@@ -241,6 +270,39 @@ class ModeFSM:
         """Handle system events"""
         if event.subtype == 'emergency':
             self._transition_to(SystemMode.EMERGENCY, ModeTransition.EMERGENCY)
+
+        elif event.subtype == 'manual_input_detected':
+            # Xbox controller input detected
+            self.last_manual_input_time = time.time()
+            current_mode = self.state.get_mode()
+
+            # Switch to manual mode if not already
+            if current_mode != SystemMode.MANUAL:
+                self._transition_to(SystemMode.MANUAL, ModeTransition.MANUAL_INPUT)
+
+        elif event.subtype == 'controller_connected':
+            # Controller connected - if no recent activity, stay in current mode
+            self.logger.info("Xbox controller connected")
+
+        elif event.subtype == 'controller_disconnected':
+            # Controller disconnected - if in manual mode, switch to appropriate autonomous mode
+            current_mode = self.state.get_mode()
+            if current_mode == SystemMode.MANUAL:
+                self.logger.info("Controller disconnected while in manual mode, switching to autonomous")
+
+                # Choose appropriate autonomous mode based on recent activity
+                now = time.time()
+                time_since_motion = now - self.last_motion_time if self.last_motion_time > 0 else 999
+                time_since_detection = now - self.last_detection_time if self.last_detection_time > 0 else 999
+
+                if time_since_detection < 10.0:
+                    target_mode = SystemMode.DETECTION
+                elif time_since_motion < 30.0:
+                    target_mode = SystemMode.VIGILANT
+                else:
+                    target_mode = SystemMode.IDLE
+
+                self._transition_to(target_mode, ModeTransition.USER_OVERRIDE)
 
     def set_mode_override(self, mode: SystemMode, duration: float = None) -> bool:
         """Override automatic mode transitions"""
@@ -314,8 +376,10 @@ class ModeFSM:
             'override_remaining': max(0, self.override_until - now) if self.override_mode else 0,
             'last_motion': self.last_motion_time,
             'last_detection': self.last_detection_time,
+            'last_manual_input': self.last_manual_input_time,
             'time_since_motion': now - self.last_motion_time if self.last_motion_time > 0 else 999,
             'time_since_detection': now - self.last_detection_time if self.last_detection_time > 0 else 999,
+            'time_since_manual': now - self.last_manual_input_time if self.last_manual_input_time > 0 else 999,
             'timeouts': self.timeouts.copy()
         }
 

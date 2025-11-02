@@ -1,5 +1,69 @@
 # Resume Chat Context - WIM-Z Session Log
 
+## Session: 2025-11-02 03:00 EST
+**Goal:** Create unified Mode Manager with Xbox controller integration
+**Status:** ⚠️ Partial - Manual mode working, automatic switching needs work
+
+### Work Completed:
+- ✅ **Created unified Mode Manager** integrating Xbox controller with existing WIM-Z architecture
+- ✅ **Added 120-second timeout logic** for auto-return to autonomous
+- ✅ **Integrated API server** into main_treatbot.py (unified single service)
+- ✅ **Fixed systemd service** to use proper virtual environment (env_new)
+- ✅ **Disabled conflicting services** (BluetoothESCController and main motor service)
+- ✅ **Stopped autonomous camera scanning** that was interfering with manual control
+- ✅ **Xbox controller motors working** when in manual mode
+- ✅ **Camera control working** (right joystick)
+
+### Key Solutions:
+- **Multiple service conflicts:** Disabled BluetoothESCController and main motor service to prevent GPIO conflicts
+- **API server not starting:** Fixed treatbot.service to use /home/morgan/dogbot/env_new/bin/python
+- **Camera scanning interference:** Pan/tilt service was scanning autonomously, now stops in manual mode
+- **Motor control broken:** Xbox controller has direct motor control, main motor service was conflicting
+
+### Current Status:
+- ✅ **System auto-starts on boot** (treatbot.service)
+- ✅ **Xbox controller connected and responsive**
+- ✅ **Motors work when manually triggered into manual mode**
+- ✅ **Camera gimbal responds to right joystick**
+- ✅ **API server responding on port 8000**
+- ⚠️ **Automatic mode switching incomplete** - Xbox button presses don't auto-trigger manual mode
+- ⚠️ **LED manual mode indicators not working**
+
+## Previous Session: 2025-11-02 02:30 EST
+**Goal:** Fix Xbox controller integration issues
+**Status:** ✅ Complete
+
+### Work Completed:
+- Extended servo PWM range from 1000-2000μs to 500-2500μs for full physical movement
+- Implemented smooth servo movement with 30% interpolation factor
+- Added continuous 20Hz update loop for fluid camera control
+- Fixed IMX500 PCIe camera capture using rpicam-still (was trying USB/OpenCV)
+- Auto-initialized treat dispenser hardware on first use
+- All Xbox controller features now working
+
+### Key Solutions:
+- **Camera Servo Range Issue:** Physical servo limited to ~120° despite software. Extended PWM pulse width.
+- **Servo Jitter:** Added smooth interpolation and threshold filtering
+- **Photo Capture Failed:** IMX500 is PCIe camera. Fixed with rpicam-still
+- **Treat Dispenser:** Added auto-init in get_dispenser_service()
+
+### Files Modified:
+- api/server.py - IMX500 photo capture, smooth servo API
+- config/settings.py - Extended PWM range
+- core/hardware/servo_controller.py - Wider angle support
+- services/reward/dispenser.py - Auto-initialize hardware
+- xbox_hybrid_controller.py - Smooth camera control
+
+### Commit: 4b54ca90 - fix: Xbox controller integration - servos, camera, dispenser
+
+### Next Session Tasks:
+1. Test features with physical hardware
+2. Fine-tune servo smoothing parameters
+3. Clean up test files in root directory
+4. Map remaining Xbox buttons (X for LED modes)
+
+---
+
 ## Session: 2025-10-29 03:00 EDT
 **Goal:** Fix ArUco detection, integrate bark detection
 **Status:** ✅ Partially Complete

@@ -39,7 +39,28 @@ except ImportError:
         logger = logging.getLogger('XboxHybrid')
         logger.warning("No direct motor control available, will use API")
 
+# Try to connect to event bus for mode management
+event_bus = None
+try:
+    from core.bus import get_bus, publish_system_event
+    event_bus = get_bus()
+    logger.info("Connected to event bus for mode management")
+except ImportError:
+    logger.info("Event bus not available, running standalone")
+
 logging.basicConfig(level=logging.INFO)
+
+def notify_manual_input():
+    """Notify the system that manual input occurred"""
+    if event_bus:
+        try:
+            publish_system_event('manual_input_detected', {
+                'timestamp': time.time(),
+                'source': 'xbox_controller'
+            }, 'xbox_hybrid_controller')
+            logger.debug("Manual input event published")
+        except Exception as e:
+            logger.debug(f"Failed to notify manual input: {e}")
 
 @dataclass
 class ControllerState:
@@ -80,16 +101,23 @@ class XboxHybridController:
     TURN_SPEED_FACTOR = 0.6
 
     # Sound track numbers on SD card (D-pad navigation)
-    # Track 1-8 are different sound effects
+    # These map to the actual audio files in /talks/ folder
     SOUND_TRACKS = [
-        (1, "Track 1"),
-        (2, "Track 2"),
-        (3, "Track 3"),
-        (4, "Track 4"),
-        (5, "Track 5"),
-        (6, "Track 6"),
-        (7, "Track 7"),
-        (8, "Track 8")
+        (1, "Scooby Intro"),      # 0001.mp3
+        (3, "Elsa"),               # 0003.mp3
+        (4, "Bezik"),              # 0004.mp3
+        (8, "Good Dog"),           # 0008.mp3 - GOOD
+        (13, "Treat"),             # 0013.mp3 - Treat
+        (15, "Sit"),               # 0015.mp3
+        (16, "Spin"),              # 0016.mp3
+        (17, "Stay")               # 0017.mp3
+    ]
+
+    # Y button alternates between these sounds (using file paths)
+    # Index 0 = Good (even presses), Index 1 = Treat (odd presses)
+    REWARD_SOUNDS = [
+        ("/talks/0008.mp3", "Good Dog"),    # Index 0 - even presses (2nd, 4th, 6th...)
+        ("/talks/0013.mp3", "Treat")        # Index 1 - odd presses (1st, 3rd, 5th...)
     ]
 
     def __init__(self, device_path: str = '/dev/input/js0'):
@@ -101,6 +129,7 @@ class XboxHybridController:
 
         # Sound navigation
         self.current_sound_index = 0
+        # Y button: 0=Treat (first press), 1=Good (second press), etc.
 
         # Photo capture cooldown
         self.last_photo_time = 0
@@ -109,6 +138,19 @@ class XboxHybridController:
         # Camera control timer for smooth movement
         self.camera_timer = None
         self.camera_update_interval = 0.05  # 20Hz update rate for smooth movement
+
+        # LED state tracking
+        self.led_enabled = False
+        self.current_led_mode = 0
+        # Use the actual LED modes the API supports
+        self.led_modes = [
+            "idle",             # Default idle mode
+            "searching",        # Searching for dogs
+            "dog_detected",     # Dog detected
+            "treat_launching",  # Dispensing treat
+            "error",            # Error/warning
+            "charging"          # Charging mode
+        ]
 
         # API session for non-motor functions
         self.session = requests.Session()
@@ -190,6 +232,10 @@ class XboxHybridController:
         if abs(normalized) < self.DEADZONE:
             normalized = 0.0
 
+        # Notify manual input for any significant axis movement
+        if abs(normalized) > self.DEADZONE:
+            notify_manual_input()
+
         # Update state based on axis
         if number == 0:  # Left stick X
             self.state.left_x = normalized
@@ -201,8 +247,22 @@ class XboxHybridController:
         elif number == 4:  # Right stick Y (camera tilt)
             self.state.right_y = -normalized
             # Control camera continuously for smooth movement
-        elif number == 2:  # Left trigger
+        elif number == 2:  # Left trigger - Cycle LED modes
             self.state.left_trigger = (value + 32767) / 65534.0
+
+            # Initialize the flag if it doesn't exist
+            if not hasattr(self, '_lt_pressed'):
+                self._lt_pressed = False
+
+            # Trigger LED mode change when pulled more than 30% (lowered threshold)
+            if self.state.left_trigger > 0.3 and not self._lt_pressed:
+                self._lt_pressed = True
+                logger.info(f"Left Trigger pulled ({self.state.left_trigger:.2f}) - cycling LED mode")
+                self.cycle_led_mode()
+            elif self.state.left_trigger < 0.1:  # Released completely
+                if self._lt_pressed:
+                    logger.debug(f"Left Trigger released ({self.state.left_trigger:.2f})")
+                self._lt_pressed = False
         elif number == 5:  # Right trigger
             self.state.right_trigger = (value + 32767) / 65534.0
 
@@ -212,6 +272,11 @@ class XboxHybridController:
 
     def process_button(self, number: int, pressed: bool):
         """Process button press/release"""
+
+        # Notify manual input for any button press
+        if pressed:
+            notify_manual_input()
+
         if number == 0:  # A button
             self.state.a_button = pressed
             if pressed:
@@ -224,13 +289,15 @@ class XboxHybridController:
                 logger.info("B button: Stop motors")
                 self.stop_motors()
 
-        elif number == 2:  # X button
+        elif number == 2:  # X button - Toggle LED
             self.state.x_button = pressed
+            if pressed:
+                self.toggle_led()
 
-        elif number == 3:  # Y button
+        elif number == 3:  # Y button - Toggle Good/Treat
             self.state.y_button = pressed
             if pressed:
-                self.play_sound_effect()
+                self.play_reward_sound()
 
         elif number == 4:  # Left bumper (LB) - Dispense treat
             self.state.left_bumper = pressed
@@ -244,6 +311,11 @@ class XboxHybridController:
 
     def process_dpad(self, number: int, value: int):
         """Process D-pad input for audio control"""
+
+        # Notify manual input for any D-pad press
+        if value != 0:
+            notify_manual_input()
+
         if number == 6:  # D-pad X axis
             self.state.dpad_left = (value < 0)
             self.state.dpad_right = (value > 0)
@@ -457,7 +529,7 @@ class XboxHybridController:
             logger.info(f"Photo saved: {result.get('filename')} ({result.get('resolution')})")
 
     def play_sound_effect(self):
-        """Play sound effect via API"""
+        """Play sound effect via API (D-pad selected)"""
         track_num, track_name = self.SOUND_TRACKS[self.current_sound_index]
         logger.info(f"Playing {track_name} (track #{track_num})")
 
@@ -468,6 +540,63 @@ class XboxHybridController:
             logger.info(f"Now playing: {track_name}")
         else:
             logger.error(f"Failed to play {track_name}")
+
+    def play_reward_sound(self):
+        """Play reward sound - always consistent pattern: Treat, Good, Treat, Good..."""
+        # Determine which sound based on press count (no memory)
+        # Odd presses (1st, 3rd, 5th...) = Treat
+        # Even presses (2nd, 4th, 6th...) = Good
+        if not hasattr(self, '_y_press_count'):
+            self._y_press_count = 0
+
+        self._y_press_count += 1
+
+        # Odd press = Treat (index 1), Even press = Good (index 0)
+        sound_index = 1 if (self._y_press_count % 2 == 1) else 0
+        filepath, track_name = self.REWARD_SOUNDS[sound_index]
+
+        logger.info(f"Y button press #{self._y_press_count}: Playing {track_name}")
+
+        # Play the sound by filepath
+        data = {"filepath": filepath}
+        result = self.api_request('POST', '/audio/play/file', data)
+        if result and result.get('success'):
+            logger.info(f"Playing: {track_name} ({filepath})")
+        else:
+            logger.error(f"Failed to play {track_name}")
+
+    def toggle_led(self):
+        """Toggle LED on/off (X button)"""
+        self.led_enabled = not self.led_enabled
+
+        if self.led_enabled:
+            # Turn on with current mode
+            mode = self.led_modes[self.current_led_mode]
+            logger.info(f"X button: LED ON - {mode} mode")
+            data = {"mode": mode}
+            self.api_request('POST', '/leds/mode', data)
+        else:
+            # Turn off (set to 'off' mode)
+            logger.info("X button: LED OFF")
+            data = {"mode": "off"}
+            self.api_request('POST', '/leds/mode', data)
+
+    def cycle_led_mode(self):
+        """Cycle through LED modes (Left Trigger)"""
+        self.current_led_mode = (self.current_led_mode + 1) % len(self.led_modes)
+        mode = self.led_modes[self.current_led_mode]
+
+        logger.info(f"Left Trigger: LED mode = {mode}")
+
+        # Apply new mode if LED is on
+        if self.led_enabled:
+            data = {"mode": mode}
+            self.api_request('POST', '/leds/mode', data)
+        else:
+            # Turn on LED with new mode
+            self.led_enabled = True
+            data = {"mode": mode}
+            self.api_request('POST', '/leds/mode', data)
 
     def update_camera_smooth(self):
         """Continuous camera update for smooth movement"""
@@ -489,9 +618,14 @@ class XboxHybridController:
 
         self.running = True
         logger.info("Xbox Hybrid controller ready!")
-        logger.info("Movement: Left stick (DIRECT control for low latency)")
-        logger.info("Controls: LB=treat, RB=photo, Y=sound, A=emergency stop")
-        logger.info("D-pad left/right to select sounds, D-pad down to play")
+        logger.info("=== CONTROLS ===")
+        logger.info("Movement: Left stick + RT for speed control")
+        logger.info("Camera: Right stick (smooth pan/tilt)")
+        logger.info("A = Emergency Stop, B = Stop Motors")
+        logger.info("X = LED On/Off, LT = Cycle LED modes")
+        logger.info("Y = Treat/Good sound (alternating: Treat, Good, Treat...)")
+        logger.info("LB = Dispense Treat, RB = Take Photo")
+        logger.info("D-pad = Audio controls (L/R select, Up pause, Down play)")
 
         # Start smooth camera update timer
         self.update_camera_smooth()

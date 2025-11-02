@@ -16,7 +16,8 @@ from core.state import get_state
 
 # Audio components
 from ai.bark_classifier import BarkClassifier
-from audio.bark_buffer import BarkAudioBuffer
+# Use arecord-based buffer to avoid USB freezing
+from audio.bark_buffer_arecord import BarkAudioBufferArecord as BarkAudioBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +98,12 @@ class BarkDetectorService:
                 n_mels=self.config.get('n_mels', 128)
             )
 
-            # Initialize audio buffer
+            # Initialize audio buffer with correct parameters
+            # Note: USB device records at 44100Hz, model expects 22050Hz
             self.audio_buffer = BarkAudioBuffer(
-                sample_rate=self.config.get('sample_rate', 48000),
-                chunk_duration=self.config.get('duration', 3.0)
+                sample_rate=44100,  # USB device native rate
+                chunk_duration=self.config.get('duration', 3.0),
+                gain=self.config.get('audio_gain', 30.0)  # Amplification for quiet mic
             )
 
             logger.info("Bark detection components initialized successfully")
@@ -186,21 +189,45 @@ class BarkDetectorService:
                     if detection_count % 10 == 0:
                         logger.debug(f"Processing audio chunk #{detection_count}, shape: {audio_chunk.shape}")
 
-                    # Check audio energy level
-                    audio_energy = np.mean(np.abs(audio_chunk))
-                    if audio_energy > 0.01:  # Only process if there's significant audio
-                        logger.info(f"Significant audio detected, energy: {audio_energy:.4f}")
+                    # Check audio energy level (RMS is better than mean absolute)
+                    audio_energy = np.sqrt(np.mean(audio_chunk**2))
+
+                    # Log energy every 10th chunk to debug
+                    if detection_count % 10 == 0:
+                        logger.info(f"Audio energy check - RMS: {audio_energy:.6f}, Max: {np.max(np.abs(audio_chunk)):.6f}")
+
+                    # Very low threshold since mic is quiet and we're amplifying by 30x
+                    if audio_energy > 0.001:  # Process almost any audio
+                        logger.info(f"Processing audio - Energy: {audio_energy:.4f}")
+
+                        # Resample from 44100Hz to 22050Hz for the model
+                        from scipy import signal
+                        audio_resampled = signal.resample(
+                            audio_chunk,
+                            int(len(audio_chunk) * 22050 / 44100)
+                        )
 
                         # Classify bark emotion
                         result = self.classifier.predict(
-                            audio_chunk,
+                            audio_resampled,
                             confidence_threshold=self.confidence_threshold
                         )
 
-                        logger.debug(f"Classification result: {result['emotion']} (conf: {result['confidence']:.2f})")
+                        logger.info(f"Classification result: {result['emotion']} (conf: {result['confidence']:.2f}), all probs: {result['all_probabilities']}")
 
-                        if result['is_confident'] and result['emotion'] != 'notbark':
+                        # Check if 'notbark' has high confidence - if so, this is NOT a bark
+                        notbark_confidence = result['all_probabilities'].get('notbark', 0.0)
+
+                        # Only consider it a bark if:
+                        # 1. The top prediction is NOT 'notbark'
+                        # 2. The confidence is above threshold
+                        # 3. The 'notbark' confidence is below 0.5 (model thinks it's NOT "not a bark")
+                        if (result['emotion'] != 'notbark' and
+                            result['is_confident'] and
+                            notbark_confidence < 0.5):
                             self._handle_bark_detected(result)
+                        else:
+                            logger.debug(f"Not a bark - emotion: {result['emotion']}, notbark conf: {notbark_confidence:.2f}")
 
                 # Brief pause
                 time.sleep(0.1)

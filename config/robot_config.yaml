@@ -116,21 +116,22 @@ logging:
 
   # Bark Detection Configuration
 bark_detection:
-  enabled: true
+  enabled: false  # Set to true to enable (NOTE: Requires better mic - current lavalier has poor room pickup)
   model_path: "/home/morgan/dogbot/ai/models/dog_bark_classifier.tflite"
   emotion_mapping_path: "/home/morgan/dogbot/ai/models/emotion_mapping.json"
-  
-  # Audio settings
-  sample_rate: 44100
-  duration: 1.4  # Adjusted to match model's expected 130 time frames
+
+  # Audio settings (tuned for USB lavalier mic - adjust gain with better mic)
+  sample_rate: 22050  # Model expects this (DO NOT CHANGE)
+  duration: 3.0  # Model trained on 3-second clips (DO NOT CHANGE)
   n_mels: 128
-  
+  audio_gain: 30.0  # High amplification needed for quiet lavalier mic
+
   # Detection settings
   confidence_threshold: 0.55  # Minimum confidence for valid bark
   reward_emotions:  # Emotions that trigger treat dispensing
     - alert
     - attention
-  
+
   # Processing
   check_interval: 0.5  # Seconds between bark checks
   cooldown_period: 5.0  # Seconds to wait between treats

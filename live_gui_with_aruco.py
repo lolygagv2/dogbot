@@ -16,6 +16,10 @@ import queue
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Force DISPLAY for local Pi testing
+if not os.environ.get('DISPLAY'):
+    os.environ['DISPLAY'] = ':0'
+
 try:
     from picamera2 import Picamera2
     PICAMERA2_AVAILABLE = True
@@ -29,8 +33,13 @@ from detect_aruco_id import detect_ids  # Use existing ArUco implementation
 try:
     from servo_control_module import ServoController
     SERVO_AVAILABLE = True
-except ImportError:
+    print("[INFO] Servo control module imported successfully")
+except ImportError as e:
     SERVO_AVAILABLE = False
+    print(f"[ERROR] Failed to import servo_control_module: {e}")
+except Exception as e:
+    SERVO_AVAILABLE = False
+    print(f"[ERROR] Unexpected error importing servo module: {e}")
 
 class WIMZDetectionGUI:
     """WIM-Z Real-time GUI with ArUco dog identification"""
@@ -65,22 +74,34 @@ class WIMZDetectionGUI:
 
         # Servo control
         self.servo_controller = None
+        print(f"[DEBUG] SERVO_AVAILABLE = {SERVO_AVAILABLE}")
         if SERVO_AVAILABLE:
             try:
+                print("[DEBUG] Creating ServoController instance...")
                 self.servo_controller = ServoController()
-                if self.servo_controller.initialize():
-                    print("[INFO] Servo controller initialized")
+                print("[DEBUG] Calling initialize()...")
+                init_result = self.servo_controller.initialize()
+                print(f"[DEBUG] initialize() returned: {init_result}")
+                if init_result:
+                    print("[INFO] ✅ Servo controller initialized successfully")
+                else:
+                    print("[ERROR] ❌ Servo initialization returned False")
+                    self.servo_controller = None
             except Exception as e:
-                print(f"[WARNING] Servo controller not available: {e}")
+                print(f"[ERROR] ❌ Exception during servo init: {e}")
+                import traceback
+                traceback.print_exc()
+                self.servo_controller = None
+        else:
+            print("[ERROR] SERVO_AVAILABLE is False - import failed")
 
-        # ArUco dog ID mapping
+        # ArUco dog ID mapping - DICT_4X4_1000 (IDs 0-999)
+        # 4cm x 4cm markers
         self.dog_names = {
-            1: "Max",
-            2: "Bella",
-            3: "Charlie",
-            4: "Luna",
-            5: "Cooper"
+            315: "Elsa",    # ArUco marker ID 315
+            832: "Bezik"    # ArUco marker ID 832
         }
+        self.expected_dog_ids = [315, 832]  # Only track these IDs
 
         # Dog tracking data
         self.dog_profiles = {}  # Store per-dog data
@@ -88,10 +109,10 @@ class WIMZDetectionGUI:
         self.fps = 0
         self.last_time = time.time()
 
-        # Camera control
-        self.pan_angle = 90
-        self.tilt_angle = 90
-        self.angle_step = 5
+        # Camera control - servo controller uses -90 to +90 range with 0 as center
+        self.pan_angle = 0  # Center position
+        self.tilt_angle = 0  # Center position
+        self.angle_step = 10  # Larger steps for better responsiveness
 
     def initialize_camera(self):
         """Initialize the camera"""
@@ -128,21 +149,30 @@ class WIMZDetectionGUI:
     def draw_aruco_markers(self, frame, markers):
         """Draw ArUco markers and dog IDs on frame"""
         for marker_id, cx, cy in markers:
-            # Get dog name if known
-            dog_name = self.dog_names.get(marker_id, f"Dog #{marker_id}")
+            # Only process known dog markers
+            if marker_id not in self.expected_dog_ids:
+                # Draw unknown markers in gray
+                cv2.putText(frame, f"Unknown: {marker_id}",
+                           (int(cx - 30), int(cy - 40)),
+                           self.font, 0.5, (128, 128, 128), 1)
+                continue
 
-            # Draw marker box (approximate size)
-            box_size = 50
+            # Get dog name
+            dog_name = self.dog_names[marker_id]
+
+            # Draw marker box (larger for known dogs)
+            box_size = 80
+            color = (0, 255, 0) if marker_id == 315 else (255, 0, 255)  # Green for Elsa, Magenta for Bezik
             cv2.rectangle(frame,
                          (int(cx - box_size), int(cy - box_size)),
                          (int(cx + box_size), int(cy + box_size)),
-                         self.colors['aruco_box'], 3)
+                         color, 3)
 
-            # Draw dog ID and name
-            label = f"ArUco {marker_id}: {dog_name}"
+            # Draw dog name prominently
+            label = f"{dog_name} (ID: {marker_id})"
             cv2.putText(frame, label,
                        (int(cx - box_size), int(cy - box_size - 10)),
-                       self.font, 0.7, self.colors['aruco_text'], 2)
+                       self.font, 1.0, color, 3)
 
             # Update dog profile
             if marker_id not in self.dog_profiles:
@@ -155,36 +185,39 @@ class WIMZDetectionGUI:
             else:
                 self.dog_profiles[marker_id]['last_seen'] = time.time()
 
-    def draw_detections(self, frame, detections):
+    def draw_detections(self, frame, detections, poses, behaviors):
         """Draw AI detection results on frame"""
         if not detections:
             return
 
+        # Draw detection boxes
         for i, det in enumerate(detections):
-            bbox = det.get('bbox', [])
+            bbox = det.bbox if hasattr(det, 'bbox') else []
             if len(bbox) >= 4:
                 # Draw bounding box
                 x1, y1, x2, y2 = map(int, bbox[:4])
                 cv2.rectangle(frame, (x1, y1), (x2, y2), self.colors['detection_box'], 2)
 
                 # Draw confidence
-                conf = det.get('confidence', 0)
+                conf = det.confidence if hasattr(det, 'confidence') else 0
                 label = f"Dog {conf:.2f}"
                 cv2.putText(frame, label, (x1, y1 - 10),
                            self.font, 0.6, self.colors['confidence_text'], 2)
 
-            # Draw pose keypoints
-            keypoints = det.get('keypoints', {}).get('keypoints', [])
-            if keypoints:
-                for kp in keypoints:
-                    if len(kp) >= 2:
-                        x, y = int(kp[0]), int(kp[1])
-                        cv2.circle(frame, (x, y), 5, self.colors['pose_keypoints'], -1)
+        # Draw pose keypoints
+        for pose in poses:
+            if hasattr(pose, 'keypoints'):
+                keypoints = pose.keypoints
+                if keypoints is not None:
+                    for kp in keypoints:
+                        if len(kp) >= 2:
+                            x, y = int(kp[0]), int(kp[1])
+                            cv2.circle(frame, (x, y), 5, self.colors['pose_keypoints'], -1)
 
-            # Draw behavior if detected
-            behavior = det.get('behavior')
-            if behavior and behavior != 'unknown':
-                text = f"BEHAVIOR: {behavior.upper()}"
+        # Draw behaviors
+        for i, behavior in enumerate(behaviors):
+            if hasattr(behavior, 'behavior') and behavior.behavior != 'unknown':
+                text = f"BEHAVIOR: {behavior.behavior.upper()}"
                 y_pos = 100 + (i * 40)
                 cv2.putText(frame, text, (50, y_pos),
                            self.font, 1, self.colors['behavior_text'], 2)
@@ -216,38 +249,66 @@ class WIMZDetectionGUI:
 
     def update_camera_position(self, key):
         """Update camera pan/tilt based on key press"""
+        # Debug output
+        if key in [ord('w'), ord('s'), ord('a'), ord('d'), ord('h')]:
+            print(f"[DEBUG] Key pressed: {chr(key)}")
+
         if not self.servo_controller:
+            print("[ERROR] Servo controller is None!")
             return
 
         moved = False
-        if key == ord('w'):  # Tilt up
-            self.tilt_angle = max(0, self.tilt_angle - self.angle_step)
+        if key == ord('w'):  # Tilt up (positive angle)
+            self.tilt_angle = min(45, self.tilt_angle + self.angle_step)  # Max +45°
             moved = True
-        elif key == ord('s'):  # Tilt down
-            self.tilt_angle = min(180, self.tilt_angle + self.angle_step)
+            print(f"[DEBUG] W pressed - tilt up to {self.tilt_angle}")
+        elif key == ord('s'):  # Tilt down (negative angle)
+            self.tilt_angle = max(-45, self.tilt_angle - self.angle_step)  # Min -45°
             moved = True
-        elif key == ord('a'):  # Pan left
-            self.pan_angle = max(0, self.pan_angle - self.angle_step)
+            print(f"[DEBUG] S pressed - tilt down to {self.tilt_angle}")
+        elif key == ord('a'):  # Pan left (negative angle)
+            self.pan_angle = max(-90, self.pan_angle - self.angle_step)  # Min -90°
             moved = True
-        elif key == ord('d'):  # Pan right
-            self.pan_angle = min(180, self.pan_angle + self.angle_step)
+            print(f"[DEBUG] A pressed - pan left to {self.pan_angle}")
+        elif key == ord('d'):  # Pan right (positive angle)
+            self.pan_angle = min(90, self.pan_angle + self.angle_step)  # Max +90°
             moved = True
-        elif key == ord('h'):  # Home position
-            self.pan_angle = 90
-            self.tilt_angle = 90
+            print(f"[DEBUG] D pressed - pan right to {self.pan_angle}")
+        elif key == ord('h'):  # Home position (center)
+            self.pan_angle = 0
+            self.tilt_angle = 0
             moved = True
+            print(f"[DEBUG] H pressed - home position")
 
         if moved:
-            self.servo_controller.set_angle('pan', self.pan_angle)
-            self.servo_controller.set_angle('tilt', self.tilt_angle)
-            print(f"[SERVO] Pan: {self.pan_angle}°, Tilt: {self.tilt_angle}°")
+            print(f"[DEBUG] Attempting to move servos...")
+            try:
+                # Use the correct method names from servo controller
+                self.servo_controller.set_pan_angle(self.pan_angle, smooth=False)  # Fast response
+                self.servo_controller.set_tilt_angle(self.tilt_angle, smooth=False)  # Fast response
+                print(f"[SERVO MOVED] Pan: {self.pan_angle}°, Tilt: {self.tilt_angle}°")
+            except Exception as e:
+                print(f"[ERROR] Failed to move servos: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def save_frame(self, frame, prefix="detection"):
+        """Save frame to file in headless mode"""
+        output_dir = Path("detection_results")
+        output_dir.mkdir(exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = output_dir / f"{prefix}_{timestamp}_{self.frame_count:06d}.jpg"
+        cv2.imwrite(str(filename), frame)
+        return filename
 
     def run(self):
-        """Main GUI loop"""
+        """Main GUI loop - LOCAL HDMI ONLY"""
         if not self.initialize_camera():
             print("[ERROR] Failed to initialize camera")
             return
 
+        # Create window for local display
         window_name = "WIM-Z Detection with ArUco"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(window_name, self.display_width, self.display_height)
@@ -268,11 +329,20 @@ class WIMZDetectionGUI:
                 aruco_markers = detect_ids(frame)
                 if aruco_markers:
                     self.draw_aruco_markers(frame, aruco_markers)
-                    print(f"[ARUCO] Detected markers: {aruco_markers}")
+                    # Only print if we detect our dogs
+                    for marker_id, cx, cy in aruco_markers:
+                        if marker_id in self.expected_dog_ids:
+                            dog_name = self.dog_names[marker_id]
+                            print(f"[DOG DETECTED] {dog_name} (ID: {marker_id}) at position ({cx:.1f}, {cy:.1f})")
 
-                # Run AI detection
-                detections = self.ai.process_frame(frame)
-                self.draw_detections(frame, detections)
+                # Run AI detection - returns tuple (detections, poses, behaviors)
+                result = self.ai.process_frame(frame)
+                if isinstance(result, tuple) and len(result) == 3:
+                    detections, poses, behaviors = result
+                else:
+                    detections, poses, behaviors = [], [], []
+
+                self.draw_detections(frame, detections, poses, behaviors)
 
                 # Update FPS
                 self.frame_count += 1
@@ -298,8 +368,11 @@ class WIMZDetectionGUI:
             print("\n[INFO] Interrupted by user")
         except Exception as e:
             print(f"[ERROR] {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.cleanup()
+
 
     def cleanup(self):
         """Clean up resources"""
@@ -307,10 +380,14 @@ class WIMZDetectionGUI:
         if self.camera and PICAMERA2_AVAILABLE:
             self.camera.stop()
         if self.servo_controller:
-            # Return to home position
-            self.servo_controller.set_angle('pan', 90)
-            self.servo_controller.set_angle('tilt', 90)
-            self.servo_controller.cleanup()
+            try:
+                # Return to home position (center = 0°)
+                print("[INFO] Centering servos...")
+                self.servo_controller.set_pan_angle(0, smooth=False)
+                self.servo_controller.set_tilt_angle(0, smooth=False)
+                self.servo_controller.cleanup()
+            except Exception as e:
+                print(f"[WARNING] Error during servo cleanup: {e}")
         cv2.destroyAllWindows()
         print("[INFO] Cleanup complete")
 

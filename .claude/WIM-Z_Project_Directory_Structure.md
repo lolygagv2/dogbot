@@ -202,6 +202,9 @@ When answering questions about functionality:
 
 ### Files Created This Session:
 - `/live_gui_with_aruco.py` - ArUco-enabled GUI
+  - Elsa: ArUco marker ID 315 (Green box)
+  - Bezik: ArUco marker ID 832 (Magenta box)
+  - Dictionary: DICT_4X4_1000 (4cm x 4cm markers)
 - `/tests/test_bark_quiet_training.py` - Bark training test
 - `/services/control/bluetooth_esc.py` - Bluetooth control
 - `/modes/treat_on_sit.py` - Autonomous training mode

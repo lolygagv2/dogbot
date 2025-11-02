@@ -24,6 +24,7 @@ class LEDMode(Enum):
     TREAT_LAUNCHING = "treat_launching"
     ERROR = "error"
     CHARGING = "charging"
+    MANUAL_RC = "manual_rc"
 
 class LEDController:
     """LED system management with proven NeoPixel and Blue LED control"""
@@ -251,7 +252,38 @@ class LEDController:
                     
         except Exception as e:
             print(f"Rainbow animation error: {e}")
-    
+
+    def manual_rc_pattern(self, delay=0.5):
+        """Purple base with flashing green pattern for manual RC mode"""
+        if not self.pixels:
+            return
+
+        try:
+            while self.animation_active:
+                # Purple base for 1 second
+                self.pixels.fill(Colors.PURPLE)
+                self.pixels.show()
+                time.sleep(delay)
+
+                if not self.animation_active:
+                    break
+
+                # Flash green briefly
+                self.pixels.fill(Colors.GREEN)
+                self.pixels.show()
+                time.sleep(0.1)
+
+                if not self.animation_active:
+                    break
+
+                # Back to purple
+                self.pixels.fill(Colors.PURPLE)
+                self.pixels.show()
+                time.sleep(delay)
+
+        except Exception as e:
+            print(f"Manual RC pattern error: {e}")
+
     def stop_animation(self):
         """Stop current animation"""
         self.animation_active = False
@@ -302,6 +334,10 @@ class LEDController:
         elif mode == LEDMode.CHARGING:
             self.blue_on()  # Keep blue on for charging indicator
             self.start_animation(self.pulse_color, Colors.CHARGING, 20, 0.08)
+
+        elif mode == LEDMode.MANUAL_RC:
+            self.blue_on()  # Keep blue on for manual mode indicator
+            self.start_animation(self.manual_rc_pattern, 0.5)
     
     def get_status(self):
         """Get current LED system status"""

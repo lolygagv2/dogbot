@@ -1,0 +1,23 @@
+[Unit]
+Description=TreatBot Main System
+After=network.target bluetooth.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=morgan
+Group=morgan
+WorkingDirectory=/home/morgan/dogbot
+Environment=PYTHONPATH=/home/morgan/dogbot
+ExecStartPre=/bin/sleep 10
+ExecStart=/home/morgan/dogbot/env_new/bin/python /home/morgan/dogbot/main_treatbot.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# GPIO and hardware access permissions
+SupplementaryGroups=gpio spi i2c dialout audio video
+
+[Install]
+WantedBy=multi-user.target

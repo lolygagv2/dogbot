@@ -1,0 +1,17 @@
+[Unit]
+Description=Xbox Controller for DogBot
+After=bluetooth.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/morgan/dogbot
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/python3 /home/morgan/dogbot/xbox_hybrid_controller.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

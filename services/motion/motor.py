@@ -111,6 +111,9 @@ class MotorService:
             # Set initial mode
             self.movement_mode = MovementMode.MANUAL
 
+            # Subscribe to motion events from Bluetooth controller
+            self.bus.subscribe('motion', self._handle_motion_event)
+
             # Subscribe to emergency events
             self.bus.subscribe('emergency.*', self._handle_emergency)
 
@@ -354,6 +357,67 @@ class MotorService:
             'auto_stop_active': self.auto_stop_timer is not None,
             'motor_controller_status': self.motor_controller.get_status() if hasattr(self.motor_controller, 'get_status') else None
         }
+
+    def _handle_motion_event(self, event):
+        """Handle motion events from Bluetooth controller"""
+        try:
+            if event.subtype == 'MOVE' and self.movement_mode == MovementMode.MANUAL:
+                data = event.data
+                left_speed = data.get('left_speed', 0)
+                right_speed = data.get('right_speed', 0)
+
+                # Control motors directly with differential drive
+                if self.controller_type == "gpioset":
+                    # For gpioset controller, use differential drive
+                    if left_speed == 0 and right_speed == 0:
+                        self.motor_controller.stop()
+                    else:
+                        # Convert to direction and speed
+                        if left_speed > 0 and right_speed > 0:
+                            # Forward
+                            self.motor_controller.move_forward(max(abs(left_speed), abs(right_speed)))
+                        elif left_speed < 0 and right_speed < 0:
+                            # Backward
+                            self.motor_controller.move_backward(max(abs(left_speed), abs(right_speed)))
+                        elif left_speed > right_speed:
+                            # Turn right
+                            self.motor_controller.turn_right(abs(left_speed - right_speed))
+                        else:
+                            # Turn left
+                            self.motor_controller.turn_left(abs(right_speed - left_speed))
+                else:
+                    # For other controllers, implement differential drive
+                    self._differential_drive(left_speed, right_speed)
+
+                print(f"🎮 Motor command: L={left_speed}, R={right_speed}")
+
+        except Exception as e:
+            print(f"❌ Motion event handling error: {e}")
+
+    def _handle_emergency(self, event):
+        """Handle emergency stop events"""
+        self.emergency_stop()
+        print("🛑 Emergency stop activated from event")
+
+    def _differential_drive(self, left_speed: int, right_speed: int):
+        """Implement differential drive for tank steering"""
+        # This would need implementation based on specific motor controller
+        # For now, convert to simple forward/turn commands
+        avg_speed = (left_speed + right_speed) / 2
+        turn = (left_speed - right_speed) / 2
+
+        if abs(avg_speed) > 5:
+            if avg_speed > 0:
+                self.motor_controller.move_forward(abs(avg_speed))
+            else:
+                self.motor_controller.move_backward(abs(avg_speed))
+        elif abs(turn) > 5:
+            if turn > 0:
+                self.motor_controller.turn_left(abs(turn))
+            else:
+                self.motor_controller.turn_right(abs(turn))
+        else:
+            self.motor_controller.stop()
 
     def cleanup(self):
         """Clean up motor service"""

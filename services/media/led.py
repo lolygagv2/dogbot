@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any, Optional, List, Tuple
 
 from core.bus import get_bus, publish_system_event
-from core.state import get_state
+from core.state import get_state, SystemMode
 from core.hardware.led_controller import LEDController, LEDMode
 
 
@@ -42,7 +42,8 @@ class LedService:
             'pulse_green': self._pattern_pulse_green,
             'pulse_blue': self._pattern_pulse_blue,
             'spinning_dot': self._pattern_spinning_dot,
-            'celebration': self._pattern_celebration
+            'celebration': self._pattern_celebration,
+            'manual_rc': self._pattern_manual_rc
         }
 
         # Pattern state
@@ -50,6 +51,9 @@ class LedService:
         self.pattern_thread = None
         self.pattern_running = False
         self._stop_pattern = threading.Event()
+
+        # Subscribe to system mode changes
+        self.bus.subscribe('system', self._on_system_event)
 
         # Colors (from existing LED controller)
         self.colors = {
@@ -309,6 +313,39 @@ class LedService:
             if self.led.pixels:
                 self.led.set_solid_color('off')
 
+    def _pattern_manual_rc(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Manual RC mode - purple base with flashing green"""
+        if not self.led.pixels:
+            return
+
+        self.led.blue_on()  # Keep blue LED on for manual mode indicator
+
+        start_time = time.time()
+        while not self._stop_pattern.is_set():
+            if duration and time.time() - start_time > duration:
+                break
+
+            # Purple base for 1 second
+            self.led.pixels.fill(self.colors['purple'])
+            self.led.pixels.show()
+            time.sleep(0.5)
+
+            if self._stop_pattern.is_set():
+                break
+
+            # Flash green briefly
+            self.led.pixels.fill(self.colors['green'])
+            self.led.pixels.show()
+            time.sleep(0.1)
+
+            if self._stop_pattern.is_set():
+                break
+
+            # Back to purple
+            self.led.pixels.fill(self.colors['purple'])
+            self.led.pixels.show()
+            time.sleep(0.5)
+
     def _pulse_effect(self, color_name: str, duration: float) -> None:
         """Pulsing effect for specified duration"""
         if not self.led.pixels:
@@ -361,7 +398,8 @@ class LedService:
             LEDMode.DOG_DETECTED: 'dog_detected',
             LEDMode.TREAT_LAUNCHING: 'treat_launching',
             LEDMode.ERROR: 'error',
-            LEDMode.CHARGING: 'charging'
+            LEDMode.CHARGING: 'charging',
+            LEDMode.MANUAL_RC: 'manual_rc'
         }
 
         pattern = mode_patterns.get(mode, 'idle')
@@ -385,6 +423,30 @@ class LedService:
             'neopixel_count': self.led.neopixel_count if self.led else 0,
             'blue_led_on': self.led.blue_is_on if self.led else False
         }
+
+    def _on_system_event(self, event) -> None:
+        """Handle system events to update LED patterns"""
+        if event.subtype == 'mode_transition':
+            # Automatically update LED pattern when system mode changes
+            new_mode = event.data.get('to_mode')
+            if new_mode:
+                self._update_led_for_system_mode(new_mode)
+
+    def _update_led_for_system_mode(self, system_mode: str) -> None:
+        """Update LED pattern based on system mode"""
+        mode_to_led_pattern = {
+            'IDLE': 'idle',
+            'DETECTION': 'searching',
+            'VIGILANT': 'searching',
+            'MANUAL': 'manual_rc',
+            'PHOTOGRAPHY': 'dog_detected',
+            'EMERGENCY': 'error',
+            'SHUTDOWN': 'off'
+        }
+
+        pattern = mode_to_led_pattern.get(system_mode, 'idle')
+        self.logger.info(f"System mode changed to {system_mode}, setting LED pattern: {pattern}")
+        self.set_pattern(pattern)
 
     def cleanup(self) -> None:
         """Clean shutdown"""
