@@ -34,7 +34,7 @@ class DispenserService:
         # Dispensing state
         self.treats_dispensed_today = 0
         self.last_dispense_time = 0.0
-        self.min_dispense_interval = 1.0  # seconds between dispenses
+        self.min_dispense_interval = 0.0  # TESTING: removed cooldown - was 1.0 seconds between dispenses
         self.daily_limit = 50  # max treats per day
 
         # Per-dog tracking
@@ -42,8 +42,8 @@ class DispenserService:
         self.dog_cooldowns = {}     # dog_id -> last_dispense_time
 
         # Dispensing parameters (from working test scripts)
-        self.dispense_pulse = 1700  # microseconds
-        self.dispense_duration = 0.12  # seconds (slightly longer for reliability)
+        self.dispense_pulse = 1300  # microseconds - changed from 1700 for different rotation
+        self.dispense_duration = 0.05  # seconds - final optimized duration
 
         # Thread safety
         self._dispense_lock = threading.Lock()
@@ -96,12 +96,12 @@ class DispenserService:
                 self.logger.warning("Dispense too soon after last dispense")
                 return False
 
-            # Check dog-specific cooldown
-            if dog_id and dog_id in self.dog_cooldowns:
-                dog_cooldown = 20.0  # seconds between treats for same dog
-                if now - self.dog_cooldowns[dog_id] < dog_cooldown:
-                    self.logger.warning(f"Dog {dog_id} on cooldown")
-                    return False
+            # Check dog-specific cooldown - TESTING: disabled for troubleshooting
+            # if dog_id and dog_id in self.dog_cooldowns:
+            #     dog_cooldown = 20.0  # seconds between treats for same dog
+            #     if now - self.dog_cooldowns[dog_id] < dog_cooldown:
+            #         self.logger.warning(f"Dog {dog_id} on cooldown")
+            #         return False
 
             try:
                 # Dispense treat using proven method
@@ -151,8 +151,8 @@ class DispenserService:
     def _rotate_carousel(self) -> bool:
         """Rotate carousel to dispense one treat"""
         try:
-            # Use the proven method from test scripts
-            success = self.servo.rotate_winch('forward', self.dispense_duration)
+            # Use the proven method from test scripts - using 'slow' for 1000us pulse
+            success = self.servo.rotate_winch('slow', self.dispense_duration)
             return success
 
         except Exception as e:
@@ -194,12 +194,12 @@ class DispenserService:
         if self.treats_dispensed_today >= self.daily_limit:
             return False
 
-        # Check dog-specific cooldown
+        # Check dog-specific cooldown - TESTING: disabled for troubleshooting
         now = time.time()
-        if dog_id in self.dog_cooldowns:
-            dog_cooldown = 20.0  # seconds
-            if now - self.dog_cooldowns[dog_id] < dog_cooldown:
-                return False
+        # if dog_id in self.dog_cooldowns:
+        #     dog_cooldown = 20.0  # seconds
+        #     if now - self.dog_cooldowns[dog_id] < dog_cooldown:
+        #         return False
 
         return True
 

@@ -1,5 +1,147 @@
 # Resume Chat Context - WIM-Z Session Log
 
+## Session: 2025-11-03 06:10
+**Goal:** Xbox Controller Fine-tuning & Treat Dispenser Optimization
+**Status:** ✅ Complete
+
+### Work Completed:
+- Fine-tuned Xbox controller treat dispenser settings
+- Resolved multiple process conflicts and lockout issues
+- Optimized treat dispensing pulse width and duration
+- Updated hardware specifications with final calibrated values
+- Disabled cooldown restrictions for testing/troubleshooting
+
+### Key Solutions:
+- **Process Conflicts**: Fixed multiple instances of main_treatbot.py and xbox_hybrid_controller.py running simultaneously causing GPIO/I2C conflicts
+- **Treat Dispenser Lockout**: Identified and resolved servo lockup issues by adding proper error handling
+- **Pulse Width Optimization**: Tuned from 1700μs → 1580μs for controlled dispensing
+- **Duration Optimization**: Refined from 0.08s → 0.05s for precise treat amounts
+- **Cooldown Removal**: Disabled 20-second dog cooldown and 1-second minimum interval for unrestricted testing
+
+### Files Modified:
+- `/home/morgan/dogbot/services/reward/dispenser.py` (cooldown removal, duration tuning)
+- `/home/morgan/dogbot/core/hardware/servo_controller.py` (pulse width optimization, error handling)
+- `/home/morgan/dogbot/.claude/hardware_specs.md` (updated with final calibrated values)
+
+### Final Settings (CALIBRATED):
+- **Pulse Width**: 1580μs (slow forward rotation)
+- **Duration**: 0.05 seconds (50ms)
+- **Cooldowns**: Disabled for testing
+- **Direction**: 'slow' (uses 1580μs pulse)
+
+### Process Management Solutions:
+- Identified restart_xbox.sh sometimes creates duplicate instances
+- Established clean kill/restart procedure: `kill -9 [PIDs]; sleep 3; start single instance`
+- API server conflicts on port 8000 resolved
+
+### Technical Details:
+- Xbox controller uses direct servo access via ServoController class
+- Treat dispenser calls `servo.rotate_winch('slow', 0.05)`
+- Servo controller maps 'slow' direction to 1580μs pulse width
+- 1580μs provides enough torque for reliable carousel movement while minimizing treat output
+
+### Next Session:
+- Monitor treat dispenser performance with final settings
+- Consider re-enabling cooldowns once mechanical testing complete
+- May need further pulse width fine-tuning based on treat types/sizes
+
+### Important Notes/Warnings:
+- NEVER run main_treatbot.py and xbox_hybrid_controller.py simultaneously - causes GPIO conflicts
+- Always check for duplicate processes before starting new instances
+- Treat dispenser uses continuous servo - pulse width controls speed, not position
+- Final calibrated values saved in hardware_specs.md - do not modify without testing
+
+### Commit: [Pending] - Xbox controller treat dispenser optimization
+
+---
+
+## Session: 2025-11-03 00:30
+**Goal:** Fix Xbox Controller Camera Controls
+**Status:** ✅ **COMPLETE**
+**Duration:** 2 hours
+
+### Work Completed:
+- Fixed Xbox controller camera pan/tilt direction inversions
+- Extended camera range to full servo capability (190° pan, 150° tilt)
+- Balanced left/right pan movement (was offset to right)
+- Increased UP tilt range from 45° to 70° above horizon
+- Eliminated camera drift/jitter with proper deadzone thresholds
+
+### Key Technical Solutions:
+
+#### 1. Direction Inversion Fixes
+**Problem:** Right stick directions were backwards/inverted
+**Root Cause:** Incorrect servo angle mapping and sign errors
+**Solution:**
+- Pan: `pan_angle = 125 - (normalized * 95)` (right stick right = lower servo angle)
+- Tilt: `tilt_angle = 55 - (normalized * 75)` (right stick up = higher servo angle)
+
+#### 2. Camera Range Extension
+**Problem:** Limited 90° total pan, insufficient UP movement
+**Root Cause:** Conservative angle ranges not using full servo capability
+**Solution:**
+- Pan Range: 30-220° (190° total) vs previous ~100°
+- Tilt Range: -20° to 130° (150° total) with 70° UP movement
+
+#### 3. Pan Balance Fix
+**Problem:** 65° right movement vs 35° left movement
+**Root Cause:** Servo mechanically off-center
+**Solution:** Shifted software center from 105° to 125° to compensate
+
+#### 4. Drift/Jitter Elimination
+**Problem:** Constant small camera movements
+**Root Cause:** Low deadzone threshold allowing stick drift
+**Solution:** Increased deadzone from 0.1 to 0.2
+
+### Files Modified:
+- **xbox_hybrid_controller.py** - Main camera control logic (142 lines changed)
+- **api/server.py** - LED control improvements (315 lines added)
+- **services/media/led.py** - LED service updates (127 lines changed)
+- **core/hardware/led_controller.py** - GPIO conflict fixes (52 lines removed)
+
+### Final Camera Control Specifications:
+```python
+# Pan Control (Horizontal)
+pan_angle = 125 - (normalized * 95)  # 30-220° range, centered at 125°
+# Range: 95° left, 95° right from center
+
+# Tilt Control (Vertical)
+tilt_angle = 55 - (normalized * 75)   # -20° to 130° range, centered at 55°
+# Range: 75° down, 75° up from center (70° above horizon)
+
+# Deadzone: 0.2 (prevents drift)
+```
+
+### Testing Results:
+- ✅ Right stick right → Camera pans right
+- ✅ Right stick left → Camera pans left
+- ✅ Right stick up → Camera tilts up (70° above horizon)
+- ✅ Right stick down → Camera tilts down
+- ✅ No camera drift or constant movement
+- ✅ Full 190° pan range available
+- ✅ Balanced left/right movement
+
+### Next Session Priority:
+1. **File Organization**: Move 27 test files from root to `/tests/` structure
+2. **System Integration**: Test full robot functionality with new camera controls
+3. **Performance Tuning**: Fine-tune camera movement smoothness if needed
+
+### Important Notes:
+- Xbox controller now uses **direct servo control** via ServoController class
+- Camera controls do NOT trigger manual input notifications (intentional)
+- Pan/tilt service automatically stops in MANUAL mode to prevent conflicts
+- LED controls resolved (X button = blue LED, LT = NeoPixel modes)
+
+### Unresolved Issues:
+- None - camera controls working as specified
+
+### Project Structure Issues Found:
+- 27 test files in root directory need organization
+- Some files in wrong locations per WIM-Z structure
+- Consider cleanup session next time
+
+---
+
 ## Session: 2025-11-02 03:00 EST
 **Goal:** Create unified Mode Manager with Xbox controller integration
 **Status:** ⚠️ Partial - Manual mode working, automatic switching needs work

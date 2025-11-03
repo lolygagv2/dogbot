@@ -13,16 +13,16 @@
 - **Treat Positions:** 6 compartments around carousel
 - **Rotation per treat:** 60° (360° ÷ 6 positions)
 - **Dispensing method:** Brief rotation to advance to next treat slot
-- **Duration:** 0.08 seconds per treat (80ms) - CALIBRATED
-- **Pulse Width:** 1700μs (forward rotation) - CALIBRATED
-- **Control:** `winch.duty_cycle = pulse_to_duty(1700)` for exactly 1 treat
+- **Duration:** 0.05 seconds per treat (50ms) - CALIBRATED
+- **Pulse Width:** 1580μs (slow forward rotation) - CALIBRATED
+- **Control:** `winch.duty_cycle = pulse_to_duty(1580)` for controlled dispensing
 
 **Safe Control:**
 ```python
 # ✅ CORRECT - Treat Dispensing (CALIBRATED VALUES)
 def dispense_one_treat():
-    winch.duty_cycle = pulse_to_duty(1700)  # 1700μs pulse
-    time.sleep(0.08)                        # 80ms duration
+    winch.duty_cycle = pulse_to_duty(1580)  # 1580μs pulse
+    time.sleep(0.05)                        # 50ms duration
     controller.stop_carousel(gradual=True)  # Safe stop with ramp-down
 
 # ❌ NEVER DO THIS

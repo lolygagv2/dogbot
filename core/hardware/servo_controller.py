@@ -198,22 +198,24 @@ class ServoController:
                 pulse = 1700  # Forward rotation
             elif direction == 'backward':
                 pulse = 1300  # Backward rotation
+            elif direction == 'slow':
+                pulse = 1580  # Slightly more forward - slow rotation
             else:
                 print(f"Invalid winch direction: {direction}")
                 return False
-            
+
             # Start rotation
             self.winch_channel.duty_cycle = self._pulse_to_duty(pulse)
             print(f"Winch rotating {direction} for {duration}s")
-            
+
             # Run for specified duration
             time.sleep(duration)
-            
+
             # Stop rotation
             self.winch_channel.duty_cycle = 0
             print("Winch stopped")
             return True
-            
+
         except Exception as e:
             print(f"Winch rotation error: {e}")
             return False
