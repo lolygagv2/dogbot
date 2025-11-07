@@ -1,0 +1,81 @@
+# Xbox Controller Settings for WIM-Z
+# Calibrated settings for optimal performance
+
+motor_control:
+  # Motor calibration - adjust these values to get straight driving
+  right_motor_boost: 1.10  # Multiplier for right motor (1.10 = 10% boost)
+  left_motor_boost: 1.0    # Multiplier for left motor (usually 1.0)
+
+  # Speed settings
+  max_speed: 100           # Maximum motor speed (0-100)
+  turn_speed_factor: 0.6   # Turning speed reduction factor
+
+  # Deadzone settings
+  stick_deadzone: 0.15     # Joystick deadzone (0-1)
+  trigger_deadzone: 0.1    # Trigger deadzone (0-1)
+
+  # Safety settings
+  motor_update_rate: 0.05  # Seconds between motor updates (20Hz)
+  motor_timeout: 0.5       # Seconds before auto-stop with no input
+
+  # Power limiting (prevent power supply overload)
+  max_motor_power: 80      # Maximum power to motors (0-100)
+
+treat_dispenser:
+  cooldown: 2.0            # Seconds between treat dispensing
+
+photo_capture:
+  cooldown: 2.0            # Seconds between photo captures
+
+camera_control:
+  # Pan settings (horizontal)
+  pan_center: 125          # Center position for pan servo
+  pan_range: 95            # Degrees of movement each direction
+  pan_min: 30              # Minimum pan angle
+  pan_max: 220             # Maximum pan angle
+
+  # Tilt settings (vertical)
+  tilt_center: 80          # Center position for tilt servo
+  tilt_range: 50           # Degrees of movement each direction
+  tilt_min: 30             # Minimum tilt angle
+  tilt_max: 150            # Maximum tilt angle
+
+  # Responsiveness
+  stick_threshold: 0.2     # Minimum stick movement to trigger camera
+
+# LED modes available
+led_modes:
+  - off
+  - idle
+  - searching
+  - dog_detected
+  - treat_launching
+  - error
+  - charging
+  - manual_rc
+
+# Sound tracks on SD card
+sound_tracks:
+  - number: 1
+    name: "Scooby Intro"
+  - number: 3
+    name: "Elsa"
+  - number: 4
+    name: "Bezik"
+  - number: 8
+    name: "Good Dog"
+  - number: 13
+    name: "Treat"
+  - number: 15
+    name: "Sit"
+  - number: 16
+    name: "Spin"
+  - number: 17
+    name: "Stay"
+
+# Notes for calibration:
+# - If robot drifts left, increase right_motor_boost (or decrease left_motor_boost)
+# - If robot drifts right, decrease right_motor_boost (or increase left_motor_boost)
+# - Adjust max_motor_power if motors cut out (power supply overload)
+# - Increase motor_timeout for longer coast time after releasing controls
+# - Decrease motor_update_rate for smoother control (but higher CPU usage)

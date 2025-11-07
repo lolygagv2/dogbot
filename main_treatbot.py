@@ -188,6 +188,8 @@ class TreatBotMain:
         try:
             self.pantilt = get_pantilt_service()
             services_status['pantilt'] = self.pantilt.initialize()
+            # NOTE: When Xbox controller is connected, it will take over camera control
+            # The pantilt service will be paused automatically during manual control
         except Exception as e:
             self.logger.error(f"Pan/tilt service failed: {e}")
             services_status['pantilt'] = False
@@ -312,8 +314,9 @@ class TreatBotMain:
             self.mode_fsm.start_fsm()
 
             # Start pan/tilt tracking
-            if self.pantilt.servo_initialized:
-                self.pantilt.start_tracking()
+            if self.pantilt and hasattr(self.pantilt, 'servo_initialized'):
+                if self.pantilt.servo_initialized:
+                    self.pantilt.start_tracking()
 
             # Start detection (will be controlled by mode FSM)
             if self.detector.ai_initialized:
@@ -437,8 +440,12 @@ class TreatBotMain:
         )
         self.main_thread.start()
 
-        # Set initial mode
-        self.state.set_mode(SystemMode.DETECTION, "System ready - starting detection")
+        # Set initial mode - but don't override manual mode if Xbox controller is active
+        current_mode = self.state.get_mode()
+        if current_mode != SystemMode.MANUAL:
+            self.state.set_mode(SystemMode.DETECTION, "System ready - starting detection")
+        else:
+            self.logger.info("Xbox controller active - staying in MANUAL mode")
 
         self.logger.info("🚀 TreatBot main system started!")
         return True
@@ -549,13 +556,29 @@ class TreatBotMain:
             if self.bark_detector:
                 self.bark_detector.stop()
             if self.pantilt:
-                self.pantilt.stop_tracking()
+                if self.pantilt:
+                    self.pantilt.stop_tracking()
             if self.mode_fsm:
                 self.mode_fsm.stop_fsm()
             if self.safety:
                 self.safety.stop_monitoring()
             if self.xbox_controller:
                 self.xbox_controller.stop()
+
+            # Stop audio explicitly
+            try:
+                if self.sfx and hasattr(self.sfx, 'audio') and self.sfx.audio:
+                    self.logger.info("Stopping DFPlayer audio...")
+                    # Send stop commands to DFPlayer
+                    if hasattr(self.sfx.audio, '_send_command'):
+                        self.sfx.audio._send_command('AT+STOP')
+                        self.sfx.audio._send_command('AT+VOL=0')
+                        self.sfx.audio._send_command('AT+AMP=OFF')
+                    # Close serial connection
+                    if hasattr(self.sfx.audio, 'serial_connection') and self.sfx.audio.serial_connection:
+                        self.sfx.audio.serial_connection.close()
+            except Exception as e:
+                self.logger.error(f"Error stopping audio: {e}")
 
             # Cleanup services
             services = [self.detector, self.bark_detector, self.pantilt, self.motor, self.dispenser, self.sfx, self.led, self.xbox_controller]
@@ -586,7 +609,8 @@ class TreatBotMain:
             if self.detector:
                 self.detector.stop_detection()
             if self.pantilt:
-                self.pantilt.center_camera()
+                if self.pantilt:
+                    self.pantilt.center_camera()
             if self.led:
                 self.led.set_pattern('error', 10.0)
 

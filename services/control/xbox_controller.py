@@ -45,7 +45,7 @@ class XboxControllerService:
         # Controller state tracking
         self.is_connected = False
         self.last_manual_input_time = 0.0
-        self.manual_timeout = 120.0  # 2 minutes
+        self.manual_timeout = 600.0  # 10 minutes (much longer)
 
         # Device paths
         self.device_path = '/dev/input/js0'

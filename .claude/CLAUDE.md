@@ -1,5 +1,12 @@
 # WIM-Z (Watchful Intelligent Mobile Zen) Project - Development Rules
 
+## CRITICAL: DFPlayer Pro Audio System
+- **MUST use full file paths**, NOT track numbers (e.g., `/talks/0008.mp3` not track 8)
+- Audio files are on SD card in `/talks/` and `/02/` folders
+- To add new audio: Update track_map in `/services/media/sfx.py` with full path
+- Commands: `AT+PLAYFILE=/path/file.mp3` NOT `AT+PLAYNUM=`
+- See `/config/settings.py` AudioFiles class for all available audio files
+
 ## NEVER DELETE OR MODIFY
 - notes.txt (user's personal notes - IGNORE)
 - /docs/ folder (reference documentation only)

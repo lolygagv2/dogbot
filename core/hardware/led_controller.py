@@ -47,8 +47,14 @@ class LEDController:
         self.blue_chip = None
         self.pixels = None
         
-        self._initialize_blue_led()
-        self._initialize_neopixels()
+        # Blue LED disabled - now handled by API server only
+        self.blue_chip = None
+        self.blue_is_on = False
+        print("Blue LED control moved to API server")
+
+        # NeoPixels disabled - now handled by API server only
+        self.pixels = None
+        print("NeoPixel control moved to API server")
     
     def _initialize_blue_led(self):
         """Initialize blue LED using proven lgpio method"""
@@ -96,42 +102,14 @@ class LEDController:
         return (self.blue_chip is not None) or (self.pixels is not None)
 
     def blue_on(self):
-        """Turn blue LED on using proven method"""
-        if not self.blue_chip:
-            return False
-            
-        try:
-            lgpio.gpio_write(self.blue_chip, self.pins.BLUE_LED, 1)
-            self.blue_is_on = True
-            print("Blue LED: ON")
-            return True
-            
-        except Exception as e:
-            print(f"Blue LED on error: {e}")
-            return False
-    
+        """Blue LED now handled by API server"""
+        print("Blue LED: API server handles blue LED control")
+        return True
+
     def blue_off(self):
-        """Turn blue LED off using proven reliable method"""
-        if not self.blue_chip:
-            return False
-            
-        try:
-            # Use the proven method from working tests
-            lgpio.gpio_write(self.blue_chip, self.pins.BLUE_LED, 0)
-            time.sleep(0.05)  # Small delay for reliability
-            
-            # Double-check with reclaim if needed (from proven script)
-            lgpio.gpio_free(self.blue_chip, self.pins.BLUE_LED)
-            lgpio.gpio_claim_output(self.blue_chip, self.pins.BLUE_LED, lgpio.SET_PULL_DOWN)
-            lgpio.gpio_write(self.blue_chip, self.pins.BLUE_LED, 0)
-            
-            self.blue_is_on = False
-            print("Blue LED: OFF")
-            return True
-            
-        except Exception as e:
-            print(f"Blue LED off error: {e}")
-            return False
+        """Blue LED now handled by API server"""
+        print("Blue LED: API server handles blue LED control")
+        return True
     
     def set_neopixel_brightness(self, level):
         """Set NeoPixel brightness (0.1 to 1.0)"""

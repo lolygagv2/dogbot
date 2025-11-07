@@ -123,8 +123,13 @@ GPIO HIGH → Pi Audio   (NO - Normally Open)
 **DFPlayer Pro MP3 Module**
 - **Storage:** MicroSD card (up to 32GB)
 - **Output:** Line-level audio to relay
-- **Control:** UART (RX/TX)
-- **Files:** Pre-recorded training sounds (good_dog.mp3, etc.)
+- **Control:** UART (RX/TX @ 115200 baud)
+- **Serial Port:** `/dev/ttyAMA0`
+- **Files:** Pre-recorded training sounds on SD card
+- **⚠️ CRITICAL:** Must use FULL FILE PATHS (e.g., `/talks/0008.mp3`), NOT track numbers
+- **Commands:** `AT+PLAYFILE=/path/to/file.mp3` (NOT `AT+PLAYNUM=`)
+- **File Locations:** `/talks/` folder for commands, `/02/` folder for music/effects
+- **See:** `/config/settings.py` AudioFiles class for complete file list
 
 **Amplifier**
 - **Model:** 300W Class D amplifier

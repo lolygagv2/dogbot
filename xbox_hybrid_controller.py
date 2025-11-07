@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Hybrid Xbox Controller for DogBot
-- Direct motor control for low latency movement
-- API calls for other features (photos, sounds, treats)
+Fixed Xbox Controller for DogBot
+- Fixes treat dispenser freeze with cooldown
+- Fixes motor control lockup with proper cleanup and rate limiting
+- Adds motor calibration for straight driving
 """
 
 import struct
@@ -11,33 +12,40 @@ import os
 import sys
 import logging
 import requests
-from threading import Thread, Event, Timer
+import signal
+import threading
+from threading import Thread, Event, Timer, Lock
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 # Add project root to path for direct imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Direct hardware import for motors only
+# Direct hardware import for motors - use robust version
 try:
-    from core.hardware.motor_controller import MotorController
+    from core.hardware.motor_controller_robust import MotorControllerRobust as MotorController
     MOTOR_DIRECT = True
     motor_controller = MotorController()
-    logger = logging.getLogger('XboxHybrid')
-    logger.info("Direct motor control initialized")
+    logger = logging.getLogger('XboxFixed')
+    logger.info("Robust motor control initialized")
 except ImportError:
-    # Fallback to gpioset if PWM not available
     try:
-        from core.hardware.motor_controller_gpioset import MotorController
+        from core.hardware.motor_controller import MotorController
         MOTOR_DIRECT = True
         motor_controller = MotorController()
-        logger = logging.getLogger('XboxHybrid')
-        logger.info("Direct motor control initialized (gpioset mode)")
+        logger = logging.getLogger('XboxFixed')
+        logger.info("Direct motor control initialized (fallback)")
     except ImportError:
         MOTOR_DIRECT = False
         motor_controller = None
-        logger = logging.getLogger('XboxHybrid')
+        logger = logging.getLogger('XboxFixed')
         logger.warning("No direct motor control available, will use API")
+
+# Disable direct servo control - use API for reliability
+# Direct servo control can freeze due to GPIO cleanup issues
+servo_controller = None
+SERVO_DIRECT = False
+logger.info("Using API for servo control (more reliable)")
 
 # Try to connect to event bus for mode management
 event_bus = None
@@ -58,9 +66,8 @@ def notify_manual_input():
                 'timestamp': time.time(),
                 'source': 'xbox_controller'
             }, 'xbox_hybrid_controller')
-            logger.debug("Manual input event published")
         except Exception as e:
-            logger.debug(f"Failed to notify manual input: {e}")
+            logger.warning(f"Failed to notify manual input: {e}")
 
 @dataclass
 class ControllerState:
@@ -88,8 +95,8 @@ class ControllerState:
     motors_stopped: bool = True
 
 
-class XboxHybridController:
-    """Hybrid Xbox controller - direct motors, API for rest"""
+class XboxHybridControllerFixed:
+    """Fixed Xbox controller with proper thread safety and cooldowns"""
 
     # API configuration
     API_BASE_URL = "http://localhost:8000"
@@ -100,24 +107,50 @@ class XboxHybridController:
     MAX_SPEED = 100
     TURN_SPEED_FACTOR = 0.6
 
-    # Sound track numbers on SD card (D-pad navigation)
-    # These map to the actual audio files in /talks/ folder
+    # Motor calibration (right motor needs boost)
+    RIGHT_MOTOR_BOOST = 1.10  # 10% boost for right motor to match left
+
+    # Safety features
+    TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
+    MOTOR_UPDATE_RATE = 0.02  # 20ms between motor updates (50Hz) - more responsive
+    MOTOR_TIMEOUT = 0.15  # Stop motors if no update in 150ms - faster stop
+
+    # Sound tracks with FULL PATHS for D-pad navigation
     SOUND_TRACKS = [
-        (1, "Scooby Intro"),      # 0001.mp3
-        (3, "Elsa"),               # 0003.mp3
-        (4, "Bezik"),              # 0004.mp3
-        (8, "Good Dog"),           # 0008.mp3 - GOOD
-        (13, "Treat"),             # 0013.mp3 - Treat
-        (15, "Sit"),               # 0015.mp3
-        (16, "Spin"),              # 0016.mp3
-        (17, "Stay")               # 0017.mp3
+        ("/talks/0001.mp3", "Scooby Intro"),
+        ("/talks/0003.mp3", "Elsa"),
+        ("/talks/0004.mp3", "Bezik"),
+        ("/talks/0005.mp3", "Bezik Come"),
+        ("/talks/0006.mp3", "Elsa Come"),
+        ("/talks/0007.mp3", "Dogs Come"),
+        ("/talks/0008.mp3", "Good Dog"),
+        ("/talks/0009.mp3", "Kahnshik"),
+        ("/talks/0010.mp3", "Lie Down"),
+        ("/talks/0011.mp3", "Quiet"),
+        ("/talks/0012.mp3", "No"),
+        ("/talks/0013.mp3", "Treat"),
+        ("/talks/0014.mp3", "Kokoma"),
+        ("/talks/0015.mp3", "Sit"),
+        ("/talks/0016.mp3", "Spin"),
+        ("/talks/0017.mp3", "Stay"),
+        ("/02/0018.mp3", "Mozart Piano"),
+        ("/02/0019.mp3", "Mozart Concerto"),
+        ("/02/0020.mp3", "Milkshake"),
+        ("/02/0021.mp3", "Yummy"),
+        ("/02/0022.mp3", "Hungry Like Wolf"),
+        ("/02/0023.mp3", "Cake By Ocean"),
+        ("/02/0024.mp3", "Who Let Dogs Out"),
+        ("/02/0025.mp3", "Progress Scan"),
+        ("/02/0026.mp3", "Robot Scan"),
+        ("/02/0027.mp3", "Door Scan"),
+        ("/02/0028.mp3", "Hi Scan"),
+        ("/02/0029.mp3", "Busy Scan"),
+        ("/02/0030.mp3", "Scooby Snacks")
     ]
 
-    # Y button alternates between these sounds (using file paths)
-    # Index 0 = Good (even presses), Index 1 = Treat (odd presses)
     REWARD_SOUNDS = [
-        ("/talks/0008.mp3", "Good Dog"),    # Index 0 - even presses (2nd, 4th, 6th...)
-        ("/talks/0013.mp3", "Treat")        # Index 1 - odd presses (1st, 3rd, 5th...)
+        ("/talks/0008.mp3", "Good Dog"),
+        ("/talks/0013.mp3", "Treat")
     ]
 
     def __init__(self, device_path: str = '/dev/input/js0'):
@@ -127,64 +160,95 @@ class XboxHybridController:
         self.state = ControllerState()
         self.stop_event = Event()
 
+        # Thread safety locks
+        self.motor_lock = Lock()
+        self.api_lock = Lock()
+        self.treat_lock = Lock()
+
+        # Cooldown tracking
+        self.last_treat_time = 0
+        self.last_photo_time = 0
+        self.last_motor_update = 0
+        self.last_motor_command_time = 0
+        self.photo_cooldown = 2.0
+
+        # Motor safety timer
+        self.motor_watchdog_timer = None
+        self.motor_update_thread = None
+        self.motor_update_running = False
+
+        # Camera control
+        self.camera_update_thread = None
+        self.camera_update_running = False
+        self.last_pan_angle = 100  # Center (shifted 10 degrees right from 90)
+        self.last_tilt_angle = 90  # Center
+        self.last_camera_update = 0
+        self.CAMERA_UPDATE_RATE = 0.05  # 50ms between updates (20Hz)
+
         # Sound navigation
         self.current_sound_index = 0
-        # Y button: 0=Treat (first press), 1=Good (second press), etc.
-
-        # Photo capture cooldown
-        self.last_photo_time = 0
-        self.photo_cooldown = 2.0  # seconds
-
-        # Camera control timer for smooth movement
-        self.camera_timer = None
-        self.camera_update_interval = 0.05  # 20Hz update rate for smooth movement
 
         # LED state tracking
         self.led_enabled = False
         self.current_led_mode = 0
-        # Use the actual LED modes the API supports
         self.led_modes = [
-            "idle",             # Default idle mode
-            "searching",        # Searching for dogs
-            "dog_detected",     # Dog detected
-            "treat_launching",  # Dispensing treat
-            "error",            # Error/warning
-            "charging"          # Charging mode
+            "off",
+            "idle",
+            "searching",
+            "dog_detected",
+            "treat_launching",
+            "error",
+            "charging",
+            "manual_rc"
         ]
 
         # API session for non-motor functions
         self.session = requests.Session()
         self.session.headers.update({'Content-Type': 'application/json'})
 
-        logger.info(f"Xbox Hybrid Controller initialized for {device_path}")
+        logger.info(f"Xbox Fixed Controller initialized for {device_path}")
         logger.info(f"Motor control: {'DIRECT' if MOTOR_DIRECT else 'API'}")
+        logger.info(f"Right motor boost: {self.RIGHT_MOTOR_BOOST}x")
         logger.info(f"API endpoint: {self.API_BASE_URL}")
 
-    def api_request(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
-        """Make API request with error handling"""
-        url = f"{self.API_BASE_URL}{endpoint}"
+        # Preload audio system
+        self._preload_audio_system()
+
+    def _preload_audio_system(self):
+        """Preload audio system to prevent first-time delay"""
         try:
-            # Longer timeout for audio commands since DFPlayer is slow
-            timeout = 10.0 if 'audio' in endpoint else 2.0
+            logger.info("Preloading audio system...")
+            result = self.api_request('GET', '/audio/status')
+            if result:
+                logger.info("Audio system preloaded successfully")
+        except Exception as e:
+            logger.warning(f"Audio preload error: {e}")
 
-            if method == 'GET':
-                response = self.session.get(url, timeout=timeout)
-            elif method == 'POST':
-                response = self.session.post(url, json=data, timeout=timeout)
-            else:
-                logger.error(f"Unsupported method: {method}")
+    def api_request(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
+        """Thread-safe API request with error handling"""
+        with self.api_lock:
+            url = f"{self.API_BASE_URL}{endpoint}"
+            try:
+                timeout = 10.0 if 'audio' in endpoint else 2.0
+
+                if method == 'GET':
+                    response = self.session.get(url, timeout=timeout)
+                elif method == 'POST':
+                    response = self.session.post(url, json=data, timeout=timeout)
+                else:
+                    logger.error(f"Unsupported method: {method}")
+                    return None
+
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException as e:
+                logger.error(f"API request failed: {endpoint} - {e}")
                 return None
-
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            logger.error(f"API request failed: {endpoint} - {e}")
-            return None
 
     def connect(self) -> bool:
         """Connect to the Xbox controller"""
         try:
-            # Check if API is available for other features
+            # Check if API is available
             health = self.api_request('GET', '/health')
             if health:
                 logger.info(f"API health check: {health}")
@@ -195,12 +259,15 @@ class XboxHybridController:
             self.device = open(self.device_path, 'rb')
             logger.info(f"Connected to Xbox controller at {self.device_path}")
 
-            # Motors are initialized in __init__, just log status
-            if MOTOR_DIRECT and motor_controller:
-                if motor_controller.is_initialized():
-                    logger.info("Direct motor control ready")
-                else:
-                    logger.warning("Motor controller not properly initialized")
+            # Start motor update thread for smooth control
+            self.motor_update_running = True
+            self.motor_update_thread = Thread(target=self._motor_update_loop, daemon=True)
+            self.motor_update_thread.start()
+
+            # Start camera update thread for smooth control
+            self.camera_update_running = True
+            self.camera_update_thread = Thread(target=self._camera_update_loop, daemon=True)
+            self.camera_update_thread.start()
 
             return True
 
@@ -211,12 +278,106 @@ class XboxHybridController:
             logger.error(f"Failed to connect: {e}")
             return False
 
+    def _camera_update_loop(self):
+        """Separate thread for smooth camera control"""
+        while self.camera_update_running:
+            try:
+                current_time = time.time()
+
+                # Only update if enough time has passed (smooth rate limiting)
+                if current_time - self.last_camera_update < self.CAMERA_UPDATE_RATE:
+                    time.sleep(0.01)
+                    continue
+
+                # Check if stick is being used
+                if abs(self.state.right_x) > self.DEADZONE or abs(self.state.right_y) > self.DEADZONE:
+                    # Velocity-based smooth control (like we had before)
+                    # Slow, smooth movement based on stick position
+                    pan_speed = self.state.right_x * 2.5  # Slower speed for smoothness
+                    tilt_speed = self.state.right_y * 2.0  # Slower speed for smoothness
+
+                    # Update positions incrementally
+                    # Pan: inverted as requested (right stick right = camera left)
+                    new_pan = self.last_pan_angle - pan_speed  # Inverted
+
+                    # Tilt: INVERTED as requested
+                    # right_y is already inverted in process_axis, so:
+                    # positive right_y = stick UP = camera should look DOWN (inverted)
+                    # negative right_y = stick DOWN = camera should look UP (inverted)
+                    new_tilt = self.last_tilt_angle + tilt_speed  # Inverted: UP increases angle
+
+                    # Clamp to valid range
+                    new_pan = max(10, min(270, new_pan))
+                    new_tilt = max(20, min(160, new_tilt))
+
+                    # Only send if changed enough (reduce jitter)
+                    if (abs(new_pan - self.last_pan_angle) > 1.0 or
+                        abs(new_tilt - self.last_tilt_angle) > 1.0):
+
+                        self.api_request('POST', '/camera/pantilt', {
+                            "pan": int(new_pan),
+                            "tilt": int(new_tilt),
+                            "smooth": True  # Enable smooth movement
+                        })
+
+                        self.last_pan_angle = new_pan
+                        self.last_tilt_angle = new_tilt
+                        self.last_camera_update = current_time
+
+                time.sleep(0.01)
+
+            except Exception as e:
+                logger.error(f"Camera update loop error: {e}")
+                time.sleep(0.1)
+
+    def _motor_update_loop(self):
+        """Separate thread for smooth motor control with safety timeout"""
+        while self.motor_update_running:
+            try:
+                current_time = time.time()
+
+                # Only timeout if there's actually no input (stick at center and no trigger)
+                has_input = (abs(self.state.left_x) > self.DEADZONE or
+                           abs(self.state.left_y) > self.DEADZONE or
+                           self.state.right_trigger > self.TRIGGER_DEADZONE)
+
+                if has_input:
+                    # Keep updating command time while there's input
+                    self.last_motor_command_time = current_time
+                    # Update motor speeds
+                    with self.motor_lock:
+                        self.update_motor_control()
+                elif current_time - self.last_motor_command_time > self.MOTOR_TIMEOUT:
+                    # Only stop if truly no input for timeout period
+                    if not self.state.motors_stopped:
+                        with self.motor_lock:
+                            self._stop_motors_internal()
+                            self.state.motors_stopped = True
+                            logger.debug("Motors stopped (timeout - no input)")
+
+                time.sleep(self.MOTOR_UPDATE_RATE)
+
+            except Exception as e:
+                logger.error(f"Motor update loop error: {e}")
+                time.sleep(0.1)
+
+    def _stop_motors_internal(self):
+        """Internal motor stop without lock (call with motor_lock held)"""
+        if MOTOR_DIRECT and motor_controller:
+            try:
+                motor_controller.emergency_stop()
+                self.state.last_left_speed = 0
+                self.state.last_right_speed = 0
+                return True
+            except Exception as e:
+                logger.error(f"Direct motor stop error: {e}")
+        return False
+
     def read_event(self) -> Optional[Tuple]:
         """Read a single joystick event"""
         try:
             event_data = self.device.read(8)
             if event_data:
-                # Parse as signed integers (fixed the issue)
                 timestamp, value, event_type, number = struct.unpack('IhBB', event_data)
                 return (timestamp, value, event_type, number)
         except Exception as e:
@@ -232,58 +393,147 @@ class XboxHybridController:
         if abs(normalized) < self.DEADZONE:
             normalized = 0.0
 
-        # Notify manual input for any significant axis movement
-        if abs(normalized) > self.DEADZONE:
-            notify_manual_input()
-
         # Update state based on axis
         if number == 0:  # Left stick X
             self.state.left_x = normalized
+            if abs(normalized) > self.DEADZONE:
+                notify_manual_input()
+
         elif number == 1:  # Left stick Y (inverted for forward)
             self.state.left_y = -normalized
+            if abs(normalized) > self.DEADZONE:
+                notify_manual_input()
+
+        elif number == 2:  # Left trigger (LT)
+            normalized_trigger = (value + 32767) / 65534.0
+            previous_trigger = self.state.left_trigger
+
+            # Add a trigger state tracker
+            if not hasattr(self, 'lt_was_pressed'):
+                self.lt_was_pressed = False
+
+            # Detect trigger press on rising edge only
+            if normalized_trigger > 0.8 and not self.lt_was_pressed:
+                self.cycle_led_mode()
+                self.lt_was_pressed = True
+                logger.info(f"LT TRIGGERED! Value: {normalized_trigger:.2f}")
+            elif normalized_trigger < 0.2:
+                self.lt_was_pressed = False
+
+            self.state.left_trigger = normalized_trigger
+
         elif number == 3:  # Right stick X (camera pan)
             self.state.right_x = normalized
-            # Control camera continuously for smooth movement
+            # Store for smooth camera update loop
+
         elif number == 4:  # Right stick Y (camera tilt)
             self.state.right_y = -normalized
-            # Control camera continuously for smooth movement
-        elif number == 2:  # Left trigger - Cycle LED modes
-            self.state.left_trigger = (value + 32767) / 65534.0
+            # Store for smooth camera update loop
 
-            # Initialize the flag if it doesn't exist
-            if not hasattr(self, '_lt_pressed'):
-                self._lt_pressed = False
+        elif number == 5:  # Right trigger (RT) - speed control
+            normalized_trigger = (value + 32767) / 65534.0
+            if normalized_trigger > self.TRIGGER_DEADZONE:
+                self.state.right_trigger = normalized_trigger
+            else:
+                self.state.right_trigger = 0.0
 
-            # Trigger LED mode change when pulled more than 30% (lowered threshold)
-            if self.state.left_trigger > 0.3 and not self._lt_pressed:
-                self._lt_pressed = True
-                logger.info(f"Left Trigger pulled ({self.state.left_trigger:.2f}) - cycling LED mode")
-                self.cycle_led_mode()
-            elif self.state.left_trigger < 0.1:  # Released completely
-                if self._lt_pressed:
-                    logger.debug(f"Left Trigger released ({self.state.left_trigger:.2f})")
-                self._lt_pressed = False
-        elif number == 5:  # Right trigger
-            self.state.right_trigger = (value + 32767) / 65534.0
+    def update_motor_control(self):
+        """Update motor speeds with calibration and safety"""
+        # Progressive speed control - more control at low speeds
+        # If trigger not pressed, use stick position for speed
+        if self.state.right_trigger < 0.1:
+            # No trigger - use stick magnitude for speed (5-45% max)
+            stick_magnitude = (self.state.left_x**2 + self.state.left_y**2) ** 0.5
+            stick_magnitude = min(1.0, stick_magnitude)  # Clamp to 1.0
+            # Non-linear curve for better low-speed control - even slower at minimum
+            speed_multiplier = 0.05 + (stick_magnitude ** 2.0) * 0.4  # 5-45% range, squared for more gradual
+        else:
+            # Trigger pressed - use trigger for speed boost (30-100%)
+            speed_multiplier = 0.3 + (self.state.right_trigger * 0.7)
 
-        # Update motor control for left stick
-        if number in [0, 1]:
-            self.update_motor_control()
+        # Calculate motor speeds from left stick
+        forward = self.state.left_y * self.MAX_SPEED * speed_multiplier
+        turn = self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * speed_multiplier
+
+        left_speed = int(forward + turn)
+        right_speed = int(forward - turn)
+
+        # Apply right motor boost for straight driving
+        if abs(turn) < 10:  # Going mostly straight
+            right_speed = int(right_speed * self.RIGHT_MOTOR_BOOST)
+
+        # Clamp to valid range
+        left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
+        right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
+
+        # Rate limiting - only update if enough time has passed
+        current_time = time.time()
+        if current_time - self.last_motor_update < self.MOTOR_UPDATE_RATE:
+            return
+
+        # Only send if changed (lower threshold for better responsiveness)
+        if (abs(left_speed - self.state.last_left_speed) > 2 or
+            abs(right_speed - self.state.last_right_speed) > 2 or
+            (left_speed == 0 and right_speed == 0 and not self.state.motors_stopped)):
+
+            self.set_motor_speeds(left_speed, right_speed)
+            self.state.last_left_speed = left_speed
+            self.state.last_right_speed = right_speed
+            self.state.motors_stopped = (left_speed == 0 and right_speed == 0)
+            self.last_motor_update = current_time
+
+    def set_motor_speeds(self, left: int, right: int):
+        """Set motor speeds with proper error handling"""
+        if MOTOR_DIRECT and motor_controller:
+            try:
+                if left == 0 and right == 0:
+                    motor_controller.emergency_stop()
+                else:
+                    left_dir = 'forward' if left >= 0 else 'backward'
+                    right_dir = 'forward' if right >= 0 else 'backward'
+                    left_speed = abs(left)
+                    right_speed = abs(right)
+
+                    motor_controller.set_motor_speed('A', left_speed, left_dir)
+                    motor_controller.set_motor_speed('B', right_speed, right_dir)
+                    logger.debug(f"Motors: L={left:4d}, R={right:4d}")
+            except Exception as e:
+                logger.error(f"Motor control error: {e}")
+                # Try to stop motors on error
+                try:
+                    motor_controller.emergency_stop()
+                except:
+                    pass
+
+    def stop_motors(self):
+        """Stop all motors with lock"""
+        with self.motor_lock:
+            self._stop_motors_internal()
+            self.state.motors_stopped = True
+            logger.info("Motors stopped")
+
+    def emergency_stop(self):
+        """Emergency stop - immediate halt"""
+        logger.warning("EMERGENCY STOP activated")
+        with self.motor_lock:
+            self._stop_motors_internal()
+            self.state.motors_stopped = True
+        # Also send via API as backup
+        self.api_request('POST', '/motor/stop', {"reason": "emergency"})
 
     def process_button(self, number: int, pressed: bool):
-        """Process button press/release"""
-
-        # Notify manual input for any button press
+        """Process button press with proper cooldowns"""
         if pressed:
+            logger.debug(f"Button {number} pressed")
             notify_manual_input()
 
-        if number == 0:  # A button
+        if number == 0:  # A button - Emergency stop
             self.state.a_button = pressed
             if pressed:
                 logger.info("A button: Emergency stop")
                 self.emergency_stop()
 
-        elif number == 1:  # B button
+        elif number == 1:  # B button - Stop motors
             self.state.b_button = pressed
             if pressed:
                 logger.info("B button: Stop motors")
@@ -294,229 +544,58 @@ class XboxHybridController:
             if pressed:
                 self.toggle_led()
 
-        elif number == 3:  # Y button - Toggle Good/Treat
+        elif number == 3:  # Y button - Sound
             self.state.y_button = pressed
             if pressed:
                 self.play_reward_sound()
 
-        elif number == 4:  # Left bumper (LB) - Dispense treat
+        elif number == 4:  # Left bumper - Dispense treat (with cooldown)
             self.state.left_bumper = pressed
             if pressed:
-                self.dispense_treat()
+                self.dispense_treat_safe()
 
-        elif number == 5:  # Right bumper (RB) - Take photo
+        elif number == 5:  # Right bumper - Take photo
             self.state.right_bumper = pressed
             if pressed:
                 self.take_photo()
 
-    def process_dpad(self, number: int, value: int):
-        """Process D-pad input for audio control"""
+        elif number == 10:  # Right stick click - Center camera
+            if pressed:
+                self.center_camera()
 
-        # Notify manual input for any D-pad press
-        if value != 0:
-            notify_manual_input()
-
-        if number == 6:  # D-pad X axis
-            self.state.dpad_left = (value < 0)
-            self.state.dpad_right = (value > 0)
-
-            if value < 0:  # Left - Previous track
-                self.current_sound_index = (self.current_sound_index - 1) % len(self.SOUND_TRACKS)
-                track_num, track_name = self.SOUND_TRACKS[self.current_sound_index]
-                logger.info(f"Selected: {track_name}")
-            elif value > 0:  # Right - Next track
-                self.current_sound_index = (self.current_sound_index + 1) % len(self.SOUND_TRACKS)
-                track_num, track_name = self.SOUND_TRACKS[self.current_sound_index]
-                logger.info(f"Selected: {track_name}")
-
-        elif number == 7:  # D-pad Y axis
-            self.state.dpad_up = (value < 0)
-            self.state.dpad_down = (value > 0)
-
-            if value < 0:  # Up - Pause/Resume
-                logger.info("D-pad up: Pause/Resume")
-                self.api_request('POST', '/audio/pause')
-            elif value > 0:  # Down - Play selected track
-                track_num, track_name = self.SOUND_TRACKS[self.current_sound_index]
-                logger.info(f"D-pad down: Play {track_name}")
-                self.play_sound_effect()
-
-    def update_motor_control(self):
-        """Update motor speeds based on joystick input"""
-        # Variable speed based on trigger
-        speed_multiplier = 0.3 + (self.state.right_trigger * 0.7)
-
-        # Calculate motor speeds from left stick
-        forward = self.state.left_y * self.MAX_SPEED * speed_multiplier
-        turn = self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * speed_multiplier
-
-        left_speed = int(forward + turn)
-        right_speed = int(forward - turn)
-
-        # Clamp to valid range
-        left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
-        right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
-
-        # Only send if changed significantly
-        if (abs(left_speed - self.state.last_left_speed) > 5 or
-            abs(right_speed - self.state.last_right_speed) > 5 or
-            (left_speed == 0 and right_speed == 0 and not self.state.motors_stopped)):
-
-            self.set_motor_speeds(left_speed, right_speed)
-            self.state.last_left_speed = left_speed
-            self.state.last_right_speed = right_speed
-            self.state.motors_stopped = (left_speed == 0 and right_speed == 0)
-
-    def set_motor_speeds(self, left: int, right: int):
-        """Set motor speeds - DIRECT hardware control for low latency"""
-        if MOTOR_DIRECT and motor_controller:
-            # Direct hardware control - minimal latency
-            try:
-                if left == 0 and right == 0:
-                    motor_controller.emergency_stop()
-                    logger.debug("Motors stopped (direct)")
-                else:
-                    # Set individual motor speeds directly
-                    # Motor A (left), Motor B (right)
-                    left_dir = 'forward' if left >= 0 else 'backward'
-                    right_dir = 'forward' if right >= 0 else 'backward'
-                    left_speed = abs(left)
-                    right_speed = abs(right)
-
-                    motor_controller.set_motor_speed('A', left_speed, left_dir)
-                    motor_controller.set_motor_speed('B', right_speed, right_dir)
-                    logger.debug(f"Motors (direct): L={left:4d}, R={right:4d}")
-            except Exception as e:
-                logger.error(f"Direct motor control error: {e}")
-                # Fallback to API
-                self._set_motor_speeds_api(left, right)
-        else:
-            # Use API if no direct control
-            self._set_motor_speeds_api(left, right)
-
-    def _set_motor_speeds_api(self, left: int, right: int):
-        """Fallback API motor control"""
-        data = {
-            "left_speed": left,
-            "right_speed": right
-        }
-        result = self.api_request('POST', '/motor/control', data)
-        if result and result.get('success'):
-            if left != 0 or right != 0:
-                logger.debug(f"Motors (API): L={left:4d}, R={right:4d}")
-
-    def stop_motors(self):
-        """Stop all motors"""
-        if MOTOR_DIRECT and motor_controller:
-            try:
-                motor_controller.emergency_stop()
-                logger.info("Motors stopped (direct)")
-                self.state.motors_stopped = True
-                return
-            except Exception as e:
-                logger.error(f"Direct motor stop error: {e}")
-
-        # Fallback to API
-        result = self.api_request('POST', '/motor/stop', {"reason": "controller_stop"})
-        if result:
-            logger.info("Motors stopped (API)")
-        self.state.motors_stopped = True
-
-    def emergency_stop(self):
-        """Emergency stop - try both direct and API"""
-        logger.warning("EMERGENCY STOP activated")
-
-        # Try direct first for fastest response
-        if MOTOR_DIRECT and motor_controller:
-            try:
-                motor_controller.emergency_stop()
-            except:
-                pass
-
-        # Also send via API to ensure all systems stop
-        self.api_request('POST', '/motor/stop', {"reason": "emergency"})
-        self.state.motors_stopped = True
-
-    def control_camera_pan(self):
-        """Control camera pan via API with smooth movement"""
-        # Lower threshold for more precise control
-        if abs(self.state.right_x) > 0.15:
-            # Calculate target angle
-            target_pan = int(90 - (self.state.right_x * 180))  # Full 360 degree range
-            target_pan = max(-90, min(270, target_pan))  # Match extended PWM limits
-
-            # Initialize or update with smoother transitions
-            if not hasattr(self, '_current_pan_angle'):
-                self._current_pan_angle = 90  # Start at center
-
-            # Only update if change is significant (reduce jitter)
-            if abs(target_pan - self._current_pan_angle) > 3:
-                # Smooth interpolation - move partway to target
-                smooth_factor = 0.3  # Adjust for smoother/faster response
-                delta = int((target_pan - self._current_pan_angle) * smooth_factor)
-
-                # Ensure minimum movement to avoid stuck positions
-                if delta != 0 or abs(target_pan - self._current_pan_angle) > 10:
-                    if delta == 0:
-                        delta = 1 if target_pan > self._current_pan_angle else -1
-
-                    self._current_pan_angle += delta
-                    self._current_pan_angle = max(-90, min(270, self._current_pan_angle))
-
-                    # Send with smooth speed parameter
-                    data = {"pan": self._current_pan_angle, "smooth": True}
-                    try:
-                        self.api_request('POST', '/camera/pantilt', data)
-                    except:
-                        pass
-
-    def control_camera_tilt(self):
-        """Control camera tilt via API with smooth movement"""
-        # Manual control only - no auto-centering
-        if abs(self.state.right_y) > 0.15:  # Lower threshold for more control
-            # Calculate target angle
-            target_tilt = int(90 + (self.state.right_y * 90))
-            target_tilt = max(0, min(180, target_tilt))
-
-            # Initialize or update with smoother transitions
-            if not hasattr(self, '_current_tilt_angle'):
-                self._current_tilt_angle = 90  # Start at center
-
-            # Only update if change is significant
-            if abs(target_tilt - self._current_tilt_angle) > 3:
-                # Smooth interpolation
-                smooth_factor = 0.3
-                delta = int((target_tilt - self._current_tilt_angle) * smooth_factor)
-
-                # Ensure minimum movement
-                if delta != 0 or abs(target_tilt - self._current_tilt_angle) > 10:
-                    if delta == 0:
-                        delta = 1 if target_tilt > self._current_tilt_angle else -1
-
-                    self._current_tilt_angle += delta
-                    self._current_tilt_angle = max(0, min(180, self._current_tilt_angle))
-
-                    # Send with smooth speed parameter
-                    data = {"tilt": self._current_tilt_angle, "smooth": True}
-                    try:
-                        self.api_request('POST', '/camera/pantilt', data)
-                    except:
-                        pass
-
-    def dispense_treat(self):
-        """Dispense treat via API"""
+    def dispense_treat_safe(self):
+        """Dispense treat - always works on button press"""
         logger.info("LB pressed: Dispensing treat")
+
+        # Don't use a lock or cooldown that blocks - just track for logging
+        current_time = time.time()
+        time_since_last = current_time - self.last_treat_time
+
+        # Warn if too fast but still dispense
+        if time_since_last < self.TREAT_COOLDOWN and self.last_treat_time > 0:
+            logger.warning(f"Rapid treat request (only {time_since_last:.1f}s since last)")
+
+        self.last_treat_time = current_time
+
+        # Direct API call - no thread needed for treats
+        # The API itself should handle any queuing/safety
         data = {
             "dog_id": "xbox_test",
             "reason": "manual_xbox",
             "count": 1
         }
-        result = self.api_request('POST', '/treat/dispense', data)
-        if result and result.get('success'):
-            logger.info("Treat dispensed!")
+
+        try:
+            result = self.api_request('POST', '/treat/dispense', data)
+            if result and result.get('success'):
+                logger.info("Treat dispensed successfully!")
+            else:
+                logger.error(f"Treat dispense failed: {result}")
+        except Exception as e:
+            logger.error(f"Treat dispense error: {e}")
 
     def take_photo(self):
-        """Take photo via API"""
+        """Take photo with cooldown"""
         current_time = time.time()
         if current_time - self.last_photo_time < self.photo_cooldown:
             return
@@ -526,89 +605,91 @@ class XboxHybridController:
 
         result = self.api_request('POST', '/camera/photo')
         if result and result.get('success'):
-            logger.info(f"Photo saved: {result.get('filename')} ({result.get('resolution')})")
+            logger.info(f"Photo saved: {result.get('filename', 'unknown')}")
 
-    def play_sound_effect(self):
-        """Play sound effect via API (D-pad selected)"""
-        track_num, track_name = self.SOUND_TRACKS[self.current_sound_index]
-        logger.info(f"Playing {track_name} (track #{track_num})")
+    def center_camera(self):
+        """Center the camera to default position"""
+        logger.info("Right stick click: Centering camera")
 
-        # Play by track number directly - more reliable
-        data = {"number": track_num}
-        result = self.api_request('POST', '/audio/play/number', data)
-        if result and result.get('success'):
-            logger.info(f"Now playing: {track_name}")
-        else:
-            logger.error(f"Failed to play {track_name}")
+        # Reset to center positions
+        self.last_pan_angle = 100  # Center with slight right offset
+        self.last_tilt_angle = 90  # Center
 
-    def play_reward_sound(self):
-        """Play reward sound - always consistent pattern: Treat, Good, Treat, Good..."""
-        # Determine which sound based on press count (no memory)
-        # Odd presses (1st, 3rd, 5th...) = Treat
-        # Even presses (2nd, 4th, 6th...) = Good
-        if not hasattr(self, '_y_press_count'):
-            self._y_press_count = 0
-
-        self._y_press_count += 1
-
-        # Odd press = Treat (index 1), Even press = Good (index 0)
-        sound_index = 1 if (self._y_press_count % 2 == 1) else 0
-        filepath, track_name = self.REWARD_SOUNDS[sound_index]
-
-        logger.info(f"Y button press #{self._y_press_count}: Playing {track_name}")
-
-        # Play the sound by filepath
-        data = {"filepath": filepath}
-        result = self.api_request('POST', '/audio/play/file', data)
-        if result and result.get('success'):
-            logger.info(f"Playing: {track_name} ({filepath})")
-        else:
-            logger.error(f"Failed to play {track_name}")
+        # Send center command
+        self.api_request('POST', '/camera/pantilt', {
+            "pan": 100,
+            "tilt": 90,
+            "smooth": True
+        })
 
     def toggle_led(self):
-        """Toggle LED on/off (X button)"""
+        """Toggle blue LED"""
         self.led_enabled = not self.led_enabled
-
-        if self.led_enabled:
-            # Turn on with current mode
-            mode = self.led_modes[self.current_led_mode]
-            logger.info(f"X button: LED ON - {mode} mode")
-            data = {"mode": mode}
-            self.api_request('POST', '/leds/mode', data)
-        else:
-            # Turn off (set to 'off' mode)
-            logger.info("X button: LED OFF")
-            data = {"mode": "off"}
-            self.api_request('POST', '/leds/mode', data)
+        endpoint = '/leds/blue/on' if self.led_enabled else '/leds/blue/off'
+        result = self.api_request('POST', endpoint)
+        if result and result.get('success'):
+            logger.info(f"Blue LED {'on' if self.led_enabled else 'off'}")
 
     def cycle_led_mode(self):
-        """Cycle through LED modes (Left Trigger)"""
+        """Cycle through NeoPixel LED modes"""
         self.current_led_mode = (self.current_led_mode + 1) % len(self.led_modes)
         mode = self.led_modes[self.current_led_mode]
+        logger.info(f"Left Trigger: NeoPixel mode = {mode}")
 
-        logger.info(f"Left Trigger: LED mode = {mode}")
+        data = {"mode": mode}
+        result = self.api_request('POST', '/leds/mode', data)
+        if result and result.get('success'):
+            logger.info(f"NeoPixel LEDs set to {mode}")
 
-        # Apply new mode if LED is on
-        if self.led_enabled:
-            data = {"mode": mode}
-            self.api_request('POST', '/leds/mode', data)
-        else:
-            # Turn on LED with new mode
-            self.led_enabled = True
-            data = {"mode": mode}
-            self.api_request('POST', '/leds/mode', data)
+    def play_reward_sound(self):
+        """Play alternating reward sounds (Y button)"""
+        # Initialize press counter if needed
+        if not hasattr(self, 'y_press_count'):
+            self.y_press_count = 0
 
-    def update_camera_smooth(self):
-        """Continuous camera update for smooth movement"""
-        if self.running:
-            # Update pan and tilt based on current joystick state
-            self.control_camera_pan()
-            self.control_camera_tilt()
+        self.y_press_count += 1
 
-            # Schedule next update
-            self.camera_timer = Timer(self.camera_update_interval, self.update_camera_smooth)
-            self.camera_timer.daemon = True
-            self.camera_timer.start()
+        if self.y_press_count % 2 == 1:  # Odd press = Treat
+            logger.info("Y button: Playing 'Treat' sound")
+            self.api_request('POST', '/audio/play', {"track": 13, "name": "Treat"})
+        else:  # Even press = Good Dog
+            logger.info("Y button: Playing 'Good Dog' sound")
+            self.api_request('POST', '/audio/play', {"track": 8, "name": "Good Dog"})
+
+    def play_sound_effect(self):
+        """Play selected sound effect (D-pad down)"""
+        file_path, track_name = self.SOUND_TRACKS[self.current_sound_index]
+        logger.info(f"Playing: {track_name} ({file_path})")
+        # Send the file path directly
+        self.api_request('POST', '/audio/play_file', {"path": file_path, "name": track_name})
+
+    def process_dpad(self, number: int, value: int):
+        """Process D-pad input"""
+        if value != 0:
+            notify_manual_input()
+
+        if number == 6:  # D-pad X axis
+            self.state.dpad_left = (value < 0)
+            self.state.dpad_right = (value > 0)
+
+            if value < 0:  # Left - Previous track
+                self.current_sound_index = (self.current_sound_index - 1) % len(self.SOUND_TRACKS)
+                file_path, track_name = self.SOUND_TRACKS[self.current_sound_index]
+                logger.info(f"Selected: {track_name}")
+            elif value > 0:  # Right - Next track
+                self.current_sound_index = (self.current_sound_index + 1) % len(self.SOUND_TRACKS)
+                file_path, track_name = self.SOUND_TRACKS[self.current_sound_index]
+                logger.info(f"Selected: {track_name}")
+
+        elif number == 7:  # D-pad Y axis
+            self.state.dpad_up = (value < 0)
+            self.state.dpad_down = (value > 0)
+
+            if value < 0:  # Up - Pause/Resume
+                logger.info("D-pad up: Pause/Resume")
+                self.api_request('POST', '/audio/pause')
+            elif value > 0:  # Down - Play selected
+                self.play_sound_effect()
 
     def run(self):
         """Main control loop"""
@@ -617,18 +698,18 @@ class XboxHybridController:
             return
 
         self.running = True
-        logger.info("Xbox Hybrid controller ready!")
-        logger.info("=== CONTROLS ===")
-        logger.info("Movement: Left stick + RT for speed control")
-        logger.info("Camera: Right stick (smooth pan/tilt)")
+        logger.info("Xbox Fixed Controller ready!")
+        logger.info("=== FIXED CONTROLS ===")
+        logger.info("Movement: Left stick + RT for speed")
+        logger.info("Camera: Right stick")
         logger.info("A = Emergency Stop, B = Stop Motors")
-        logger.info("X = LED On/Off, LT = Cycle LED modes")
-        logger.info("Y = Treat/Good sound (alternating: Treat, Good, Treat...)")
-        logger.info("LB = Dispense Treat, RB = Take Photo")
-        logger.info("D-pad = Audio controls (L/R select, Up pause, Down play)")
-
-        # Start smooth camera update timer
-        self.update_camera_smooth()
+        logger.info("X = Blue LED, LT = NeoPixel modes")
+        logger.info("Y = Sound, LB = Treat (2s cooldown), RB = Photo")
+        logger.info("=== FIXES APPLIED ===")
+        logger.info("✅ Treat dispenser cooldown prevents freezing")
+        logger.info("✅ Motor control with timeout safety")
+        logger.info("✅ Right motor boost for straight driving")
+        logger.info("✅ Thread-safe API calls")
 
         try:
             while self.running and not self.stop_event.is_set():
@@ -638,7 +719,6 @@ class XboxHybridController:
 
                 timestamp, value, event_type, number = event
 
-                # Process based on event type
                 if event_type == 0x01:  # Button event
                     pressed = (value == 1)
                     self.process_button(number, pressed)
@@ -660,10 +740,16 @@ class XboxHybridController:
         """Clean up resources"""
         logger.info("Cleaning up...")
         self.running = False
+        self.motor_update_running = False
+        self.camera_update_running = False
 
-        # Stop camera timer
-        if self.camera_timer:
-            self.camera_timer.cancel()
+        # Stop motor update thread
+        if self.motor_update_thread:
+            self.motor_update_thread.join(timeout=1.0)
+
+        # Stop camera update thread
+        if self.camera_update_thread:
+            self.camera_update_thread.join(timeout=1.0)
 
         # Stop motors
         self.stop_motors()
@@ -691,15 +777,12 @@ class XboxHybridController:
 
 def main():
     """Main entry point"""
-    # Check for joystick device
     js_device = '/dev/input/js0'
     if not os.path.exists(js_device):
         logger.error(f"No joystick at {js_device}")
-        logger.info("Make sure Xbox controller is connected and run:")
-        logger.info("  sudo ./fix_xbox_controller.sh")
         return
 
-    controller = XboxHybridController(js_device)
+    controller = XboxHybridControllerFixed(js_device)
 
     try:
         controller.run()

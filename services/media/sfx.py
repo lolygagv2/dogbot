@@ -291,6 +291,67 @@ class SfxService:
         self.sound_library[name] = command
         self.logger.info(f"Added sound: {name} -> {command}")
 
+    def play_track(self, track_number: int) -> bool:
+        """Play a specific track number on DFPlayer - using file paths"""
+        if not self.audio_initialized:
+            self.logger.error("Audio not initialized")
+            return False
+
+        try:
+            # Map track numbers to file paths
+            track_map = {
+                1: "/talks/0001.mp3",  # Scooby intro
+                3: "/talks/0003.mp3",  # Elsa
+                4: "/talks/0004.mp3",  # Bezik
+                8: "/talks/0008.mp3",  # Good Dog
+                13: "/talks/0013.mp3", # Treat
+                15: "/talks/0015.mp3", # Sit
+                16: "/talks/0016.mp3", # Spin
+                17: "/talks/0017.mp3", # Stay
+            }
+
+            filepath = track_map.get(track_number)
+            if not filepath:
+                self.logger.error(f"Unknown track number: {track_number}")
+                return False
+
+            # Use the audio controller's play_file_by_path method
+            success = self.audio.play_file_by_path(filepath)
+
+            if success:
+                self.currently_playing = f"track_{track_number}"
+                self.play_start_time = time.time()
+                self.state.update_hardware(audio_playing=True)
+                self.logger.info(f"Playing track {track_number}: {filepath}")
+
+            return success
+        except Exception as e:
+            self.logger.error(f"Play track error: {e}")
+            return False
+
+    def stop(self) -> bool:
+        """Stop audio playback"""
+        return self.stop_sound()
+
+    def pause(self) -> bool:
+        """Pause/resume audio playback"""
+        if not self.audio_initialized:
+            return False
+
+        try:
+            # Use the audio controller's play_pause_toggle method
+            if hasattr(self.audio, 'play_pause_toggle'):
+                success = self.audio.play_pause_toggle()
+                if success:
+                    self.logger.info("Toggled play/pause")
+                return success
+            else:
+                # Fallback - use stop
+                return self.stop_sound()
+        except Exception as e:
+            self.logger.error(f"Pause error: {e}")
+            return False
+
     def get_status(self) -> Dict[str, Any]:
         """Get audio service status"""
         return {

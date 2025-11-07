@@ -199,7 +199,7 @@ class ServoController:
             elif direction == 'backward':
                 pulse = 1300  # Backward rotation
             elif direction == 'slow':
-                pulse = 1580  # Slightly more forward - slow rotation
+                pulse = 1590  # Slightly faster forward - controlled rotation
             else:
                 print(f"Invalid winch direction: {direction}")
                 return False

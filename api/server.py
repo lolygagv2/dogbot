@@ -22,23 +22,308 @@ from core.store import get_store
 from services.reward.dispenser import get_dispenser_service
 from services.motion.motor import get_motor_service
 from services.motion.pan_tilt import get_pantilt_service
+from services.media.sfx import get_sfx_service
 from orchestrators.sequence_engine import get_sequence_engine
 from orchestrators.reward_logic import get_reward_logic
 from orchestrators.mode_fsm import get_mode_fsm
 from core.hardware.audio_controller import AudioController
 from core.hardware.led_controller import LEDController, LEDMode
 from config.settings import AudioFiles
+import lgpio
 
-# Singleton LED controller to prevent GPIO conflicts
+# Direct GPIO control for blue LED to avoid conflicts
+_gpio_handle = None
+_gpio_lock = threading.Lock()
+BLUE_LED_PIN = 25
+
+def get_gpio_handle():
+    global _gpio_handle
+    with _gpio_lock:
+        if _gpio_handle is None:
+            try:
+                _gpio_handle = lgpio.gpiochip_open(0)
+                lgpio.gpio_claim_output(_gpio_handle, BLUE_LED_PIN)
+                logger.warning("🔵 Direct GPIO control initialized for blue LED")
+            except Exception as e:
+                logger.error(f"🔵 GPIO init failed: {e}")
+                _gpio_handle = None
+        return _gpio_handle
+
+def blue_led_direct_control(state):
+    """Direct GPIO control for blue LED"""
+    try:
+        handle = get_gpio_handle()
+        if handle is not None:
+            lgpio.gpio_write(handle, BLUE_LED_PIN, 1 if state else 0)
+            logger.warning(f"🔵 Blue LED {'ON' if state else 'OFF'} via direct GPIO")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"🔵 Direct GPIO error: {e}")
+        return False
+
+# Direct NeoPixel control for API (separate from main LED service)
+_neopixels = None
 _led_controller = None
-_led_lock = threading.Lock()
+_neopixel_lock = threading.Lock()
+
+def get_neopixels():
+    """Get direct NeoPixel control for API"""
+    global _neopixels
+    with _neopixel_lock:
+        if _neopixels is None:
+            try:
+                import board
+                import neopixel
+                _neopixels = neopixel.NeoPixel(
+                    board.D12, 75,
+                    brightness=0.3,
+                    auto_write=False,
+                    pixel_order=neopixel.GRB
+                )
+                _neopixels.fill((0, 0, 0))
+                _neopixels.show()
+                logger.warning("🔗 Direct NeoPixel control initialized for API")
+            except Exception as e:
+                logger.error(f"🔗 Direct NeoPixel init failed: {e}")
+                raise Exception(f"Cannot initialize NeoPixels: {e}")
+        return _neopixels
+
+class DirectNeoPixelController:
+    def __init__(self):
+        self.pixels = get_neopixels()
+        self.current_mode = "off"
+        self.animation_active = False
+        self.animation_thread = None
+
+    def stop_animation(self):
+        """Stop any running animation forcefully - ONE AT A TIME"""
+        self.animation_active = False
+        if self.animation_thread and self.animation_thread.is_alive():
+            self.animation_thread.join(timeout=0.2)
+        # Make sure it's really dead
+        self.animation_thread = None
+        logger.warning("🛑 Animation stopped")
+
+    def set_mode(self, mode):
+        """Set NeoPixel mode with safe patterns"""
+        self.current_mode = mode.value if hasattr(mode, 'value') else mode
+        logger.warning(f"🔗 Direct NeoPixel mode: {self.current_mode}")
+
+        # Always stop animation first
+        self.stop_animation()
+
+        if self.current_mode == 'off':
+            self.pixels.fill((0, 0, 0))
+            self.pixels.show()
+        elif self.current_mode == 'idle':
+            self.pixels.fill((30, 30, 30))
+            self.pixels.show()
+        elif self.current_mode == 'searching':
+            self._start_safe_animation('pulse', (0, 0, 255))
+        elif self.current_mode == 'dog_detected':
+            self._start_safe_animation('sparkle', (0, 255, 0))
+        elif self.current_mode == 'treat_launching':
+            self._start_safe_animation('spin', (255, 255, 0))
+        elif self.current_mode == 'error':
+            self._start_safe_animation('pulse', (255, 0, 0))
+        elif self.current_mode == 'charging':
+            self._start_safe_animation('breathe', (255, 165, 0))
+        elif self.current_mode == 'manual_rc':
+            self._start_safe_animation('rainbow', None)
+        else:
+            self.pixels.fill((30, 30, 30))
+            self.pixels.show()
+
+        return True
+
+    def _start_safe_animation(self, pattern_type, color):
+        """Start a single safe animation thread"""
+        import threading
+        self.animation_active = True
+        logger.warning(f"🎬 Starting animation: {pattern_type}")
+        self.animation_thread = threading.Thread(
+            target=self._safe_animation_loop,
+            args=(pattern_type, color),
+            daemon=True
+        )
+        self.animation_thread.start()
+        logger.warning(f"🎬 Animation thread started: {self.animation_thread.is_alive()}")
+
+    def _safe_animation_loop(self, pattern_type, color):
+        """Single animation loop that handles all patterns safely"""
+        import time, random, math
+
+        step = 0
+        while self.animation_active:
+            try:
+                if pattern_type == 'pulse':
+                    brightness = abs(math.sin(step * 0.1)) * 0.8 + 0.2
+                    dimmed = tuple(int(c * brightness) for c in color)
+                    self.pixels.fill(dimmed)
+
+                elif pattern_type == 'sparkle':
+                    self.pixels.fill((0, 0, 0))
+                    for _ in range(3):
+                        pixel = random.randint(0, 74)
+                        self.pixels[pixel] = color
+
+                elif pattern_type == 'spin':
+                    self.pixels.fill((0, 0, 0))
+                    pos = step % 75
+                    self.pixels[pos] = color
+
+                elif pattern_type == 'breathe':
+                    brightness = (math.sin(step * 0.05) + 1) * 0.5
+                    dimmed = tuple(int(c * brightness) for c in color)
+                    self.pixels.fill(dimmed)
+
+                elif pattern_type == 'rainbow':
+                    for i in range(75):
+                        hue = (step * 3 + i * 5) % 360
+                        rgb = self._hsv_to_rgb(hue, 1.0, 0.3)
+                        self.pixels[i] = rgb
+
+                self.pixels.show()
+                step += 1
+                time.sleep(0.1)
+
+            except Exception as e:
+                logger.error(f"🎬 Animation error: {e}")
+                break
+        logger.warning(f"🎬 Animation loop ended: {pattern_type}")
+
+    def _hsv_to_rgb(self, h, s, v):
+        """Convert HSV to RGB"""
+        h = h / 60.0
+        i = int(h)
+        f = h - i
+        p = v * (1 - s)
+        q = v * (1 - s * f)
+        t = v * (1 - s * (1 - f))
+
+        if i == 0: r, g, b = v, t, p
+        elif i == 1: r, g, b = q, v, p
+        elif i == 2: r, g, b = p, v, t
+        elif i == 3: r, g, b = p, q, v
+        elif i == 4: r, g, b = t, p, v
+        else: r, g, b = v, p, q
+
+        return (int(r * 255), int(g * 255), int(b * 255))
+
+    def _start_animation(self, animation_func, *args):
+        """Start animation in background thread"""
+        import threading
+        self.animation_active = True
+        self.animation_thread = threading.Thread(target=animation_func, args=args)
+        self.animation_thread.daemon = True
+        self.animation_thread.start()
+
+    def _pulse_pattern(self, color):
+        """Pulsing effect"""
+        import time
+        while self.animation_active:
+            for brightness in range(0, 100, 10):
+                if not self.animation_active: break
+                factor = brightness / 100.0
+                dimmed = tuple(int(c * factor) for c in color)
+                self.pixels.fill(dimmed)
+                self.pixels.show()
+                time.sleep(0.05)
+            for brightness in range(100, 0, -10):
+                if not self.animation_active: break
+                factor = brightness / 100.0
+                dimmed = tuple(int(c * factor) for c in color)
+                self.pixels.fill(dimmed)
+                self.pixels.show()
+                time.sleep(0.05)
+
+    def _sparkle_pattern(self, color):
+        """Random sparkle effect"""
+        import time, random
+        while self.animation_active:
+            self.pixels.fill((0, 0, 0))
+            for _ in range(5):
+                if not self.animation_active: break
+                pixel = random.randint(0, 74)
+                self.pixels[pixel] = color
+            self.pixels.show()
+            time.sleep(0.2)
+
+    def _spinning_pattern(self, color):
+        """Spinning dot effect"""
+        import time
+        while self.animation_active:
+            for i in range(75):
+                if not self.animation_active: break
+                self.pixels.fill((0, 0, 0))
+                self.pixels[i] = color
+                self.pixels.show()
+                time.sleep(0.05)
+
+    def _breathing_pattern(self, color):
+        """Slow breathing effect"""
+        import time
+        while self.animation_active:
+            for brightness in range(0, 100, 5):
+                if not self.animation_active: break
+                factor = brightness / 100.0
+                dimmed = tuple(int(c * factor) for c in color)
+                self.pixels.fill(dimmed)
+                self.pixels.show()
+                time.sleep(0.1)
+            for brightness in range(100, 0, -5):
+                if not self.animation_active: break
+                factor = brightness / 100.0
+                dimmed = tuple(int(c * factor) for c in color)
+                self.pixels.fill(dimmed)
+                self.pixels.show()
+                time.sleep(0.1)
+
+    def _rainbow_pattern(self):
+        """Rainbow color cycle"""
+        import time
+        hue = 0
+        while self.animation_active:
+            for i in range(75):
+                if not self.animation_active: break
+                pixel_hue = (hue + i * 5) % 360
+                color = self._hsv_to_rgb(pixel_hue, 1.0, 0.3)
+                self.pixels[i] = color
+            self.pixels.show()
+            hue = (hue + 10) % 360
+            time.sleep(0.1)
+
+    def _hsv_to_rgb(self, h, s, v):
+        """Convert HSV to RGB"""
+        h = h / 60.0
+        i = int(h)
+        f = h - i
+        p = v * (1 - s)
+        q = v * (1 - s * f)
+        t = v * (1 - s * (1 - f))
+
+        if i == 0: r, g, b = v, t, p
+        elif i == 1: r, g, b = q, v, p
+        elif i == 2: r, g, b = p, v, t
+        elif i == 3: r, g, b = p, q, v
+        elif i == 4: r, g, b = t, p, v
+        else: r, g, b = v, p, q
+
+        return (int(r * 255), int(g * 255), int(b * 255))
+
+    def get_status(self):
+        return {"mode": self.current_mode, "pixels_initialized": True, "animation_active": self.animation_active}
 
 def get_led_controller():
+    """Singleton LED controller to prevent animation conflicts"""
     global _led_controller
-    with _led_lock:
-        if _led_controller is None:
-            _led_controller = LEDController()
-        return _led_controller
+    if _led_controller is None:
+        logger.warning("🏗️ Creating NEW LED controller singleton")
+        _led_controller = DirectNeoPixelController()
+    else:
+        logger.warning("🔄 Reusing existing LED controller singleton")
+    return _led_controller
 
 # Models
 class ModeRequest(BaseModel):
@@ -1112,8 +1397,13 @@ async def test_audio_system():
 async def get_led_status():
     """Get LED system status"""
     try:
-        leds = get_led_controller()
-        status = leds.get_status()
+        # Use LED service instead of dummy controller
+        from services.media.led import get_led_service
+        led_service = get_led_service()
+        if led_service.led_initialized and led_service.led:
+            status = led_service.led.get_status()
+        else:
+            status = {"error": "LED service not initialized"}
         return {
             "success": True,
             "status": status
@@ -1230,6 +1520,7 @@ async def set_led_mode(request: LEDModeRequest):
         if request.mode not in valid_modes:
             raise HTTPException(status_code=400, detail=f"Invalid mode. Valid modes: {valid_modes}")
 
+        # Use direct LED controller ONLY (old service is broken)
         leds = get_led_controller()
         led_mode = LEDMode(request.mode)
         leds.set_mode(led_mode)
@@ -1297,9 +1588,10 @@ async def stop_led_animation():
 @app.post("/leds/blue/on")
 async def blue_led_on():
     """Turn blue LED on"""
+    logger.warning("🔵 BLUE LED ON API CALLED! X BUTTON DETECTED!")
     try:
-        leds = get_led_controller()
-        success = leds.blue_on()
+        success = blue_led_direct_control(True)
+        logger.warning(f"🔵 Blue LED ON result: {success}")
 
         return {
             "success": success,
@@ -1313,8 +1605,8 @@ async def blue_led_on():
 async def blue_led_off():
     """Turn blue LED off"""
     try:
-        leds = get_led_controller()
-        success = leds.blue_off()
+        success = blue_led_direct_control(False)
+        logger.warning(f"🔵 Blue LED OFF result: {success}")
 
         return {
             "success": success,
@@ -1594,6 +1886,95 @@ async def get_system_status():
         status["services"] = {"error": str(e)}
 
     return status
+
+# ============================================================================
+# Audio Control Endpoints
+# ============================================================================
+
+@app.post("/audio/play")
+async def play_audio(request: dict):
+    """Play audio track on DFPlayer"""
+    try:
+        sfx_service = get_sfx_service()
+
+        track = request.get("track")
+        name = request.get("name", f"Track {track}")
+
+        if track is None:
+            raise HTTPException(status_code=400, detail="Track number required")
+
+        # Play the track
+        success = sfx_service.play_track(track)
+
+        return {
+            "success": success,
+            "track": track,
+            "name": name
+        }
+    except Exception as e:
+        logger.error(f"Audio play error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/audio/play_file")
+async def play_audio_file(request: dict):
+    """Play audio file by path on DFPlayer"""
+    try:
+        sfx_service = get_sfx_service()
+
+        file_path = request.get("path")
+        name = request.get("name", file_path)
+
+        if file_path is None:
+            raise HTTPException(status_code=400, detail="File path required")
+
+        # Play the file directly
+        if hasattr(sfx_service, 'audio') and sfx_service.audio:
+            success = sfx_service.audio.play_file_by_path(file_path)
+            if success:
+                logger.info(f"Playing audio file: {name} ({file_path})")
+        else:
+            success = False
+
+        return {
+            "success": success,
+            "path": file_path,
+            "name": name
+        }
+    except Exception as e:
+        logger.error(f"Audio play file error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/audio/stop")
+async def stop_audio():
+    """Stop audio playback"""
+    try:
+        sfx_service = get_sfx_service()
+        success = sfx_service.stop()
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Audio stop error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/audio/pause")
+async def pause_audio():
+    """Pause/resume audio playback"""
+    try:
+        sfx_service = get_sfx_service()
+        success = sfx_service.pause()
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Audio pause error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.get("/audio/status")
+async def get_audio_status():
+    """Get audio system status"""
+    try:
+        sfx_service = get_sfx_service()
+        return sfx_service.get_status()
+    except Exception as e:
+        logger.error(f"Audio status error: {e}")
+        return {"error": str(e)}
 
 def create_app():
     """Create FastAPI app (for external use)"""

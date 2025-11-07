@@ -1,17 +1,24 @@
 [Unit]
-Description=Xbox Controller for DogBot
-After=bluetooth.target
+Description=WIM-Z Xbox Controller Service
+After=network.target bluetooth.target
+Wants=network.target
 
 [Service]
 Type=simple
-User=root
+User=morgan
+Group=morgan
 WorkingDirectory=/home/morgan/dogbot
-ExecStartPre=/bin/sleep 5
-ExecStart=/usr/bin/python3 /home/morgan/dogbot/xbox_hybrid_controller.py
-Restart=on-failure
-RestartSec=5
+Environment=PYTHONPATH=/home/morgan/dogbot
+ExecStart=/home/morgan/dogbot/env_new/bin/python /home/morgan/dogbot/xbox_hybrid_controller.py
+Restart=always
+RestartSec=10
 StandardOutput=journal
 StandardError=journal
+
+# Health monitoring
+WatchdogSec=60
+TimeoutStopSec=15
+KillMode=mixed
 
 [Install]
 WantedBy=multi-user.target

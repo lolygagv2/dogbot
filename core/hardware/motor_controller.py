@@ -70,7 +70,9 @@ class MotorController:
             print("Motor controller not initialized")
             return False
             
-        speed = max(0, min(100, speed))
+        # Power limit to prevent left motor shutdown (80% max power)
+        MAX_MOTOR_POWER = 80  # Reduced from 100% to prevent power supply overload
+        speed = max(0, min(MAX_MOTOR_POWER, speed))
         
         try:
             if motor in ['A', 'left']:

@@ -29,6 +29,9 @@ class LedService:
         self.led = None
         self.led_initialized = False
 
+        # Blue LED command file monitoring for Xbox controller
+        self.last_command_check = 0
+
         # Pattern definitions (from leds_v3.py)
         self.patterns = {
             'off': self._pattern_off,
@@ -43,7 +46,9 @@ class LedService:
             'pulse_blue': self._pattern_pulse_blue,
             'spinning_dot': self._pattern_spinning_dot,
             'celebration': self._pattern_celebration,
-            'manual_rc': self._pattern_manual_rc
+            'manual_rc': self._pattern_manual_rc,
+            'blue_led_on': self._pattern_blue_led_on,
+            'blue_led_off': self._pattern_blue_led_off
         }
 
         # Pattern state
@@ -51,6 +56,10 @@ class LedService:
         self.pattern_thread = None
         self.pattern_running = False
         self._stop_pattern = threading.Event()
+
+        # Manual override state - when True, ignore automatic mode changes
+        self.manual_override_active = False
+        self.manual_override_timeout = 0.0
 
         # Subscribe to system mode changes
         self.bus.subscribe('system', self._on_system_event)
@@ -94,7 +103,7 @@ class LedService:
             return False
 
     def set_pattern(self, pattern_name: str, duration: Optional[float] = None,
-                   color: Optional[str] = None, **kwargs) -> bool:
+                   color: Optional[str] = None, manual_override: bool = False, **kwargs) -> bool:
         """
         Set LED pattern
 
@@ -102,6 +111,7 @@ class LedService:
             pattern_name: Name of pattern to run
             duration: Duration to run pattern (None = indefinite)
             color: Color override for pattern
+            manual_override: If True, prevents automatic overrides for 30 seconds
             **kwargs: Additional pattern parameters
 
         Returns:
@@ -114,6 +124,12 @@ class LedService:
         if pattern_name not in self.patterns:
             self.logger.warning(f"Unknown pattern: {pattern_name}")
             return False
+
+        # Set manual override if requested
+        if manual_override:
+            self.manual_override_active = True
+            self.manual_override_timeout = time.time() + 30.0  # 30 seconds
+            self.logger.info("LED manual override activated for 30 seconds")
 
         # Stop current pattern
         self._stop_current_pattern()
@@ -130,6 +146,7 @@ class LedService:
                 'pattern': pattern_name,
                 'duration': duration,
                 'color': color,
+                'manual_override': manual_override,
                 'kwargs': kwargs
             }, 'led_service')
 
@@ -142,7 +159,7 @@ class LedService:
             )
             self.pattern_thread.start()
 
-            self.logger.info(f"LED pattern started: {pattern_name}")
+            self.logger.info(f"LED pattern started: {pattern_name} (manual: {manual_override})")
             return True
 
         except Exception as e:
@@ -175,16 +192,27 @@ class LedService:
 
     # Pattern implementations
     def _pattern_off(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
-        """Turn off all LEDs"""
+        """Turn off all LEDs (NeoPixels only - blue LED controlled by Xbox X button)"""
         if self.led.pixels:
             self.led.set_solid_color('off')
-        self.led.blue_off()
+        # Blue LED controlled separately by Xbox controller X button
 
     def _pattern_idle(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
-        """Idle pattern - dim white"""
+        """Idle pattern - dim white (NeoPixels only)"""
         if self.led.pixels:
             self.led.set_solid_color('dim_white')
-        self.led.blue_off()
+
+        # Run continuously and check for blue LED commands
+        start_time = time.time()
+        while not self._stop_pattern.is_set():
+            # Check for blue LED commands from Xbox controller
+            self.check_blue_led_commands()
+
+            # Check duration
+            if duration and (time.time() - start_time) >= duration:
+                break
+
+            time.sleep(0.1)  # Check every 100ms
 
     def _pattern_searching(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
         """Searching pattern - spinning cyan dot"""
@@ -197,31 +225,34 @@ class LedService:
                 if self._stop_pattern.is_set():
                     break
 
+                # Check for blue LED commands from Xbox controller
+                self.check_blue_led_commands()
+
                 self.led.pixels.fill(self.colors['off'])
                 self.led.pixels[i] = self.colors[search_color]
                 self.led.pixels.show()
                 time.sleep(0.08)
 
     def _pattern_dog_detected(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
-        """Dog detected - solid green"""
+        """Dog detected - solid green (NeoPixels only)"""
         if self.led.pixels:
             self.led.set_solid_color('green')
-        self.led.blue_on()
+        # Blue LED controlled separately by Xbox controller X button
 
         if duration:
             time.sleep(duration)
 
     def _pattern_treat_launching(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
-        """Treat launching - bright white flash"""
+        """Treat launching - bright white flash (NeoPixels only)"""
         if self.led.pixels:
             self.led.set_solid_color('white')
-        self.led.blue_on()
+        # Blue LED controlled separately by Xbox controller X button
 
         time.sleep(0.5)
 
         if self.led.pixels:
             self.led.set_solid_color('off')
-        self.led.blue_off()
+        # Blue LED controlled separately by Xbox controller X button
 
     def _pattern_error(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
         """Error pattern - flashing red"""
@@ -231,12 +262,12 @@ class LedService:
         while not self._stop_pattern.is_set() and flash_count < max_flashes:
             if self.led.pixels:
                 self.led.set_solid_color('red')
-            self.led.blue_on()
+            # Blue LED controlled separately by Xbox controller X button
             time.sleep(0.3)
 
             if self.led.pixels:
                 self.led.set_solid_color('off')
-            self.led.blue_off()
+            # Blue LED controlled separately by Xbox controller X button
             time.sleep(0.3)
 
             flash_count += 1
@@ -314,11 +345,11 @@ class LedService:
                 self.led.set_solid_color('off')
 
     def _pattern_manual_rc(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
-        """Manual RC mode - purple base with flashing green"""
+        """Manual RC mode - purple base with flashing green (NeoPixels only)"""
         if not self.led.pixels:
             return
 
-        self.led.blue_on()  # Keep blue LED on for manual mode indicator
+        # Blue LED controlled separately by Xbox controller X button
 
         start_time = time.time()
         while not self._stop_pattern.is_set():
@@ -424,13 +455,47 @@ class LedService:
             'blue_led_on': self.led.blue_is_on if self.led else False
         }
 
+    def _pattern_blue_led_on(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Turn blue LED on (Xbox X button)"""
+        if self.led:
+            success = self.led.blue_on()
+            self.logger.info(f"Blue LED turned ON: {success}")
+
+    def _pattern_blue_led_off(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Turn blue LED off (Xbox X button)"""
+        if self.led:
+            success = self.led.blue_off()
+            self.logger.info(f"Blue LED turned OFF: {success}")
+
     def _on_system_event(self, event) -> None:
         """Handle system events to update LED patterns"""
         if event.subtype == 'mode_transition':
+            # Check if manual override is active
+            if self.manual_override_active:
+                if time.time() > self.manual_override_timeout:
+                    self.manual_override_active = False
+                    self.logger.info("LED manual override expired")
+                else:
+                    self.logger.debug("LED mode change ignored - manual override active")
+                    return
+
             # Automatically update LED pattern when system mode changes
             new_mode = event.data.get('to_mode')
             if new_mode:
                 self._update_led_for_system_mode(new_mode)
+
+        elif event.subtype == 'blue_led_control':
+            # Handle Xbox controller blue LED commands
+            if self.led_initialized and self.led:
+                action = event.data.get('action')
+                if action == 'on':
+                    success = self.led.blue_on()
+                    self.logger.warning(f"🔵 Blue LED ON via event bus: {success}")
+                elif action == 'off':
+                    success = self.led.blue_off()
+                    self.logger.warning(f"🔵 Blue LED OFF via event bus: {success}")
+            else:
+                self.logger.error("Blue LED control failed - LED not initialized")
 
     def _update_led_for_system_mode(self, system_mode: str) -> None:
         """Update LED pattern based on system mode"""
@@ -448,12 +513,40 @@ class LedService:
         self.logger.info(f"System mode changed to {system_mode}, setting LED pattern: {pattern}")
         self.set_pattern(pattern)
 
+    def check_blue_led_commands(self) -> None:
+        """Check for blue LED commands from Xbox controller API"""
+        try:
+            import os
+            command_file = '/tmp/treatbot/blue_led_command.txt'
+
+            if os.path.exists(command_file):
+                # Check if file was modified since last check
+                stat = os.stat(command_file)
+                if stat.st_mtime > self.last_command_check:
+                    self.last_command_check = stat.st_mtime
+
+                    with open(command_file, 'r') as f:
+                        command = f.read().strip()
+
+                    if command == 'ON' and self.led and self.led_initialized:
+                        success = self.led.blue_on()
+                        self.logger.warning(f"🔵 Blue LED ON executed: {success}")
+                    elif command == 'OFF' and self.led and self.led_initialized:
+                        success = self.led.blue_off()
+                        self.logger.warning(f"🔵 Blue LED OFF executed: {success}")
+
+                    # Clear the command file
+                    os.remove(command_file)
+
+        except Exception as e:
+            pass  # Ignore errors, this is just a helper
+
     def cleanup(self) -> None:
         """Clean shutdown"""
         self._stop_current_pattern()
         if self.led:
             self.led.set_solid_color('off')
-            self.led.blue_off()
+            # Blue LED controlled separately by Xbox controller X button
         self.logger.info("LED service cleaned up")
 
 

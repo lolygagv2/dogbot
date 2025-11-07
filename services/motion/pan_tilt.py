@@ -147,6 +147,11 @@ class PanTiltService:
         while not self._stop_event.wait(0.05):  # 20Hz control loop
             try:
                 current_mode = self.state.get_mode()
+
+                # Skip entire control loop in MANUAL mode to prevent conflicts
+                if current_mode == SystemMode.MANUAL:
+                    continue
+
                 now = time.time()
                 dt = now - last_update
                 last_update = now
@@ -164,6 +169,12 @@ class PanTiltService:
     def _handle_detection_mode(self, dt: float) -> None:
         """Handle tracking in detection mode"""
         if not self.tracking_enabled:
+            return
+
+        # Check if we're in manual mode - if so, don't auto-scan
+        current_mode = self.state.get_mode()
+        if current_mode == SystemMode.MANUAL:
+            # Manual mode - stop autonomous scanning
             return
 
         now = time.time()
@@ -184,10 +195,22 @@ class PanTiltService:
 
     def _handle_vigilant_mode(self, dt: float) -> None:
         """Handle scanning in vigilant mode"""
+        # Check if we're in manual mode - if so, don't auto-scan
+        current_mode = self.state.get_mode()
+        if current_mode == SystemMode.MANUAL:
+            # Manual mode - stop autonomous scanning
+            return
+
         self._scan_for_target()
 
     def _handle_idle_mode(self) -> None:
         """Handle idle mode - center camera"""
+        # Check if we're in manual mode - if so, don't auto-center
+        current_mode = self.state.get_mode()
+        if current_mode == SystemMode.MANUAL:
+            # Manual mode - don't interfere with Xbox controller
+            return
+
         if abs(self.current_pan - 90) > 5 or abs(self.current_tilt - 90) > 5:
             self.center_camera()
 
