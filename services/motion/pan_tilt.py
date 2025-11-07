@@ -146,6 +146,17 @@ class PanTiltService:
 
         while not self._stop_event.wait(0.05):  # 20Hz control loop
             try:
+                # Check if Xbox controller is running - if so, do NOTHING
+                import subprocess
+                try:
+                    result = subprocess.run(['pgrep', '-f', 'xbox_hybrid_controller'],
+                                          capture_output=True, timeout=0.1)
+                    if result.returncode == 0:
+                        # Xbox controller is active, skip ALL camera control
+                        continue
+                except:
+                    pass
+
                 current_mode = self.state.get_mode()
 
                 # Skip entire control loop in MANUAL mode to prevent conflicts
@@ -335,6 +346,17 @@ class PanTiltService:
 
     def center_camera(self) -> bool:
         """Center camera to neutral position"""
+        # Check if Xbox controller is active - if so, don't center
+        import subprocess
+        try:
+            result = subprocess.run(['pgrep', '-f', 'xbox_hybrid_controller'],
+                                  capture_output=True, timeout=0.1)
+            if result.returncode == 0:
+                self.logger.debug("Xbox controller active, skipping camera center")
+                return True  # Return success but don't actually center
+        except:
+            pass
+
         try:
             success = self.servo.center_camera()
             if success:

@@ -4417,3 +4417,11 @@
 [2025-11-07 02:04:50.190] [5757] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
 [2025-11-07 02:04:50.190] [5757] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
 [2025-11-07 02:04:50.190] [5757] [HailoRT] [info] [vdevice.cpp:681] [create] VDevice Infos: 0001:01:00.0
+[2025-11-07 02:16:42.741] [1557] [HailoRT] [info] [vdevice.cpp:535] [create] Creating vdevice with params: device_count: 1, scheduling_algorithm: NONE, multi_process_service: false
+[2025-11-07 02:16:42.762] [1557] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2025-11-07 02:16:42.762] [1557] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2025-11-07 02:16:42.762] [1557] [HailoRT] [info] [vdevice.cpp:681] [create] VDevice Infos: 0001:01:00.0
+[2025-11-07 10:32:43.434] [57646] [HailoRT] [info] [vdevice.cpp:535] [create] Creating vdevice with params: device_count: 1, scheduling_algorithm: NONE, multi_process_service: false
+[2025-11-07 10:32:43.445] [57646] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2025-11-07 10:32:43.445] [57646] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2025-11-07 10:32:43.445] [57646] [HailoRT] [info] [vdevice.cpp:681] [create] VDevice Infos: 0001:01:00.0

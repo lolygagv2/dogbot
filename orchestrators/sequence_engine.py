@@ -267,6 +267,11 @@ class SequenceEngine:
 
     def _execute_motion_command(self, command: str, params: Dict[str, Any]) -> None:
         """Execute motion command"""
+        # Check if pantilt service exists (might be disabled for Xbox controller)
+        if not self.pantilt:
+            self.logger.debug("PanTilt service disabled, skipping motion command")
+            return
+
         if command == 'stop':
             self.pantilt.set_tracking_enabled(False)
         elif command == 'center':
@@ -368,8 +373,11 @@ class SequenceEngine:
         # LED startup pattern
         self.led.set_pattern('searching', 3.0)
 
-        # Center camera
-        self.pantilt.center_camera()
+        # Center camera (only if pantilt service is available)
+        if self.pantilt:
+            self.pantilt.center_camera()
+        else:
+            self.logger.debug("PanTilt disabled, skipping camera center")
 
         time.sleep(1.0)
 
@@ -384,8 +392,9 @@ class SequenceEngine:
         # LED shutdown pattern
         self.led.set_pattern('error', 2.0)
 
-        # Center camera
-        self.pantilt.center_camera()
+        # Center camera (only if pantilt service is available)
+        if self.pantilt:
+            self.pantilt.center_camera()
 
         # Turn off LEDs
         time.sleep(2.0)

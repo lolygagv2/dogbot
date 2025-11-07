@@ -473,8 +473,10 @@ class XboxHybridControllerFixed:
         forward = self.state.left_y * self.MAX_SPEED * speed_multiplier
         turn = self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * speed_multiplier
 
-        left_speed = int(forward + turn)
-        right_speed = int(forward - turn)
+        # INVERTED: Stick left should make robot turn left
+        # When stick is left (negative X), right motor should be faster than left
+        left_speed = int(forward - turn)  # Inverted
+        right_speed = int(forward + turn)  # Inverted
 
         # Apply right motor boost for straight driving
         if abs(turn) < 10:  # Going mostly straight
