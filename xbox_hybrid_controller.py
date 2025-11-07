@@ -269,6 +269,12 @@ class XboxHybridControllerFixed:
             self.camera_update_thread = Thread(target=self._camera_update_loop, daemon=True)
             self.camera_update_thread.start()
 
+            # Start heartbeat thread to keep MANUAL mode active
+            self.heartbeat_running = True
+            self.heartbeat_thread = Thread(target=self._heartbeat_loop, daemon=True)
+            self.heartbeat_thread.start()
+            logger.info("Heartbeat thread started to maintain MANUAL mode")
+
             return True
 
         except FileNotFoundError:
@@ -329,6 +335,18 @@ class XboxHybridControllerFixed:
             except Exception as e:
                 logger.error(f"Camera update loop error: {e}")
                 time.sleep(0.1)
+
+    def _heartbeat_loop(self):
+        """Send periodic manual_input events to prevent timeout"""
+        while self.heartbeat_running:
+            try:
+                # Send manual input event every 30 seconds to keep MANUAL mode active
+                notify_manual_input()
+                logger.debug("Heartbeat: Keeping MANUAL mode active")
+                time.sleep(30.0)  # Every 30 seconds
+            except Exception as e:
+                logger.error(f"Heartbeat error: {e}")
+                time.sleep(30.0)
 
     def _motor_update_loop(self):
         """Separate thread for smooth motor control with safety timeout"""
@@ -742,6 +760,7 @@ class XboxHybridControllerFixed:
         self.running = False
         self.motor_update_running = False
         self.camera_update_running = False
+        self.heartbeat_running = False
 
         # Stop motor update thread
         if self.motor_update_thread:
@@ -750,6 +769,10 @@ class XboxHybridControllerFixed:
         # Stop camera update thread
         if self.camera_update_thread:
             self.camera_update_thread.join(timeout=1.0)
+
+        # Stop heartbeat thread
+        if hasattr(self, 'heartbeat_thread'):
+            self.heartbeat_thread.join(timeout=1.0)
 
         # Stop motors
         self.stop_motors()

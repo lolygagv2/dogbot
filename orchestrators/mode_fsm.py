@@ -204,6 +204,20 @@ class ModeFSM:
         if self.last_manual_input_time == 0:
             return  # No manual input recorded yet
 
+        # Check if Xbox controller is connected - if so, NEVER timeout
+        # The Xbox controller will send periodic manual_input_detected events
+        # but we'll also check for the controller process
+        try:
+            import subprocess
+            result = subprocess.run(['pgrep', '-f', 'xbox_hybrid_controller'],
+                                  capture_output=True, text=True, timeout=0.5)
+            if result.returncode == 0:
+                # Xbox controller is running, stay in MANUAL mode
+                self.last_manual_input_time = now  # Reset timeout
+                return
+        except:
+            pass  # If check fails, continue with normal timeout logic
+
         time_since_manual = now - self.last_manual_input_time
 
         # Manual timeout -> return to appropriate autonomous mode
