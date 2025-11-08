@@ -108,7 +108,7 @@ class XboxHybridControllerFixed:
     TURN_SPEED_FACTOR = 0.6
 
     # Motor calibration (right motor needs boost)
-    RIGHT_MOTOR_BOOST = 1.10  # 10% boost for right motor to match left
+    RIGHT_MOTOR_BOOST = 1.13  # 13% boost for right motor to match left (was 1.10)
 
     # Safety features
     TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
