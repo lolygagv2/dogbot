@@ -65,14 +65,22 @@ class MotorController:
             self.gpio_chip = None
     
     def set_motor_speed(self, motor, speed, direction):
-        """Control individual motor with corrected wiring from proven tests"""
+        """Control individual motor with corrected wiring - SAFE FOR 6V MOTORS"""
         if not self.gpio_chip:
             print("Motor controller not initialized")
             return False
-            
-        # Power limit to prevent left motor shutdown (80% max power)
-        MAX_MOTOR_POWER = 80  # Reduced from 100% to prevent power supply overload
-        speed = max(0, min(MAX_MOTOR_POWER, speed))
+
+        # CRITICAL: Limit PWM for 6V motors on 14V system
+        # Load tuning profile for speed vs safety trade-off
+        try:
+            from config.motor_tuning import MAX_MOTOR_PWM
+            MAX_SAFE_DUTY = MAX_MOTOR_PWM
+        except ImportError:
+            MAX_SAFE_DUTY = 50  # Fallback to safe default
+
+        # Scale input speed (0-100) to safe duty cycle (0-50)
+        safe_speed = int(speed * MAX_SAFE_DUTY / 100)
+        safe_speed = max(0, min(MAX_SAFE_DUTY, safe_speed))
         
         try:
             if motor in ['A', 'left']:
@@ -92,7 +100,7 @@ class MotorController:
                 print(f"Invalid motor: {motor}")
                 return False
             
-            # Execute motor control using proven method
+            # Execute motor control using proven method - WITH SAFE VOLTAGE
             if direction == 'stop' or speed == 0:
                 # Stop motor
                 lgpio.gpio_write(self.gpio_chip, in1, 0)
@@ -102,30 +110,31 @@ class MotorController:
                     self.left_speed = 0
                 else:
                     self.right_speed = 0
-                    
+
             elif direction == 'forward':
                 # Forward direction
                 lgpio.gpio_write(self.gpio_chip, in1, 1)
                 lgpio.gpio_write(self.gpio_chip, in2, 0)
-                lgpio.tx_pwm(self.gpio_chip, ena, self._current_pwm_freq, speed)
+                lgpio.tx_pwm(self.gpio_chip, ena, self._current_pwm_freq, safe_speed)  # USE SAFE_SPEED!
                 if motor in ['A', 'left']:
-                    self.left_speed = speed
+                    self.left_speed = speed  # Store original for status
                 else:
                     self.right_speed = speed
-                    
+
             elif direction == 'backward':
                 # Backward direction
                 lgpio.gpio_write(self.gpio_chip, in1, 0)
                 lgpio.gpio_write(self.gpio_chip, in2, 1)
-                lgpio.tx_pwm(self.gpio_chip, ena, self._current_pwm_freq, speed)
+                lgpio.tx_pwm(self.gpio_chip, ena, self._current_pwm_freq, safe_speed)  # USE SAFE_SPEED!
                 if motor in ['A', 'left']:
-                    self.left_speed = -speed
+                    self.left_speed = -speed  # Store original for status
                 else:
                     self.right_speed = -speed
-            
-            # Debug output (can be removed in production)
+
+            # Debug output with voltage info
             correction_note = "(corrected)" if motor in ['A', 'left'] else ""
-            print(f"Motor {motor_name}: {direction} at {speed}% {correction_note}")
+            voltage = 12.6 * safe_speed / 100
+            print(f"Motor {motor_name}: {direction} at {speed}% (PWM: {safe_speed}%, ~{voltage:.1f}V) {correction_note}")
             return True
             
         except Exception as e:

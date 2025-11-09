@@ -112,12 +112,26 @@ class MotorControllerRobust:
             del self.pwm_threads[pin]
 
     def set_motor_speed(self, motor: str, speed: int, direction: str):
-        """Control individual motor with gpioset commands"""
+        """Control individual motor with gpioset commands - SAFE FOR 6V MOTORS"""
         with self.motor_lock:
             try:
-                # Power limiting
-                MAX_POWER = 80  # Prevent power supply overload
-                speed = max(0, min(MAX_POWER, speed))
+                # CRITICAL: Limit PWM for 6V motors on 14V system
+                # Use dynamic motor profile for speed control
+                try:
+                    from config.motor_profiles import get_profile_manager
+                    profile_mgr = get_profile_manager()
+                    MAX_SAFE_DUTY = profile_mgr.get_max_pwm()
+                except ImportError:
+                    # Fallback to static config
+                    try:
+                        from config.motor_tuning import MAX_MOTOR_PWM
+                        MAX_SAFE_DUTY = MAX_MOTOR_PWM
+                    except ImportError:
+                        MAX_SAFE_DUTY = 50  # Ultimate fallback
+
+                # Scale input speed (0-100) to safe duty cycle (0-50)
+                safe_speed = int(speed * MAX_SAFE_DUTY / 100)
+                safe_speed = max(0, min(MAX_SAFE_DUTY, safe_speed))
 
                 if motor in ['A', 'left']:
                     in1, in2, ena = self.pins.MOTOR_IN1, self.pins.MOTOR_IN2, self.pins.MOTOR_ENA
@@ -146,23 +160,24 @@ class MotorControllerRobust:
                 elif direction == 'forward':
                     self._run_gpio_command(in1, 1)
                     self._run_gpio_command(in2, 0)
-                    self._emulate_pwm(ena, 100, speed, motor_name)  # 100Hz PWM
+                    self._emulate_pwm(ena, 100, safe_speed, motor_name)  # Use safe_speed!
                     if motor in ['A', 'left']:
-                        self.left_speed = speed
+                        self.left_speed = speed  # Store original for status
                     else:
                         self.right_speed = speed
 
                 elif direction == 'backward':
                     self._run_gpio_command(in1, 0)
                     self._run_gpio_command(in2, 1)
-                    self._emulate_pwm(ena, 100, speed, motor_name)  # 100Hz PWM
+                    self._emulate_pwm(ena, 100, safe_speed, motor_name)  # Use safe_speed!
                     if motor in ['A', 'left']:
-                        self.left_speed = -speed
+                        self.left_speed = -speed  # Store original for status
                     else:
                         self.right_speed = -speed
 
                 self.last_command_time = time.time()
-                logger.debug(f"Motor {motor_name}: {direction} at {speed}%")
+                logger.debug(f"Motor {motor_name}: {direction} at {speed}% (PWM: {safe_speed}%)")
+                logger.info(f"Motor voltage: ~{12.6 * safe_speed / 100:.1f}V (safe for 6V motor)")
                 return True
 
             except Exception as e:

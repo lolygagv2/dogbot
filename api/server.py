@@ -941,6 +941,78 @@ async def joystick_control(request: JoystickRequest):
         logger.error(f"Joystick control error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/motor/profile")
+async def set_motor_profile(request: dict):
+    """Set motor speed profile (safe/sport/turbo)"""
+    try:
+        from config.motor_profiles import get_profile_manager
+        profile_mgr = get_profile_manager()
+
+        profile_name = request.get('profile', 'sport').lower()
+        success = profile_mgr.set_profile(profile_name)
+
+        if success:
+            status = profile_mgr.get_status()
+            logger.info(f"Motor profile set to: {profile_name} ({status['max_voltage']}V)")
+            return {
+                "success": True,
+                "profile": profile_name,
+                "status": status
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Invalid profile: {profile_name}",
+                "valid_profiles": ["safe", "sport", "turbo"]
+            }
+    except Exception as e:
+        logger.error(f"Profile change error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/motor/profile")
+async def get_motor_profile():
+    """Get current motor speed profile status"""
+    try:
+        from config.motor_profiles import get_profile_manager
+        profile_mgr = get_profile_manager()
+        status = profile_mgr.get_status()
+
+        return {
+            "success": True,
+            "status": status,
+            "profiles": {
+                "safe": "6V - Standard speed, maximum motor life",
+                "sport": "7V - 15% faster, good balance",
+                "turbo": "8V - 33% faster, moderate wear (Xbox RT trigger)"
+            }
+        }
+    except Exception as e:
+        logger.error(f"Profile status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/motor/turbo")
+async def toggle_turbo(request: dict):
+    """Toggle turbo boost mode"""
+    try:
+        from config.motor_profiles import get_profile_manager
+        profile_mgr = get_profile_manager()
+
+        enable = request.get('enable', False)
+        if enable:
+            profile_mgr.enable_turbo_boost()
+        else:
+            profile_mgr.disable_turbo_boost()
+
+        status = profile_mgr.get_status()
+        return {
+            "success": True,
+            "turbo_active": status['turbo_active'],
+            "status": status
+        }
+    except Exception as e:
+        logger.error(f"Turbo toggle error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/motor/stop")
 async def motor_stop(request: Optional[EmergencyStopRequest] = None):
     """Emergency stop all motors"""

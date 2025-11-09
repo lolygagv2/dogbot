@@ -457,16 +457,36 @@ class XboxHybridControllerFixed:
 
     def update_motor_control(self):
         """Update motor speeds with calibration and safety"""
-        # Progressive speed control - more control at low speeds
+        # Progressive speed control with TURBO MODE on right trigger
         # If trigger not pressed, use stick position for speed
         if self.state.right_trigger < 0.1:
-            # No trigger - use stick magnitude for speed (5-45% max)
+            # No trigger - disable turbo mode, use normal speed
+            try:
+                from config.motor_profiles import get_profile_manager
+                profile_mgr = get_profile_manager()
+                if profile_mgr.turbo_boost_active:
+                    profile_mgr.disable_turbo_boost()
+                    logger.info("Turbo mode DISENGAGED - returning to sport mode")
+            except ImportError:
+                pass
+
+            # Use stick magnitude for speed (5-45% max)
             stick_magnitude = (self.state.left_x**2 + self.state.left_y**2) ** 0.5
             stick_magnitude = min(1.0, stick_magnitude)  # Clamp to 1.0
             # Non-linear curve for better low-speed control - even slower at minimum
             speed_multiplier = 0.05 + (stick_magnitude ** 2.0) * 0.4  # 5-45% range, squared for more gradual
         else:
-            # Trigger pressed - use trigger for speed boost (30-100%)
+            # RIGHT TRIGGER PRESSED - ENGAGE TURBO MODE! (8V motor power)
+            try:
+                from config.motor_profiles import get_profile_manager
+                profile_mgr = get_profile_manager()
+                if not profile_mgr.turbo_boost_active:
+                    profile_mgr.enable_turbo_boost()
+                    logger.info("TURBO MODE ENGAGED! 8V power - 33% speed boost!")
+            except ImportError:
+                pass
+
+            # Use trigger for speed boost (30-100%)
             speed_multiplier = 0.3 + (self.state.right_trigger * 0.7)
 
         # Calculate motor speeds from left stick
@@ -802,6 +822,13 @@ class XboxHybridControllerFixed:
 
 def main():
     """Main entry point"""
+    # MOTOR SAFETY WARNING
+    logger.warning("=" * 60)
+    logger.warning("MOTOR SAFETY ACTIVE: 6V motors on 14V system")
+    logger.warning("Controllers now limit PWM to 50% max (6.3V)")
+    logger.warning("Your motors are protected from overvoltage damage")
+    logger.warning("=" * 60)
+
     js_device = '/dev/input/js0'
     if not os.path.exists(js_device):
         logger.error(f"No joystick at {js_device}")

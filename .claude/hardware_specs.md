@@ -148,12 +148,26 @@ GPIO HIGH → Pi Audio   (NO - Normally Open)
 
 ### Devastator Tank Chassis
 - **Type:** Tracked vehicle (differential drive)
-- **Motors:** 2x DC gear motors with encoders
+- **Motors:** 2x DFRobot FIT0186 DC Gear Motors
+  - **Rated Voltage:** 6V
+  - **Operating Voltage Range:** 2-7.5V
+  - **Gear Reduction Ratio:** 45:1
+  - **D Output Shaft Diameter:** 4mm
+  - **No-load Speed:** 133 RPM @ 6V
+  - **No-load Current:** 0.13A
+  - **Locked-rotor Torque:** 4.5 kg·cm
+  - **Locked-rotor Current:** 2.3A
+  - **⚠️ CRITICAL:** Motors are 6V rated, MUST use PWM to limit voltage from 14V supply
 - **Motor Driver:** L298N H-Bridge
   - **Logic Power:** 5V (from buck converter)
   - **Motor Power:** Direct from battery (12-16.8V)
+  - **Voltage Drop:** ~1.4V typical
   - **Max Current:** 2A per channel
-- **Speed Control:** PWM (0-100%)
+  - **Effective Motor Voltage:** 12.6V (14V - 1.4V drop)
+- **Speed Control:** PWM on enable pins
+  - **Safe PWM Range:** 20-50% duty cycle (2.5-6.3V effective)
+  - **Maximum PWM:** 60% duty cycle (7.5V effective - absolute max)
+  - **⚠️ NEVER use 100% duty cycle (would supply 12.6V to 6V motors)**
 - **Turning:** Differential steering
 
 ### Wheels/Tracks
