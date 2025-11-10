@@ -14,6 +14,8 @@ import logging
 import requests
 import signal
 import threading
+import subprocess
+import atexit
 from threading import Thread, Event, Timer, Lock
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -55,6 +57,41 @@ try:
     logger.info("Connected to event bus for mode management")
 except ImportError:
     logger.info("Event bus not available, running standalone")
+
+logging.basicConfig(level=logging.INFO)
+
+# CRITICAL SAFETY: Global emergency stop function
+def global_emergency_stop():
+    """Emergency stop all motors - works even if Python is frozen"""
+    logger = logging.getLogger('XboxFixed')
+    logger.critical("GLOBAL EMERGENCY STOP TRIGGERED")
+    try:
+        # Use subprocess to ensure GPIO cleanup even if threads are stuck
+        motor_pins = [17, 27, 22, 23, 24, 25]  # All motor control pins
+        for pin in motor_pins:
+            subprocess.run(['gpioset', 'gpiochip0', f'{pin}=0'],
+                          capture_output=True, timeout=0.1)
+        logger.info("All motor pins cleared via emergency stop")
+        # Also kill any stuck gpioset processes
+        subprocess.run(['killall', 'gpioset'], capture_output=True, timeout=0.1)
+    except Exception as e:
+        logger.error(f"Error in emergency stop: {e}")
+
+# CRITICAL SAFETY: Signal handlers
+def signal_handler(sig, frame):
+    """Handle termination signals safely"""
+    logger = logging.getLogger('XboxFixed')
+    logger.warning(f"Received signal {sig} - stopping motors")
+    global_emergency_stop()
+    sys.exit(0)
+
+# Register signal handlers IMMEDIATELY for safety
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGHUP, signal_handler)
+
+# Register emergency stop on program exit
+atexit.register(global_emergency_stop)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -114,6 +151,8 @@ class XboxHybridControllerFixed:
     TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
     MOTOR_UPDATE_RATE = 0.02  # 20ms between motor updates (50Hz) - more responsive
     MOTOR_TIMEOUT = 0.15  # Stop motors if no update in 150ms - faster stop
+    MOTOR_WATCHDOG_TIMEOUT = 0.5  # Emergency stop if no heartbeat for 0.5s
+    CONNECTION_TIMEOUT = 1.0  # Emergency stop if controller disconnected for 1s
 
     # Sound tracks with FULL PATHS for D-pad navigation
     SOUND_TRACKS = [
@@ -176,6 +215,10 @@ class XboxHybridControllerFixed:
         self.motor_watchdog_timer = None
         self.motor_update_thread = None
         self.motor_update_running = False
+        self.watchdog_thread = None
+        self.watchdog_running = False
+        self.last_heartbeat_time = time.time()
+        self.controller_connected = False
 
         # Camera control
         self.camera_update_thread = None
@@ -214,6 +257,9 @@ class XboxHybridControllerFixed:
         # Preload audio system
         self._preload_audio_system()
 
+        # Start safety watchdog thread
+        self._start_watchdog()
+
     def _preload_audio_system(self):
         """Preload audio system to prevent first-time delay"""
         try:
@@ -244,6 +290,39 @@ class XboxHybridControllerFixed:
             except requests.exceptions.RequestException as e:
                 logger.error(f"API request failed: {endpoint} - {e}")
                 return None
+
+    def _start_watchdog(self):
+        """Start watchdog thread for motor safety"""
+        self.watchdog_running = True
+        self.watchdog_thread = Thread(target=self._watchdog_loop, daemon=False)  # NOT daemon!
+        self.watchdog_thread.start()
+        logger.info("Safety watchdog started")
+
+    def _watchdog_loop(self):
+        """Watchdog that stops motors if controller freezes or disconnects"""
+        while self.watchdog_running:
+            try:
+                current_time = time.time()
+
+                # Check for heartbeat timeout
+                if current_time - self.last_heartbeat_time > self.MOTOR_WATCHDOG_TIMEOUT:
+                    if not self.state.motors_stopped:
+                        logger.critical("WATCHDOG: No heartbeat - emergency stop!")
+                        self.emergency_stop()
+                        self.state.motors_stopped = True
+
+                # Check for controller disconnection
+                if self.controller_connected:
+                    if current_time - self.last_heartbeat_time > self.CONNECTION_TIMEOUT:
+                        logger.critical("WATCHDOG: Controller disconnected - emergency stop!")
+                        self.emergency_stop()
+                        self.controller_connected = False
+
+                time.sleep(0.1)  # Check every 100ms
+
+            except Exception as e:
+                logger.error(f"Watchdog error: {e} - stopping motors")
+                self.emergency_stop()
 
     def connect(self) -> bool:
         """Connect to the Xbox controller"""
@@ -777,12 +856,22 @@ class XboxHybridControllerFixed:
             self.cleanup()
 
     def cleanup(self):
-        """Clean up resources"""
+        """Clean up resources with emergency stop"""
         logger.info("Cleaning up...")
+
+        # FIRST: Emergency stop motors immediately
+        self.emergency_stop()
+
+        # Then stop threads
         self.running = False
         self.motor_update_running = False
         self.camera_update_running = False
         self.heartbeat_running = False
+        self.watchdog_running = False  # Stop watchdog
+
+        # Stop watchdog thread
+        if hasattr(self, 'watchdog_thread') and self.watchdog_thread:
+            self.watchdog_thread.join(timeout=1.0)
 
         # Stop motor update thread
         if self.motor_update_thread:
@@ -796,7 +885,7 @@ class XboxHybridControllerFixed:
         if hasattr(self, 'heartbeat_thread'):
             self.heartbeat_thread.join(timeout=1.0)
 
-        # Stop motors
+        # Final motor stop to be sure
         self.stop_motors()
 
         # Clean up motor controller

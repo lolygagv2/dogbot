@@ -6,6 +6,8 @@ Robust motor controller that can recover from errors
 import subprocess
 import time
 import threading
+import signal
+import atexit
 from enum import Enum
 from typing import Optional
 import logging
@@ -18,6 +20,26 @@ from config.pins import TreatBotPins
 from config.settings import SystemSettings
 
 logger = logging.getLogger(__name__)
+
+# CRITICAL SAFETY: Global emergency stop
+def motor_emergency_stop():
+    """Emergency stop all motors via direct GPIO commands"""
+    logger.critical("MOTOR EMERGENCY STOP")
+    motor_pins = [17, 27, 22, 23, 24, 25]  # All motor pins
+    for pin in motor_pins:
+        try:
+            subprocess.run(['gpioset', 'gpiochip0', f'{pin}=0'],
+                          capture_output=True, timeout=0.1)
+        except:
+            pass
+    # Kill any gpioset processes
+    try:
+        subprocess.run(['killall', 'gpioset'], capture_output=True, timeout=0.1)
+    except:
+        pass
+
+# Register emergency stop on exit
+atexit.register(motor_emergency_stop)
 
 class MotorDirection(Enum):
     FORWARD = "forward"
@@ -97,18 +119,23 @@ class MotorControllerRobust:
             # Ensure pin is off when stopping
             self._run_gpio_command(pin, 0)
 
-        thread = threading.Thread(target=pwm_loop, daemon=True)
+        # CRITICAL SAFETY: Use non-daemon thread so it MUST be stopped
+        thread = threading.Thread(target=pwm_loop, daemon=False)
         thread.start()
         self.pwm_threads[pin] = thread
 
     def _stop_pwm_thread(self, pin: int):
-        """Stop PWM emulation thread"""
+        """Stop PWM emulation thread - CRITICAL for safety"""
         if pin in self.pwm_running:
             self.pwm_running[pin] = False
 
         if pin in self.pwm_threads:
             thread = self.pwm_threads[pin]
-            thread.join(timeout=0.2)
+            thread.join(timeout=0.5)  # Increased timeout for safety
+            if thread.is_alive():
+                logger.error(f"WARNING: PWM thread for pin {pin} still alive after timeout!")
+                # Force GPIO to 0 anyway
+                self._run_gpio_command(pin, 0)
             del self.pwm_threads[pin]
 
     def set_motor_speed(self, motor: str, speed: int, direction: str):
@@ -213,9 +240,19 @@ class MotorControllerRobust:
         return True
 
     def cleanup(self):
-        """Cleanup - but don't prevent future use"""
-        logger.info("Motor controller cleanup")
+        """Cleanup - CRITICAL to stop all PWM threads"""
+        logger.info("Motor controller cleanup - stopping all PWM threads")
         self.emergency_stop()
+
+        # Wait for all threads to actually stop
+        for pin in list(self.pwm_threads.keys()):
+            thread = self.pwm_threads.get(pin)
+            if thread and thread.is_alive():
+                logger.warning(f"Waiting for PWM thread on pin {pin} to stop...")
+                thread.join(timeout=1.0)
+                if thread.is_alive():
+                    logger.error(f"PWM thread on pin {pin} won't stop!")
+
         # Don't set anything to None - stay ready for reuse
 
     def get_status(self):
