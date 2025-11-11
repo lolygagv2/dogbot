@@ -10,11 +10,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import uvicorn
 import logging
 import threading
+import cv2
+import io
+import time
 
 # TreatBot imports
 from core.state import get_state, SystemMode
@@ -402,8 +407,8 @@ class LEDCustomColorRequest(BaseModel):
 
 # FastAPI app
 app = FastAPI(
-    title="TreatBot API",
-    description="REST API for TreatBot dog training robot",
+    title="WIM-Z Robot API",
+    description="REST API and WebSocket server for WIM-Z robot control",
     version="1.0.0"
 )
 
@@ -416,10 +421,56 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files for web dashboard
+app.mount("/static", StaticFiles(directory="api/static"), name="static")
+
+# Global camera instance for video streaming
+_camera = None
+_camera_lock = threading.Lock()
+
+def get_camera():
+    """Get or initialize camera instance"""
+    global _camera
+    with _camera_lock:
+        if _camera is None and CAMERA_AVAILABLE:
+            try:
+                _camera = Picamera2()
+                _camera.configure(_camera.create_preview_configuration(main={"size": (640, 480)}))
+                _camera.start()
+                logger.info("Camera initialized for streaming")
+            except Exception as e:
+                logger.error(f"Failed to initialize camera: {e}")
+                _camera = None
+        return _camera
+
+def cleanup_camera():
+    """Clean up camera resources"""
+    global _camera
+    with _camera_lock:
+        if _camera:
+            try:
+                _camera.stop()
+                _camera.close()
+                logger.info("Camera cleaned up")
+            except Exception as e:
+                logger.error(f"Error cleaning up camera: {e}")
+            _camera = None
+
 # Logging
 logger = logging.getLogger('TreatBotAPI')
 
 # Cleanup handler
+# Import WebSocket server
+from api.ws import get_websocket_server
+
+# Camera for video streaming
+try:
+    from picamera2 import Picamera2
+    CAMERA_AVAILABLE = True
+except ImportError:
+    CAMERA_AVAILABLE = False
+    logger.warning("Picamera2 not available - video streaming disabled")
+
 import atexit
 
 def cleanup_hardware():
@@ -429,6 +480,7 @@ def cleanup_hardware():
         logger.info("Cleaning up LED controller...")
         _led_controller.cleanup()
         _led_controller = None
+    cleanup_camera()
 
 atexit.register(cleanup_hardware)
 
@@ -436,10 +488,77 @@ atexit.register(cleanup_hardware)
 async def root():
     """API root endpoint"""
     return {
-        "message": "TreatBot API",
+        "message": "WIM-Z Robot API",
         "version": "1.0.0",
-        "status": "running"
+        "status": "running",
+        "endpoints": {
+            "dashboard": "/dashboard",
+            "video_feed": "/video/feed",
+            "websocket": "/ws",
+            "health": "/health",
+            "docs": "/docs"
+        }
     }
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """Serve the web dashboard"""
+    try:
+        with open("api/static/index.html", "r") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+
+@app.get("/video/feed")
+async def video_feed():
+    """MJPEG video stream endpoint"""
+    if not CAMERA_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Camera not available")
+
+    def generate_mjpeg():
+        camera = get_camera()
+        if camera is None:
+            return
+
+        frame_time = 1/30  # Target 30 FPS
+        last_frame_time = time.time()
+
+        try:
+            while True:
+                current_time = time.time()
+
+                # Skip frames if we're falling behind to prevent latency buildup
+                time_since_last = current_time - last_frame_time
+                if time_since_last < frame_time:
+                    time.sleep(frame_time - time_since_last)
+
+                # Capture frame
+                frame = camera.capture_array()
+                last_frame_time = time.time()
+
+                # Convert to JPEG with optimized settings for speed
+                _, buffer = cv2.imencode('.jpg', frame, [
+                    cv2.IMWRITE_JPEG_QUALITY, 50,  # Lower quality for speed
+                    cv2.IMWRITE_JPEG_OPTIMIZE, 1   # Enable optimization
+                ])
+                frame_bytes = buffer.tobytes()
+
+                # Yield frame in MJPEG format
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+        except Exception as e:
+            logger.error(f"Video streaming error: {e}")
+            return
+
+    return StreamingResponse(generate_mjpeg(),
+                           media_type="multipart/x-mixed-replace; boundary=frame")
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time communication"""
+    ws_server = get_websocket_server()
+    await ws_server.handle_websocket(websocket)
 
 @app.get("/health")
 async def health_check():

@@ -174,6 +174,13 @@ class MotorService:
 
             speed = max(0, min(100, speed))  # Clamp to valid range
 
+            # Rate limiting: Don't send commands too frequently (prevents PWM overflow)
+            now = time.time()
+            min_command_interval = 0.05  # 50ms minimum between commands (20Hz max)
+            if hasattr(self, '_last_command_time') and (now - self._last_command_time) < min_command_interval:
+                return True  # Silently succeed to avoid spamming
+            self._last_command_time = now
+
             # Clear any existing auto-stop timer
             if self.auto_stop_timer:
                 self.auto_stop_timer.cancel()

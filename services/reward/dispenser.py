@@ -80,10 +80,12 @@ class DispenserService:
             bool: True if treat was dispensed successfully
         """
         with self._dispense_lock:
-            # Safety checks
+            # Auto-initialize if not already done
             if not self.servo_initialized:
-                self.logger.error("Dispenser not initialized")
-                return False
+                self.logger.info("Auto-initializing dispenser on first use")
+                if not self.initialize():
+                    self.logger.error("Dispenser auto-initialization failed")
+                    return False
 
             # Check daily limit
             if self.treats_dispensed_today >= self.daily_limit:

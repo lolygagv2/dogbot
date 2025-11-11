@@ -383,6 +383,36 @@ class PanTiltService:
             # Clear target
             self.target_position = None
 
+    def move_camera(self, pan: Optional[float] = None, tilt: Optional[float] = None) -> bool:
+        """
+        Move camera to specified position
+
+        Args:
+            pan: Pan angle in degrees (10-200), None to keep current
+            tilt: Tilt angle in degrees (20-160), None to keep current
+
+        Returns:
+            bool: True if movement was successful
+        """
+        if not self.servo_initialized:
+            self.logger.error("Servos not initialized")
+            return False
+
+        try:
+            # Use current position if not specified
+            target_pan = pan if pan is not None else self.current_pan
+            target_tilt = tilt if tilt is not None else self.current_tilt
+
+            # Use the private method to move
+            self._move_to_position(target_pan, target_tilt)
+
+            self.logger.info(f"Camera moved to pan={target_pan:.1f}°, tilt={target_tilt:.1f}°")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Camera movement error: {e}")
+            return False
+
     def set_tracking_enabled(self, enabled: bool) -> None:
         """Enable/disable tracking"""
         self.tracking_enabled = enabled
