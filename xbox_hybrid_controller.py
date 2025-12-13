@@ -155,40 +155,40 @@ class XboxHybridControllerFixed:
 
     # Sound tracks with FULL PATHS for D-pad navigation
     SOUND_TRACKS = [
-        ("/talks/0001.mp3", "Scooby Intro"),
-        ("/talks/0003.mp3", "Elsa"),
-        ("/talks/0004.mp3", "Bezik"),
-        ("/talks/0005.mp3", "Bezik Come"),
-        ("/talks/0006.mp3", "Elsa Come"),
-        ("/talks/0007.mp3", "Dogs Come"),
-        ("/talks/0008.mp3", "Good Dog"),
-        ("/talks/0009.mp3", "Kahnshik"),
-        ("/talks/0010.mp3", "Lie Down"),
-        ("/talks/0011.mp3", "Quiet"),
-        ("/talks/0012.mp3", "No"),
-        ("/talks/0013.mp3", "Treat"),
-        ("/talks/0014.mp3", "Kokoma"),
-        ("/talks/0015.mp3", "Sit"),
-        ("/talks/0016.mp3", "Spin"),
-        ("/talks/0017.mp3", "Stay"),
-        ("/02/0018.mp3", "Mozart Piano"),
-        ("/02/0019.mp3", "Mozart Concerto"),
-        ("/02/0020.mp3", "Milkshake"),
-        ("/02/0021.mp3", "Yummy"),
-        ("/02/0022.mp3", "Hungry Like Wolf"),
-        ("/02/0023.mp3", "Cake By Ocean"),
-        ("/02/0024.mp3", "Who Let Dogs Out"),
-        ("/02/0025.mp3", "Progress Scan"),
-        ("/02/0026.mp3", "Robot Scan"),
-        ("/02/0027.mp3", "Door Scan"),
-        ("/02/0028.mp3", "Hi Scan"),
-        ("/02/0029.mp3", "Busy Scan"),
-        ("/02/0030.mp3", "Scooby Snacks")
+        ("/talks/scooby_intro.mp3", "Scooby Intro"),
+        ("/talks/elsa.mp3", "Elsa"),
+        ("/talks/bezik.mp3", "Bezik"),
+        ("/talks/bezik_come.mp3", "Bezik Come"),
+        ("/talks/elsa_come.mp3", "Elsa Come"),
+        ("/talks/dogs_come.mp3", "Dogs Come"),
+        ("/talks/good_dog.mp3", "Good Dog"),
+        ("/talks/kahnshik.mp3", "Kahnshik"),
+        ("/talks/lie_down.mp3", "Lie Down"),
+        ("/talks/quiet.mp3", "Quiet"),
+        ("/talks/no.mp3", "No"),
+        ("/talks/treat.mp3", "Treat"),
+        ("/talks/kokoma.mp3", "Kokoma"),
+        ("/talks/sit.mp3", "Sit"),
+        ("/talks/spin.mp3", "Spin"),
+        ("/talks/stay.mp3", "Stay"),
+        ("/songs/mozart_piano.mp3", "Mozart Piano"),
+        ("/songs/mozart_concerto.mp3", "Mozart Concerto"),
+        ("/songs/milkshake.mp3", "Milkshake"),
+        ("/songs/yummy.mp3", "Yummy"),
+        ("/songs/hungry_like_wolf.mp3", "Hungry Like Wolf"),
+        ("/songs/cake_by_ocean.mp3", "Cake By Ocean"),
+        ("/songs/who_let_dogs_out.mp3", "Who Let Dogs Out"),
+        ("/songs/progress_scan.mp3", "Progress Scan"),
+        ("/songs/robot_scan.mp3", "Robot Scan"),
+        ("/songs/door_scan.mp3", "Door Scan"),
+        ("/songs/hi_scan.mp3", "Hi Scan"),
+        ("/songs/busy_scan.mp3", "Busy Scan"),
+        ("/songs/scooby_snacks.mp3", "Scooby Snacks")
     ]
 
     REWARD_SOUNDS = [
-        ("/talks/0008.mp3", "Good Dog"),
-        ("/talks/0013.mp3", "Treat")
+        ("/talks/good_dog.mp3", "Good Dog"),
+        ("/talks/treat.mp3", "Treat")
     ]
 
     def __init__(self, device_path: str = '/dev/input/js0'):
@@ -319,21 +319,21 @@ class XboxHybridControllerFixed:
 
         # Initialize sound tracks for D-pad navigation
         self.SOUND_TRACKS = [
-            ("/talks/0008.mp3", "Good Dog"),
-            ("/talks/0013.mp3", "Treat"),
-            ("/talks/0003.mp3", "Elsa"),
-            ("/talks/0004.mp3", "Bezik"),
-            ("/talks/0005.mp3", "Bezik Come"),
-            ("/talks/0006.mp3", "Elsa Come"),
-            ("/talks/0007.mp3", "Dogs Come"),
-            ("/talks/0010.mp3", "Lie Down"),
-            ("/talks/0011.mp3", "Quiet"),
-            ("/talks/0012.mp3", "No"),
-            ("/talks/0015.mp3", "Sit"),
-            ("/talks/0016.mp3", "Spin"),
-            ("/talks/0017.mp3", "Stay"),
-            ("/02/0024.mp3", "Who Let Dogs Out"),
-            ("/02/0030.mp3", "Scooby Snacks")
+            ("/talks/good_dog.mp3", "Good Dog"),
+            ("/talks/treat.mp3", "Treat"),
+            ("/talks/elsa.mp3", "Elsa"),
+            ("/talks/bezik.mp3", "Bezik"),
+            ("/talks/bezik_come.mp3", "Bezik Come"),
+            ("/talks/elsa_come.mp3", "Elsa Come"),
+            ("/talks/dogs_come.mp3", "Dogs Come"),
+            ("/talks/lie_down.mp3", "Lie Down"),
+            ("/talks/quiet.mp3", "Quiet"),
+            ("/talks/no.mp3", "No"),
+            ("/talks/sit.mp3", "Sit"),
+            ("/talks/spin.mp3", "Spin"),
+            ("/talks/stay.mp3", "Stay"),
+            ("/songs/who_let_dogs_out.mp3", "Who Let Dogs Out"),
+            ("/songs/scooby_snacks.mp3", "Scooby Snacks")
         ]
         logger.info(f"Audio tracks initialized: {len(self.SOUND_TRACKS)} tracks available")
 
@@ -784,7 +784,7 @@ class XboxHybridControllerFixed:
             self.state.b_button = pressed
             if pressed:
                 logger.info("B button: Playing 'Good Dog' audio")
-                self.api_request('POST', '/audio/play/file', {"filepath": "/talks/0008.mp3"})
+                self.api_request('POST', '/audio/play/file', {"filepath": "/talks/good_dog.mp3"})
 
         elif number == 2:  # X button - Toggle LED
             self.state.x_button = pressed
@@ -892,28 +892,28 @@ class XboxHybridControllerFixed:
         """Initialize audio track list for D-pad navigation"""
         # Define available sound tracks for D-pad cycling
         self.SOUND_TRACKS = [
-            ("/talks/0008.mp3", "Good Dog"),
-            ("/talks/0013.mp3", "Treat"),
-            ("/talks/0003.mp3", "Elsa"),
-            ("/talks/0004.mp3", "Bezik"),
-            ("/talks/0005.mp3", "Bezik Come"),
-            ("/talks/0006.mp3", "Elsa Come"),
-            ("/talks/0007.mp3", "Dogs Come"),
-            ("/talks/0010.mp3", "Lie Down"),
-            ("/talks/0011.mp3", "Quiet"),
-            ("/talks/0012.mp3", "No"),
-            ("/talks/0015.mp3", "Sit"),
-            ("/talks/0016.mp3", "Spin"),
-            ("/talks/0017.mp3", "Stay"),
-            ("/02/0024.mp3", "Who Let Dogs Out"),
-            ("/02/0030.mp3", "Scooby Snacks")
+            ("/talks/good_dog.mp3", "Good Dog"),
+            ("/talks/treat.mp3", "Treat"),
+            ("/talks/elsa.mp3", "Elsa"),
+            ("/talks/bezik.mp3", "Bezik"),
+            ("/talks/bezik_come.mp3", "Bezik Come"),
+            ("/talks/elsa_come.mp3", "Elsa Come"),
+            ("/talks/dogs_come.mp3", "Dogs Come"),
+            ("/talks/lie_down.mp3", "Lie Down"),
+            ("/talks/quiet.mp3", "Quiet"),
+            ("/talks/no.mp3", "No"),
+            ("/talks/sit.mp3", "Sit"),
+            ("/talks/spin.mp3", "Spin"),
+            ("/talks/stay.mp3", "Stay"),
+            ("/songs/who_let_dogs_out.mp3", "Who Let Dogs Out"),
+            ("/songs/scooby_snacks.mp3", "Scooby Snacks")
         ]
         logger.info(f"Audio system preloaded: {len(self.SOUND_TRACKS)} tracks available")
 
     def play_reward_sound(self):
         """Play TREAT sound (Y button)"""
         logger.info("Y button: Playing 'Treat' sound")
-        self.api_request('POST', '/audio/play_file', {"path": "/talks/0013.mp3", "name": "Treat"})
+        self.api_request('POST', '/audio/play_file', {"path": "/talks/treat.mp3", "name": "Treat"})
 
 
     def play_sound_effect(self):
