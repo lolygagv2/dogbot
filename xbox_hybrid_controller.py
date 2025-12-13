@@ -230,6 +230,8 @@ class XboxHybridControllerFixed:
 
         # Sound navigation
         self.current_sound_index = 0
+        self.last_dpad_time = 0
+        self.dpad_cooldown = 0.3  # 300ms cooldown between D-pad presses
 
         # LED state tracking
         self.led_enabled = False
@@ -261,7 +263,7 @@ class XboxHybridControllerFixed:
         self._start_watchdog()
 
     def _preload_audio_system(self):
-        """Preload audio system to prevent first-time delay"""
+        """Preload audio system and initialize sound tracks"""
         try:
             logger.info("Preloading audio system...")
             result = self.api_request('GET', '/audio/status')
@@ -269,6 +271,26 @@ class XboxHybridControllerFixed:
                 logger.info("Audio system preloaded successfully")
         except Exception as e:
             logger.warning(f"Audio preload error: {e}")
+
+        # Initialize sound tracks for D-pad navigation
+        self.SOUND_TRACKS = [
+            ("/talks/0008.mp3", "Good Dog"),
+            ("/talks/0013.mp3", "Treat"),
+            ("/talks/0003.mp3", "Elsa"),
+            ("/talks/0004.mp3", "Bezik"),
+            ("/talks/0005.mp3", "Bezik Come"),
+            ("/talks/0006.mp3", "Elsa Come"),
+            ("/talks/0007.mp3", "Dogs Come"),
+            ("/talks/0010.mp3", "Lie Down"),
+            ("/talks/0011.mp3", "Quiet"),
+            ("/talks/0012.mp3", "No"),
+            ("/talks/0015.mp3", "Sit"),
+            ("/talks/0016.mp3", "Spin"),
+            ("/talks/0017.mp3", "Stay"),
+            ("/02/0024.mp3", "Who Let Dogs Out"),
+            ("/02/0030.mp3", "Scooby Snacks")
+        ]
+        logger.info(f"Audio tracks initialized: {len(self.SOUND_TRACKS)} tracks available")
 
     def api_request(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
         """Thread-safe API request with error handling"""
@@ -652,11 +674,11 @@ class XboxHybridControllerFixed:
                 logger.info("A button: Emergency stop")
                 self.emergency_stop()
 
-        elif number == 1:  # B button - Stop motors
+        elif number == 1:  # B button - Play "Good Dog" audio
             self.state.b_button = pressed
             if pressed:
-                logger.info("B button: Stop motors")
-                self.stop_motors()
+                logger.info("B button: Playing 'Good Dog' audio")
+                self.api_request('POST', '/audio/play/file', {"filepath": "/talks/0008.mp3"})
 
         elif number == 2:  # X button - Toggle LED
             self.state.x_button = pressed
@@ -775,12 +797,12 @@ class XboxHybridControllerFixed:
             logger.info("Y button: Playing 'Good Dog' sound")
             self.api_request('POST', '/audio/play', {"track": 8, "name": "Good Dog"})
 
+
     def play_sound_effect(self):
         """Play selected sound effect (D-pad down)"""
         file_path, track_name = self.SOUND_TRACKS[self.current_sound_index]
         logger.info(f"Playing: {track_name} ({file_path})")
-        # Send the file path directly
-        self.api_request('POST', '/audio/play_file', {"path": file_path, "name": track_name})
+        self.api_request('POST', '/audio/play/file', {"filepath": file_path})
 
     def process_dpad(self, number: int, value: int):
         """Process D-pad input"""
@@ -791,24 +813,35 @@ class XboxHybridControllerFixed:
             self.state.dpad_left = (value < 0)
             self.state.dpad_right = (value > 0)
 
+            # Add cooldown to prevent rapid cycling
+            current_time = time.time()
+            if current_time - self.last_dpad_time < self.dpad_cooldown:
+                return
+
             if value < 0:  # Left - Previous track
                 self.current_sound_index = (self.current_sound_index - 1) % len(self.SOUND_TRACKS)
                 file_path, track_name = self.SOUND_TRACKS[self.current_sound_index]
                 logger.info(f"Selected: {track_name}")
+                self.last_dpad_time = current_time
             elif value > 0:  # Right - Next track
                 self.current_sound_index = (self.current_sound_index + 1) % len(self.SOUND_TRACKS)
                 file_path, track_name = self.SOUND_TRACKS[self.current_sound_index]
                 logger.info(f"Selected: {track_name}")
+                self.last_dpad_time = current_time
 
         elif number == 7:  # D-pad Y axis
             self.state.dpad_up = (value < 0)
             self.state.dpad_down = (value > 0)
 
-            if value < 0:  # Up - Pause/Resume
-                logger.info("D-pad up: Pause/Resume")
-                self.api_request('POST', '/audio/pause')
+            if value < 0:  # Up - Stop audio
+                logger.info("D-pad up: Stop audio")
+                self.api_request('POST', '/audio/stop')
             elif value > 0:  # Down - Play selected
-                self.play_sound_effect()
+                # Add cooldown to prevent rapid audio triggering
+                current_time = time.time()
+                if current_time - self.last_dpad_time >= self.dpad_cooldown:
+                    self.play_sound_effect()
+                    self.last_dpad_time = current_time
 
     def run(self):
         """Main control loop"""
