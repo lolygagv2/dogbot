@@ -23,25 +23,24 @@ from typing import Optional, Tuple
 # Add project root to path for direct imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Direct hardware import for motors - use robust version
+# Import motor control modules but don't initialize yet
 try:
-    from core.hardware.motor_controller_robust import MotorControllerRobust as MotorController
-    MOTOR_DIRECT = True
-    motor_controller = MotorController()
-    logger = logging.getLogger('XboxFixed')
-    logger.info("Robust motor control initialized")
+    from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+    MOTOR_BUS_AVAILABLE = True
 except ImportError:
-    try:
-        from core.hardware.motor_controller import MotorController
-        MOTOR_DIRECT = True
-        motor_controller = MotorController()
-        logger = logging.getLogger('XboxFixed')
-        logger.info("Direct motor control initialized (fallback)")
-    except ImportError:
-        MOTOR_DIRECT = False
-        motor_controller = None
-        logger = logging.getLogger('XboxFixed')
-        logger.warning("No direct motor control available, will use API")
+    MOTOR_BUS_AVAILABLE = False
+
+try:
+    from core.hardware.motor_controller_dfrobot_encoder import DFRobotEncoderMotorController
+    MOTOR_CONTROLLER_AVAILABLE = True
+except ImportError:
+    MOTOR_CONTROLLER_AVAILABLE = False
+
+# Initialize after imports
+motor_bus = None
+motor_controller = None
+MOTOR_DIRECT = False
+logger = logging.getLogger('XboxFixed')
 
 # Disable direct servo control - use API for reliability
 # Direct servo control can freeze due to GPIO cleanup issues
@@ -138,19 +137,19 @@ class XboxHybridControllerFixed:
     # API configuration
     API_BASE_URL = "http://localhost:8000"
 
-    # Controller configuration
-    DEADZONE = 0.15
+    # Controller configuration - FIXED FOR SMOOTH CONTROL
+    DEADZONE = 0.10  # Smaller deadzone for more responsiveness
     TRIGGER_DEADZONE = 0.1
     MAX_SPEED = 100
-    TURN_SPEED_FACTOR = 0.6
+    TURN_SPEED_FACTOR = 0.7  # Better turning response
 
     # Motor calibration (right motor needs boost)
     RIGHT_MOTOR_BOOST = 1.13  # 13% boost for right motor to match left (was 1.10)
 
-    # Safety features
+    # Safety features - FIXED FOR SMOOTH CONTROL
     TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
-    MOTOR_UPDATE_RATE = 0.02  # 20ms between motor updates (50Hz) - more responsive
-    MOTOR_TIMEOUT = 0.15  # Stop motors if no update in 150ms - faster stop
+    MOTOR_UPDATE_RATE = 0.05  # 50ms between motor updates - prevent conflicts with motor bus
+    MOTOR_TIMEOUT = 1.0  # Longer timeout to prevent jerky stops
     MOTOR_WATCHDOG_TIMEOUT = 0.5  # Emergency stop if no heartbeat for 0.5s
     CONNECTION_TIMEOUT = 1.0  # Emergency stop if controller disconnected for 1s
 
@@ -215,10 +214,7 @@ class XboxHybridControllerFixed:
         self.motor_watchdog_timer = None
         self.motor_update_thread = None
         self.motor_update_running = False
-        self.watchdog_thread = None
-        self.watchdog_running = False
-        self.last_heartbeat_time = time.time()
-        self.controller_connected = False
+        # REMOVED: Watchdog variables - using motor command bus safety instead
 
         # Camera control
         self.camera_update_thread = None
@@ -251,16 +247,65 @@ class XboxHybridControllerFixed:
         self.session = requests.Session()
         self.session.headers.update({'Content-Type': 'application/json'})
 
+        # Motor control system
+        self.motor_bus = None
+        self.motor_controller = None
+        self.motor_direct = False
+
+        # Initialize motor control
+        self._initialize_motor_system()
+
         logger.info(f"Xbox Fixed Controller initialized for {device_path}")
-        logger.info(f"Motor control: {'DIRECT' if MOTOR_DIRECT else 'API'}")
+        logger.info(f"Motor control: {'DIRECT' if self.motor_direct else 'API'}")
         logger.info(f"Right motor boost: {self.RIGHT_MOTOR_BOOST}x")
         logger.info(f"API endpoint: {self.API_BASE_URL}")
 
         # Preload audio system
         self._preload_audio_system()
 
-        # Start safety watchdog thread
-        self._start_watchdog()
+        # DISABLED: Xbox watchdog conflicts with motor command bus watchdog
+        # Motor command bus already provides safety with 5-second timeout
+        # self._start_watchdog()
+
+    def _initialize_motor_system(self):
+        """Initialize motor control system with fallback options"""
+        global motor_bus, motor_controller, MOTOR_DIRECT
+
+        if MOTOR_BUS_AVAILABLE:
+            try:
+                self.motor_bus = get_motor_bus()
+                if self.motor_bus.start():
+                    self.motor_direct = True
+                    motor_bus = self.motor_bus  # Update global reference
+                    MOTOR_DIRECT = True
+                    logger.info("✅ Motor command bus with polling encoders initialized")
+                    return
+                else:
+                    logger.warning("Motor command bus failed to start")
+                    self.motor_bus = None
+            except Exception as e:
+                logger.error(f"Motor bus initialization error: {e}")
+                self.motor_bus = None
+
+        if MOTOR_CONTROLLER_AVAILABLE:
+            try:
+                self.motor_controller = DFRobotEncoderMotorController()
+                if self.motor_controller.initialize():
+                    self.motor_direct = True
+                    motor_controller = self.motor_controller  # Update global reference
+                    MOTOR_DIRECT = True
+                    logger.info("✅ DFRobot encoder motor control initialized (fallback)")
+                    return
+                else:
+                    logger.warning("DFRobot motor controller failed to initialize")
+                    self.motor_controller = None
+            except Exception as e:
+                logger.error(f"Motor controller initialization error: {e}")
+                self.motor_controller = None
+
+        logger.warning("❌ No motor control available, will use API")
+        self.motor_direct = False
+        MOTOR_DIRECT = False
 
     def _preload_audio_system(self):
         """Preload audio system and initialize sound tracks"""
@@ -466,13 +511,19 @@ class XboxHybridControllerFixed:
                     # Update motor speeds
                     with self.motor_lock:
                         self.update_motor_control()
-                elif current_time - self.last_motor_command_time > self.MOTOR_TIMEOUT:
-                    # Only stop if truly no input for timeout period
+                else:
+                    # FIXED: Send stop commands to keep motor bus alive even when stick centered
                     if not self.state.motors_stopped:
                         with self.motor_lock:
-                            self._stop_motors_internal()
+                            self.set_motor_speeds(0, 0)  # Send explicit stop command
                             self.state.motors_stopped = True
-                            logger.debug("Motors stopped (timeout - no input)")
+                            logger.debug("Motors stopped (no input)")
+                    else:
+                        # Send periodic heartbeat stop commands to prevent watchdog timeout
+                        if current_time - self.last_motor_command_time > 2.0:  # Every 2 seconds
+                            with self.motor_lock:
+                                self.set_motor_speeds(0, 0)  # Heartbeat stop command
+                            self.last_motor_command_time = current_time
 
                 time.sleep(self.MOTOR_UPDATE_RATE)
 
@@ -482,9 +533,18 @@ class XboxHybridControllerFixed:
 
     def _stop_motors_internal(self):
         """Internal motor stop without lock (call with motor_lock held)"""
-        if MOTOR_DIRECT and motor_controller:
+        if self.motor_direct and self.motor_bus:
             try:
-                motor_controller.emergency_stop()
+                cmd = create_motor_command(0, 0, CommandSource.XBOX_CONTROLLER)
+                self.motor_bus.send_command(cmd)
+                self.state.last_left_speed = 0
+                self.state.last_right_speed = 0
+                return True
+            except Exception as e:
+                logger.error(f"Motor bus stop error: {e}")
+        elif self.motor_direct and self.motor_controller:
+            try:
+                self.motor_controller.emergency_stop()
                 self.state.last_left_speed = 0
                 self.state.last_right_speed = 0
                 return True
@@ -558,37 +618,20 @@ class XboxHybridControllerFixed:
 
     def update_motor_control(self):
         """Update motor speeds with calibration and safety"""
-        # Progressive speed control with TURBO MODE on right trigger
-        # If trigger not pressed, use stick position for speed
+        # FIXED: Simple linear speed control - no complex turbo mode BS
         if self.state.right_trigger < 0.1:
-            # No trigger - disable turbo mode, use normal speed
-            try:
-                from config.motor_profiles import get_profile_manager
-                profile_mgr = get_profile_manager()
-                if profile_mgr.turbo_boost_active:
-                    profile_mgr.disable_turbo_boost()
-                    logger.info("Turbo mode DISENGAGED - returning to sport mode")
-            except ImportError:
-                pass
-
-            # Use stick magnitude for speed (5-45% max)
+            # Normal mode: 30-70% speed range (enough power for DFRobot motors)
             stick_magnitude = (self.state.left_x**2 + self.state.left_y**2) ** 0.5
             stick_magnitude = min(1.0, stick_magnitude)  # Clamp to 1.0
-            # Non-linear curve for better low-speed control - even slower at minimum
-            speed_multiplier = 0.05 + (stick_magnitude ** 2.0) * 0.4  # 5-45% range, squared for more gradual
+            # Linear response curve for predictable control
+            speed_multiplier = 0.30 + (stick_magnitude * 0.40)  # 30-70% range, LINEAR
         else:
-            # RIGHT TRIGGER PRESSED - ENGAGE TURBO MODE! (8V motor power)
-            try:
-                from config.motor_profiles import get_profile_manager
-                profile_mgr = get_profile_manager()
-                if not profile_mgr.turbo_boost_active:
-                    profile_mgr.enable_turbo_boost()
-                    logger.info("TURBO MODE ENGAGED! 8V power - 33% speed boost!")
-            except ImportError:
-                pass
-
-            # Use trigger for speed boost (30-100%)
-            speed_multiplier = 0.3 + (self.state.right_trigger * 0.7)
+            # Trigger pressed: 70-100% speed range for more power
+            base_speed = 0.30 + (self.state.right_trigger * 0.40)  # 30-70% from trigger
+            stick_magnitude = (self.state.left_x**2 + self.state.left_y**2) ** 0.5
+            stick_magnitude = min(1.0, stick_magnitude)
+            # Combine trigger base with stick magnitude for 70-100% range
+            speed_multiplier = base_speed + (stick_magnitude * 0.30)  # Up to 100%
 
         # Calculate motor speeds from left stick
         forward = self.state.left_y * self.MAX_SPEED * speed_multiplier
@@ -599,6 +642,13 @@ class XboxHybridControllerFixed:
         left_speed = int(forward - turn)  # Inverted
         right_speed = int(forward + turn)  # Inverted
 
+        # For pure turns (no forward movement), ensure minimum turning speeds
+        if abs(forward) < 5 and abs(turn) > 10:
+            # Pure turn - boost speeds to ensure movement
+            turn_boost = 1.5  # Boost turning by 50%
+            left_speed = int((forward - turn) * turn_boost)
+            right_speed = int((forward + turn) * turn_boost)
+
         # Apply right motor boost for straight driving
         if abs(turn) < 10:  # Going mostly straight
             right_speed = int(right_speed * self.RIGHT_MOTOR_BOOST)
@@ -607,14 +657,16 @@ class XboxHybridControllerFixed:
         left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
         right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
 
-        # Rate limiting - only update if enough time has passed
+        # FIXED: Minimal rate limiting to prevent stuttering
         current_time = time.time()
-        if current_time - self.last_motor_update < self.MOTOR_UPDATE_RATE:
+
+        # Only rate limit if sending too frequently (10Hz max)
+        if current_time - self.last_motor_update < 0.1:
             return
 
-        # Only send if changed (lower threshold for better responsiveness)
-        if (abs(left_speed - self.state.last_left_speed) > 2 or
-            abs(right_speed - self.state.last_right_speed) > 2 or
+        # Send if any meaningful change (lower threshold for smooth control)
+        if (abs(left_speed - self.state.last_left_speed) > 1 or
+            abs(right_speed - self.state.last_right_speed) > 1 or
             (left_speed == 0 and right_speed == 0 and not self.state.motors_stopped)):
 
             self.set_motor_speeds(left_speed, right_speed)
@@ -624,32 +676,86 @@ class XboxHybridControllerFixed:
             self.last_motor_update = current_time
 
     def set_motor_speeds(self, left: int, right: int):
-        """Set motor speeds with proper error handling"""
-        if MOTOR_DIRECT and motor_controller:
+        """
+        Set motor speeds using motor command bus (preferred) or direct controller
+
+        Motor command bus handles all hardware compensation automatically
+        """
+        if self.motor_direct and self.motor_bus:
+            try:
+                # Use motor command bus - it handles all hardware compensation
+                cmd = create_motor_command(left, right, CommandSource.XBOX_CONTROLLER)
+                success = self.motor_bus.send_command(cmd)
+
+                if success:
+                    # Get encoder feedback if available
+                    if hasattr(self.motor_bus.motor_controller, 'get_encoder_counts'):
+                        left_enc, right_enc = self.motor_bus.motor_controller.get_encoder_counts()
+                        logger.debug(f"Motors: L={left:4d}, R={right:4d} | Encoders: L={left_enc}, R={right_enc}")
+                    else:
+                        logger.debug(f"Motors: L={left:4d}, R={right:4d}")
+                else:
+                    logger.error("Motor command bus failed")
+
+            except Exception as e:
+                logger.error(f"Motor bus control error: {e}")
+
+        elif self.motor_direct and self.motor_controller:
+            # Fallback to direct motor controller (legacy path with manual compensation)
             try:
                 if left == 0 and right == 0:
-                    motor_controller.emergency_stop()
+                    # Gentle stop - set both motors to 0 speed
+                    motor_controller.set_motor_speed('left', 0, 'forward')
+                    motor_controller.set_motor_speed('right', 0, 'forward')
+                    logger.debug(f"Motors: STOPPED (gentle)")
                 else:
-                    left_dir = 'forward' if left >= 0 else 'backward'
-                    right_dir = 'forward' if right >= 0 else 'backward'
-                    left_speed = abs(left)
-                    right_speed = abs(right)
+                    # HARDWARE COMPENSATION (legacy - motor bus handles this now):
+                    # Swap left/right because wires are physically swapped
+                    actual_left_speed = right  # What we want left track to do
+                    actual_right_speed = left  # What we want right track to do
 
-                    motor_controller.set_motor_speed('A', left_speed, left_dir)
-                    motor_controller.set_motor_speed('B', right_speed, right_dir)
-                    logger.debug(f"Motors: L={left:4d}, R={right:4d}")
+                    # Calculate directions
+                    actual_left_dir = 'forward' if actual_left_speed >= 0 else 'backward'
+                    actual_right_dir = 'forward' if actual_right_speed >= 0 else 'backward'
+
+                    # Invert right motor direction (hardware is wired backwards)
+                    if actual_right_dir == 'forward':
+                        actual_right_dir = 'backward'
+                    elif actual_right_dir == 'backward':
+                        actual_right_dir = 'forward'
+
+                    # Get absolute speeds
+                    actual_left_speed_abs = abs(actual_left_speed)
+                    actual_right_speed_abs = abs(actual_right_speed)
+
+                    # Apply minimum speed for DFRobot motors (they need 30% minimum)
+                    if actual_left_speed_abs > 0 and actual_left_speed_abs < 30:
+                        actual_left_speed_abs = 30
+                    if actual_right_speed_abs > 0 and actual_right_speed_abs < 30:
+                        actual_right_speed_abs = 30
+
+                    # Send commands to motor controller with swapped assignment
+                    # (motor_controller 'left' controls actual right track)
+                    # (motor_controller 'right' controls actual left track)
+                    self.motor_controller.set_motor_speed('right', actual_left_speed_abs, actual_left_dir)  # Swapped!
+                    self.motor_controller.set_motor_speed('left', actual_right_speed_abs, actual_right_dir)  # Swapped!
+
+                    logger.debug(f"LEGACY: L={left:4d}, R={right:4d} | "
+                                f"MC_L→RightTrack={actual_right_speed_abs}{actual_right_dir[0]}, "
+                                f"MC_R→LeftTrack={actual_left_speed_abs}{actual_left_dir[0]}")
             except Exception as e:
                 logger.error(f"Motor control error: {e}")
                 # Try to stop motors on error
                 try:
-                    motor_controller.emergency_stop()
+                    self.motor_controller.set_motor_speed('left', 0, 'forward')
+                    self.motor_controller.set_motor_speed('right', 0, 'forward')
                 except:
                     pass
 
     def stop_motors(self):
         """Stop all motors with lock"""
         with self.motor_lock:
-            self._stop_motors_internal()
+            self.set_motor_speeds(0, 0)
             self.state.motors_stopped = True
             logger.info("Motors stopped")
 
@@ -657,7 +763,7 @@ class XboxHybridControllerFixed:
         """Emergency stop - immediate halt"""
         logger.warning("EMERGENCY STOP activated")
         with self.motor_lock:
-            self._stop_motors_internal()
+            self.set_motor_speeds(0, 0)
             self.state.motors_stopped = True
         # Also send via API as backup
         self.api_request('POST', '/motor/stop', {"reason": "emergency"})
@@ -782,20 +888,32 @@ class XboxHybridControllerFixed:
         if result and result.get('success'):
             logger.info(f"NeoPixel LEDs set to {mode}")
 
+    def _preload_audio_system(self):
+        """Initialize audio track list for D-pad navigation"""
+        # Define available sound tracks for D-pad cycling
+        self.SOUND_TRACKS = [
+            ("/talks/0008.mp3", "Good Dog"),
+            ("/talks/0013.mp3", "Treat"),
+            ("/talks/0003.mp3", "Elsa"),
+            ("/talks/0004.mp3", "Bezik"),
+            ("/talks/0005.mp3", "Bezik Come"),
+            ("/talks/0006.mp3", "Elsa Come"),
+            ("/talks/0007.mp3", "Dogs Come"),
+            ("/talks/0010.mp3", "Lie Down"),
+            ("/talks/0011.mp3", "Quiet"),
+            ("/talks/0012.mp3", "No"),
+            ("/talks/0015.mp3", "Sit"),
+            ("/talks/0016.mp3", "Spin"),
+            ("/talks/0017.mp3", "Stay"),
+            ("/02/0024.mp3", "Who Let Dogs Out"),
+            ("/02/0030.mp3", "Scooby Snacks")
+        ]
+        logger.info(f"Audio system preloaded: {len(self.SOUND_TRACKS)} tracks available")
+
     def play_reward_sound(self):
-        """Play alternating reward sounds (Y button)"""
-        # Initialize press counter if needed
-        if not hasattr(self, 'y_press_count'):
-            self.y_press_count = 0
-
-        self.y_press_count += 1
-
-        if self.y_press_count % 2 == 1:  # Odd press = Treat
-            logger.info("Y button: Playing 'Treat' sound")
-            self.api_request('POST', '/audio/play', {"track": 13, "name": "Treat"})
-        else:  # Even press = Good Dog
-            logger.info("Y button: Playing 'Good Dog' sound")
-            self.api_request('POST', '/audio/play', {"track": 8, "name": "Good Dog"})
+        """Play TREAT sound (Y button)"""
+        logger.info("Y button: Playing 'Treat' sound")
+        self.api_request('POST', '/audio/play_file', {"path": "/talks/0013.mp3", "name": "Treat"})
 
 
     def play_sound_effect(self):
@@ -900,11 +1018,7 @@ class XboxHybridControllerFixed:
         self.motor_update_running = False
         self.camera_update_running = False
         self.heartbeat_running = False
-        self.watchdog_running = False  # Stop watchdog
-
-        # Stop watchdog thread
-        if hasattr(self, 'watchdog_thread') and self.watchdog_thread:
-            self.watchdog_thread.join(timeout=1.0)
+        # REMOVED: Watchdog thread cleanup - no longer using Xbox watchdog
 
         # Stop motor update thread
         if self.motor_update_thread:
@@ -921,10 +1035,15 @@ class XboxHybridControllerFixed:
         # Final motor stop to be sure
         self.stop_motors()
 
-        # Clean up motor controller
-        if MOTOR_DIRECT and motor_controller:
+        # Clean up motor system
+        if self.motor_direct and self.motor_bus:
             try:
-                motor_controller.cleanup()
+                self.motor_bus.stop()
+            except:
+                pass
+        elif self.motor_direct and self.motor_controller:
+            try:
+                self.motor_controller.cleanup()
             except:
                 pass
 

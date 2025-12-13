@@ -1,6 +1,144 @@
 # Resume Chat Context - WIM-Z Session Log
 
-## Latest Session: 2025-11-10 18:00
+## Latest Session: 2025-12-11 (Motor Control Debugging)
+**Goal:** Fix Xbox controller motor control for demo
+**Status:** 🚧 Hardware wiring issues identified, motor controller rebuilt
+**Duration:** 4+ hours
+
+### Work Completed:
+- ✅ Fixed USB audio system (DFPlayer → pygame USB audio)
+- ✅ Updated Y button to play TREAT audio specifically
+- ✅ Confirmed Xbox controller axes 0,1,5 working correctly
+- ✅ Built unified motor command bus architecture with safety watchdog
+- ✅ Performed comprehensive hardware GPIO verification
+- 🚧 Identified L298N wiring configuration through direct GPIO testing
+
+### Critical Hardware Discovery:
+**L298N Motor Driver Actual Wiring (Verified via GPIO):**
+- Motor A Forward (IN1=1, IN2=0) → **NOTHING** (broken/disconnected)
+- Motor A Backward (IN1=0, IN2=1) → **RIGHT track forward** ✅
+- Motor B Forward (IN3=1, IN4=0) → **LEFT track forward** ✅
+- Motor B Backward (IN3=0, IN4=1) → **RIGHT track backward** ✅
+
+**Available movements:**
+- ✅ Left forward (Motor B forward)
+- ✅ Right forward (Motor A backward)
+- ✅ Right backward (Motor B backward)
+- ❌ Left backward (Motor A forward = broken)
+
+### Key Solutions:
+- Replaced DFPlayer with USB audio via pygame
+- Fixed USB audio volume (3% → 80%)
+- Created hardware-first verification approach instead of software assumptions
+- Built motor controller matching actual L298N wiring configuration
+- Implemented encoder support for odometry tracking
+
+### Files Modified:
+- **api/server.py** - Updated audio service calls
+- **services/media/usb_audio.py** - Fixed USB card routing
+- **core/motor_command_bus.py** - Created unified motor control (NEW)
+- **xbox_bus_controller.py** - Clean Xbox implementation using command bus (NEW)
+- **core/hardware/motor_controller_dfrobot_encoder.py** - Fixed motor mapping
+- **test_hardware_first.py** - GPIO verification script (NEW)
+- **test_simple_motors.py, test_gpio_direct.py** - Motor testing scripts (NEW)
+
+### Next Session Priority:
+**IMMEDIATE:** Fix Motor A forward connection (GPIO17 → L298N IN1)
+- Check GPIO17 (Pin 11) connection to L298N IN1 pin
+- Verify Motor A output wires to right motor
+- Consider swapping IN1/IN2 if direction is inverted
+
+**Once fixed:** Full differential steering should work:
+- Left forward: Motor B forward
+- Left backward: Motor A forward (once fixed)
+- Right forward: Motor A backward
+- Right backward: Motor B backward
+
+### Hardware Specs Reference:
+```
+GPIO17 (Pin 11) → L298N IN1  (Motor A Direction 1) ← CHECK THIS CONNECTION
+GPIO18 (Pin 12) → L298N IN2  (Motor A Direction 2) ← Works
+GPIO27 (Pin 13) → L298N IN3  (Motor B Direction 1) ← Works
+GPIO22 (Pin 15) → L298N IN4  (Motor B Direction 2) ← Works
+GPIO13 (Pin 33) → L298N ENA  (Motor A Enable) ← Works
+GPIO19 (Pin 35) → L298N ENB  (Motor B Enable) ← Works
+```
+
+### Encoder Configuration (Working):
+- ENCODER_A1 = GPIO4 (Pin 7) - Left motor encoder A
+- ENCODER_B1 = GPIO23 (Pin 16) - Left motor encoder B
+- ENCODER_A2 = GPIO5 (Pin 29) - Right motor encoder A
+- ENCODER_B2 = GPIO6 (Pin 31) - Right motor encoder B
+
+### Important Notes/Warnings:
+- **Hardware-first debugging approach works!** Always verify GPIO connections before writing software
+- Motor controller now matches actual wiring vs making assumptions
+- Xbox controller differential steering calculations are correct
+- Only one GPIO connection needs fixing for full functionality
+- Audio system fully operational for demo
+
+### Demo Status:
+- ✅ Audio: Y button plays TREAT, volume fixed
+- ✅ Xbox controller: Connected, axes confirmed
+- 🚧 Motors: 3 of 4 directions working, 1 connection to fix
+- ✅ Architecture: Unified command bus with safety features
+
+**Ready for demo once Motor A forward is fixed (likely just GPIO17 connection)**
+
+---
+
+## Previous Session: 2025-11-25 16:00
+**Goal:** Document 3-week hardware upgrades and prepare for testing
+**Status:** ✅ Documentation Complete, Ready for Hardware Testing
+**Duration:** 1 hour
+
+### 🔧 Major Hardware Upgrades Documented:
+
+#### **Component Upgrades Completed:**
+1. **Motors:** Upgraded to DFRobot Metal DC Motors w/Encoders
+   - Specs: 6V 210RPM 10Kg.cm (2.2x torque, 57% faster)
+   - Status: ⚠️ Installed but only produces "clicks" - needs PWM recalibration
+
+2. **Audio:** Conference microphone upgrade (from lapel mic)
+   - Status: ⚠️ Needs audio quality testing
+
+3. **Camera:** Longer camera cable installed
+   - Status: ⚠️ Needs functionality verification
+
+#### **New Hardware Added (Currently Offline):**
+4. **IR Sensors:** 3x rear sensors for Roomba-style docking
+   - Issue: ⚠️ Caused Pi startup failure when connected
+   - Status: Hardware present but disconnected
+
+5. **Charging Pads:** Bare metal plates wired to P+/P-
+   - Issue: ⚠️ May be contributing to Pi startup problems
+   - Status: Hardware present but disconnected
+
+### 📋 Documentation Updates:
+- Updated hardware_specs.md with GPIO pin mapping and new components
+- Reorganized development_todos.md with hardware integration priorities
+- Updated product_roadmap.md with current hardware status
+- Created resumeA_Chat.md session summary
+
+### 🎯 Critical Issues Identified:
+1. **BLOCKING:** Motor control needs reconfiguration for new DFRobot motors
+2. **HIGH:** Power issues causing Pi startup failure with IR/charging systems
+3. **MEDIUM:** Component validation needed for upgraded parts
+
+### ⚠️ Next Session Priorities:
+1. Debug motor control (PWM recalibration for new motors)
+2. Resolve power issues with IR sensors and charging pads
+3. Test conference microphone and camera cable
+4. Return to software integration once hardware stable
+
+### 📊 Project Status:
+- **Hardware:** Final MVP configuration reached
+- **Software:** Web dashboard complete, core architecture 85% done
+- **Blockers:** Hardware debugging required before full system test
+
+---
+
+## Previous Session: 2025-11-10 18:00
 **Goal:** Web Dashboard Camera Control Calibration & Motor Error Resolution
 **Status:** ✅ **COMPLETE**
 **Duration:** ~45 minutes

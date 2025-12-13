@@ -30,19 +30,37 @@ controller.set_servo_angle('carousel', angle)  # Will spin continuously!
 kit.continuous_servo[2].throttle = 0.0  # Abrupt stop causes screech
 ```
 
-### 📹 Camera Pan Servo
-**Servo:** Standard position servo
+### 📹 Camera Pan Servo (MG996R)
+**Servo:** MG996R high-torque servo (extended range)
 **Channel:** 0 (PCA9685)
 **Function:** Left/right camera movement
-**Range:** -90° to +90°
-**Control Method:** `kit.servo[0].angle`
+**Range:** 0° to 270° (270° total range)
+**TRUE CENTER:** 140° (physical center position)
+**Control Method:** `servo_controller.set_camera_pan(degrees)`
 
-### 📹 Camera Pitch Servo
-**Servo:** Standard position servo
+**Pan Mapping:**
+- **Right Extreme:** 0° (rightmost view)
+- **True Center:** 140° (straight ahead, horizon level)
+- **Left Extreme:** 270° (leftmost view)
+- **Full Range:** 270° of rotation available
+
+### 📹 Camera Pitch/Tilt Servo (MG996R)
+**Servo:** MG996R high-torque servo (extended range)
 **Channel:** 1 (PCA9685)
 **Function:** Up/down camera movement
-**Range:** -45° to +45°
-**Control Method:** `kit.servo[1].angle`
+**Range:** 20° to 200° (estimated full range)
+**TRUE CENTER:** 50° (horizon level)
+**Control Method:** `servo_controller.set_camera_pitch(degrees)`
+
+**Tilt Mapping:**
+- **Down Extreme:** ~20° (looking down)
+- **True Horizon:** 50° (level with horizon)
+- **Up Extreme:** ~200° (looking up)
+- **Working Range:** 180° of tilt available
+
+**⚠️ CRITICAL - Camera Gimbal Calibration Completed (Dec 2024)**
+**TRUE CENTER POSITION: Pan=140°, Tilt=50°**
+*This is the physically calibrated center - horizon level and centered left/right*
 
 **⚠️ NO LAUNCHER SERVO EXISTS - Carousel handles all treat dispensing**
 *Updated: October 2025 - Hardware Clarification*
@@ -62,6 +80,52 @@ kit.continuous_servo[2].throttle = 0.0  # Abrupt stop causes screech
 - **OS:** Raspberry Pi OS (64-bit)
 - **Power:** 5V @ 5A via buck converter
 - **Cooling:** Active heatsink + fan
+
+### GPIO Pin Mapping (Current Build)
+```
+Pin # | Assignment
+------|--------------------------------------------------
+  1   | 3.3V → PCA9685 LOGIC V+
+  2   | 5V (unused here, available for 5V power rail)
+  3   | SDA1 → PCA9685 SDA
+  4   | 5V → 5V supply
+  5   | SCL1 → PCA9685 SCL
+  6   | GND → Pi to GND HUB Direct (black wire)
+  7   | GPIO4 → Encoder A1 (Motor 1)
+  8   | GPIO14 (TXD) → DFPLAYER RX (ORANGE WIRE)
+  9   | GND
+ 10   | GPIO15 (RXD) → DFPLAYER TX (YELLOW WIRE)
+ 11   | GPIO17 → PWM IN1
+ 12   | GPIO18 → PWM IN2
+ 13   | GPIO27 → PWM IN3
+ 14   | GND → PCA9685 GND
+ 15   | GPIO22 → PWM IN4
+ 16   | GPIO23 → ENCODER B1 (Motor 1 left - right side of L298N)
+ 17   | 3.3V → sensor/encoder VCC rail (encoders + 3× IR)
+ 18   | GPIO24
+ 19   | GPIO10 (MOSI)
+ 20   | GND
+ 21   | GPIO9 (MISO)
+ 22   | GPIO25 → (GREEN Wire Pure MoSFET controlled)
+ 23   | GPIO11 (SCLK)
+ 24   | GPIO8 (CE0)
+ 25   | GND
+ 26   | GPIO7 (CE1)
+ 27   | ID_SD (reserved)
+ 28   | ID_SC (reserved)
+ 29   | GPIO5 → ENCODER A2 (Motor 2)
+ 30   | GND
+ 31   | GPIO6 → ENCODER B2 (Motor 2)
+ 32   | GPIO12 → NeoPixel signal (black wire base)
+ 33   | GPIO13 → PWM ENA
+ 34   | GND
+ 35   | GPIO19 → PWM ENB
+ 36   | GPIO16 → Relay Max4544 L/R (white wire)
+ 37   | GPIO26 → Left IR OUT
+ 38   | GPIO20 → Center IR OUT
+ 39   | GND
+ 40   | GPIO21 → Right IR OUT
+```
 
 ### Hailo-8 AI Accelerator HAT
 - **Performance:** 26 TOPS (Tera Operations Per Second)
@@ -99,11 +163,12 @@ kit.continuous_servo[2].throttle = 0.0  # Abrupt stop causes screech
 ### ✅ CURRENT Audio Architecture
 
 #### Input
-**Lapel Microphone**
-- **Type:** Electret condenser microphone
+**Conference Microphone** (Upgraded)
+- **Type:** Conference-grade microphone (upgraded from lapel mic)
 - **Interface:** Analog 3.5mm jack → Raspberry Pi audio input
-- **Use Case:** Bark detection, "quiet" command training
-- **Sensitivity:** Adjustable via software (decibel threshold)
+- **Use Case:** Bark detection, "quiet" command training, improved audio quality
+- **Sensitivity:** Higher quality pickup, adjustable via software (decibel threshold)
+- **⚠️ STATUS:** Hardware installed, needs testing
 
 #### Processing
 **Audio Switching - DPDT Relay System**
@@ -148,16 +213,14 @@ GPIO HIGH → Pi Audio   (NO - Normally Open)
 
 ### Devastator Tank Chassis
 - **Type:** Tracked vehicle (differential drive)
-- **Motors:** 2x DFRobot FIT0186 DC Gear Motors
+- **Motors:** 2x DFRobot Metal DC Geared Motor w/Encoder
+  - **Model:** 6V 210RPM 10Kg.cm (upgraded from FIT0186)
   - **Rated Voltage:** 6V
-  - **Operating Voltage Range:** 2-7.5V
-  - **Gear Reduction Ratio:** 45:1
-  - **D Output Shaft Diameter:** 4mm
-  - **No-load Speed:** 133 RPM @ 6V
-  - **No-load Current:** 0.13A
-  - **Locked-rotor Torque:** 4.5 kg·cm
-  - **Locked-rotor Current:** 2.3A
-  - **⚠️ CRITICAL:** Motors are 6V rated, MUST use PWM to limit voltage from 14V supply
+  - **Speed:** 210 RPM @ 6V (vs 133 RPM previous)
+  - **Torque:** 10 kg·cm (vs 4.5 kg·cm previous)
+  - **Encoders:** Built-in quadrature encoders
+  - **⚠️ STATUS:** Hardware installed, requires new control configuration
+  - **⚠️ ISSUE:** Currently only producing "clicks" - needs PWM/control tuning
 - **Motor Driver:** L298N H-Bridge
   - **Logic Power:** 5V (from buck converter)
   - **Motor Power:** Direct from battery (12-16.8V)
@@ -264,14 +327,22 @@ GPIO HIGH → Pi Audio   (NO - Normally Open)
 
 ### Active Sensors
 - [x] **IMX500 Camera** (vision, pose detection)
-- [x] **Lapel Microphone** (audio input, bark detection)
+  - **⚠️ STATUS:** Needs testing with new longer cable
+- [x] **Conference Microphone** (audio input, bark detection)
+  - **⚠️ STATUS:** Upgraded hardware, needs testing
 - [x] **Motor Encoders** (odometry, navigation)
+  - **⚠️ STATUS:** New DFRobot motors with built-in encoders
 
-### Planned Sensors
-- [ ] **IR Transmitters/Receivers** (Roomba-style docking)
-  - **Dock:** 1x IR transmitter (360° beacon)
-  - **Robot:** 3-4x IR receivers (TSOP38238 or similar)
-  - **Protocol:** 38kHz modulated signal
+### Recently Added (OFFLINE - Power Issues)
+- [🔧] **IR Sensors** (Roomba-style docking)
+  - **Location:** Rear Right, Rear Center, Rear Left
+  - **⚠️ ISSUE:** Caused Pi not to start when connected
+  - **STATUS:** Hardware installed but disconnected pending power debug
+
+- [🔧] **Charging Pads** (Roomba-style charging)
+  - **Design:** Bare metal plates wired directly to P+/P-
+  - **⚠️ ISSUE:** May be causing Pi startup failure
+  - **STATUS:** Hardware installed but disconnected pending power debug
   
 - [ ] **Bumper Sensors** (collision detection)
   - **Type:** Mechanical switches (Roomba-style)

@@ -33,7 +33,7 @@ class HailoDetector(BaseDetector):
         self.output_vstream_infos = None
 
         # Model configuration
-        self.model_path = config.get('hailo_model_path', '/home/morgan/dogbot/ai/models/best_dogbot.hef')
+        self.model_path = config.get('hailo_model_path', '/home/morgan/dogbot/ai/models/dogdetector_14.hef')
         self.input_shape = (640, 640, 3)
 
         # Initialize if available

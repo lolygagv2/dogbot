@@ -27,14 +27,23 @@ from core.store import get_store
 from services.reward.dispenser import get_dispenser_service
 from services.motion.motor import get_motor_service
 from services.motion.pan_tilt import get_pantilt_service
-from services.media.sfx import get_sfx_service
+from services.media.usb_audio import get_usb_audio_service
 from orchestrators.sequence_engine import get_sequence_engine
 from orchestrators.reward_logic import get_reward_logic
 from orchestrators.mode_fsm import get_mode_fsm
+from orchestrators.mission_engine import get_mission_engine
 from core.hardware.audio_controller import AudioController
 from core.hardware.led_controller import LEDController, LEDMode
 from config.settings import AudioFiles
 import lgpio
+
+# AI Detection imports
+try:
+    from core.ai_controller_3stage_fixed import AI3StageControllerFixed
+    AI_AVAILABLE = True
+except ImportError:
+    AI_AVAILABLE = False
+    print("AI detection not available")
 
 # Direct GPIO control for blue LED to avoid conflicts
 _gpio_handle = None
@@ -428,6 +437,11 @@ app.mount("/static", StaticFiles(directory="api/static"), name="static")
 _camera = None
 _camera_lock = threading.Lock()
 
+# Global AI detection instance
+_ai_controller = None
+_ai_lock = threading.Lock()
+ai_detection_enabled = False  # Control flag for AI overlays
+
 def get_camera():
     """Get or initialize camera instance"""
     global _camera
@@ -456,6 +470,76 @@ def cleanup_camera():
                 logger.error(f"Error cleaning up camera: {e}")
             _camera = None
 
+def get_ai_controller():
+    """Get or initialize AI controller instance"""
+    global _ai_controller
+    with _ai_lock:
+        if _ai_controller is None and AI_AVAILABLE:
+            try:
+                _ai_controller = AI3StageControllerFixed()
+                if _ai_controller.initialize():
+                    logger.info("AI Controller initialized for detection overlays")
+                else:
+                    logger.error("AI Controller failed to initialize")
+                    _ai_controller = None
+            except Exception as e:
+                logger.error(f"Failed to initialize AI controller: {e}")
+                _ai_controller = None
+        return _ai_controller
+
+def cleanup_ai():
+    """Clean up AI controller resources"""
+    global _ai_controller
+    with _ai_lock:
+        if _ai_controller:
+            try:
+                # AI controller doesn't have explicit cleanup method, just release reference
+                logger.info("AI controller cleaned up")
+            except Exception as e:
+                logger.error(f"Error cleaning up AI controller: {e}")
+            _ai_controller = None
+
+def draw_detection_overlays(frame, detections, poses=None, behaviors=None):
+    """Draw AI detection overlays on frame"""
+    if not detections:
+        return frame
+
+    annotated = frame.copy()
+
+    # Draw detections
+    for i, det in enumerate(detections):
+        cv2.rectangle(annotated, (det.x1, det.y1), (det.x2, det.y2), (0, 255, 0), 2)
+        cv2.putText(annotated, f"Dog {i+1}: {det.confidence:.2f}",
+                   (det.x1, det.y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # Draw poses if available
+    if poses:
+        for pose in poses:
+            keypoints = pose.keypoints
+            det = pose.detection
+            scale_x = det.width / 640
+            scale_y = det.height / 640
+
+            for kpt_idx, (x, y, conf) in enumerate(keypoints):
+                if conf > 0.5:
+                    x_px = int(det.x1 + x * scale_x)
+                    y_px = int(det.y1 + y * scale_y)
+                    cv2.circle(annotated, (x_px, y_px), 3, (0, 0, 255), -1)
+
+    # Draw behaviors if available
+    if behaviors:
+        for i, behavior in enumerate(behaviors):
+            if behavior.behavior:
+                y_offset = 30 + (i * 20)
+                cv2.putText(annotated, f"Behavior: {behavior.behavior} ({behavior.confidence:.2f})",
+                           (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+    # Add detection count
+    cv2.putText(annotated, f"Detections: {len(detections)}", (10, 20),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    return annotated
+
 # Logging
 logger = logging.getLogger('TreatBotAPI')
 
@@ -481,6 +565,7 @@ def cleanup_hardware():
         _led_controller.cleanup()
         _led_controller = None
     cleanup_camera()
+    cleanup_ai()
 
 atexit.register(cleanup_hardware)
 
@@ -536,6 +621,16 @@ async def video_feed():
                 frame = camera.capture_array()
                 last_frame_time = time.time()
 
+                # Process AI detection overlays if enabled
+                if ai_detection_enabled:
+                    ai = get_ai_controller()
+                    if ai is not None:
+                        try:
+                            detections, poses, behaviors = ai.process_frame(frame)
+                            frame = draw_detection_overlays(frame, detections, poses, behaviors)
+                        except Exception as e:
+                            logger.debug(f"AI processing error (continuing without overlay): {e}")
+
                 # Convert to JPEG with optimized settings for speed
                 _, buffer = cv2.imencode('.jpg', frame, [
                     cv2.IMWRITE_JPEG_QUALITY, 50,  # Lower quality for speed
@@ -553,6 +648,72 @@ async def video_feed():
 
     return StreamingResponse(generate_mjpeg(),
                            media_type="multipart/x-mixed-replace; boundary=frame")
+
+@app.get("/ai/detection/status")
+async def get_ai_detection_status():
+    """Get AI detection overlay status"""
+    global ai_detection_enabled
+    return {
+        "enabled": ai_detection_enabled,
+        "ai_available": AI_AVAILABLE,
+        "ai_initialized": _ai_controller is not None
+    }
+
+@app.post("/ai/detection/enable")
+async def enable_ai_detection():
+    """Enable AI detection overlays on video feed"""
+    global ai_detection_enabled
+    if not AI_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI detection not available")
+
+    ai_detection_enabled = True
+    # Initialize AI controller if not already done
+    get_ai_controller()
+
+    return {"status": "enabled", "message": "AI detection overlays enabled"}
+
+@app.post("/ai/detection/disable")
+async def disable_ai_detection():
+    """Disable AI detection overlays on video feed"""
+    global ai_detection_enabled
+    ai_detection_enabled = False
+    return {"status": "disabled", "message": "AI detection overlays disabled"}
+
+@app.get("/ai/detection/latest")
+async def get_latest_detection():
+    """Get latest AI detection results"""
+    global _ai_controller, ai_detection_enabled
+
+    if not AI_AVAILABLE or not ai_detection_enabled:
+        return {
+            "enabled": ai_detection_enabled,
+            "detections": [],
+            "poses": [],
+            "behaviors": [],
+            "timestamp": time.time()
+        }
+
+    ai = get_ai_controller()
+    if ai is None:
+        return {
+            "enabled": ai_detection_enabled,
+            "detections": [],
+            "poses": [],
+            "behaviors": [],
+            "timestamp": time.time(),
+            "error": "AI controller not available"
+        }
+
+    # For now, return empty data - this would need integration with the AI processing pipeline
+    # In a production system, this would maintain a recent detection cache
+    return {
+        "enabled": ai_detection_enabled,
+        "detections": [],
+        "poses": [],
+        "behaviors": [],
+        "timestamp": time.time(),
+        "message": "Live detection data would be available here"
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -614,32 +775,80 @@ async def clear_mode_override():
     mode_fsm.clear_override("API request")
     return {"success": True}
 
-# Mission endpoints (placeholder - would need mission system)
+# Mission endpoints
 @app.get("/missions/status")
 async def get_mission_status():
     """Get current mission status"""
-    state = get_state()
-    return {
-        "mission": state.mission.to_dict(),
-        "active": state.mission.state.value != "inactive"
-    }
+    mission_engine = get_mission_engine()
+    return mission_engine.get_mission_status()
 
 @app.post("/missions/start")
 async def start_mission(request: MissionRequest):
     """Start a mission"""
-    # Placeholder - would integrate with mission system
-    return {
-        "success": False,
-        "message": "Mission system not yet implemented",
-        "mission_name": request.mission_name
-    }
+    mission_engine = get_mission_engine()
+
+    try:
+        success = mission_engine.start_mission(
+            request.mission_name,
+            dog_id=request.parameters.get('dog_id') if request.parameters else None
+        )
+
+        if success:
+            return {
+                "success": True,
+                "message": f"Mission '{request.mission_name}' started successfully",
+                "mission_name": request.mission_name
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Failed to start mission '{request.mission_name}'",
+                "mission_name": request.mission_name
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Mission start error: {str(e)}")
 
 @app.post("/missions/stop")
 async def stop_mission():
-    """Stop current mission"""
-    state = get_state()
-    state.reset_mission()
-    return {"success": True}
+    """Stop the current mission"""
+    mission_engine = get_mission_engine()
+    success = mission_engine.stop_mission("user_requested")
+
+    return {
+        "success": success,
+        "message": "Mission stopped" if success else "No mission to stop"
+    }
+
+@app.post("/missions/pause")
+async def pause_mission():
+    """Pause the current mission"""
+    mission_engine = get_mission_engine()
+    success = mission_engine.pause_mission()
+
+    return {
+        "success": success,
+        "message": "Mission paused" if success else "No mission to pause"
+    }
+
+@app.post("/missions/resume")
+async def resume_mission():
+    """Resume the current mission"""
+    mission_engine = get_mission_engine()
+    success = mission_engine.resume_mission()
+
+    return {
+        "success": success,
+        "message": "Mission resumed" if success else "No mission to resume"
+    }
+
+@app.get("/missions/available")
+async def get_available_missions():
+    """Get list of available missions"""
+    mission_engine = get_mission_engine()
+    return {
+        "missions": mission_engine.get_available_missions()
+    }
 
 # Treat endpoints
 @app.post("/treat/dispense")
@@ -2060,7 +2269,7 @@ async def get_system_status():
         from services.perception.bark_detector import get_bark_detector_service
         from services.motion.pan_tilt import get_pantilt_service
         from services.reward.dispenser import get_dispenser_service
-        from services.media.sfx import get_sfx_service
+        from services.media.usb_audio import get_usb_audio_service
         from services.media.led import get_led_service
 
         status["services"] = {
@@ -2068,7 +2277,7 @@ async def get_system_status():
             "bark_detector": get_bark_detector_service().get_status(),
             "pantilt": get_pantilt_service().get_status(),
             "dispenser": get_dispenser_service().get_status(),
-            "sfx": get_sfx_service().get_status(),
+            "usb_audio": {"initialized": get_usb_audio_service().is_initialized, "volume": get_usb_audio_service().current_volume},
             "led": get_led_service().get_status()
         }
 
@@ -2086,7 +2295,7 @@ async def get_system_status():
 async def play_audio(request: dict):
     """Play audio track on DFPlayer"""
     try:
-        sfx_service = get_sfx_service()
+        usb_audio_service = get_usb_audio_service()
 
         track = request.get("track")
         name = request.get("name", f"Track {track}")
@@ -2094,8 +2303,9 @@ async def play_audio(request: dict):
         if track is None:
             raise HTTPException(status_code=400, detail="Track number required")
 
-        # Play the track
-        success = sfx_service.play_track(track)
+        # Play using USB audio - map track to appropriate file
+        # For now, play a default test file
+        success = usb_audio_service.play_file("0001.mp3", "talks")
 
         return {
             "success": success,
@@ -2110,7 +2320,7 @@ async def play_audio(request: dict):
 async def play_audio_file(request: dict):
     """Play audio file by path on DFPlayer"""
     try:
-        sfx_service = get_sfx_service()
+        usb_audio_service = get_usb_audio_service()
 
         file_path = request.get("path")
         name = request.get("name", file_path)
@@ -2118,11 +2328,18 @@ async def play_audio_file(request: dict):
         if file_path is None:
             raise HTTPException(status_code=400, detail="File path required")
 
-        # Play the file directly
-        if hasattr(sfx_service, 'audio') and sfx_service.audio:
-            success = sfx_service.audio.play_file_by_path(file_path)
-            if success:
-                logger.info(f"Playing audio file: {name} ({file_path})")
+        # Parse file path to extract filename and folder
+        # Expected format: /talks/0001.mp3 or /02/0020.mp3
+        if file_path.startswith('/'):
+            parts = file_path.strip('/').split('/')
+            if len(parts) >= 2:
+                folder = parts[0]
+                filename = parts[1]
+                success = usb_audio_service.play_file(filename, folder)
+                if success:
+                    logger.info(f"Playing audio file: {name} ({file_path})")
+            else:
+                success = False
         else:
             success = False
 
@@ -2139,8 +2356,8 @@ async def play_audio_file(request: dict):
 async def stop_audio():
     """Stop audio playback"""
     try:
-        sfx_service = get_sfx_service()
-        success = sfx_service.stop()
+        usb_audio_service = get_usb_audio_service()
+        success = usb_audio_service.stop()
         return {"success": success}
     except Exception as e:
         logger.error(f"Audio stop error: {e}")
@@ -2150,8 +2367,9 @@ async def stop_audio():
 async def pause_audio():
     """Pause/resume audio playback"""
     try:
-        sfx_service = get_sfx_service()
-        success = sfx_service.pause()
+        usb_audio_service = get_usb_audio_service()
+        # USB audio service doesn't have pause, use stop instead
+        success = usb_audio_service.stop()
         return {"success": success}
     except Exception as e:
         logger.error(f"Audio pause error: {e}")
@@ -2161,8 +2379,12 @@ async def pause_audio():
 async def get_audio_status():
     """Get audio system status"""
     try:
-        sfx_service = get_sfx_service()
-        return sfx_service.get_status()
+        usb_audio_service = get_usb_audio_service()
+        return {
+            "initialized": usb_audio_service.is_initialized,
+            "playing": usb_audio_service.is_busy(),
+            "volume": usb_audio_service.current_volume
+        }
     except Exception as e:
         logger.error(f"Audio status error: {e}")
         return {"error": str(e)}

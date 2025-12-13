@@ -11,11 +11,9 @@ class SystemSettings:
     DEFAULT_MOTOR_SPEED = 50  # Default speed percentage
     MOTOR_TIMEOUT = 10.0  # Max time for motor operations (safety)
     
-    # Audio Configuration  
-    DFPLAYER_BAUD_RATE = 115200
-    DFPLAYER_TIMEOUT = 1.0
-    DEFAULT_VOLUME = 23  # DFPlayer volume (0-30)
-    AUDIO_COMMAND_DELAY = 0.1  # Delay between AT commands
+    # Audio Configuration (USB Audio via pygame)
+    DEFAULT_VOLUME = 70  # USB audio volume (0-100)
+    AUDIO_SAMPLE_RATE = 22050  # Sample rate for pygame mixer
     
     # LED Configuration
     NEOPIXEL_COUNT = 75
@@ -47,50 +45,50 @@ class SystemSettings:
     CONFIG_FILE_PATH = "/etc/treatsensei/config.json"
 
 class AudioFiles:
-    """DFPlayer audio file mappings"""
+    """USB Audio file mappings for pygame-based playback"""
     
    # ===== TALKS FOLDER =====
     # System/intro sounds
-    SCOOBY_INTRO =  "/talks/0001.mp3"  # Scooby Snacks INTRO
-  
+    SCOOBY_INTRO =  "/home/morgan/dogbot/VOICEMP3/talks/0001.mp3"  # Scooby Snacks INTRO
+
      # Dog names/calls
-    ELSA =          "/talks/0003.mp3"  # Elsa
-    BEZIK =         "/talks/0004.mp3"  # Bezik
-    BEZIK_COME =    "/talks/0005.mp3"  # Bezik Come
-    ELSA_COME =     "/talks/0006.mp3"  # Elsa COME
-    DOGS_COME =     "/talks/0007.mp3"  # Bezik Elsa Come (both dogs)
+    ELSA =          "/home/morgan/dogbot/VOICEMP3/talks/0003.mp3"  # Elsa
+    BEZIK =         "/home/morgan/dogbot/VOICEMP3/talks/0004.mp3"  # Bezik
+    BEZIK_COME =    "/home/morgan/dogbot/VOICEMP3/talks/0005.mp3"  # Bezik Come
+    ELSA_COME =     "/home/morgan/dogbot/VOICEMP3/talks/0006.mp3"  # Elsa COME
+    DOGS_COME =     "/home/morgan/dogbot/VOICEMP3/talks/0007.mp3"  # Bezik Elsa Come (both dogs)
 
     # Positive reinforcement
-    GOOD_DOG =      "/talks/0008.mp3"  # GOOD
-    KAHNSHIK =      "/talks/0009.mp3"  # KAHNSHIK (good/praise?)
+    GOOD_DOG =      "/home/morgan/dogbot/VOICEMP3/talks/0008.mp3"  # GOOD
+    KAHNSHIK =      "/home/morgan/dogbot/VOICEMP3/talks/0009.mp3"  # KAHNSHIK (good/praise?)
 
     # Commands
-    LIE_DOWN =      "/talks/0010.mp3"  # Lie Down
-    QUIET =         "/talks/0011.mp3"  # Quiet
-    NO =            "/talks/0012.mp3"  # No
-    TREAT =         "/talks/0013.mp3"  # Treat
-    KOKOMA =        "/talks/0014.mp3"  # Kokoma potatoe
-    SIT =           "/talks/0015.mp3"  # Sit
-    SPIN =          "/talks/0016.mp3"  # Spin
-    STAY =          "/talks/0017.mp3"  # Stay
+    LIE_DOWN =      "/home/morgan/dogbot/VOICEMP3/talks/0010.mp3"  # Lie Down
+    QUIET =         "/home/morgan/dogbot/VOICEMP3/talks/0011.mp3"  # Quiet
+    NO =            "/home/morgan/dogbot/VOICEMP3/talks/0012.mp3"  # No
+    TREAT =         "/home/morgan/dogbot/VOICEMP3/talks/0013.mp3"  # Treat
+    KOKOMA =        "/home/morgan/dogbot/VOICEMP3/talks/0014.mp3"  # Kokoma potatoe
+    SIT =           "/home/morgan/dogbot/VOICEMP3/talks/0015.mp3"  # Sit
+    SPIN =          "/home/morgan/dogbot/VOICEMP3/talks/0016.mp3"  # Spin
+    STAY =          "/home/morgan/dogbot/VOICEMP3/talks/0017.mp3"  # Stay
 
     # ===== 02 AUDIO FOLDER =====
     # Background music
-    MOZART_CONCERTO =   "/02/0019.mp3"  # Mozart: Concerto for flute, h
-    MOZART_PIANO =      "/02/0018.mp3"  # Mozart: Piano concerto No. 26
-    MILKSHAKE =         "/02/0020.mp3"  # Milkshake
-    YUMMY =             "/02/0021.mp3"  # Justin Bieber - Yummy (Lyric Video)
-    HUNGRY =            "/02/0022.mp3"  # Duran Duran - Hungry like the Wolf [Audio]
-    DNCE =              "/02/0023.mp3"  # DNCE - Cake By The Ocean (Lyrics)
-    DOGS_OUT =          "/02/0024.mp3"  # Baha Men - Who Let the Dogs Out Lyrics
-    SCOOBY_SNACKS =     "/02/0030.mp3"  # Scooby Snacks
+    MOZART_CONCERTO =   "/home/morgan/dogbot/VOICEMP3/02/0019.mp3"  # Mozart: Concerto for flute, h
+    MOZART_PIANO =      "/home/morgan/dogbot/VOICEMP3/02/0018.mp3"  # Mozart: Piano concerto No. 26
+    MILKSHAKE =         "/home/morgan/dogbot/VOICEMP3/02/0020.mp3"  # Milkshake
+    YUMMY =             "/home/morgan/dogbot/VOICEMP3/02/0021.mp3"  # Justin Bieber - Yummy (Lyric Video)
+    HUNGRY =            "/home/morgan/dogbot/VOICEMP3/02/0022.mp3"  # Duran Duran - Hungry like the Wolf [Audio]
+    DNCE =              "/home/morgan/dogbot/VOICEMP3/02/0023.mp3"  # DNCE - Cake By The Ocean (Lyrics)
+    DOGS_OUT =          "/home/morgan/dogbot/VOICEMP3/02/0024.mp3"  # Baha Men - Who Let the Dogs Out Lyrics
+    SCOOBY_SNACKS =     "/home/morgan/dogbot/VOICEMP3/02/0030.mp3"  # Scooby Snacks
 
     # System FX
-    PROGRESS_SCAN =     "/02/0025.mp3"  # Progress minutes of scanning
-    ROBO_SCAN =         "/02/0026.mp3"  # RobotScanning
-    DOOR_SCAN =         "/02/0027.mp3"  # Short Door Scan beep
-    HI_SCAN =           "/02/0028.mp3"  # A load high pitch scan
-    BUSY_SCAN =         "/02/0029.mp3"  # A busy noisey scan - like 30 seconds or so
+    PROGRESS_SCAN =     "/home/morgan/dogbot/VOICEMP3/02/0025.mp3"  # Progress minutes of scanning
+    ROBO_SCAN =         "/home/morgan/dogbot/VOICEMP3/02/0026.mp3"  # RobotScanning
+    DOOR_SCAN =         "/home/morgan/dogbot/VOICEMP3/02/0027.mp3"  # Short Door Scan beep
+    HI_SCAN =           "/home/morgan/dogbot/VOICEMP3/02/0028.mp3"  # A load high pitch scan
+    BUSY_SCAN =         "/home/morgan/dogbot/VOICEMP3/02/0029.mp3"  # A busy noisey scan - like 30 seconds or so
 
 
     @classmethod

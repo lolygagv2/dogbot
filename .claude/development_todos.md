@@ -47,14 +47,23 @@ Following the 6-phase plan from `claude_code_instructions.md`:
 - **Main Entry Point** - Single `/main_treatbot.py` orchestrator
 - **API Server** - REST endpoints for control and monitoring
 
-### ✅ Hardware Systems [Verified Working]
-- **Motors** - Instant gpioset commands, no runaway
+### ✅ Hardware Systems [Updated Nov 25, 2025]
+- **Motors** - ⚠️ NEW: DFRobot Metal Motors w/Encoders (6V 210RPM 10Kg.cm)
+  - STATUS: Installed, producing "clicks" but not moving - needs control reconfiguration
 - **LEDs** - NeoPixel patterns and blue LED
 - **Servos** - Pan/tilt/carousel all functional
 - **Audio** - DFPlayer Pro with relay switching
+  - UPGRADED: Conference microphone (from lapel mic) - needs testing
 - **Camera** - Multi-mode system with AI detection
+  - UPGRADED: Longer camera cable - needs testing
 - **Gamepad** - Bluetooth framework ready (pygame)
 - **Bark Detection** - TFLite emotion classifier (58% accuracy) [Oct 25, 2025]
+
+### 🔧 Hardware Added (OFFLINE - Power Issues)
+- **IR Sensors** - 3x rear sensors for docking (Left, Center, Right)
+  - STATUS: Caused Pi startup failure when connected, currently disconnected
+- **Charging Pads** - Roomba-style charging with bare metal plates wired to P+/P-
+  - STATUS: May be causing Pi startup failure, currently disconnected
 
 ## 🎯 COMPLETION GATES - System Validation
 
@@ -72,7 +81,37 @@ Following the 6-phase plan from `claude_code_instructions.md`:
 
 **Legend:** ✅ Verified | ⏳ Ready to test | ❌ Not implemented
 
-## 🔴 CRITICAL - Complete Core System (This Week)
+## 🔴 CRITICAL - Hardware Integration & Testing (This Week)
+
+### 🚨 IMMEDIATE - Hardware Issues
+**Priority 1: Fix Motor Control [BLOCKING MVP TESTING]**
+- **Issue:** New DFRobot motors only "click" instead of moving
+- **Root Cause:** Different motor characteristics require control recalibration
+- **Tasks:**
+  - [ ] Test motor response with manual PWM values
+  - [ ] Calibrate PWM duty cycle ranges for new motors
+  - [ ] Update motor service configuration
+  - [ ] Verify encoder functionality
+  - [ ] Test movement in all directions
+
+**Priority 2: Debug Power/Startup Issues [BLOCKING FULL MVP]**
+- **Issue:** Pi won't start when IR sensors + charging pads connected
+- **Suspects:** Power draw, short circuit, or voltage drop
+- **Tasks:**
+  - [ ] Measure current draw of IR sensors individually
+  - [ ] Test charging pad wiring for shorts
+  - [ ] Check voltage levels at Pi terminals
+  - [ ] Add power isolation/protection circuitry
+  - [ ] Reconnect components one by one
+
+**Priority 3: Test Upgraded Components [VALIDATION]**
+- **Tasks:**
+  - [ ] Test conference microphone audio quality
+  - [ ] Verify new camera cable functionality
+  - [ ] Confirm camera feed quality/length
+  - [ ] Test audio input levels and sensitivity
+
+## 🔴 CRITICAL - Complete Core System (Next Week)
 
 ### 1. Implement SQLite Store [BLOCKING]
 **File:** `/core/store.py`

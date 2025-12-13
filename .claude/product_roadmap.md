@@ -108,17 +108,35 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 - [x] REST API (`/api/server.py`)
 - [ ] WebSocket server (`/api/ws.py`)
 
-### 🔄 UPDATED HARDWARE SPECS
-**Audio System Changes:**
-- ❌ Removed: ReSpeaker 2-Mic HAT
-- ✅ Added: Lapel microphone (analog input)
-- ✅ Added: 2x single-channel relays for audio switching
-  - Relay 1: DFPlayer → Speaker
-  - Relay 2: Pi Audio Out → Speaker
-  - GPIO-controlled selection
+### 🔄 HARDWARE UPDATES [November 25, 2025]
 
-**Sensor Additions (Planned):**
-- [ ] IR transmitters/receivers (Roomba-style, for docking)
+**✅ COMPLETED UPGRADES:**
+- **Motors:** Upgraded to DFRobot Metal DC Motors w/Encoders (6V 210RPM 10Kg.cm)
+  - **Higher torque:** 10 kg·cm (vs 4.5 kg·cm previous)
+  - **Higher speed:** 210 RPM (vs 133 RPM previous)
+  - **Built-in encoders:** Quadrature feedback for precise control
+  - **⚠️ STATUS:** Hardware installed, needs control reconfiguration
+
+**Audio System:**
+- ✅ **Conference microphone** (upgraded from lapel mic)
+- ✅ **2x single-channel relays** for audio switching (DFPlayer ↔ Pi Audio)
+- **⚠️ STATUS:** Conference mic needs testing
+
+**Camera System:**
+- ✅ **Longer camera cable** installed
+- **⚠️ STATUS:** Need to test cable functionality and video quality
+
+**🔧 OFFLINE - POWER DEBUG NEEDED:**
+- **IR Sensors:** 3x rear sensors installed (Left, Center, Right)
+  - **Issue:** Caused Pi startup failure when connected
+  - **Status:** Hardware present but disconnected
+
+- **Charging Pads:** Roomba-style bare metal charging plates
+  - **Connection:** Direct to P+/P- (may be causing power issues)
+  - **Issue:** May be contributing to Pi startup failure
+  - **Status:** Hardware present but disconnected
+
+**Sensor Additions (Still Planned):**
 - [ ] Bumper sensors (collision detection)
 - [ ] Ultrasonic sensors (obstacle avoidance, optional)
 - [ ] Cliff sensors (edge detection)

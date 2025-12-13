@@ -35,6 +35,13 @@ except ImportError:
     GPIOSET_MOTOR_AVAILABLE = False
     print("[WARNING] Gpioset motor controller not available")
 
+try:
+    from core.hardware.motor_controller_dfrobot_encoder import DFRobotEncoderMotorController, MotorDirection as EncoderDirection
+    ENCODER_MOTOR_AVAILABLE = True
+except ImportError:
+    ENCODER_MOTOR_AVAILABLE = False
+    print("[WARNING] DFRobot encoder motor controller not available")
+
 from core.bus import get_bus, MotionEvent
 from core.state import get_state
 
@@ -77,8 +84,17 @@ class MotorService:
     def initialize(self) -> bool:
         """Initialize motor service with available controller"""
         try:
-            # Try core motor controller first (lgpio-based)
-            if CORE_MOTOR_AVAILABLE:
+            # Try DFRobot encoder controller FIRST - this has proper encoder support and minimum speeds
+            if ENCODER_MOTOR_AVAILABLE:
+                self.motor_controller = DFRobotEncoderMotorController()
+                if self.motor_controller.initialize():
+                    self.controller_type = "dfrobot_encoder"
+                    print("✅ Motor service using DFRobot encoder controller (20% min speed for reliable turning)")
+                else:
+                    self.motor_controller = None
+
+            # Fallback to core motor controller (lgpio-based)
+            if not self.motor_controller and CORE_MOTOR_AVAILABLE:
                 self.motor_controller = CoreMotorController()
                 if self.motor_controller.is_initialized():
                     self.controller_type = "core_lgpio"
@@ -185,8 +201,25 @@ class MotorService:
             if self.auto_stop_timer:
                 self.auto_stop_timer.cancel()
 
+            # Convert direction string to enum for DFRobot encoder controller
+            if self.controller_type == "dfrobot_encoder":
+                direction_map = {
+                    'forward': EncoderDirection.FORWARD,
+                    'backward': EncoderDirection.BACKWARD,
+                    'left': EncoderDirection.LEFT,
+                    'right': EncoderDirection.RIGHT,
+                    'stop': EncoderDirection.STOP
+                }
+
+                if direction not in direction_map:
+                    print(f"❌ Invalid direction: {direction}")
+                    return False
+
+                motor_direction = direction_map[direction]
+                success = self.motor_controller.move(motor_direction, speed, None)
+
             # Convert direction string to enum for core controller
-            if self.controller_type == "core_lgpio":
+            elif self.controller_type == "core_lgpio":
                 direction_map = {
                     'forward': MotorDirection.FORWARD,
                     'backward': MotorDirection.BACKWARD,
@@ -319,7 +352,9 @@ class MotorService:
                 self.auto_stop_timer = None
 
             # Stop motors using appropriate method
-            if self.controller_type == "core_lgpio":
+            if self.controller_type == "dfrobot_encoder":
+                self.motor_controller.emergency_stop()
+            elif self.controller_type == "core_lgpio":
                 self.motor_controller.emergency_stop()
             elif self.controller_type == "alt_rpi_gpio":
                 self.motor_controller.stop()

@@ -123,6 +123,244 @@
             background: #606060;
         }
 
+        /* AI Detection Controls */
+        .ai-controls {
+            margin-top: 15px;
+            padding: 10px;
+            background: #333;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .ai-toggle {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background 0.3s;
+            margin: 0 5px;
+        }
+
+        .ai-toggle:hover {
+            background: #45a049;
+        }
+
+        .ai-toggle.disabled {
+            background: #f44336;
+        }
+
+        .ai-toggle.disabled:hover {
+            background: #da190b;
+        }
+
+        .ai-status {
+            display: inline-block;
+            margin-right: 10px;
+            font-size: 0.9em;
+        }
+
+        /* Mission Control */
+        .mission-controls {
+            margin-top: 15px;
+            padding: 10px;
+            background: #333;
+            border-radius: 8px;
+        }
+
+        .mission-select {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            background: #555;
+            border: 1px solid #777;
+            border-radius: 4px;
+            color: white;
+            font-size: 1em;
+        }
+
+        .mission-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .mission-btn {
+            background: #2196F3;
+            border: none;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: background 0.3s;
+        }
+
+        .mission-btn:hover {
+            background: #1976D2;
+        }
+
+        .mission-btn.stop {
+            background: #f44336;
+        }
+
+        .mission-btn.stop:hover {
+            background: #d32f2f;
+        }
+
+        .mission-btn.pause {
+            background: #ff9800;
+        }
+
+        .mission-btn.pause:hover {
+            background: #f57c00;
+        }
+
+        .mission-status {
+            background: #444;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            margin-top: 10px;
+        }
+
+        .mission-status .status-active {
+            color: #4CAF50;
+        }
+
+        .mission-status .status-inactive {
+            color: #999;
+        }
+
+        /* Real-time Detection Status */
+        .detection-status {
+            margin-top: 15px;
+            padding: 10px;
+            background: #333;
+            border-radius: 8px;
+            font-size: 0.85em;
+        }
+
+        .detection-status h4 {
+            margin: 0 0 8px 0;
+            color: #fff;
+            font-size: 0.9em;
+        }
+
+        .detection-info {
+            background: #444;
+            padding: 6px 8px;
+            border-radius: 4px;
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .detection-info:last-child {
+            margin-bottom: 0;
+        }
+
+        .detection-label {
+            color: #ccc;
+        }
+
+        .detection-value {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+
+        .detection-none {
+            color: #999;
+            text-align: center;
+            font-style: italic;
+            padding: 10px;
+        }
+
+        /* Camera Slider Controls */
+        .camera-sliders {
+            margin-top: 15px;
+            padding: 10px;
+            background: #333;
+            border-radius: 8px;
+        }
+
+        .camera-sliders h4 {
+            margin: 0 0 10px 0;
+            color: #fff;
+            font-size: 0.9em;
+            text-align: center;
+        }
+
+        .slider-group {
+            margin-bottom: 15px;
+        }
+
+        .slider-label {
+            color: #ccc;
+            font-size: 0.8em;
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .slider-value {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+
+        .camera-slider {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #555;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .camera-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #4CAF50;
+            cursor: pointer;
+        }
+
+        .camera-slider::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #4CAF50;
+            cursor: pointer;
+            border: none;
+        }
+
+        .slider-buttons {
+            display: flex;
+            gap: 5px;
+            margin-top: 10px;
+        }
+
+        .slider-btn {
+            flex: 1;
+            background: #555;
+            border: none;
+            color: white;
+            padding: 6px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8em;
+            transition: background 0.3s;
+        }
+
+        .slider-btn:hover {
+            background: #666;
+        }
+
         /* Motor Control Panel */
         .motor-controls {
             text-align: center;
@@ -326,6 +564,81 @@
                     <button class="camera-btn" onclick="moveCamera('home')">🏠</button>
                     <button class="camera-btn" onclick="moveCamera('right')">➡️</button>
                 </div>
+
+                <!-- AI Detection Controls -->
+                <div class="ai-controls">
+                    <div style="margin-bottom: 10px;">
+                        <span class="ai-status" id="aiStatus">🧠 AI Detection: Loading...</span>
+                    </div>
+                    <button class="ai-toggle" id="aiToggleBtn" onclick="toggleAIDetection()">
+                        Enable AI Detection
+                    </button>
+                </div>
+
+                <!-- Mission Control -->
+                <div class="mission-controls">
+                    <div style="margin-bottom: 10px; font-weight: bold; color: #fff;">
+                        🎯 Mission Control
+                    </div>
+                    <select class="mission-select" id="missionSelect">
+                        <option value="">Select Mission...</option>
+                    </select>
+                    <div class="mission-buttons">
+                        <button class="mission-btn" onclick="startSelectedMission()">Start</button>
+                        <button class="mission-btn stop" onclick="stopMission()">Stop</button>
+                        <button class="mission-btn pause" onclick="pauseMission()">Pause</button>
+                        <button class="mission-btn" onclick="resumeMission()">Resume</button>
+                    </div>
+                    <div class="mission-status" id="missionStatus">
+                        Status: <span class="status-inactive">No mission active</span>
+                    </div>
+                </div>
+
+                <!-- Real-time Detection Status -->
+                <div class="detection-status">
+                    <h4>🔍 Detection Status</h4>
+                    <div id="detectionContent">
+                        <div class="detection-none">AI detection not active</div>
+                    </div>
+                </div>
+
+                <!-- Camera Slider Controls -->
+                <div class="camera-sliders">
+                    <h4>🎚️ Fine Camera Control</h4>
+
+                    <div class="slider-group">
+                        <div class="slider-label">
+                            <span>Pan (Left ↔ Right)</span>
+                            <span class="slider-value" id="panValue">100°</span>
+                        </div>
+                        <input type="range"
+                               class="camera-slider"
+                               id="panSlider"
+                               min="10"
+                               max="270"
+                               value="100"
+                               oninput="updateCameraSlider('pan', this.value)">
+                    </div>
+
+                    <div class="slider-group">
+                        <div class="slider-label">
+                            <span>Tilt (Down ↕ Up)</span>
+                            <span class="slider-value" id="tiltValue">70°</span>
+                        </div>
+                        <input type="range"
+                               class="camera-slider"
+                               id="tiltSlider"
+                               min="20"
+                               max="160"
+                               value="70"
+                               oninput="updateCameraSlider('tilt', this.value)">
+                    </div>
+
+                    <div class="slider-buttons">
+                        <button class="slider-btn" onclick="resetCameraPosition()">Reset to Center</button>
+                        <button class="slider-btn" onclick="saveCameraPreset()">Save Preset</button>
+                    </div>
+                </div>
             </div>
 
             <!-- Motor Control Panel -->
@@ -411,6 +724,10 @@
             initializeWebSocket();
             initializeJoystick();
             updateConnectionStatus(false);
+            checkAIStatus();
+            loadAvailableMissions();
+            updateMissionStatus();
+            loadCameraPreset();
         });
 
         function initializeWebSocket() {
@@ -671,24 +988,24 @@
 
             switch (direction) {
                 case 'up':
-                    tilt = 140; // Tilt up more (extended range)
+                    tilt = 160; // Max up (matches Xbox controller)
                     break;
                 case 'down':
-                    tilt = 40; // Tilt down more (extended range)
+                    tilt = 20; // Max down (matches Xbox controller)
                     break;
                 case 'left':
-                    pan = 160; // Pan left more (extended range)
+                    pan = 270; // Max left (matches Xbox controller)
                     break;
                 case 'right':
-                    pan = 20; // Pan right more (extended range)
+                    pan = 10; // Max right (matches Xbox controller)
                     break;
                 case 'center':
-                    pan = 90;
-                    tilt = 90;
+                    pan = 100; // Center (matches Xbox controller)
+                    tilt = 70; // Lowered 20 degrees from 90
                     break;
                 case 'home':
-                    pan = 90;
-                    tilt = 90;
+                    pan = 100; // Center (matches Xbox controller)
+                    tilt = 70; // Lowered 20 degrees from 90
                     break;
             }
 
@@ -699,6 +1016,392 @@
 
             ws.send(JSON.stringify(command));
             addEventToLog('CAMERA', `Moving camera ${direction}`);
+        }
+
+        // AI Detection functions
+        let aiDetectionEnabled = false;
+
+        async function toggleAIDetection() {
+            try {
+                const endpoint = aiDetectionEnabled ? '/ai/detection/disable' : '/ai/detection/enable';
+                const response = await fetch(endpoint, { method: 'POST' });
+                const data = await response.json();
+
+                if (response.ok) {
+                    aiDetectionEnabled = !aiDetectionEnabled;
+                    updateAIStatus();
+                    addEventToLog('AI', `AI Detection ${aiDetectionEnabled ? 'enabled' : 'disabled'}`);
+
+                    // Start or stop detection status updates
+                    if (aiDetectionEnabled) {
+                        startDetectionStatusUpdates();
+                    } else {
+                        stopDetectionStatusUpdates();
+                    }
+                } else {
+                    addEventToLog('ERROR', `AI toggle failed: ${data.detail || data.message}`);
+                }
+            } catch (error) {
+                addEventToLog('ERROR', `AI toggle error: ${error.message}`);
+            }
+        }
+
+        async function checkAIStatus() {
+            try {
+                const response = await fetch('/ai/detection/status');
+                const data = await response.json();
+
+                if (response.ok) {
+                    aiDetectionEnabled = data.enabled;
+                    updateAIStatus(data);
+
+                    // Start detection status updates if AI is enabled
+                    if (aiDetectionEnabled) {
+                        startDetectionStatusUpdates();
+                    }
+                }
+            } catch (error) {
+                console.log('AI status check failed:', error);
+                updateAIStatus({ enabled: false, ai_available: false });
+            }
+        }
+
+        function updateAIStatus(statusData = null) {
+            const statusElement = document.getElementById('aiStatus');
+            const toggleButton = document.getElementById('aiToggleBtn');
+
+            if (statusData && !statusData.ai_available) {
+                statusElement.textContent = '🧠 AI Detection: Not Available';
+                toggleButton.textContent = 'AI Not Available';
+                toggleButton.disabled = true;
+                toggleButton.classList.add('disabled');
+            } else {
+                statusElement.textContent = `🧠 AI Detection: ${aiDetectionEnabled ? 'ON' : 'OFF'}`;
+                toggleButton.textContent = aiDetectionEnabled ? 'Disable AI Detection' : 'Enable AI Detection';
+                toggleButton.disabled = false;
+                toggleButton.classList.toggle('disabled', aiDetectionEnabled);
+            }
+        }
+
+        // Mission Control functions
+        let availableMissions = [];
+        let currentMissionStatus = null;
+
+        async function loadAvailableMissions() {
+            try {
+                const response = await fetch('/missions/available');
+                const data = await response.json();
+
+                if (response.ok) {
+                    availableMissions = data.missions;
+                    const selectElement = document.getElementById('missionSelect');
+                    selectElement.innerHTML = '<option value="">Select Mission...</option>';
+
+                    availableMissions.forEach(mission => {
+                        const option = document.createElement('option');
+                        option.value = mission.name;
+                        option.textContent = `${mission.name} - ${mission.description}`;
+                        selectElement.appendChild(option);
+                    });
+                } else {
+                    addEventToLog('ERROR', 'Failed to load missions');
+                }
+            } catch (error) {
+                addEventToLog('ERROR', `Mission load error: ${error.message}`);
+            }
+        }
+
+        async function startSelectedMission() {
+            const selectElement = document.getElementById('missionSelect');
+            const selectedMission = selectElement.value;
+
+            if (!selectedMission) {
+                addEventToLog('ERROR', 'Please select a mission first');
+                return;
+            }
+
+            try {
+                const response = await fetch('/missions/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mission_name: selectedMission,
+                        parameters: {}
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    addEventToLog('MISSION', `Started mission: ${selectedMission}`);
+                    updateMissionStatus();
+                } else {
+                    addEventToLog('ERROR', data.message || 'Mission start failed');
+                }
+            } catch (error) {
+                addEventToLog('ERROR', `Mission start error: ${error.message}`);
+            }
+        }
+
+        async function stopMission() {
+            try {
+                const response = await fetch('/missions/stop', { method: 'POST' });
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    addEventToLog('MISSION', 'Mission stopped');
+                    updateMissionStatus();
+                } else {
+                    addEventToLog('ERROR', data.message || 'Mission stop failed');
+                }
+            } catch (error) {
+                addEventToLog('ERROR', `Mission stop error: ${error.message}`);
+            }
+        }
+
+        async function pauseMission() {
+            try {
+                const response = await fetch('/missions/pause', { method: 'POST' });
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    addEventToLog('MISSION', 'Mission paused');
+                    updateMissionStatus();
+                } else {
+                    addEventToLog('ERROR', data.message || 'Mission pause failed');
+                }
+            } catch (error) {
+                addEventToLog('ERROR', `Mission pause error: ${error.message}`);
+            }
+        }
+
+        async function resumeMission() {
+            try {
+                const response = await fetch('/missions/resume', { method: 'POST' });
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    addEventToLog('MISSION', 'Mission resumed');
+                    updateMissionStatus();
+                } else {
+                    addEventToLog('ERROR', data.message || 'Mission resume failed');
+                }
+            } catch (error) {
+                addEventToLog('ERROR', `Mission resume error: ${error.message}`);
+            }
+        }
+
+        async function updateMissionStatus() {
+            try {
+                const response = await fetch('/missions/status');
+                const data = await response.json();
+
+                if (response.ok) {
+                    currentMissionStatus = data;
+                    const statusElement = document.getElementById('missionStatus');
+
+                    if (data.mission_name && data.state !== 'idle') {
+                        statusElement.innerHTML = `Status: <span class="status-active">${data.mission_name} - ${data.state}</span>`;
+                    } else {
+                        statusElement.innerHTML = `Status: <span class="status-inactive">No mission active</span>`;
+                    }
+                }
+            } catch (error) {
+                console.log('Mission status check failed:', error);
+            }
+        }
+
+        // Detection status display functions
+        let detectionUpdateInterval = null;
+
+        function startDetectionStatusUpdates() {
+            if (detectionUpdateInterval) {
+                clearInterval(detectionUpdateInterval);
+            }
+
+            // Update every 2 seconds when AI detection is enabled
+            detectionUpdateInterval = setInterval(updateDetectionStatus, 2000);
+            updateDetectionStatus(); // Initial update
+        }
+
+        function stopDetectionStatusUpdates() {
+            if (detectionUpdateInterval) {
+                clearInterval(detectionUpdateInterval);
+                detectionUpdateInterval = null;
+            }
+
+            // Show inactive status
+            const detectionContent = document.getElementById('detectionContent');
+            detectionContent.innerHTML = '<div class="detection-none">AI detection not active</div>';
+        }
+
+        async function updateDetectionStatus() {
+            if (!aiDetectionEnabled) {
+                stopDetectionStatusUpdates();
+                return;
+            }
+
+            try {
+                const response = await fetch('/ai/detection/latest');
+                const data = await response.json();
+
+                if (response.ok) {
+                    updateDetectionDisplay(data);
+                } else {
+                    console.log('Detection status fetch failed');
+                }
+            } catch (error) {
+                console.log('Detection status error:', error);
+            }
+        }
+
+        function updateDetectionDisplay(data) {
+            const detectionContent = document.getElementById('detectionContent');
+
+            if (!data.enabled) {
+                detectionContent.innerHTML = '<div class="detection-none">AI detection not active</div>';
+                return;
+            }
+
+            if (data.error) {
+                detectionContent.innerHTML = `<div class="detection-none">Error: ${data.error}</div>`;
+                return;
+            }
+
+            if (data.detections.length === 0 && data.poses.length === 0 && data.behaviors.length === 0) {
+                detectionContent.innerHTML = '<div class="detection-none">No dogs detected</div>';
+                return;
+            }
+
+            let html = '';
+
+            // Display detection count
+            if (data.detections.length > 0) {
+                html += `<div class="detection-info">
+                    <span class="detection-label">Dogs Detected:</span>
+                    <span class="detection-value">${data.detections.length}</span>
+                </div>`;
+
+                // Show individual detection confidence
+                data.detections.forEach((detection, index) => {
+                    html += `<div class="detection-info">
+                        <span class="detection-label">Dog ${index + 1} Confidence:</span>
+                        <span class="detection-value">${(detection.confidence * 100).toFixed(1)}%</span>
+                    </div>`;
+                });
+            }
+
+            // Display pose information
+            if (data.poses.length > 0) {
+                html += `<div class="detection-info">
+                    <span class="detection-label">Poses Analyzed:</span>
+                    <span class="detection-value">${data.poses.length}</span>
+                </div>`;
+            }
+
+            // Display behavior information
+            if (data.behaviors.length > 0) {
+                data.behaviors.forEach((behavior, index) => {
+                    if (behavior.behavior) {
+                        html += `<div class="detection-info">
+                            <span class="detection-label">Behavior ${index + 1}:</span>
+                            <span class="detection-value">${behavior.behavior}</span>
+                        </div>`;
+                    }
+                });
+            }
+
+            // Add timestamp
+            const timestamp = new Date(data.timestamp * 1000).toLocaleTimeString();
+            html += `<div class="detection-info">
+                <span class="detection-label">Last Update:</span>
+                <span class="detection-value">${timestamp}</span>
+            </div>`;
+
+            detectionContent.innerHTML = html;
+        }
+
+        // Camera slider control functions
+        let currentCameraPan = 100;  // Default center pan
+        let currentCameraTilt = 70;  // Default center tilt
+        let cameraSliderTimeout = null;
+
+        function updateCameraSlider(axis, value) {
+            const numValue = parseInt(value);
+
+            if (axis === 'pan') {
+                currentCameraPan = numValue;
+                document.getElementById('panValue').textContent = `${numValue}°`;
+            } else if (axis === 'tilt') {
+                currentCameraTilt = numValue;
+                document.getElementById('tiltValue').textContent = `${numValue}°`;
+            }
+
+            // Debounce camera movements to avoid too many commands
+            if (cameraSliderTimeout) {
+                clearTimeout(cameraSliderTimeout);
+            }
+
+            cameraSliderTimeout = setTimeout(() => {
+                moveCameraToPosition(currentCameraPan, currentCameraTilt);
+            }, 150); // 150ms delay to prevent spam
+        }
+
+        function moveCameraToPosition(pan, tilt) {
+            if (!isConnected) return;
+
+            const command = {
+                command: 'camera_control',
+                params: { pan: pan, tilt: tilt }
+            };
+
+            ws.send(JSON.stringify(command));
+            addEventToLog('CAMERA', `Moving to pan=${pan}°, tilt=${tilt}°`);
+        }
+
+        function resetCameraPosition() {
+            currentCameraPan = 100;
+            currentCameraTilt = 70;
+
+            // Update sliders
+            document.getElementById('panSlider').value = currentCameraPan;
+            document.getElementById('tiltSlider').value = currentCameraTilt;
+            document.getElementById('panValue').textContent = `${currentCameraPan}°`;
+            document.getElementById('tiltValue').textContent = `${currentCameraTilt}°`;
+
+            // Move camera
+            moveCameraToPosition(currentCameraPan, currentCameraTilt);
+        }
+
+        function saveCameraPreset() {
+            // Save current position to localStorage for future sessions
+            localStorage.setItem('cameraPreset', JSON.stringify({
+                pan: currentCameraPan,
+                tilt: currentCameraTilt
+            }));
+
+            addEventToLog('CAMERA', `Preset saved: pan=${currentCameraPan}°, tilt=${currentCameraTilt}°`);
+        }
+
+        function loadCameraPreset() {
+            try {
+                const preset = localStorage.getItem('cameraPreset');
+                if (preset) {
+                    const { pan, tilt } = JSON.parse(preset);
+                    currentCameraPan = pan;
+                    currentCameraTilt = tilt;
+
+                    // Update sliders
+                    document.getElementById('panSlider').value = currentCameraPan;
+                    document.getElementById('tiltSlider').value = currentCameraTilt;
+                    document.getElementById('panValue').textContent = `${currentCameraPan}°`;
+                    document.getElementById('tiltValue').textContent = `${currentCameraTilt}°`;
+
+                    addEventToLog('CAMERA', `Preset loaded: pan=${currentCameraPan}°, tilt=${currentCameraTilt}°`);
+                }
+            } catch (error) {
+                console.log('Failed to load camera preset:', error);
+            }
         }
 
         // Control functions
