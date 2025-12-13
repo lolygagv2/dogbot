@@ -1620,15 +1620,15 @@ def get_audio_controller():
 
 @app.post("/audio/play/file")
 async def play_audio_file(request: DFPlayerPlayRequest):
-    """Play audio file by path"""
+    """Play audio file by path using USB audio service"""
     try:
-        audio = get_audio_controller()
-        success = audio.play_file_by_path(request.filepath)
+        usb_audio_service = get_usb_audio_service()
+        result = usb_audio_service.play_file(request.filepath)
 
         return {
-            "success": success,
+            "success": result.get("success", False),
             "filepath": request.filepath,
-            "message": f"Playing {request.filepath}" if success else "Failed to play file"
+            "message": result.get("message", f"Playing {request.filepath}" if result.get("success") else "Failed to play file")
         }
     except Exception as e:
         logger.error(f"Audio play file error: {e}")

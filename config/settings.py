@@ -46,49 +46,49 @@ class SystemSettings:
 
 class AudioFiles:
     """USB Audio file mappings for pygame-based playback"""
-    
-   # ===== TALKS FOLDER =====
-    # System/intro sounds
-    SCOOBY_INTRO =  "/home/morgan/dogbot/VOICEMP3/talks/0001.mp3"  # Scooby Snacks INTRO
 
-     # Dog names/calls
-    ELSA =          "/home/morgan/dogbot/VOICEMP3/talks/0003.mp3"  # Elsa
-    BEZIK =         "/home/morgan/dogbot/VOICEMP3/talks/0004.mp3"  # Bezik
-    BEZIK_COME =    "/home/morgan/dogbot/VOICEMP3/talks/0005.mp3"  # Bezik Come
-    ELSA_COME =     "/home/morgan/dogbot/VOICEMP3/talks/0006.mp3"  # Elsa COME
-    DOGS_COME =     "/home/morgan/dogbot/VOICEMP3/talks/0007.mp3"  # Bezik Elsa Come (both dogs)
+   # ===== TALKS FOLDER (Voice Commands & Dog Names) =====
+    # System/intro sounds
+    SCOOBY_INTRO =  "/home/morgan/dogbot/VOICEMP3/talks/scooby_intro.mp3"  # Scooby Snacks INTRO
+
+    # Dog names/calls
+    ELSA =          "/home/morgan/dogbot/VOICEMP3/talks/elsa.mp3"  # Elsa
+    BEZIK =         "/home/morgan/dogbot/VOICEMP3/talks/bezik.mp3"  # Bezik
+    BEZIK_COME =    "/home/morgan/dogbot/VOICEMP3/talks/bezik_come.mp3"  # Bezik Come
+    ELSA_COME =     "/home/morgan/dogbot/VOICEMP3/talks/elsa_come.mp3"  # Elsa COME
+    DOGS_COME =     "/home/morgan/dogbot/VOICEMP3/talks/dogs_come.mp3"  # Bezik Elsa Come (both dogs)
 
     # Positive reinforcement
-    GOOD_DOG =      "/home/morgan/dogbot/VOICEMP3/talks/0008.mp3"  # GOOD
-    KAHNSHIK =      "/home/morgan/dogbot/VOICEMP3/talks/0009.mp3"  # KAHNSHIK (good/praise?)
+    GOOD_DOG =      "/home/morgan/dogbot/VOICEMP3/talks/good_dog.mp3"  # GOOD
+    KAHNSHIK =      "/home/morgan/dogbot/VOICEMP3/talks/kahnshik.mp3"  # KAHNSHIK (good/praise?)
 
     # Commands
-    LIE_DOWN =      "/home/morgan/dogbot/VOICEMP3/talks/0010.mp3"  # Lie Down
-    QUIET =         "/home/morgan/dogbot/VOICEMP3/talks/0011.mp3"  # Quiet
-    NO =            "/home/morgan/dogbot/VOICEMP3/talks/0012.mp3"  # No
-    TREAT =         "/home/morgan/dogbot/VOICEMP3/talks/0013.mp3"  # Treat
-    KOKOMA =        "/home/morgan/dogbot/VOICEMP3/talks/0014.mp3"  # Kokoma potatoe
-    SIT =           "/home/morgan/dogbot/VOICEMP3/talks/0015.mp3"  # Sit
-    SPIN =          "/home/morgan/dogbot/VOICEMP3/talks/0016.mp3"  # Spin
-    STAY =          "/home/morgan/dogbot/VOICEMP3/talks/0017.mp3"  # Stay
+    LIE_DOWN =      "/home/morgan/dogbot/VOICEMP3/talks/lie_down.mp3"  # Lie Down
+    QUIET =         "/home/morgan/dogbot/VOICEMP3/talks/quiet.mp3"  # Quiet
+    NO =            "/home/morgan/dogbot/VOICEMP3/talks/no.mp3"  # No
+    TREAT =         "/home/morgan/dogbot/VOICEMP3/talks/treat.mp3"  # Treat
+    KOKOMA =        "/home/morgan/dogbot/VOICEMP3/talks/kokoma.mp3"  # Kokoma potato
+    SIT =           "/home/morgan/dogbot/VOICEMP3/talks/sit.mp3"  # Sit
+    SPIN =          "/home/morgan/dogbot/VOICEMP3/talks/spin.mp3"  # Spin
+    STAY =          "/home/morgan/dogbot/VOICEMP3/talks/stay.mp3"  # Stay
 
-    # ===== 02 AUDIO FOLDER =====
+    # ===== SONGS FOLDER (Background Music & Entertainment) =====
     # Background music
-    MOZART_CONCERTO =   "/home/morgan/dogbot/VOICEMP3/02/0019.mp3"  # Mozart: Concerto for flute, h
-    MOZART_PIANO =      "/home/morgan/dogbot/VOICEMP3/02/0018.mp3"  # Mozart: Piano concerto No. 26
-    MILKSHAKE =         "/home/morgan/dogbot/VOICEMP3/02/0020.mp3"  # Milkshake
-    YUMMY =             "/home/morgan/dogbot/VOICEMP3/02/0021.mp3"  # Justin Bieber - Yummy (Lyric Video)
-    HUNGRY =            "/home/morgan/dogbot/VOICEMP3/02/0022.mp3"  # Duran Duran - Hungry like the Wolf [Audio]
-    DNCE =              "/home/morgan/dogbot/VOICEMP3/02/0023.mp3"  # DNCE - Cake By The Ocean (Lyrics)
-    DOGS_OUT =          "/home/morgan/dogbot/VOICEMP3/02/0024.mp3"  # Baha Men - Who Let the Dogs Out Lyrics
-    SCOOBY_SNACKS =     "/home/morgan/dogbot/VOICEMP3/02/0030.mp3"  # Scooby Snacks
+    MOZART_CONCERTO =   "/home/morgan/dogbot/VOICEMP3/songs/mozart_concerto.mp3"  # Mozart: Concerto for flute, h
+    MOZART_PIANO =      "/home/morgan/dogbot/VOICEMP3/songs/mozart_piano.mp3"  # Mozart: Piano concerto No. 26
+    MILKSHAKE =         "/home/morgan/dogbot/VOICEMP3/songs/milkshake.mp3"  # Milkshake
+    YUMMY =             "/home/morgan/dogbot/VOICEMP3/songs/yummy.mp3"  # Justin Bieber - Yummy (Lyric Video)
+    HUNGRY =            "/home/morgan/dogbot/VOICEMP3/songs/hungry_like_wolf.mp3"  # Duran Duran - Hungry like the Wolf [Audio]
+    DNCE =              "/home/morgan/dogbot/VOICEMP3/songs/cake_by_ocean.mp3"  # DNCE - Cake By The Ocean (Lyrics)
+    DOGS_OUT =          "/home/morgan/dogbot/VOICEMP3/songs/who_let_dogs_out.mp3"  # Baha Men - Who Let the Dogs Out Lyrics
+    SCOOBY_SNACKS =     "/home/morgan/dogbot/VOICEMP3/songs/scooby_snacks.mp3"  # Scooby Snacks
 
     # System FX
-    PROGRESS_SCAN =     "/home/morgan/dogbot/VOICEMP3/02/0025.mp3"  # Progress minutes of scanning
-    ROBO_SCAN =         "/home/morgan/dogbot/VOICEMP3/02/0026.mp3"  # RobotScanning
-    DOOR_SCAN =         "/home/morgan/dogbot/VOICEMP3/02/0027.mp3"  # Short Door Scan beep
-    HI_SCAN =           "/home/morgan/dogbot/VOICEMP3/02/0028.mp3"  # A load high pitch scan
-    BUSY_SCAN =         "/home/morgan/dogbot/VOICEMP3/02/0029.mp3"  # A busy noisey scan - like 30 seconds or so
+    PROGRESS_SCAN =     "/home/morgan/dogbot/VOICEMP3/songs/progress_scan.mp3"  # Progress minutes of scanning
+    ROBO_SCAN =         "/home/morgan/dogbot/VOICEMP3/songs/robot_scan.mp3"  # RobotScanning
+    DOOR_SCAN =         "/home/morgan/dogbot/VOICEMP3/songs/door_scan.mp3"  # Short Door Scan beep
+    HI_SCAN =           "/home/morgan/dogbot/VOICEMP3/songs/hi_scan.mp3"  # A load high pitch scan
+    BUSY_SCAN =         "/home/morgan/dogbot/VOICEMP3/songs/busy_scan.mp3"  # A busy noisey scan - like 30 seconds or so
 
 
     @classmethod
