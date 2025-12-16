@@ -1,5 +1,9 @@
 # DFPlayer Pro Audio API Documentation
 
+
+##Currently this is no longer used - OBSOLETE.
+
+
 ## Overview
 The DFPlayer Pro is integrated using AT commands over serial (/dev/ttyAMA0 at 115200 baud). The implementation is in `core/hardware/audio_controller.py`.
 

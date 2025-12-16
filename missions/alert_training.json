@@ -1,0 +1,48 @@
+{
+  "name": "alert_training",
+  "description": "Guard dog training - rewards dog for sitting and giving alert barks",
+  "enabled": true,
+  "schedule": "manual",
+  "max_rewards": 8,
+  "duration_minutes": 45,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 300.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 10,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "wait_for_alert_behavior",
+      "timeout": 180.0,
+      "success_event": "VisionEvent.Pose.Sit",
+      "min_duration": 2.0,
+      "max_attempts": 10,
+      "sequence": "celebrate_alert",
+      "cooldown": 10.0,
+      "conditions": {
+        "min_confidence": 0.7,
+        "allow_barking": true
+      }
+    }
+  ],
+  "completion": {
+    "success": "Alert training completed successfully - dog learned to sit and bark!",
+    "timeout": "Training timed out - keep practicing!",
+    "max_rewards": "Excellent guard dog training session completed!"
+  },
+  "config": {
+    "treat_sound": "excellent.mp3",
+    "celebration_lights": "pulse_blue",
+    "daily_limit": 8,
+    "cooldown_minutes": 10,
+    "consumer_friendly": true,
+    "allow_bark_rewards": true,
+    "require_quiet_always": false,
+    "require_quiet_behaviors": []
+  }
+}

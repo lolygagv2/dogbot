@@ -71,11 +71,11 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 
 ### ✅ COMPLETED - Unified Architecture (Oct 21-22, 2025)
 
-#### Phase 1: Core Infrastructure ✅
+#### Phase 1: Core Infrastructure ⚠️ DRAFT
 - [x] Event bus (`/core/bus.py`) - Pub/sub messaging
 - [x] State manager (`/core/state.py`) - System mode tracking
 - [x] Safety monitor (`/core/safety.py`) - Battery/temp monitoring
-- [ ] Data store (`/core/store.py`) - SQLite persistence [MISSING]
+- [⚠️] Data store (`/core/store.py`) - SQLite persistence [DRAFT - 550 lines, needs testing]
 
 #### Phase 2: Service Layer ✅
 - [x] Perception service (`/services/perception/detector.py`)
@@ -87,11 +87,11 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 - [x] Gamepad service (`/services/input/gamepad.py`)
 - [x] GUI service (`/services/ui/gui.py`)
 
-#### Phase 3: Orchestration Layer ✅
+#### Phase 3: Orchestration Layer ⚠️ DRAFT
 - [x] Sequence engine (`/orchestrators/sequence_engine.py`)
 - [x] Reward logic (`/orchestrators/reward_logic.py`)
 - [x] Mode FSM (`/orchestrators/mode_fsm.py`)
-- [ ] Mission engine (`/orchestrators/mission_engine.py`) [TODO]
+- [⚠️] Mission engine (`/orchestrators/mission_engine.py`) [DRAFT - 600 lines, needs testing]
 
 #### Phase 4: Configuration ⚠️ PARTIAL
 - [x] Modes config (`/configs/modes.yaml`)
@@ -104,9 +104,9 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 - [x] Startup/shutdown sequences
 - [x] Service coordination
 
-#### Phase 6: API Layer ⚠️ PARTIAL
+#### Phase 6: API Layer ⚠️ DRAFT
 - [x] REST API (`/api/server.py`)
-- [ ] WebSocket server (`/api/ws.py`)
+- [⚠️] WebSocket server (`/api/ws.py`) [DRAFT - 467 lines, needs testing]
 
 ### 🔄 HARDWARE UPDATES [November 25, 2025]
 
@@ -115,12 +115,15 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
   - **Higher torque:** 10 kg·cm (vs 4.5 kg·cm previous)
   - **Higher speed:** 210 RPM (vs 133 RPM previous)
   - **Built-in encoders:** Quadrature feedback for precise control
-  - **⚠️ STATUS:** Hardware installed, needs control reconfiguration
+  - **✅ STATUS:** Working with error-free operation, safety fixes complete
 
 **Audio System:**
-- ✅ **Conference microphone** (upgraded from lapel mic)
-- ✅ **2x single-channel relays** for audio switching (DFPlayer ↔ Pi Audio)
-- **⚠️ STATUS:** Conference mic needs testing
+- ✅ **Ugreen USB Audio Adapter** - Unified microphone input and speaker output
+- ✅ **Conference Microphone** - 2.5" disc, omnidirectional pickup for bark detection
+- ✅ **Upgraded Speakers** - 4Ω 5W speakers for improved audio output
+- ✅ **VOICEMP3 folder** - Organized local audio files (/talks/ and /songs/)
+- ✅ **Complete Testing** - Recording/playback verified working
+- ✅ **Simplified architecture** - No DFPlayer, relays, or external amplifier needed
 
 **Camera System:**
 - ✅ **Longer camera cable** installed
@@ -423,12 +426,10 @@ mission.end()
 ## 📦 Deliverables Checklist
 
 ### Hardware Finalization
-- [ ] Audio relay wiring completed
-- [ ] Lapel mic connected and tested
-- [ ] IR sensors installed
-- [ ] Bumper sensors wired
+- [x] Conference mic connected and tested
+- [x] IR sensors installed
 - [ ] Final enclosure assembly
-- [ ] Charging dock with IR beacon
+- [x] Charging dock with IR beacon
 
 ### Software MVP
 - [ ] API server running on boot

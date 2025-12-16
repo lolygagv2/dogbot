@@ -48,6 +48,12 @@ class BarkDetectorService:
         # Service state
         self.enabled = config.get('enabled', True)
         self.is_running = False
+
+        # Consumer-friendly settings
+        self.bark_threshold = config.get('bark_threshold_db', 70)  # Adjustable volume threshold
+        self.quiet_reward_time = config.get('quiet_reward_seconds', 30)  # Reward quiet periods
+        self.last_bark_time = None
+        self.consumer_mode = config.get('consumer_friendly', True)
         self.detection_thread = None
 
         # Initialize components

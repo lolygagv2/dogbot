@@ -31,7 +31,7 @@ except ImportError:
     MOTOR_BUS_AVAILABLE = False
 
 try:
-    from core.hardware.motor_controller_dfrobot_encoder import DFRobotEncoderMotorController
+    from core.hardware.motor_controller_polling import MotorControllerPolling
     MOTOR_CONTROLLER_AVAILABLE = True
 except ImportError:
     MOTOR_CONTROLLER_AVAILABLE = False
@@ -143,8 +143,12 @@ class XboxHybridControllerFixed:
     MAX_SPEED = 100
     TURN_SPEED_FACTOR = 0.7  # Better turning response
 
-    # Motor calibration (right motor needs boost)
-    RIGHT_MOTOR_BOOST = 1.13  # 13% boost for right motor to match left (was 1.10)
+    # RPM Control - Convert speed percentages to RPM targets
+    MAX_RPM = 120  # Maximum RPM for DFRobot motors at 6V (safe operating speed)
+    USE_PID_CONTROL = True  # Enable closed-loop RPM control
+
+    # Motor calibration (fallback for direct PWM mode)
+    RIGHT_MOTOR_BOOST = 1.25  # 25% boost for right motor (legacy fallback only)
 
     # Safety features - FIXED FOR SMOOTH CONTROL
     TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
@@ -257,7 +261,6 @@ class XboxHybridControllerFixed:
 
         logger.info(f"Xbox Fixed Controller initialized for {device_path}")
         logger.info(f"Motor control: {'DIRECT' if self.motor_direct else 'API'}")
-        logger.info(f"Right motor boost: {self.RIGHT_MOTOR_BOOST}x")
         logger.info(f"API endpoint: {self.API_BASE_URL}")
 
         # Preload audio system
@@ -287,14 +290,23 @@ class XboxHybridControllerFixed:
                 logger.error(f"Motor bus initialization error: {e}")
                 self.motor_bus = None
 
+        # Use the motor controller from motor bus if available
+        if self.motor_bus and hasattr(self.motor_bus, 'motor_controller'):
+            self.motor_controller = self.motor_bus.motor_controller
+            self.motor_direct = True
+            motor_controller = self.motor_controller  # Update global reference
+            MOTOR_DIRECT = True
+            logger.info("✅ Using motor controller from motor bus for PID control")
+            return
+
         if MOTOR_CONTROLLER_AVAILABLE:
             try:
-                self.motor_controller = DFRobotEncoderMotorController()
+                self.motor_controller = MotorControllerPolling()
                 if self.motor_controller.initialize():
                     self.motor_direct = True
                     motor_controller = self.motor_controller  # Update global reference
                     MOTOR_DIRECT = True
-                    logger.info("✅ DFRobot encoder motor control initialized (fallback)")
+                    logger.info("✅ DFRobot polling motor control initialized (fallback)")
                     return
                 else:
                     logger.warning("DFRobot motor controller failed to initialize")
@@ -317,25 +329,49 @@ class XboxHybridControllerFixed:
         except Exception as e:
             logger.warning(f"Audio preload error: {e}")
 
-        # Initialize sound tracks for D-pad navigation
-        self.SOUND_TRACKS = [
-            ("/talks/good_dog.mp3", "Good Dog"),
-            ("/talks/treat.mp3", "Treat"),
+        # Initialize separate audio lists for left/right D-pad navigation
+        self.TALK_TRACKS = [
+            ("/talks/scooby_intro.mp3", "Scooby Intro"),
             ("/talks/elsa.mp3", "Elsa"),
             ("/talks/bezik.mp3", "Bezik"),
             ("/talks/bezik_come.mp3", "Bezik Come"),
             ("/talks/elsa_come.mp3", "Elsa Come"),
             ("/talks/dogs_come.mp3", "Dogs Come"),
+            ("/talks/good_dog.mp3", "Good Dog"),
+            ("/talks/kahnshik.mp3", "Kahnshik"),
             ("/talks/lie_down.mp3", "Lie Down"),
             ("/talks/quiet.mp3", "Quiet"),
             ("/talks/no.mp3", "No"),
+            ("/talks/treat.mp3", "Treat"),
+            ("/talks/kokoma.mp3", "Kokoma"),
             ("/talks/sit.mp3", "Sit"),
             ("/talks/spin.mp3", "Spin"),
-            ("/talks/stay.mp3", "Stay"),
-            ("/songs/who_let_dogs_out.mp3", "Who Let Dogs Out"),
-            ("/songs/scooby_snacks.mp3", "Scooby Snacks")
+            ("/talks/stay.mp3", "Stay")
         ]
-        logger.info(f"Audio tracks initialized: {len(self.SOUND_TRACKS)} tracks available")
+
+        self.SONG_TRACKS = [
+            ("/songs/mozart_piano.mp3", "Mozart Piano"),
+            ("/songs/mozart_concerto.mp3", "Mozart Concerto"),
+            ("/songs/milkshake.mp3", "Milkshake"),
+            ("/songs/yummy.mp3", "Yummy"),
+            ("/songs/hungry_like_wolf.mp3", "Hungry Like Wolf"),
+            ("/songs/cake_by_ocean.mp3", "Cake By Ocean"),
+            ("/songs/who_let_dogs_out.mp3", "Who Let Dogs Out"),
+            ("/songs/scooby_snacks.mp3", "Scooby Snacks"),
+            ("/songs/progress_scan.mp3", "Progress Scan"),
+            ("/songs/robot_scan.mp3", "Robot Scan"),
+            ("/songs/door_scan.mp3", "Door Scan"),
+            ("/songs/hi_scan.mp3", "Hi Scan"),
+            ("/songs/busy_scan.mp3", "Busy Scan")
+        ]
+
+        # Track indices for navigation
+        self.current_talk_index = 0
+        self.current_song_index = 0
+        self.queued_track = None  # Will hold the track to play when Down D-pad is pressed
+        self.queued_type = "talk"  # "song" or "talk"
+
+        logger.info(f"Audio tracks initialized: {len(self.TALK_TRACKS)} talks, {len(self.SONG_TRACKS)} songs")
 
     def api_request(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
         """Thread-safe API request with error handling"""
@@ -635,12 +671,13 @@ class XboxHybridControllerFixed:
 
         # Calculate motor speeds from left stick
         forward = self.state.left_y * self.MAX_SPEED * speed_multiplier
-        turn = self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * speed_multiplier
+        turn = -self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * speed_multiplier
 
-        # INVERTED: Stick left should make robot turn left
-        # When stick is left (negative X), right motor should be faster than left
-        left_speed = int(forward - turn)  # Inverted
-        right_speed = int(forward + turn)  # Inverted
+        # FIXED: Stick left should make robot turn left
+        # When stick is left (negative X), after negation becomes positive turn value
+        # which makes left motor faster than right (correct left turn)
+        left_speed = int(forward - turn)
+        right_speed = int(forward + turn)
 
         # For pure turns (no forward movement), ensure minimum turning speeds
         if abs(forward) < 5 and abs(turn) > 10:
@@ -677,11 +714,31 @@ class XboxHybridControllerFixed:
 
     def set_motor_speeds(self, left: int, right: int):
         """
-        Set motor speeds using motor command bus (preferred) or direct controller
+        Set motor speeds using closed-loop RPM control or fallback methods
 
-        Motor command bus handles all hardware compensation automatically
+        Converts speed percentages to RPM targets for precise control
         """
-        if self.motor_direct and self.motor_bus:
+        # Debug logging to see which control path is taken
+        logger.info(f"Motor control path: USE_PID={self.USE_PID_CONTROL}, motor_direct={self.motor_direct}, motor_controller={self.motor_controller is not None}")
+
+        if self.USE_PID_CONTROL and self.motor_direct and self.motor_controller:
+            try:
+                # Convert speed percentages to RPM targets
+                left_rpm = (left / self.MAX_SPEED) * self.MAX_RPM
+                right_rpm = (right / self.MAX_SPEED) * self.MAX_RPM
+
+                # Use PID closed-loop control for precise motor matching
+                self.motor_controller.set_motor_rpm(left_rpm, right_rpm)
+
+                # Always log RPM targets to debug
+                logger.info(f"RPM Targets: L={left_rpm:.1f}, R={right_rpm:.1f} (from speeds L={left}, R={right})")
+
+            except Exception as e:
+                logger.error(f"PID motor control error: {e}")
+                # Fallback to direct PWM control
+                self._fallback_pwm_control(left, right)
+
+        elif self.motor_direct and self.motor_bus:
             try:
                 # Use motor command bus - it handles all hardware compensation
                 cmd = create_motor_command(left, right, CommandSource.XBOX_CONTROLLER)
@@ -751,6 +808,33 @@ class XboxHybridControllerFixed:
                     self.motor_controller.set_motor_speed('right', 0, 'forward')
                 except:
                     pass
+
+    def _fallback_pwm_control(self, left: int, right: int):
+        """Fallback to direct PWM control when PID fails"""
+        try:
+            if left == 0 and right == 0:
+                self.motor_controller.set_motor_speed('left', 0, 'forward')
+                self.motor_controller.set_motor_speed('right', 0, 'forward')
+                return
+
+            # Apply right motor boost for hardware compensation
+            right_compensated = min(100, right * self.RIGHT_MOTOR_BOOST) if right != 0 else 0
+
+            # Set motor speeds with direction control
+            if left >= 0:
+                self.motor_controller.set_motor_speed('left', abs(left), 'forward')
+            else:
+                self.motor_controller.set_motor_speed('left', abs(left), 'backward')
+
+            if right_compensated >= 0:
+                self.motor_controller.set_motor_speed('right', abs(right_compensated), 'forward')
+            else:
+                self.motor_controller.set_motor_speed('right', abs(right_compensated), 'backward')
+
+            logger.debug(f"Fallback PWM: L={left}, R={right} (compensated={right_compensated:.1f})")
+
+        except Exception as e:
+            logger.error(f"Fallback PWM control error: {e}")
 
     def stop_motors(self):
         """Stop all motors with lock"""
@@ -888,38 +972,23 @@ class XboxHybridControllerFixed:
         if result and result.get('success'):
             logger.info(f"NeoPixel LEDs set to {mode}")
 
-    def _preload_audio_system(self):
-        """Initialize audio track list for D-pad navigation"""
-        # Define available sound tracks for D-pad cycling
-        self.SOUND_TRACKS = [
-            ("/talks/good_dog.mp3", "Good Dog"),
-            ("/talks/treat.mp3", "Treat"),
-            ("/talks/elsa.mp3", "Elsa"),
-            ("/talks/bezik.mp3", "Bezik"),
-            ("/talks/bezik_come.mp3", "Bezik Come"),
-            ("/talks/elsa_come.mp3", "Elsa Come"),
-            ("/talks/dogs_come.mp3", "Dogs Come"),
-            ("/talks/lie_down.mp3", "Lie Down"),
-            ("/talks/quiet.mp3", "Quiet"),
-            ("/talks/no.mp3", "No"),
-            ("/talks/sit.mp3", "Sit"),
-            ("/talks/spin.mp3", "Spin"),
-            ("/talks/stay.mp3", "Stay"),
-            ("/songs/who_let_dogs_out.mp3", "Who Let Dogs Out"),
-            ("/songs/scooby_snacks.mp3", "Scooby Snacks")
-        ]
-        logger.info(f"Audio system preloaded: {len(self.SOUND_TRACKS)} tracks available")
 
     def play_reward_sound(self):
         """Play TREAT sound (Y button)"""
         logger.info("Y button: Playing 'Treat' sound")
-        self.api_request('POST', '/audio/play_file', {"path": "/talks/treat.mp3", "name": "Treat"})
+        self.api_request('POST', '/audio/play/file', {"filepath": "/talks/treat.mp3"})
 
 
-    def play_sound_effect(self):
-        """Play selected sound effect (D-pad down)"""
-        file_path, track_name = self.SOUND_TRACKS[self.current_sound_index]
-        logger.info(f"Playing: {track_name} ({file_path})")
+    def play_selected_talk(self):
+        """Play selected talk track (D-pad right)"""
+        file_path, track_name = self.TALK_TRACKS[self.current_talk_index]
+        logger.info(f"Playing Talk: {track_name} ({file_path})")
+        self.api_request('POST', '/audio/play/file', {"filepath": file_path})
+
+    def play_selected_song(self):
+        """Play selected song track (D-pad left)"""
+        file_path, track_name = self.SONG_TRACKS[self.current_song_index]
+        logger.info(f"Playing Song: {track_name} ({file_path})")
         self.api_request('POST', '/audio/play/file', {"filepath": file_path})
 
     def process_dpad(self, number: int, value: int):
@@ -936,15 +1005,19 @@ class XboxHybridControllerFixed:
             if current_time - self.last_dpad_time < self.dpad_cooldown:
                 return
 
-            if value < 0:  # Left - Previous track
-                self.current_sound_index = (self.current_sound_index - 1) % len(self.SOUND_TRACKS)
-                file_path, track_name = self.SOUND_TRACKS[self.current_sound_index]
-                logger.info(f"Selected: {track_name}")
+            if value < 0:  # Left - Queue next SONG for playing
+                self.current_song_index = (self.current_song_index + 1) % len(self.SONG_TRACKS)
+                self.queued_track = self.SONG_TRACKS[self.current_song_index]
+                self.queued_type = "song"
+                file_path, track_name = self.queued_track
+                logger.info(f"🎵 QUEUED Song: {track_name} - Press DOWN to play")
                 self.last_dpad_time = current_time
-            elif value > 0:  # Right - Next track
-                self.current_sound_index = (self.current_sound_index + 1) % len(self.SOUND_TRACKS)
-                file_path, track_name = self.SOUND_TRACKS[self.current_sound_index]
-                logger.info(f"Selected: {track_name}")
+            elif value > 0:  # Right - Queue next TALK for playing
+                self.current_talk_index = (self.current_talk_index + 1) % len(self.TALK_TRACKS)
+                self.queued_track = self.TALK_TRACKS[self.current_talk_index]
+                self.queued_type = "talk"
+                file_path, track_name = self.queued_track
+                logger.info(f"🗣️ QUEUED Talk: {track_name} - Press DOWN to play")
                 self.last_dpad_time = current_time
 
         elif number == 7:  # D-pad Y axis
@@ -954,11 +1027,16 @@ class XboxHybridControllerFixed:
             if value < 0:  # Up - Stop audio
                 logger.info("D-pad up: Stop audio")
                 self.api_request('POST', '/audio/stop')
-            elif value > 0:  # Down - Play selected
+            elif value > 0:  # Down - Play the QUEUED track
                 # Add cooldown to prevent rapid audio triggering
                 current_time = time.time()
                 if current_time - self.last_dpad_time >= self.dpad_cooldown:
-                    self.play_sound_effect()
+                    if self.queued_track is not None:
+                        file_path, track_name = self.queued_track
+                        logger.info(f"▶️ PLAYING {self.queued_type.upper()}: {track_name} ({file_path})")
+                        self.api_request('POST', '/audio/play/file', {"filepath": file_path})
+                    else:
+                        logger.info("No track queued - use LEFT/RIGHT D-pad first")
                     self.last_dpad_time = current_time
 
     def run(self):

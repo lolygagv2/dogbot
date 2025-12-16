@@ -73,9 +73,6 @@ class SfxService:
                 self.audio_initialized = True
                 self.logger.info("Audio system initialized")
 
-                # Switch to DFPlayer mode
-                self.audio.switch_to_dfplayer()
-
                 # Set volume
                 self.set_volume(self.default_volume)
 

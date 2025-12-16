@@ -109,18 +109,29 @@ class MotorCommandBus:
                 left_speed = max(-70, min(70, command.left_speed))  # 70% max for safety
                 right_speed = max(-70, min(70, command.right_speed))
 
-                # Convert to motor controller format
-                if left_speed == 0:
-                    self.motor_controller.set_motor_speed('left', 0, 'forward')
-                else:
-                    left_dir = 'forward' if left_speed > 0 else 'backward'
-                    self.motor_controller.set_motor_speed('left', abs(left_speed), left_dir)
+                # Use PID RPM control if available, otherwise fall back to PWM
+                if hasattr(self.motor_controller, 'set_motor_rpm'):
+                    # Convert speed percentages to RPM targets for PID control
+                    max_rpm = 120  # Maximum safe RPM for DFRobot motors
+                    left_rpm = (left_speed / 100.0) * max_rpm
+                    right_rpm = (right_speed / 100.0) * max_rpm
 
-                if right_speed == 0:
-                    self.motor_controller.set_motor_speed('right', 0, 'forward')
+                    self.motor_controller.set_motor_rpm(left_rpm, right_rpm)
+                    self.logger.debug(f"Motor RPM command: L={left_rpm:.1f}, R={right_rpm:.1f} RPM")
                 else:
-                    right_dir = 'forward' if right_speed > 0 else 'backward'
-                    self.motor_controller.set_motor_speed('right', abs(right_speed), right_dir)
+                    # Fallback to direct PWM control
+                    if left_speed == 0:
+                        self.motor_controller.set_motor_speed('left', 0, 'forward')
+                    else:
+                        left_dir = 'forward' if left_speed > 0 else 'backward'
+                        self.motor_controller.set_motor_speed('left', abs(left_speed), left_dir)
+
+                    if right_speed == 0:
+                        self.motor_controller.set_motor_speed('right', 0, 'forward')
+                    else:
+                        right_dir = 'forward' if right_speed > 0 else 'backward'
+                        self.motor_controller.set_motor_speed('right', abs(right_speed), right_dir)
+                    self.logger.debug(f"Motor PWM command: L={left_speed}, R={right_speed}")
 
                 self.logger.debug(f"Motor command sent: L={left_speed}, R={right_speed}")
                 return True

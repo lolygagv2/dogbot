@@ -36,11 +36,11 @@ except ImportError:
     print("[WARNING] Gpioset motor controller not available")
 
 try:
-    from core.hardware.motor_controller_dfrobot_encoder import DFRobotEncoderMotorController, MotorDirection as EncoderDirection
-    ENCODER_MOTOR_AVAILABLE = True
+    from core.hardware.motor_controller_polling import MotorControllerPolling, MotorDirection as PollingDirection
+    POLLING_MOTOR_AVAILABLE = True
 except ImportError:
-    ENCODER_MOTOR_AVAILABLE = False
-    print("[WARNING] DFRobot encoder motor controller not available")
+    POLLING_MOTOR_AVAILABLE = False
+    print("[WARNING] DFRobot polling motor controller not available")
 
 from core.bus import get_bus, MotionEvent
 from core.state import get_state

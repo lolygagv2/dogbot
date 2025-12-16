@@ -501,7 +501,11 @@ class MissionEngine:
         if session.state == MissionState.WAITING_FOR_DOG:
             session.state = MissionState.WAITING_FOR_BEHAVIOR
             session.dog_id = event_data.get("dog_id")
-            self.logger.info("Dog detected, waiting for behavior")
+            # Advance to next stage when dog is detected
+            if session.current_stage < len(session.mission.stages) - 1:
+                session.current_stage += 1
+                session.stage_start_time = time.time()
+            self.logger.info(f"Dog detected, advanced to stage {session.current_stage + 1}, waiting for behavior")
 
     def _handle_dog_lost(self, event_data: Dict[str, Any]):
         """Handle dog lost event"""

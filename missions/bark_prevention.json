@@ -1,0 +1,49 @@
+{
+  "name": "bark_prevention",
+  "description": "Quiet training - reduces excessive barking behavior",
+  "enabled": true,
+  "schedule": "continuous",
+  "max_rewards": 10,
+  "duration_minutes": 480,
+  "stages": [
+    {
+      "name": "monitor_audio",
+      "timeout": 3600.0,
+      "success_event": "AudioEvent.BarkDetected",
+      "min_duration": 0.0,
+      "max_attempts": 100,
+      "sequence": "quiet_correction",
+      "cooldown": 5.0,
+      "conditions": {
+        "volume_threshold": 0.6,
+        "bark_confidence": 0.8
+      }
+    },
+    {
+      "name": "reward_quiet",
+      "timeout": 30.0,
+      "success_event": "AudioEvent.QuietPeriod",
+      "min_duration": 30.0,
+      "max_attempts": 1,
+      "sequence": "reward_quiet_behavior",
+      "cooldown": 60.0,
+      "conditions": {
+        "quiet_duration": 30
+      }
+    }
+  ],
+  "completion": {
+    "success": "Bark training session completed",
+    "timeout": "Monitoring session ended",
+    "max_rewards": "Excellent quiet behavior today!"
+  },
+  "config": {
+    "quiet_sound": "quiet.mp3",
+    "reward_sound": "good_dog.mp3",
+    "correction_lights": "orange_flash",
+    "reward_lights": "green_steady",
+    "bark_threshold_db": 70,
+    "quiet_reward_threshold": 30,
+    "consumer_friendly": true
+  }
+}

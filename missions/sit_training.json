@@ -1,0 +1,47 @@
+{
+  "name": "sit_training",
+  "description": "Basic sit training - rewards dog for sitting behavior",
+  "enabled": true,
+  "schedule": "manual",
+  "max_rewards": 5,
+  "duration_minutes": 60,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 300.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 10,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "wait_for_sit",
+      "timeout": 120.0,
+      "success_event": "VisionEvent.Pose.Sit",
+      "min_duration": 2.0,
+      "max_attempts": 5,
+      "sequence": "celebrate_sit",
+      "cooldown": 15.0,
+      "conditions": {
+        "min_confidence": 0.7
+      }
+    }
+  ],
+  "completion": {
+    "success": "All stages completed successfully",
+    "timeout": "Mission timed out waiting for behavior",
+    "max_rewards": "Daily treat limit reached - great training session!"
+  },
+  "config": {
+    "treat_sound": "good_dog.mp3",
+    "celebration_lights": "green_flash",
+    "daily_limit": 5,
+    "cooldown_minutes": 15,
+    "consumer_friendly": true,
+    "allow_bark_rewards": false,
+    "require_quiet_always": false,
+    "require_quiet_behaviors": ["sit"]
+  }
+}

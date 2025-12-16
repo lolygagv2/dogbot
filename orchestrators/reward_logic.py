@@ -54,12 +54,12 @@ class RewardLogic:
         self.sequence_engine = get_sequence_engine()
         self.logger = logging.getLogger('RewardLogic')
 
-        # Default policies
+        # Default policies - require_quiet now mission-context aware
         self.policies = {
             'sit': RewardPolicy(
                 behavior='sit',
                 min_duration=10.0,
-                require_quiet=True,
+                require_quiet=False,  # Made flexible - check mission context
                 cooldown=20.0,
                 treat_probability=0.6,
                 max_daily_rewards=8,
@@ -70,7 +70,7 @@ class RewardLogic:
             'down': RewardPolicy(
                 behavior='down',
                 min_duration=15.0,
-                require_quiet=True,
+                require_quiet=False,  # Made flexible - check mission context
                 cooldown=30.0,
                 treat_probability=0.5,
                 max_daily_rewards=6,
@@ -81,7 +81,7 @@ class RewardLogic:
             'stay': RewardPolicy(
                 behavior='stay',
                 min_duration=20.0,
-                require_quiet=True,
+                require_quiet=False,  # Made flexible - check mission context
                 cooldown=45.0,
                 treat_probability=0.7,
                 max_daily_rewards=5,
@@ -110,8 +110,9 @@ class RewardLogic:
         # Thread safety
         self._lock = threading.RLock()
 
-        # Subscribe to vision events
+        # Subscribe to vision and audio events
         self.bus.subscribe('vision', self._on_vision_event)
+        self.bus.subscribe('audio', self._on_audio_event)
 
         # Behavior detection state
         self.detection_start_times = {}  # dog_id -> {behavior -> start_time}
@@ -121,6 +122,11 @@ class RewardLogic:
         """Handle vision events"""
         if event.subtype == 'behavior_detected':
             self._process_behavior_detection(event.data)
+
+    def _on_audio_event(self, event) -> None:
+        """Handle audio events for bark-based rewards"""
+        if event.subtype == 'bark_detected':
+            self._process_bark_detection(event.data)
 
     def _process_behavior_detection(self, data: Dict[str, Any]) -> None:
         """Process behavior detection and evaluate for rewards"""
@@ -174,6 +180,62 @@ class RewardLogic:
                 if behavior in dog_stable:
                     del dog_stable[behavior]
 
+    def _process_bark_detection(self, data: Dict[str, Any]) -> None:
+        """Process bark detection and evaluate for bark-based rewards"""
+        emotion = data.get('emotion', '')
+        confidence = data.get('confidence', 0.0)
+        timestamp = data.get('timestamp', time.time())
+
+        # Get dog from current state (assume the detected dog)
+        # In a multi-dog system, this would need better dog identification
+        dog_id = self.state.get_current_dog_id() if hasattr(self.state, 'get_current_dog_id') else 'unknown'
+
+        self.logger.info(f"Bark detected: {dog_id} {emotion} (conf: {confidence:.2f})")
+
+        # Define bark reward policy
+        bark_policy = RewardPolicy(
+            behavior=f'bark_{emotion}',
+            min_duration=0.0,  # Immediate bark reward
+            require_quiet=False,  # Bark rewards don't require quiet!
+            cooldown=5.0,  # 5-second cooldown between bark rewards
+            treat_probability=0.4,  # Lower probability than behavior rewards
+            max_daily_rewards=3,  # Limit bark-only rewards
+            sounds=['good_dog'],
+            led_pattern='pulse_blue',
+            sequence_name='celebrate'
+        )
+
+        # Check if this emotion should trigger reward
+        reward_emotions = ['alert', 'attention']  # From config
+        if emotion in reward_emotions and confidence >= 0.55:
+            self._evaluate_bark_reward(dog_id, emotion, confidence, bark_policy)
+
+    def _evaluate_bark_reward(self, dog_id: str, emotion: str, confidence: float,
+                             policy: RewardPolicy) -> None:
+        """Evaluate whether to give a bark-based reward"""
+
+        # Use same cooldown/limit checking but for bark rewards
+        if not self._check_cooldown(dog_id, policy.cooldown):
+            self.logger.debug(f"Bark reward blocked by cooldown: {dog_id}")
+            return
+
+        # Check daily limit for bark rewards specifically
+        behavior_name = f'bark_{emotion}'
+        if not self._check_daily_limit(dog_id, behavior_name, policy.max_daily_rewards):
+            self.logger.debug(f"Bark reward blocked by daily limit: {dog_id} {behavior_name}")
+            return
+
+        # Bark rewards don't check mission quiet requirement - they're independent
+
+        # Variable ratio reward
+        if random.random() > policy.treat_probability:
+            self.logger.info(f"Bark reward denied by probability: {dog_id} {behavior_name} (p={policy.treat_probability})")
+            return
+
+        # Grant bark reward!
+        self.logger.info(f"Granting bark reward: {dog_id} {behavior_name}")
+        self._grant_reward(dog_id, behavior_name, confidence, 0.0, policy)
+
     def _evaluate_reward(self, dog_id: str, behavior: str, confidence: float,
                         duration: float, policy: RewardPolicy) -> None:
         """Evaluate whether to give a reward"""
@@ -188,9 +250,9 @@ class RewardLogic:
             self.logger.debug(f"Reward blocked by daily limit: {dog_id} {behavior}")
             return
 
-        # Check quiet requirement (placeholder - would need motion/audio detection)
-        if policy.require_quiet and not self._check_quiet_requirement():
-            self.logger.debug(f"Reward blocked by noise: {dog_id}")
+        # Check mission-specific quiet requirement
+        if not self._check_mission_quiet_requirement(behavior):
+            self.logger.debug(f"Reward blocked by mission noise policy: {dog_id} {behavior}")
             return
 
         # Variable ratio reward (probability-based)
@@ -198,13 +260,14 @@ class RewardLogic:
             self.logger.info(f"Reward denied by probability: {dog_id} {behavior} (p={policy.treat_probability})")
 
             # Log non-reward to store
+            mission_name = getattr(getattr(self.state, 'mission', None), 'name', 'unknown')
             self.store.log_reward(
                 dog_id=dog_id,
                 behavior=behavior,
                 confidence=confidence,
                 success=False,
                 treats_dispensed=0,
-                mission_name=self.state.mission.name
+                mission_name=mission_name
             )
             return
 
@@ -231,11 +294,56 @@ class RewardLogic:
 
         return current_count < max_daily
 
-    def _check_quiet_requirement(self) -> bool:
-        """Check if environment is quiet (placeholder)"""
-        # This would integrate with motion detection and audio analysis
-        # For now, always return True
-        return True
+    def _check_mission_quiet_requirement(self, behavior: str) -> bool:
+        """Check if mission allows rewards during barking/noise for this behavior"""
+        try:
+            # Get current mission from state
+            if not hasattr(self.state, 'mission') or not self.state.mission:
+                # No active mission - allow all rewards (flexible default)
+                return True
+
+            mission = self.state.mission
+
+            # Check if mission has specific noise policy
+            if hasattr(mission, 'config') and mission.config:
+                config = mission.config
+
+                # Check for behavior-specific quiet requirements
+                quiet_behaviors = config.get('require_quiet_behaviors', [])
+                if behavior in quiet_behaviors:
+                    # This mission requires quiet for this specific behavior
+                    return not self._is_environment_noisy()
+
+                # Check for mission-wide quiet policy
+                if config.get('require_quiet_always', False):
+                    return not self._is_environment_noisy()
+
+                # Check for bark-friendly missions
+                if config.get('allow_bark_rewards', True):
+                    # Mission explicitly allows bark + behavior rewards
+                    return True
+
+            # Default: allow rewards (flexible for bark + behavior combinations)
+            return True
+
+        except Exception as e:
+            self.logger.warning(f"Error checking mission quiet requirement: {e}")
+            # On error, be permissive
+            return True
+
+    def _is_environment_noisy(self) -> bool:
+        """Check if environment currently has noise/barking"""
+        # Check for recent bark detection events
+        # This could be enhanced to check motion/audio sensors
+        try:
+            # For now, check if bark detector is actively classifying
+            bark_state = self.state.get_service_state('bark_detector')
+            if bark_state and bark_state.get('is_processing_bark', False):
+                return True
+            return False
+        except:
+            # If can't determine, assume quiet
+            return False
 
     def _grant_reward(self, dog_id: str, behavior: str, confidence: float,
                      duration: float, policy: RewardPolicy) -> None:
@@ -282,6 +390,17 @@ class RewardLogic:
             'daily_count': dog_rewards[behavior],
             'timestamp': now
         }, 'reward_logic')
+
+        # Log successful reward to store
+        mission_name = getattr(getattr(self.state, 'mission', None), 'name', 'unknown')
+        self.store.log_reward(
+            dog_id=dog_id,
+            behavior=behavior,
+            confidence=confidence,
+            success=True,
+            treats_dispensed=1,
+            mission_name=mission_name
+        )
 
         self.logger.info(f"🎉 REWARD GRANTED: {dog_id} for {behavior} (conf: {confidence:.2f}, dur: {duration:.1f}s)")
 
@@ -341,11 +460,11 @@ class RewardLogic:
                 confidence=confidence
             )
 
-        # Check quiet requirement
-        if policy.require_quiet and not self._check_quiet_requirement():
+        # Check mission-specific quiet requirement
+        if not self._check_mission_quiet_requirement(behavior):
             return RewardDecision(
                 should_dispense=False,
-                reason="Dog not quiet (barking or motion detected)",
+                reason="Dog not quiet per mission policy (barking or motion detected)",
                 dog_id=dog_id,
                 behavior=behavior,
                 confidence=confidence
@@ -463,6 +582,84 @@ class RewardLogic:
                 'total_daily_rewards': sum(sum(rewards.values()) for rewards in self.daily_reward_counts.values()),
                 'dogs_with_rewards': len([dog for dog, rewards in self.daily_reward_counts.items() if sum(rewards.values()) > 0])
             }
+
+    def evaluate_reward(self, behavior: str, confidence: float, dog_id: str = None) -> bool:
+        """
+        Consumer-focused reward evaluation for missions
+
+        Args:
+            behavior: Behavior detected (e.g., 'sit', 'down')
+            confidence: Detection confidence (0.0-1.0)
+            dog_id: Dog identifier
+
+        Returns:
+            True if reward should be given
+        """
+        if behavior not in self.policies:
+            self.logger.warning(f"No policy for behavior: {behavior}")
+            return False
+
+        policy = self.policies[behavior]
+
+        # Check confidence threshold
+        if confidence < 0.7:  # Consumer-friendly threshold
+            self.logger.info(f"Confidence too low for {behavior}: {confidence}")
+            return False
+
+        # Check cooldown
+        dog_id = dog_id or 'default_dog'
+        last_reward_key = f"{dog_id}_{behavior}"
+        current_time = time.time()
+
+        if last_reward_key in self.last_rewards:
+            time_since_last = current_time - self.last_rewards[last_reward_key]
+            if time_since_last < policy.cooldown:
+                self.logger.info(f"Cooldown active for {behavior}: {time_since_last:.1f}s < {policy.cooldown}s")
+                return False
+
+        # Check daily limits
+        if dog_id not in self.daily_reward_counts:
+            self.daily_reward_counts[dog_id] = {}
+
+        today_count = self.daily_reward_counts[dog_id].get(behavior, 0)
+        if today_count >= policy.max_daily_rewards:
+            self.logger.info(f"Daily limit reached for {behavior}: {today_count}/{policy.max_daily_rewards}")
+            return False
+
+        # Probability check (consumer-friendly - always reward good behavior)
+        if random.random() > policy.treat_probability:
+            self.logger.info(f"Probability check failed for {behavior}")
+            return False
+
+        # All checks passed - give reward!
+        self.last_rewards[last_reward_key] = current_time
+        self.daily_reward_counts[dog_id][behavior] = today_count + 1
+
+        # Trigger reward sequence
+        try:
+            sequence_engine = get_sequence_engine()
+            if sequence_engine:
+                sequence_engine.execute_sequence(policy.sequence_name, {
+                    'behavior': behavior,
+                    'dog_id': dog_id,
+                    'confidence': confidence
+                })
+        except Exception as e:
+            self.logger.error(f"Failed to execute reward sequence: {e}")
+
+        # Log successful reward to store
+        mission_name = getattr(getattr(self.state, 'mission', None), 'name', 'mission_evaluate')
+        self.store.log_reward(
+            dog_id=dog_id,
+            behavior=behavior,
+            confidence=confidence,
+            success=True,
+            treats_dispensed=1,
+            mission_name=mission_name
+        )
+
+        self.logger.info(f"✅ Reward approved for {dog_id}: {behavior} (confidence: {confidence:.2f})")
+        return True
 
     def cleanup(self) -> None:
         """Clean shutdown"""

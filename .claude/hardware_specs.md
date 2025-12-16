@@ -92,9 +92,9 @@ Pin # | Assignment
   5   | SCL1 → PCA9685 SCL
   6   | GND → Pi to GND HUB Direct (black wire)
   7   | GPIO4 → Encoder A1 (Motor 1)
-  8   | GPIO14 (TXD) → DFPLAYER RX (ORANGE WIRE)
+  8   | GPIO14 (TXD) → AVAILABLE (DFPlayer removed)
   9   | GND
- 10   | GPIO15 (RXD) → DFPLAYER TX (YELLOW WIRE)
+ 10   | GPIO15 (RXD) → AVAILABLE (DFPlayer removed)
  11   | GPIO17 → PWM IN1
  12   | GPIO18 → PWM IN2
  13   | GPIO27 → PWM IN3
@@ -120,7 +120,7 @@ Pin # | Assignment
  33   | GPIO13 → PWM ENA
  34   | GND
  35   | GPIO19 → PWM ENB
- 36   | GPIO16 → Relay Max4544 L/R (white wire)
+ 36   | GPIO16 → AVAILABLE (Audio relay removed)
  37   | GPIO26 → Left IR OUT
  38   | GPIO20 → Center IR OUT
  39   | GND
@@ -155,57 +155,49 @@ Pin # | Assignment
 
 ---
 
-## 🔊 Audio System (REVISED)
+## 🔊 Audio System (USB-BASED)
 
-### ❌ REMOVED Components
-- ReSpeaker 2-Mic HAT (replaced by lapel mic)
+### ✅ CURRENT Audio Architecture - Unified USB Solution
 
-### ✅ CURRENT Audio Architecture
+#### Input & Output
+**Ugreen USB Audio Adapter**
+- **Type:** USB audio interface with microphone input and speaker output
+- **Interface:** USB 2.0 → Raspberry Pi 5
+- **Input:** Conference-style microphone (2.5" circular disc, 1cm height) for bark detection and voice commands
+- **Output:** Speaker/headphone jack for audio playback (4Ω 5W speakers)
+- **Power:** USB bus powered (no external power needed)
+- **Control:** Standard Linux ALSA audio interface
+- **✅ STATUS:** Simplified single-device solution - no switching needed
 
-#### Input
-**Conference Microphone** (Upgraded)
-- **Type:** Conference-grade microphone (upgraded from lapel mic)
-- **Interface:** Analog 3.5mm jack → Raspberry Pi audio input
-- **Use Case:** Bark detection, "quiet" command training, improved audio quality
-- **Sensitivity:** Higher quality pickup, adjustable via software (decibel threshold)
-- **⚠️ STATUS:** Hardware installed, needs testing
+#### Audio Files
+**Local VOICEMP3 Storage**
+- **Location:** `/home/morgan/dogbot/VOICEMP3/`
+- **Structure:**
+  - `/VOICEMP3/talks/` - Training commands and dog names
+  - `/VOICEMP3/songs/` - Background music and system sounds
+- **Format:** MP3 files for space efficiency
+- **Playback:** Direct Linux audio playback (aplay, pygame, etc.)
+- **No SD Card:** Files stored on Pi's storage
 
-#### Processing
-**Audio Switching - DPDT Relay System**
-- **Relay 1 + 2:** 2x single-channel relays (or 1x dual-channel)
-- **Control:** GPIO (1 pin for switching)
-- **Function:** Route audio source to speakers
-  - **Mode A:** DFPlayer Pro → Speakers (pre-recorded sounds)
-  - **Mode B:** Raspberry Pi Audio Out → Speakers (live audio/TTS)
+#### VOICEMP3 File Organization
+**Training Commands (`/VOICEMP3/talks/`):**
+- `elsa.mp3`, `bezik.mp3` - Individual dog names
+- `good_dog.mp3`, `treat.mp3` - Reward sounds
+- `sit.mp3`, `lie_down.mp3`, `stay.mp3` - Training commands
+- `quiet.mp3`, `no.mp3` - Correction commands
+- `scooby_intro.mp3` - Fun character sounds
 
-**Switching Logic:**
-```
-GPIO LOW  → DFPlayer   (NC - Normally Closed)
-GPIO HIGH → Pi Audio   (NO - Normally Open)
-```
+**Background Audio (`/VOICEMP3/songs/`):**
+- `mozart_piano.mp3`, `mozart_concerto.mp3` - Classical music
+- `who_let_dogs_out.mp3`, `scooby_snacks.mp3` - Dog-themed songs
+- `*_scan.mp3` files - System/robot status sounds
+- `milkshake.mp3`, `cake_by_ocean.mp3` - Celebration music
 
-#### Output
-**DFPlayer Pro MP3 Module**
-- **Storage:** MicroSD card (up to 32GB)
-- **Output:** Line-level audio to relay
-- **Control:** UART (RX/TX @ 115200 baud)
-- **Serial Port:** `/dev/ttyAMA0`
-- **Files:** Pre-recorded training sounds on SD card
-- **⚠️ CRITICAL:** Must use FULL FILE PATHS (e.g., `/talks/0008.mp3`), NOT track numbers
-- **Commands:** `AT+PLAYFILE=/path/to/file.mp3` (NOT `AT+PLAYNUM=`)
-- **File Locations:** `/talks/` folder for commands, `/02/` folder for music/effects
-- **See:** `/config/settings.py` AudioFiles class for complete file list
-
-**Amplifier**
-- **Model:** 300W Class D amplifier
-- **Power:** Direct from battery (12-16.8V)
-- **Output:** 2x channels
-- **Volume:** Software-controlled via DFPlayer
-
-**Speakers**
-- **Model:** Gikfun 4Ω 3W speakers (x2)
-- **Placement:** Left/right sides of robot
-- **Mounting:** Under carousel, cutouts in saucer
+#### Removed Components
+- ❌ **DFPlayer Pro MP3 Module** - Replaced by USB solution
+- ❌ **Audio Relay Switching** - No longer needed
+- ❌ **300W Class D Amplifier** - USB adapter has built-in audio output
+- ❌ **External Speakers** - Audio through USB adapter output
 
 ---
 
@@ -219,8 +211,8 @@ GPIO HIGH → Pi Audio   (NO - Normally Open)
   - **Speed:** 210 RPM @ 6V (vs 133 RPM previous)
   - **Torque:** 10 kg·cm (vs 4.5 kg·cm previous)
   - **Encoders:** Built-in quadrature encoders
-  - **⚠️ STATUS:** Hardware installed, requires new control configuration
-  - **⚠️ ISSUE:** Currently only producing "clicks" - needs PWM/control tuning
+  - **✅ STATUS:** Working with error-free operation, 50ms rate limiting applied
+  - **✅ COMPLETE:** PWM/control issues resolved, safety fixes implemented
 - **Motor Driver:** L298N H-Bridge
   - **Logic Power:** 5V (from buck converter)
   - **Motor Power:** Direct from battery (12-16.8V)
@@ -413,12 +405,6 @@ GPIO HIGH → Pi Audio   (NO - Normally Open)
   - Channel 1: Camera pan servo
   - Channel 2: Camera tilt servo
 
-### Relay Modules
-- **Type:** 2x single-channel DPDT or 1x dual-channel
-- **Voltage:** 5V coil
-- **Current:** <100mA per coil
-- **Control:** 1x GPIO pin (audio switching)
-
 ---
 
 ## 🌡️ Operating Conditions
@@ -481,13 +467,11 @@ GPIO HIGH → Pi Audio   (NO - Normally Open)
 - [x] Raspberry Pi 5 (8GB)
 - [x] Hailo-8 HAT (26 TOPS)
 - [x] IMX500 Camera
-- [x] DFPlayer Pro
-- [x] 300W Amplifier
+- [x] 50W Amplifier
 - [x] L298N Motor Driver
 - [x] PCA9685 PWM Driver
-- [x] 2x DPDT Relay Modules (audio switching)
-- [x] Lapel Microphone (electret)
-- [ ] IR Transmitter/Receivers (planned)
+- [x] Conference Microphone (electret)
+- [ ] IR Transmitter/Receivers (not deployed)
 - [ ] Bumper Sensors (planned)
 - [ ] Cliff Sensors (planned)
 
@@ -502,7 +486,7 @@ GPIO HIGH → Pi Audio   (NO - Normally Open)
 - [x] BMS (HX-4S-F30A)
 - [x] Buck converters (3x)
 - [x] XT60 connector
-- [ ] Pogo pins (docking, planned)
+- [x] Pogo pins (docking, planned)
 
 ### Wiring
 - [x] Dupont jumper wires
@@ -514,5 +498,6 @@ GPIO HIGH → Pi Audio   (NO - Normally Open)
 
 ---
 
-**Last Hardware Update:** Audio system revised (lapel mic + relay switching)  
-**Next Update:** IR sensors + bumper sensors installation
+**Last Hardware Update:** Audio system revised - Ugreen USB adapter with conference microphone
+**Software Status:** Draft implementations exist for SQLite store, mission engine, and WebSocket server - need integration testing and refinement
+**Next Phase:** Integration testing and iterative debugging of software components

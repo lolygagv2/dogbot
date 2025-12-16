@@ -215,7 +215,15 @@ class TreatBotMain:
         # Audio service
         try:
             self.sfx = get_sfx_service()
-            services_status['sfx'] = self.sfx.initialize()
+            if self.sfx:
+                services_status['sfx'] = self.sfx.initialize()
+                if services_status['sfx']:
+                    self.logger.info("✅ SFX service initialized successfully")
+                else:
+                    self.logger.warning("⚠️ SFX service failed to initialize")
+            else:
+                services_status['sfx'] = False
+                self.logger.error("Failed to get SFX service instance")
         except Exception as e:
             self.logger.error(f"Audio service failed: {e}")
             services_status['sfx'] = False
@@ -223,7 +231,15 @@ class TreatBotMain:
         # LED service
         try:
             self.led = get_led_service()
-            services_status['led'] = self.led.initialize()
+            if self.led:
+                services_status['led'] = self.led.initialize()
+                if services_status['led']:
+                    self.logger.info("✅ LED service initialized successfully")
+                else:
+                    self.logger.warning("⚠️ LED service failed to initialize")
+            else:
+                services_status['led'] = False
+                self.logger.error("Failed to get LED service instance")
         except Exception as e:
             self.logger.error(f"LED service failed: {e}")
             services_status['led'] = False
@@ -380,23 +396,23 @@ class TreatBotMain:
                 self.logger.info(f"🐕 Bark detected: {emotion} (conf: {confidence:.2f})")
 
                 # Visual feedback - flash LED based on emotion
-                if self.led:
+                if self.led and self.led.led_initialized:
                     if emotion in ['alert', 'attention']:
-                        self.led.pulse_color('green')
+                        self.led.set_pattern('pulse_green', 2.0)
                     elif emotion in ['anxious', 'scared']:
-                        self.led.pulse_color('yellow')
+                        self.led.set_pattern('spinning_dot', 2.0, color='yellow')
                     elif emotion == 'aggressive':
-                        self.led.pulse_color('red')
+                        self.led.set_pattern('error', 2.0)
                     elif emotion == 'playful':
-                        self.led.pulse_color('cyan')
+                        self.led.set_pattern('pulse_blue', 2.0)
 
             elif event.subtype == 'bark_rewarded':
                 emotion = event.data.get('emotion', 'unknown')
                 self.logger.info(f"🎁 Bark reward triggered for: {emotion}")
 
                 # Celebration feedback
-                if self.led:
-                    self.led.set_pattern('celebrate')
+                if self.led and self.led.led_initialized:
+                    self.led.set_pattern('celebration', 3.0)
 
         except Exception as e:
             self.logger.error(f"Bark feedback error: {e}")

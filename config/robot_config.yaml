@@ -116,7 +116,7 @@ logging:
 
   # Bark Detection Configuration
 bark_detection:
-  enabled: false  # Set to true to enable (NOTE: Requires better mic - current lavalier has poor room pickup)
+  enabled: true  # Now using USB audio with conference microphone
   model_path: "/home/morgan/dogbot/ai/models/dog_bark_classifier.tflite"
   emotion_mapping_path: "/home/morgan/dogbot/ai/models/emotion_mapping.json"
 

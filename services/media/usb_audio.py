@@ -41,7 +41,7 @@ class USBAudioService:
                 # Handle relative paths by prepending base path
                 if not filepath.startswith('/'):
                     full_path = os.path.join(self.base_path, filepath.lstrip('/'))
-                elif filepath.startswith('/talks/') or filepath.startswith('/02/'):
+                elif filepath.startswith('/talks/') or filepath.startswith('/songs/') or filepath.startswith('/02/'):
                     # Map short paths to full paths
                     full_path = os.path.join(self.base_path, filepath[1:])
                 else:
