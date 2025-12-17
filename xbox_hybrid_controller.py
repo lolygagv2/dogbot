@@ -31,7 +31,7 @@ except ImportError:
     MOTOR_BUS_AVAILABLE = False
 
 try:
-    from core.hardware.motor_controller_polling import MotorControllerPolling
+    from core.hardware.proper_pid_motor_controller import MotorControllerPolling
     MOTOR_CONTROLLER_AVAILABLE = True
 except ImportError:
     MOTOR_CONTROLLER_AVAILABLE = False
@@ -138,14 +138,14 @@ class XboxHybridControllerFixed:
     API_BASE_URL = "http://localhost:8000"
 
     # Controller configuration - FIXED FOR SMOOTH CONTROL
-    DEADZONE = 0.10  # Smaller deadzone for more responsiveness
+    DEADZONE = 0.01  # Almost no deadzone for testing
     TRIGGER_DEADZONE = 0.1
     MAX_SPEED = 100
     TURN_SPEED_FACTOR = 0.7  # Better turning response
 
     # RPM Control - Convert speed percentages to RPM targets
-    MAX_RPM = 120  # Maximum RPM for DFRobot motors at 6V (safe operating speed)
-    USE_PID_CONTROL = True  # Enable closed-loop RPM control
+    MAX_RPM = 60   # REDUCED for safe testing (was 120 - reduced by 50%)
+    USE_PID_CONTROL = True  # ENABLED - closed-loop control with encoder feedback
 
     # Motor calibration (fallback for direct PWM mode)
     RIGHT_MOTOR_BOOST = 1.25  # 25% boost for right motor (legacy fallback only)
@@ -281,6 +281,8 @@ class XboxHybridControllerFixed:
                     self.motor_direct = True
                     motor_bus = self.motor_bus  # Update global reference
                     MOTOR_DIRECT = True
+                    # CRITICAL FIX: Set motor controller reference
+                    self.motor_controller = self.motor_bus.motor_controller
                     logger.info("✅ Motor command bus with polling encoders initialized")
                     return
                 else:
@@ -601,6 +603,7 @@ class XboxHybridControllerFixed:
 
     def process_axis(self, number: int, value: int):
         """Process axis movement"""
+        print(f"🎯 RAW AXIS: number={number}, value={value}")  # DEBUG
         # Normalize to -1.0 to 1.0
         normalized = value / 32767.0
 
@@ -611,11 +614,13 @@ class XboxHybridControllerFixed:
         # Update state based on axis
         if number == 0:  # Left stick X
             self.state.left_x = normalized
+            print(f"🎮 LEFT STICK X: {normalized:.3f}")  # DEBUG
             if abs(normalized) > self.DEADZONE:
                 notify_manual_input()
 
         elif number == 1:  # Left stick Y (inverted for forward)
             self.state.left_y = -normalized
+            print(f"🎮 LEFT STICK Y: {-normalized:.3f}")  # DEBUG
             if abs(normalized) > self.DEADZONE:
                 notify_manual_input()
 
@@ -654,20 +659,13 @@ class XboxHybridControllerFixed:
 
     def update_motor_control(self):
         """Update motor speeds with calibration and safety"""
-        # FIXED: Simple linear speed control - no complex turbo mode BS
-        if self.state.right_trigger < 0.1:
-            # Normal mode: 30-70% speed range (enough power for DFRobot motors)
-            stick_magnitude = (self.state.left_x**2 + self.state.left_y**2) ** 0.5
-            stick_magnitude = min(1.0, stick_magnitude)  # Clamp to 1.0
-            # Linear response curve for predictable control
-            speed_multiplier = 0.30 + (stick_magnitude * 0.40)  # 30-70% range, LINEAR
-        else:
-            # Trigger pressed: 70-100% speed range for more power
-            base_speed = 0.30 + (self.state.right_trigger * 0.40)  # 30-70% from trigger
-            stick_magnitude = (self.state.left_x**2 + self.state.left_y**2) ** 0.5
-            stick_magnitude = min(1.0, stick_magnitude)
-            # Combine trigger base with stick magnitude for 70-100% range
-            speed_multiplier = base_speed + (stick_magnitude * 0.30)  # Up to 100%
+        # Direct linear speed from stick position
+        stick_magnitude = max(abs(self.state.left_x), abs(self.state.left_y))
+        speed_multiplier = 0.50 + (stick_magnitude * 0.50)  # 50-100% range
+
+        # RT trigger adds extra boost
+        if self.state.right_trigger > 0.1:
+            speed_multiplier = min(1.0, speed_multiplier + 0.20)
 
         # Calculate motor speeds from left stick
         forward = self.state.left_y * self.MAX_SPEED * speed_multiplier
@@ -740,22 +738,33 @@ class XboxHybridControllerFixed:
 
         elif self.motor_direct and self.motor_bus:
             try:
-                # Use motor command bus - it handles all hardware compensation
+                print(f"🚗 CLOSED-LOOP RPM CONTROL: Left={left}, Right={right}")  # DEBUG
+                # Use motor command bus for proper closed-loop control
                 cmd = create_motor_command(left, right, CommandSource.XBOX_CONTROLLER)
                 success = self.motor_bus.send_command(cmd)
 
                 if success:
-                    # Get encoder feedback if available
+                    # Get encoder feedback
                     if hasattr(self.motor_bus.motor_controller, 'get_encoder_counts'):
                         left_enc, right_enc = self.motor_bus.motor_controller.get_encoder_counts()
-                        logger.debug(f"Motors: L={left:4d}, R={right:4d} | Encoders: L={left_enc}, R={right_enc}")
-                    else:
-                        logger.debug(f"Motors: L={left:4d}, R={right:4d}")
+                        logger.debug(f"Closed-loop: L={left:4d}, R={right:4d} | Encoders: L={left_enc}, R={right_enc}")
                 else:
-                    logger.error("Motor command bus failed")
+                    logger.error("Motor command bus failed - falling back to direct control")
+                    # Fallback to direct control
+                    if left == 0:
+                        self.motor_controller.set_motor_speed('left', 0, 'forward')
+                    else:
+                        direction = 'forward' if left > 0 else 'backward'
+                        self.motor_controller.set_motor_speed('left', abs(left), direction)
+
+                    if right == 0:
+                        self.motor_controller.set_motor_speed('right', 0, 'forward')
+                    else:
+                        direction = 'forward' if right > 0 else 'backward'
+                        self.motor_controller.set_motor_speed('right', abs(right), direction)
 
             except Exception as e:
-                logger.error(f"Motor bus control error: {e}")
+                logger.error(f"Closed-loop motor control error: {e}")
 
         elif self.motor_direct and self.motor_controller:
             # Fallback to direct motor controller (legacy path with manual compensation)
@@ -849,6 +858,32 @@ class XboxHybridControllerFixed:
         with self.motor_lock:
             self.set_motor_speeds(0, 0)
             self.state.motors_stopped = True
+
+    def _emergency_stop_all_motors(self):
+        """CRITICAL: B button emergency stop - immediate motor halt"""
+        logger.critical("B BUTTON EMERGENCY STOP - Stopping all motors immediately")
+        try:
+            # Stop via motor bus
+            if self.motor_bus:
+                cmd = create_motor_command(0, 0, CommandSource.XBOX_CONTROLLER)
+                self.motor_bus.send_command(cmd)
+
+            # Stop via direct motor controller
+            if self.motor_controller:
+                self.motor_controller.set_motor_speed('left', 0, 'stop')
+                self.motor_controller.set_motor_speed('right', 0, 'stop')
+
+            # Update state
+            with self.motor_lock:
+                self.state.motors_stopped = True
+                self.state.last_left_speed = 0
+                self.state.last_right_speed = 0
+
+            logger.critical("B BUTTON EMERGENCY STOP COMPLETE")
+        except Exception as e:
+            logger.critical(f"B button emergency stop failed: {e}")
+            # Fallback to global emergency stop
+            global_emergency_stop()
         # Also send via API as backup
         self.api_request('POST', '/motor/stop', {"reason": "emergency"})
 
@@ -864,11 +899,13 @@ class XboxHybridControllerFixed:
                 logger.info("A button: Emergency stop")
                 self.emergency_stop()
 
-        elif number == 1:  # B button - Play "Good Dog" audio
+        elif number == 1:  # B button - EMERGENCY STOP (CRITICAL SAFETY)
             self.state.b_button = pressed
             if pressed:
-                logger.info("B button: Playing 'Good Dog' audio")
-                self.api_request('POST', '/audio/play/file', {"filepath": "/talks/good_dog.mp3"})
+                logger.critical("B BUTTON EMERGENCY STOP - All motors halted immediately")
+                self._emergency_stop_all_motors()
+                # Also trigger global emergency stop as backup
+                global_emergency_stop()
 
         elif number == 2:  # X button - Toggle LED
             self.state.x_button = pressed

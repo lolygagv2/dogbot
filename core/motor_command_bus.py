@@ -42,11 +42,11 @@ class MotorCommandBus:
         self.last_command = None
         self.lock = threading.Lock()
 
-        # Try to import motor controller - prioritize polling controller
+        # Try to import motor controller - prioritize proper PID controller
         try:
-            from core.hardware.motor_controller_polling import MotorControllerPolling
-            self.motor_controller = MotorControllerPolling()
-            self.logger.info("Polling motor controller initialized (with 1000Hz encoders)")
+            from core.hardware.proper_pid_motor_controller import ProperPIDMotorController
+            self.motor_controller = ProperPIDMotorController()
+            self.logger.info("🎯 Proper PID motor controller initialized (closed-loop control)")
         except ImportError:
             try:
                 from core.hardware.motor_controller_robust import MotorControllerRobust
@@ -68,13 +68,18 @@ class MotorCommandBus:
             return False
 
         try:
-            if hasattr(self.motor_controller, 'initialize'):
+            # Start PID controller (ProperPIDMotorController uses start() method)
+            if hasattr(self.motor_controller, 'start'):
+                if not self.motor_controller.start():
+                    self.logger.error("PID motor controller start failed")
+                    return False
+            elif hasattr(self.motor_controller, 'initialize'):
                 if not self.motor_controller.initialize():
                     self.logger.error("Motor controller initialization failed")
                     return False
 
             self.running = True
-            self.logger.info("Motor command bus started")
+            self.logger.info("✅ Motor command bus started with PID control")
             return True
 
         except Exception as e:
@@ -119,7 +124,7 @@ class MotorCommandBus:
                     self.motor_controller.set_motor_rpm(left_rpm, right_rpm)
                     self.logger.debug(f"Motor RPM command: L={left_rpm:.1f}, R={right_rpm:.1f} RPM")
                 else:
-                    # Fallback to direct PWM control
+                    # Direct PWM control
                     if left_speed == 0:
                         self.motor_controller.set_motor_speed('left', 0, 'forward')
                     else:
