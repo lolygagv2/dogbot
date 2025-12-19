@@ -1000,7 +1000,18 @@ class XboxHybridControllerFixed:
         })
 
     def toggle_led(self):
-        """Toggle blue LED"""
+        """Toggle blue LED with cooldown to prevent double-triggers"""
+        current_time = time.time()
+
+        # Cooldown: ignore if less than 500ms since last toggle
+        if not hasattr(self, '_last_led_toggle'):
+            self._last_led_toggle = 0
+
+        if current_time - self._last_led_toggle < 0.5:
+            logger.debug("Blue LED toggle ignored (cooldown)")
+            return
+
+        self._last_led_toggle = current_time
         self.led_enabled = not self.led_enabled
         endpoint = '/leds/blue/on' if self.led_enabled else '/leds/blue/off'
         result = self.api_request('POST', endpoint)

@@ -1,8 +1,8 @@
 # WIM-Z Resume Chat Log
 
-## Session: 2025-12-19 04:45
+## Session: 2025-12-19 04:45 (Updated 05:17)
 **Goal:** Remote Demo Setup - Auto-start services + LED upgrades + Audio recording feature
-**Status:** ✅ COMPLETE
+**Status:** ✅ COMPLETE (with post-reboot fixes)
 
 ### ✅ Work Completed:
 
@@ -83,8 +83,21 @@
 | D-pad Down | Play queued audio |
 | D-pad Up | Stop audio |
 
+#### 6. **Post-Reboot Fixes (05:07)**
+After first reboot test, fixed two issues:
+
+**Audio Not Working:**
+- Root cause: pygame wasn't using USB audio device
+- Fix: Added `os.environ['SDL_AUDIODRIVER'] = 'alsa'` and `os.environ['AUDIODEV'] = 'plughw:2,0'` before pygame import
+- File: `services/media/usb_audio.py`
+
+**Blue LED Flicker (X Button):**
+- Root cause: Double-trigger on button press causing ON→OFF sequence
+- Fix: Added 500ms cooldown to `toggle_led()` function
+- File: `xbox_hybrid_controller.py`
+
 ### ⚠️ Notes for Next Session:
-- Test reboot to verify auto-start works
+- All post-reboot issues resolved
 - First recorded audio saved: `custom_20251219_043322.mp3`
 - USB mic is card 2 (`hw:2,0`)
 

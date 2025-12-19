@@ -9,6 +9,11 @@ import time
 import logging
 import threading
 from typing import Optional, Dict, Any
+
+# Set audio environment BEFORE importing pygame
+os.environ['SDL_AUDIODRIVER'] = 'alsa'
+os.environ['AUDIODEV'] = 'plughw:2,0'
+
 import pygame
 
 logger = logging.getLogger('USBAudio')
@@ -23,10 +28,10 @@ class USBAudioService:
         self._lock = threading.Lock()
 
         try:
-            # Initialize pygame mixer for audio playback
+            # Initialize pygame mixer for audio playback (USB audio device)
             pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
             self.initialized = True
-            self.logger.info("USB Audio service initialized successfully")
+            self.logger.info("USB Audio service initialized successfully (plughw:2,0)")
         except Exception as e:
             self.logger.error(f"USB Audio initialization failed: {e}")
             self.initialized = False
