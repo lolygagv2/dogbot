@@ -157,38 +157,9 @@ class XboxHybridControllerFixed:
     MOTOR_WATCHDOG_TIMEOUT = 0.5  # Emergency stop if no heartbeat for 0.5s
     CONNECTION_TIMEOUT = 1.0  # Emergency stop if controller disconnected for 1s
 
-    # Sound tracks with FULL PATHS for D-pad navigation
-    SOUND_TRACKS = [
-        ("/talks/scooby_intro.mp3", "Scooby Intro"),
-        ("/talks/elsa.mp3", "Elsa"),
-        ("/talks/bezik.mp3", "Bezik"),
-        ("/talks/bezik_come.mp3", "Bezik Come"),
-        ("/talks/elsa_come.mp3", "Elsa Come"),
-        ("/talks/dogs_come.mp3", "Dogs Come"),
-        ("/talks/good_dog.mp3", "Good Dog"),
-        ("/talks/kahnshik.mp3", "Kahnshik"),
-        ("/talks/lie_down.mp3", "Lie Down"),
-        ("/talks/quiet.mp3", "Quiet"),
-        ("/talks/no.mp3", "No"),
-        ("/talks/treat.mp3", "Treat"),
-        ("/talks/kokoma.mp3", "Kokoma"),
-        ("/talks/sit.mp3", "Sit"),
-        ("/talks/spin.mp3", "Spin"),
-        ("/talks/stay.mp3", "Stay"),
-        ("/songs/mozart_piano.mp3", "Mozart Piano"),
-        ("/songs/mozart_concerto.mp3", "Mozart Concerto"),
-        ("/songs/milkshake.mp3", "Milkshake"),
-        ("/songs/yummy.mp3", "Yummy"),
-        ("/songs/hungry_like_wolf.mp3", "Hungry Like Wolf"),
-        ("/songs/cake_by_ocean.mp3", "Cake By Ocean"),
-        ("/songs/who_let_dogs_out.mp3", "Who Let Dogs Out"),
-        ("/songs/progress_scan.mp3", "Progress Scan"),
-        ("/songs/robot_scan.mp3", "Robot Scan"),
-        ("/songs/door_scan.mp3", "Door Scan"),
-        ("/songs/hi_scan.mp3", "Hi Scan"),
-        ("/songs/busy_scan.mp3", "Busy Scan"),
-        ("/songs/scooby_snacks.mp3", "Scooby Snacks")
-    ]
+    # Sound tracks - dynamically populated from VOICEMP3/talks and VOICEMP3/songs folders
+    # See _preload_audio_system() for dynamic scanning
+    # Add new MP3 files to those folders and they'll be automatically discovered on startup
 
     REWARD_SOUNDS = [
         ("/talks/good_dog.mp3", "Good Dog"),
@@ -244,7 +215,11 @@ class XboxHybridControllerFixed:
             "treat_launching",
             "error",
             "charging",
-            "manual_rc"
+            "manual_rc",
+            # New patterns for 165 LED strip
+            "gradient_flow",
+            "chase",
+            "fire"
         ]
 
         # API session for non-motor functions
@@ -322,7 +297,7 @@ class XboxHybridControllerFixed:
         MOTOR_DIRECT = False
 
     def _preload_audio_system(self):
-        """Preload audio system and initialize sound tracks"""
+        """Preload audio system and dynamically discover sound tracks"""
         try:
             logger.info("Preloading audio system...")
             result = self.api_request('GET', '/audio/status')
@@ -331,41 +306,40 @@ class XboxHybridControllerFixed:
         except Exception as e:
             logger.warning(f"Audio preload error: {e}")
 
-        # Initialize separate audio lists for left/right D-pad navigation
-        self.TALK_TRACKS = [
-            ("/talks/scooby_intro.mp3", "Scooby Intro"),
-            ("/talks/elsa.mp3", "Elsa"),
-            ("/talks/bezik.mp3", "Bezik"),
-            ("/talks/bezik_come.mp3", "Bezik Come"),
-            ("/talks/elsa_come.mp3", "Elsa Come"),
-            ("/talks/dogs_come.mp3", "Dogs Come"),
-            ("/talks/good_dog.mp3", "Good Dog"),
-            ("/talks/kahnshik.mp3", "Kahnshik"),
-            ("/talks/lie_down.mp3", "Lie Down"),
-            ("/talks/quiet.mp3", "Quiet"),
-            ("/talks/no.mp3", "No"),
-            ("/talks/treat.mp3", "Treat"),
-            ("/talks/kokoma.mp3", "Kokoma"),
-            ("/talks/sit.mp3", "Sit"),
-            ("/talks/spin.mp3", "Spin"),
-            ("/talks/stay.mp3", "Stay")
-        ]
+        # Dynamically scan folders for MP3 files
+        import os
+        import glob
 
-        self.SONG_TRACKS = [
-            ("/songs/mozart_piano.mp3", "Mozart Piano"),
-            ("/songs/mozart_concerto.mp3", "Mozart Concerto"),
-            ("/songs/milkshake.mp3", "Milkshake"),
-            ("/songs/yummy.mp3", "Yummy"),
-            ("/songs/hungry_like_wolf.mp3", "Hungry Like Wolf"),
-            ("/songs/cake_by_ocean.mp3", "Cake By Ocean"),
-            ("/songs/who_let_dogs_out.mp3", "Who Let Dogs Out"),
-            ("/songs/scooby_snacks.mp3", "Scooby Snacks"),
-            ("/songs/progress_scan.mp3", "Progress Scan"),
-            ("/songs/robot_scan.mp3", "Robot Scan"),
-            ("/songs/door_scan.mp3", "Door Scan"),
-            ("/songs/hi_scan.mp3", "Hi Scan"),
-            ("/songs/busy_scan.mp3", "Busy Scan")
-        ]
+        VOICEMP3_BASE = "/home/morgan/dogbot/VOICEMP3"
+
+        def scan_folder(folder_name):
+            """Scan a folder for MP3 files and return list of (api_path, display_name) tuples"""
+            folder_path = os.path.join(VOICEMP3_BASE, folder_name)
+            tracks = []
+
+            if os.path.exists(folder_path):
+                mp3_files = sorted(glob.glob(os.path.join(folder_path, "*.mp3")))
+                for mp3_path in mp3_files:
+                    filename = os.path.basename(mp3_path)
+                    # Create API path format: /talks/filename.mp3 or /songs/filename.mp3
+                    api_path = f"/{folder_name}/{filename}"
+                    # Create display name: remove .mp3, replace underscores with spaces, title case
+                    display_name = filename.replace(".mp3", "").replace("_", " ").title()
+                    tracks.append((api_path, display_name))
+
+            return tracks
+
+        # Scan talks and songs folders
+        self.TALK_TRACKS = scan_folder("talks")
+        self.SONG_TRACKS = scan_folder("songs")
+
+        # Fallback if folders are empty
+        if not self.TALK_TRACKS:
+            self.TALK_TRACKS = [("/talks/treat.mp3", "Treat")]
+            logger.warning("No talks found, using fallback")
+        if not self.SONG_TRACKS:
+            self.SONG_TRACKS = [("/songs/scooby_snacks.mp3", "Scooby Snacks")]
+            logger.warning("No songs found, using fallback")
 
         # Track indices for navigation
         self.current_talk_index = 0
@@ -373,7 +347,9 @@ class XboxHybridControllerFixed:
         self.queued_track = None  # Will hold the track to play when Down D-pad is pressed
         self.queued_type = "talk"  # "song" or "talk"
 
-        logger.info(f"Audio tracks initialized: {len(self.TALK_TRACKS)} talks, {len(self.SONG_TRACKS)} songs")
+        logger.info(f"Audio tracks discovered: {len(self.TALK_TRACKS)} talks, {len(self.SONG_TRACKS)} songs")
+        logger.info(f"Talks: {[t[1] for t in self.TALK_TRACKS]}")
+        logger.info(f"Songs: {[s[1] for s in self.SONG_TRACKS]}")
 
     def api_request(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
         """Thread-safe API request with error handling"""
@@ -930,6 +906,39 @@ class XboxHybridControllerFixed:
         elif number == 10:  # Right stick click - Center camera
             if pressed:
                 self.center_camera()
+
+        elif number == 7:  # Start/Menu button (☰) - Record new talk
+            if pressed:
+                self.handle_record_button()
+
+    # ============== AUDIO RECORDING ==============
+    def handle_record_button(self):
+        """
+        Handle Start/Menu button for recording new talk audio.
+        First press: Start recording (2 sec) + playback
+        Second press within 10s: Save to VOICEMP3/talks
+        """
+        # Check if there's a pending recording waiting for confirmation
+        status = self.api_request('GET', '/audio/record/status')
+
+        if status and status.get('has_pending'):
+            # Second press - confirm and save
+            logger.info("🎙️ START BUTTON: Confirming recording save")
+            result = self.api_request('POST', '/audio/record/confirm')
+            if result and result.get('success'):
+                logger.info(f"✅ Recording saved: {result.get('filename')}")
+            else:
+                logger.warning(f"Recording save failed: {result}")
+        else:
+            # First press - start new recording
+            logger.info("🎙️ START BUTTON: Starting new recording (2 seconds)")
+            result = self.api_request('POST', '/audio/record/start')
+            if result and result.get('success'):
+                logger.info("🎙️ Recording complete - press START again within 10s to save")
+            else:
+                logger.warning(f"Recording failed: {result}")
+
+    # ============== END AUDIO RECORDING ==============
 
     def dispense_treat_safe(self):
         """Dispense treat - always works on button press"""

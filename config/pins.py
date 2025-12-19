@@ -24,7 +24,7 @@ class TreatBotPins:
     ENCODER_B2 = 6   # GPIO6 (Pin 31) - Motor B (RIGHT) Encoder B (YELLOW wire)
 
     # LED Control
-    NEOPIXEL = 12    # GPIO12 (Pin 32) - NeoPixel ring data
+    NEOPIXEL = 10    # GPIO10 (Pin 19) - NeoPixel data via SPI MOSI
     BLUE_LED = 25    # GPIO25 (Pin 22) - Blue LED strip
     
     # I2C Bus - PCA9685 Servo Controller + Camera

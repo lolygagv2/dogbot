@@ -15,9 +15,10 @@ class SystemSettings:
     DEFAULT_VOLUME = 70  # USB audio volume (0-100)
     AUDIO_SAMPLE_RATE = 22050  # Sample rate for pygame mixer
     
-    # LED Configuration
-    NEOPIXEL_COUNT = 75
-    NEOPIXEL_BRIGHTNESS = 0.3  # 0.1 to 1.0
+    # LED Configuration (Adafruit 332 LED/m strip, 0.5m = 165 LEDs)
+    NEOPIXEL_COUNT = 165
+    NEOPIXEL_BRIGHTNESS = 0.25  # Reduced for power safety with 165 LEDs
+    NEOPIXEL_PIN = 10  # GPIO 10 (SPI MOSI) - required for Pi 5
     LED_ANIMATION_SPEED = 0.05  # Default animation delay
     
     # Servo Configuration

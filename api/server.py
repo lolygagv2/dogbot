@@ -22,6 +22,7 @@ import io
 import time
 
 # TreatBot imports
+from config.settings import SystemSettings
 from core.state import get_state, SystemMode
 from core.store import get_store
 from services.reward.dispenser import get_dispenser_service
@@ -90,8 +91,9 @@ def get_neopixels():
                 import board
                 import neopixel
                 _neopixels = neopixel.NeoPixel(
-                    board.D12, 75,
-                    brightness=0.3,
+                    board.D10,  # GPIO 10 (Pin 19) - SPI MOSI
+                    SystemSettings.NEOPIXEL_COUNT,
+                    brightness=SystemSettings.NEOPIXEL_BRIGHTNESS,
                     auto_write=False,
                     pixel_order=neopixel.GRB
                 )
@@ -145,6 +147,12 @@ class DirectNeoPixelController:
             self._start_safe_animation('breathe', (255, 165, 0))
         elif self.current_mode == 'manual_rc':
             self._start_safe_animation('rainbow', None)
+        elif self.current_mode == 'gradient_flow':
+            self._start_safe_animation('gradient_flow', None)
+        elif self.current_mode == 'chase':
+            self._start_safe_animation('chase', (0, 255, 255))
+        elif self.current_mode == 'fire':
+            self._start_safe_animation('fire', None)
         else:
             self.pixels.fill((30, 30, 30))
             self.pixels.show()
@@ -178,13 +186,14 @@ class DirectNeoPixelController:
 
                 elif pattern_type == 'sparkle':
                     self.pixels.fill((0, 0, 0))
-                    for _ in range(3):
-                        pixel = random.randint(0, 74)
+                    num_sparkles = max(3, len(self.pixels) // 25)
+                    for _ in range(num_sparkles):
+                        pixel = random.randint(0, len(self.pixels) - 1)
                         self.pixels[pixel] = color
 
                 elif pattern_type == 'spin':
                     self.pixels.fill((0, 0, 0))
-                    pos = step % 75
+                    pos = step % len(self.pixels)
                     self.pixels[pos] = color
 
                 elif pattern_type == 'breathe':
@@ -193,10 +202,36 @@ class DirectNeoPixelController:
                     self.pixels.fill(dimmed)
 
                 elif pattern_type == 'rainbow':
-                    for i in range(75):
+                    for i in range(len(self.pixels)):
                         hue = (step * 3 + i * 5) % 360
                         rgb = self._hsv_to_rgb(hue, 1.0, 0.3)
                         self.pixels[i] = rgb
+
+                elif pattern_type == 'gradient_flow':
+                    # Smooth flowing rainbow gradient
+                    for i in range(len(self.pixels)):
+                        hue = (step * 2 + (i * 360 / len(self.pixels))) % 360
+                        self.pixels[i] = self._hsv_to_rgb(hue, 1.0, 0.7)
+
+                elif pattern_type == 'chase':
+                    # Comet with trailing fade
+                    tail_length = 25
+                    self.pixels.fill((0, 0, 0))
+                    position = step % len(self.pixels)
+                    for i in range(tail_length):
+                        pixel_pos = (position - i) % len(self.pixels)
+                        brightness = 1.0 - (i / tail_length)
+                        self.pixels[pixel_pos] = tuple(int(c * brightness) for c in color)
+
+                elif pattern_type == 'fire':
+                    # Flickering fire effect
+                    fire_colors = [(255, 0, 0), (255, 50, 0), (255, 100, 0), (255, 150, 0), (255, 200, 50)]
+                    for i in range(len(self.pixels)):
+                        flicker = random.random()
+                        color_idx = int(flicker * (len(fire_colors) - 1))
+                        brightness = 0.3 + flicker * 0.7
+                        base = fire_colors[color_idx]
+                        self.pixels[i] = tuple(int(c * brightness) for c in base)
 
                 self.pixels.show()
                 step += 1
@@ -268,12 +303,12 @@ class DirectNeoPixelController:
         """Spinning dot effect"""
         import time
         while self.animation_active:
-            for i in range(75):
+            for i in range(len(self.pixels)):
                 if not self.animation_active: break
                 self.pixels.fill((0, 0, 0))
                 self.pixels[i] = color
                 self.pixels.show()
-                time.sleep(0.05)
+                time.sleep(0.02)  # Faster for longer strip
 
     def _breathing_pattern(self, color):
         """Slow breathing effect"""
@@ -299,14 +334,14 @@ class DirectNeoPixelController:
         import time
         hue = 0
         while self.animation_active:
-            for i in range(75):
+            for i in range(len(self.pixels)):
                 if not self.animation_active: break
-                pixel_hue = (hue + i * 5) % 360
+                pixel_hue = (hue + i * 3) % 360  # Adjusted for longer strip
                 color = self._hsv_to_rgb(pixel_hue, 1.0, 0.3)
                 self.pixels[i] = color
             self.pixels.show()
-            hue = (hue + 10) % 360
-            time.sleep(0.1)
+            hue = (hue + 5) % 360  # Slower rotation for smoother effect
+            time.sleep(0.05)
 
     def _hsv_to_rgb(self, h, s, v):
         """Convert HSV to RGB"""
@@ -2388,6 +2423,198 @@ async def get_audio_status():
     except Exception as e:
         logger.error(f"Audio status error: {e}")
         return {"error": str(e)}
+
+# ============== AUDIO RECORDING ENDPOINTS ==============
+# For Xbox controller "record new talk" feature
+
+import subprocess
+import glob as glob_module
+from datetime import datetime
+
+# Recording state
+_recording_state = {
+    "temp_wav": "/tmp/wimz_recording.wav",
+    "temp_mp3": "/tmp/wimz_recording.mp3",
+    "has_pending": False,
+    "record_time": None
+}
+
+@app.post("/audio/record/start")
+async def start_audio_recording():
+    """
+    Start recording a new talk audio clip.
+    Records for 2 seconds, converts to MP3, plays it back.
+    Call /audio/record/confirm to save or /audio/record/cancel to discard.
+    """
+    try:
+        import time
+
+        # Set LED to fire mode
+        try:
+            if _neopixels:
+                _neopixels.set_mode('fire')
+        except:
+            pass
+
+        # Play beep to indicate recording start
+        usb_audio_service = get_usb_audio_service()
+        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/songs/door_scan.mp3")
+        time.sleep(0.5)  # Wait for beep
+
+        # Record 2 seconds of audio using arecord (USB mic is card 2)
+        wav_path = _recording_state["temp_wav"]
+        mp3_path = _recording_state["temp_mp3"]
+
+        # Remove old temp files
+        for f in [wav_path, mp3_path]:
+            if os.path.exists(f):
+                os.remove(f)
+
+        logger.info("🎙️ Recording 2 seconds of audio...")
+        record_cmd = [
+            'arecord', '-D', 'hw:2,0', '-f', 'S16_LE', '-r', '44100',
+            '-c', '1', '-d', '2', wav_path
+        ]
+        result = subprocess.run(record_cmd, capture_output=True, timeout=5)
+
+        if result.returncode != 0:
+            logger.error(f"Recording failed: {result.stderr.decode()}")
+            return {"success": False, "error": "Recording failed"}
+
+        # Convert WAV to MP3 using ffmpeg
+        logger.info("🔄 Converting to MP3...")
+        convert_cmd = [
+            'ffmpeg', '-y', '-i', wav_path, '-acodec', 'libmp3lame',
+            '-b:a', '128k', mp3_path
+        ]
+        result = subprocess.run(convert_cmd, capture_output=True, timeout=10)
+
+        if result.returncode != 0:
+            logger.error(f"Conversion failed: {result.stderr.decode()}")
+            return {"success": False, "error": "MP3 conversion failed"}
+
+        # Play back the recording
+        logger.info("🔊 Playing back recording...")
+        usb_audio_service.play_file(mp3_path)
+
+        # Mark as pending confirmation
+        _recording_state["has_pending"] = True
+        _recording_state["record_time"] = time.time()
+
+        # Set LED back to manual_rc mode
+        try:
+            if _neopixels:
+                _neopixels.set_mode('manual_rc')
+        except:
+            pass
+
+        return {
+            "success": True,
+            "message": "Recording complete. Press button again within 10s to save.",
+            "duration": 2,
+            "pending": True
+        }
+
+    except Exception as e:
+        logger.error(f"Recording error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/audio/record/confirm")
+async def confirm_audio_recording():
+    """
+    Confirm and save the pending recording to VOICEMP3/talks folder.
+    Generates a unique filename based on timestamp.
+    """
+    try:
+        import time
+
+        if not _recording_state["has_pending"]:
+            return {"success": False, "error": "No pending recording to save"}
+
+        # Check if within 10 second window
+        elapsed = time.time() - _recording_state["record_time"]
+        if elapsed > 10:
+            _recording_state["has_pending"] = False
+            return {"success": False, "error": "Confirmation window expired (10s)"}
+
+        mp3_path = _recording_state["temp_mp3"]
+        if not os.path.exists(mp3_path):
+            return {"success": False, "error": "Recording file not found"}
+
+        # Generate unique filename
+        talks_dir = "/home/morgan/dogbot/VOICEMP3/talks"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Find next available number for today
+        existing = glob_module.glob(os.path.join(talks_dir, f"custom_{timestamp[:8]}_*.mp3"))
+        next_num = len(existing) + 1
+
+        new_filename = f"custom_{timestamp}.mp3"
+        new_path = os.path.join(talks_dir, new_filename)
+
+        # Copy the file
+        import shutil
+        shutil.copy2(mp3_path, new_path)
+
+        # Clear pending state
+        _recording_state["has_pending"] = False
+
+        # Play confirmation beep
+        usb_audio_service = get_usb_audio_service()
+        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/songs/door_scan.mp3")
+
+        logger.info(f"✅ Recording saved: {new_filename}")
+
+        return {
+            "success": True,
+            "message": f"Recording saved as {new_filename}",
+            "filename": new_filename,
+            "path": new_path
+        }
+
+    except Exception as e:
+        logger.error(f"Confirm recording error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/audio/record/cancel")
+async def cancel_audio_recording():
+    """Cancel and discard the pending recording."""
+    try:
+        _recording_state["has_pending"] = False
+
+        # Remove temp files
+        for f in [_recording_state["temp_wav"], _recording_state["temp_mp3"]]:
+            if os.path.exists(f):
+                os.remove(f)
+
+        logger.info("🗑️ Recording discarded")
+        return {"success": True, "message": "Recording discarded"}
+
+    except Exception as e:
+        logger.error(f"Cancel recording error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.get("/audio/record/status")
+async def get_recording_status():
+    """Get current recording state."""
+    import time
+
+    has_pending = _recording_state["has_pending"]
+    time_remaining = 0
+
+    if has_pending and _recording_state["record_time"]:
+        elapsed = time.time() - _recording_state["record_time"]
+        time_remaining = max(0, 10 - elapsed)
+        if time_remaining == 0:
+            _recording_state["has_pending"] = False
+            has_pending = False
+
+    return {
+        "has_pending": has_pending,
+        "time_remaining": round(time_remaining, 1)
+    }
+
+# ============== END AUDIO RECORDING ENDPOINTS ==============
 
 def create_app():
     """Create FastAPI app (for external use)"""

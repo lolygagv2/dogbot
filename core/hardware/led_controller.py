@@ -25,6 +25,10 @@ class LEDMode(Enum):
     ERROR = "error"
     CHARGING = "charging"
     MANUAL_RC = "manual_rc"
+    # New patterns for 165 LED strip
+    GRADIENT_FLOW = "gradient_flow"
+    CHASE = "chase"
+    FIRE = "fire"
 
 class LEDController:
     """LED system management with proven NeoPixel and Blue LED control"""
@@ -78,7 +82,7 @@ class LEDController:
             import neopixel
             
             self.pixels = neopixel.NeoPixel(
-                board.D12,  # GPIO12 from pins configuration
+                board.D10,  # GPIO10 (Pin 19) - SPI MOSI for Pi 5
                 self.neopixel_count,
                 brightness=self.neopixel_brightness,
                 auto_write=False,
@@ -262,6 +266,100 @@ class LEDController:
         except Exception as e:
             print(f"Manual RC pattern error: {e}")
 
+    def gradient_flow_pattern(self, delay=0.03):
+        """Smooth flowing rainbow gradient - great for silicone bead diffusion"""
+        if not self.pixels:
+            return
+
+        try:
+            hue_offset = 0
+            while self.animation_active:
+                for i in range(self.neopixel_count):
+                    if not self.animation_active:
+                        break
+                    hue = (hue_offset + (i * 360 / self.neopixel_count)) % 360
+                    self.pixels[i] = self._hsv_to_rgb(hue, 1.0, 0.7)
+                self.pixels.show()
+                hue_offset = (hue_offset + 1) % 360
+                time.sleep(delay)
+        except Exception as e:
+            print(f"Gradient flow error: {e}")
+
+    def chase_pattern(self, delay=0.015):
+        """Comet with trailing fade"""
+        if not self.pixels:
+            return
+
+        try:
+            tail_length = 25
+            position = 0
+            color = (0, 255, 255)  # Cyan
+            while self.animation_active:
+                self.pixels.fill((0, 0, 0))
+                for i in range(tail_length):
+                    pixel_pos = (position - i) % self.neopixel_count
+                    brightness = 1.0 - (i / tail_length)
+                    self.pixels[pixel_pos] = tuple(int(c * brightness) for c in color)
+                self.pixels.show()
+                position = (position + 1) % self.neopixel_count
+                time.sleep(delay)
+        except Exception as e:
+            print(f"Chase pattern error: {e}")
+
+    def fire_pattern(self, delay=0.04):
+        """Flickering fire effect"""
+        if not self.pixels:
+            return
+
+        import random
+        fire_colors = [
+            (255, 0, 0),
+            (255, 50, 0),
+            (255, 100, 0),
+            (255, 150, 0),
+            (255, 200, 50),
+        ]
+        heat = [0] * self.neopixel_count
+
+        try:
+            while self.animation_active:
+                # Cool down
+                for i in range(self.neopixel_count):
+                    heat[i] = max(0, heat[i] - random.randint(0, 5))
+                # Heat rises
+                for i in range(self.neopixel_count - 1, 2, -1):
+                    heat[i] = (heat[i - 1] + heat[i - 2] + heat[i - 2]) // 3
+                # Random sparks
+                if random.randint(0, 100) < 60:
+                    spark_pos = random.randint(0, min(15, self.neopixel_count - 1))
+                    heat[spark_pos] = min(255, heat[spark_pos] + random.randint(100, 200))
+                # Convert to colors
+                for i in range(self.neopixel_count):
+                    color_idx = min(len(fire_colors) - 1, heat[i] // 52)
+                    brightness = min(1.0, heat[i] / 255.0)
+                    base = fire_colors[color_idx]
+                    self.pixels[i] = tuple(int(c * brightness) for c in base)
+                self.pixels.show()
+                time.sleep(delay)
+        except Exception as e:
+            print(f"Fire pattern error: {e}")
+
+    def _hsv_to_rgb(self, h, s, v):
+        """Convert HSV to RGB"""
+        h = h / 60.0
+        i = int(h) % 6
+        f = h - int(h)
+        p = v * (1 - s)
+        q = v * (1 - s * f)
+        t = v * (1 - s * (1 - f))
+        if i == 0: r, g, b = v, t, p
+        elif i == 1: r, g, b = q, v, p
+        elif i == 2: r, g, b = p, v, t
+        elif i == 3: r, g, b = p, q, v
+        elif i == 4: r, g, b = t, p, v
+        else: r, g, b = v, p, q
+        return (int(r * 255), int(g * 255), int(b * 255))
+
     def stop_animation(self):
         """Stop current animation"""
         self.animation_active = False
@@ -316,7 +414,19 @@ class LEDController:
         elif mode == LEDMode.MANUAL_RC:
             self.blue_on()  # Keep blue on for manual mode indicator
             self.start_animation(self.manual_rc_pattern, 0.5)
-    
+
+        elif mode == LEDMode.GRADIENT_FLOW:
+            self.blue_on()
+            self.start_animation(self.gradient_flow_pattern, 0.03)
+
+        elif mode == LEDMode.CHASE:
+            self.blue_on()
+            self.start_animation(self.chase_pattern, 0.015)
+
+        elif mode == LEDMode.FIRE:
+            self.blue_on()
+            self.start_animation(self.fire_pattern, 0.04)
+
     def get_status(self):
         """Get current LED system status"""
         return {

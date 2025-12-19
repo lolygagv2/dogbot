@@ -48,7 +48,11 @@ class LedService:
             'celebration': self._pattern_celebration,
             'manual_rc': self._pattern_manual_rc,
             'blue_led_on': self._pattern_blue_led_on,
-            'blue_led_off': self._pattern_blue_led_off
+            'blue_led_off': self._pattern_blue_led_off,
+            # New patterns for 165 LED strip
+            'gradient_flow': self._pattern_gradient_flow,
+            'chase': self._pattern_chase,
+            'fire': self._pattern_fire
         }
 
         # Pattern state
@@ -466,6 +470,127 @@ class LedService:
         if self.led:
             success = self.led.blue_off()
             self.logger.info(f"Blue LED turned OFF: {success}")
+
+    # ========== NEW PATTERNS FOR 165 LED STRIP ==========
+
+    def _pattern_gradient_flow(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Smooth flowing gradient - perfect for silicone bead diffusion"""
+        if not self.led.pixels:
+            return
+
+        hue_offset = 0
+        speed = kwargs.get('speed', 0.5)  # Hue change per frame
+        start_time = time.time()
+
+        while not self._stop_pattern.is_set():
+            if duration and time.time() - start_time > duration:
+                break
+
+            for i in range(self.led.neopixel_count):
+                if self._stop_pattern.is_set():
+                    break
+                # Calculate hue based on position and time offset
+                hue = (hue_offset + (i * 360 / self.led.neopixel_count)) % 360
+                rgb = self._hsv_to_rgb(hue, 1.0, 0.8)
+                self.led.pixels[i] = rgb
+
+            self.led.pixels.show()
+            hue_offset = (hue_offset + speed) % 360
+            time.sleep(0.03)
+
+    def _pattern_chase(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Comet with trailing fade - optimized for 165 LEDs"""
+        if not self.led.pixels:
+            return
+
+        base_color = self.colors.get(color, self.colors['cyan'])
+        tail_length = kwargs.get('tail_length', 25)  # Longer tail for 165 LEDs
+        start_time = time.time()
+
+        position = 0
+        while not self._stop_pattern.is_set():
+            if duration and time.time() - start_time > duration:
+                break
+
+            self.led.pixels.fill(self.colors['off'])
+
+            for i in range(tail_length):
+                pixel_pos = (position - i) % self.led.neopixel_count
+                brightness = 1.0 - (i / tail_length)
+                dimmed = tuple(int(c * brightness) for c in base_color)
+                self.led.pixels[pixel_pos] = dimmed
+
+            self.led.pixels.show()
+            position = (position + 1) % self.led.neopixel_count
+            time.sleep(0.015)  # Fast for smooth chase effect
+
+    def _pattern_fire(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Flickering fire effect with orange/red/yellow"""
+        if not self.led.pixels:
+            return
+
+        import random
+
+        # Fire color palette
+        fire_colors = [
+            (255, 0, 0),      # Red
+            (255, 50, 0),     # Orange-red
+            (255, 100, 0),    # Orange
+            (255, 150, 0),    # Yellow-orange
+            (255, 200, 50),   # Yellow
+        ]
+
+        # Heat array for each pixel
+        heat = [0] * self.led.neopixel_count
+        start_time = time.time()
+
+        while not self._stop_pattern.is_set():
+            if duration and time.time() - start_time > duration:
+                break
+
+            # Cool down every cell a little
+            for i in range(self.led.neopixel_count):
+                heat[i] = max(0, heat[i] - random.randint(0, 5))
+
+            # Heat rises - spread heat upward
+            for i in range(self.led.neopixel_count - 1, 2, -1):
+                heat[i] = (heat[i - 1] + heat[i - 2] + heat[i - 2]) // 3
+
+            # Random sparks near bottom
+            if random.randint(0, 100) < 60:  # 60% chance of spark
+                spark_pos = random.randint(0, min(15, self.led.neopixel_count - 1))
+                heat[spark_pos] = min(255, heat[spark_pos] + random.randint(100, 200))
+
+            # Convert heat to LED colors
+            for i in range(self.led.neopixel_count):
+                color_index = min(len(fire_colors) - 1, heat[i] // 52)
+                brightness = min(1.0, heat[i] / 255.0)
+                base = fire_colors[color_index]
+                dimmed = tuple(int(c * brightness) for c in base)
+                self.led.pixels[i] = dimmed
+
+            self.led.pixels.show()
+            time.sleep(0.04)
+
+    def _hsv_to_rgb(self, h: float, s: float, v: float) -> Tuple[int, int, int]:
+        """Convert HSV to RGB for gradient patterns"""
+        h = h / 60.0
+        i = int(h) % 6
+        f = h - int(h)
+        p = v * (1 - s)
+        q = v * (1 - s * f)
+        t = v * (1 - s * (1 - f))
+
+        if i == 0: r, g, b = v, t, p
+        elif i == 1: r, g, b = q, v, p
+        elif i == 2: r, g, b = p, v, t
+        elif i == 3: r, g, b = p, q, v
+        elif i == 4: r, g, b = t, p, v
+        else: r, g, b = v, p, q
+
+        return (int(r * 255), int(g * 255), int(b * 255))
+
+    # ========== END NEW PATTERNS ==========
 
     def _on_system_event(self, event) -> None:
         """Handle system events to update LED patterns"""

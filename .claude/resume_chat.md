@@ -1,5 +1,95 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2025-12-19 04:45
+**Goal:** Remote Demo Setup - Auto-start services + LED upgrades + Audio recording feature
+**Status:** ✅ COMPLETE
+
+### ✅ Work Completed:
+
+#### 1. **NeoPixel LED System Upgrade (165 LEDs)**
+- Updated LED count from 75 → 165 (Adafruit 332 LED/m silicone bead strip)
+- Changed GPIO from 12 → 10 (SPI MOSI for Pi 5)
+- Added 3 new patterns: `gradient_flow`, `chase`, `fire`
+- Fixed API server to handle new patterns in `_safe_animation_loop()`
+- **Files Modified:**
+  - `config/settings.py` - LED count, brightness, GPIO pin
+  - `config/pins.py` - NEOPIXEL = 10
+  - `api/server.py` - New pattern handlers
+  - `core/hardware/led_controller.py` - New LEDMode enum values + patterns
+  - `services/media/led.py` - New pattern methods
+  - `xbox_hybrid_controller.py` - Added new modes to led_modes list
+
+#### 2. **Auto-Start Services for Remote Demo**
+- Enabled `treatbot.service` for boot auto-start
+- Enabled `xbox-controller.service` for boot auto-start
+- **On boot flow:**
+  - treatbot.service starts → API server + Mode FSM (autonomous)
+  - xbox-controller.service starts → waits for controller
+  - Xbox input detected → Mode FSM switches to MANUAL mode
+
+#### 3. **Dynamic Audio File Discovery**
+- Updated `xbox_hybrid_controller.py` to dynamically scan VOICEMP3/talks and VOICEMP3/songs
+- New files added to folders are auto-discovered on controller startup
+- Removed hardcoded SOUND_TRACKS list
+
+#### 4. **NEW: Audio Recording Feature (Start Button)**
+- **Button 7 (Start/Menu ☰)** records new talk audio
+- **Workflow:**
+  1. Press Start → Beep, LED fire, record 2 sec via USB mic
+  2. Playback automatically
+  3. Press Start again within 10s → Save to VOICEMP3/talks/custom_YYYYMMDD_HHMMSS.mp3
+  4. No second press → Recording discarded
+- **API Endpoints Added:**
+  - `POST /audio/record/start` - Start recording
+  - `POST /audio/record/confirm` - Save recording
+  - `POST /audio/record/cancel` - Discard recording
+  - `GET /audio/record/status` - Check pending state
+
+#### 5. **Audio Volume Fix**
+- System volume was at 20%, boosted to 95%
+- Saved with `sudo alsactl store`
+
+### 📁 Files Modified This Session:
+| File | Changes |
+|------|---------|
+| `config/settings.py` | LED count 75→165, GPIO 10 |
+| `config/pins.py` | NEOPIXEL = 10 |
+| `api/server.py` | New LED patterns + audio recording endpoints |
+| `core/hardware/led_controller.py` | New patterns + LEDMode enum |
+| `services/media/led.py` | New pattern methods |
+| `xbox_hybrid_controller.py` | Dynamic audio, recording button, new LED modes |
+| `tests/hardware/test_led_165.py` | NEW - LED test script |
+
+### 🔧 Services Status:
+| Service | Enabled | Auto-Start |
+|---------|---------|------------|
+| treatbot.service | ✅ | On boot |
+| xbox-controller.service | ✅ | On boot |
+
+### 🎮 Xbox Controller Button Map (Updated):
+| Button | Function |
+|--------|----------|
+| A | Emergency stop |
+| B | Emergency stop (safety) |
+| X | Toggle LED mode |
+| Y | Play treat sound |
+| LB | Dispense treat |
+| RB | Take photo |
+| LT | Cycle LED modes |
+| RT | Speed control |
+| **Start (☰)** | **Record new talk audio** |
+| D-pad Left | Cycle songs |
+| D-pad Right | Cycle talks |
+| D-pad Down | Play queued audio |
+| D-pad Up | Stop audio |
+
+### ⚠️ Notes for Next Session:
+- Test reboot to verify auto-start works
+- First recorded audio saved: `custom_20251219_043322.mp3`
+- USB mic is card 2 (`hw:2,0`)
+
+---
+
 ## Session: 2025-12-17 05:30
 **Goal:** Fix Xbox controller DC motor control - restore proper closed-loop PID system
 **Status:** ✅ COMPLETE - Major breakthrough achieved!
