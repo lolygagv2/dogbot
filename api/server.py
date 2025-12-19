@@ -2436,7 +2436,8 @@ _recording_state = {
     "temp_wav": "/tmp/wimz_recording.wav",
     "temp_mp3": "/tmp/wimz_recording.mp3",
     "has_pending": False,
-    "record_time": None
+    "record_time": None,
+    "in_progress": False
 }
 
 @app.post("/audio/record/start")
@@ -2446,22 +2447,42 @@ async def start_audio_recording():
     Records for 2 seconds, converts to MP3, plays it back.
     Call /audio/record/confirm to save or /audio/record/cancel to discard.
     """
+    # Check if already recording - reject duplicate requests
+    if _recording_state["in_progress"]:
+        logger.warning("🎙️ Recording already in progress - ignoring duplicate request")
+        return {"success": False, "error": "Recording already in progress"}
+
     try:
         import time
+        from services.perception.bark_detector import get_bark_detector_service
 
-        # Set LED to fire mode
-        try:
-            if _neopixels:
-                _neopixels.set_mode('fire')
-        except:
-            pass
+        # Mark recording as in progress IMMEDIATELY
+        _recording_state["in_progress"] = True
 
-        # Play beep to indicate recording start
         usb_audio_service = get_usb_audio_service()
-        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/songs/door_scan.mp3")
-        time.sleep(0.5)  # Wait for beep
 
-        # Record 2 seconds of audio using arecord (USB mic is card 2)
+        # Step 1: Pause bark detector to free the microphone
+        logger.info("🎙️ Pausing bark detector for recording...")
+        try:
+            bark_detector = get_bark_detector_service()
+            bark_detector.set_enabled(False)
+            time.sleep(0.5)  # Wait for mic to be released
+        except Exception as e:
+            logger.warning(f"Could not pause bark detector: {e}")
+
+        # Step 2: Set LED to fire mode (visual indicator)
+        try:
+            leds = get_led_controller()
+            leds.set_mode('fire')
+        except Exception as e:
+            logger.warning(f"Could not set fire LED mode: {e}")
+
+        # Step 3: Play start beep and wait for it to finish
+        logger.info("🔔 Playing start beep...")
+        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/songs/door_scan.mp3")
+        time.sleep(1.0)  # Wait for beep to finish completely
+
+        # Step 4: Record 2 seconds of audio
         wav_path = _recording_state["temp_wav"]
         mp3_path = _recording_state["temp_mp3"]
 
@@ -2470,18 +2491,33 @@ async def start_audio_recording():
             if os.path.exists(f):
                 os.remove(f)
 
-        logger.info("🎙️ Recording 2 seconds of audio...")
+        logger.info("🎙️ RECORDING NOW - Speak for 2 seconds...")
         record_cmd = [
             'arecord', '-D', 'hw:2,0', '-f', 'S16_LE', '-r', '44100',
             '-c', '1', '-d', '2', wav_path
         ]
         result = subprocess.run(record_cmd, capture_output=True, timeout=5)
 
+        # Re-enable bark detector regardless of recording success
+        try:
+            bark_detector = get_bark_detector_service()
+            bark_detector.set_enabled(True)
+            logger.info("🎙️ Bark detector re-enabled")
+        except:
+            pass
+
         if result.returncode != 0:
             logger.error(f"Recording failed: {result.stderr.decode()}")
-            return {"success": False, "error": "Recording failed"}
+            _recording_state["in_progress"] = False
+            # Set LED back to normal
+            try:
+                leds = get_led_controller()
+                leds.set_mode('manual_rc')
+            except Exception as e:
+                logger.warning(f"Could not reset LED mode: {e}")
+            return {"success": False, "error": "Recording failed - mic busy"}
 
-        # Convert WAV to MP3 using ffmpeg
+        # Step 5: Convert WAV to MP3 using ffmpeg
         logger.info("🔄 Converting to MP3...")
         convert_cmd = [
             'ffmpeg', '-y', '-i', wav_path, '-acodec', 'libmp3lame',
@@ -2491,32 +2527,44 @@ async def start_audio_recording():
 
         if result.returncode != 0:
             logger.error(f"Conversion failed: {result.stderr.decode()}")
+            _recording_state["in_progress"] = False
             return {"success": False, "error": "MP3 conversion failed"}
 
-        # Play back the recording
-        logger.info("🔊 Playing back recording...")
+        # Step 6: Play back the recording so user can hear it
+        logger.info("🔊 Playing back your recording...")
         usb_audio_service.play_file(mp3_path)
+        time.sleep(2.5)  # Wait for 2 second recording to play back
 
-        # Mark as pending confirmation
+        # Step 7: Mark as pending confirmation (and clear in_progress)
+        _recording_state["in_progress"] = False
         _recording_state["has_pending"] = True
         _recording_state["record_time"] = time.time()
 
-        # Set LED back to manual_rc mode
+        # Set LED to chase mode (waiting for confirmation)
         try:
-            if _neopixels:
-                _neopixels.set_mode('manual_rc')
-        except:
-            pass
+            leds = get_led_controller()
+            leds.set_mode('chase')
+        except Exception as e:
+            logger.warning(f"Could not set chase LED mode: {e}")
+
+        logger.info("⏳ Waiting for confirmation - press START again within 10s to save")
 
         return {
             "success": True,
-            "message": "Recording complete. Press button again within 10s to save.",
+            "message": "Recording complete. Press START again within 10s to save.",
             "duration": 2,
             "pending": True
         }
 
     except Exception as e:
         logger.error(f"Recording error: {e}")
+        _recording_state["in_progress"] = False
+        # Re-enable bark detector on error
+        try:
+            from services.perception.bark_detector import get_bark_detector_service
+            get_bark_detector_service().set_enabled(True)
+        except:
+            pass
         return {"success": False, "error": str(e)}
 
 @app.post("/audio/record/confirm")
@@ -2559,9 +2607,16 @@ async def confirm_audio_recording():
         # Clear pending state
         _recording_state["has_pending"] = False
 
-        # Play confirmation beep
+        # Play "good dog" to confirm save
         usb_audio_service = get_usb_audio_service()
-        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/songs/door_scan.mp3")
+        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/talks/good_dog.mp3")
+
+        # Set LED back to manual_rc
+        try:
+            leds = get_led_controller()
+            leds.set_mode('manual_rc')
+        except Exception as e:
+            logger.warning(f"Could not reset LED mode: {e}")
 
         logger.info(f"✅ Recording saved: {new_filename}")
 
@@ -2611,6 +2666,7 @@ async def get_recording_status():
 
     return {
         "has_pending": has_pending,
+        "in_progress": _recording_state["in_progress"],
         "time_remaining": round(time_remaining, 1)
     }
 

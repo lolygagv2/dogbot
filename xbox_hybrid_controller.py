@@ -918,8 +918,20 @@ class XboxHybridControllerFixed:
         First press: Start recording (2 sec) + playback
         Second press within 10s: Save to VOICEMP3/talks
         """
-        # Check if there's a pending recording waiting for confirmation
+        current_time = time.time()
+        logger.warning(f"🎙️ handle_record_button CALLED at {current_time:.2f}")
+
+        if not hasattr(self, '_last_record_button'):
+            self._last_record_button = 0
+
+        # Check recording status FIRST
         status = self.api_request('GET', '/audio/record/status')
+        logger.warning(f"🎙️ Recording status: {status}")
+
+        # If recording in progress, ignore (server will also reject)
+        if status and status.get('in_progress'):
+            logger.warning("🎙️ Recording in progress - IGNORING button press")
+            return
 
         if status and status.get('has_pending'):
             # Second press - confirm and save
@@ -930,7 +942,12 @@ class XboxHybridControllerFixed:
             else:
                 logger.warning(f"Recording save failed: {result}")
         else:
-            # First press - start new recording
+            # First press - start new recording (with cooldown to prevent double-trigger)
+            if current_time - self._last_record_button < 6.0:
+                logger.debug("Record button ignored (cooldown - recording may be in progress)")
+                return
+
+            self._last_record_button = current_time
             logger.info("🎙️ START BUTTON: Starting new recording (2 seconds)")
             result = self.api_request('POST', '/audio/record/start')
             if result and result.get('success'):

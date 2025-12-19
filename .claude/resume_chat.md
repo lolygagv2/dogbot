@@ -1,5 +1,80 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2025-12-19 05:45 - 06:20
+**Goal:** Fix Audio Recording Double-Trigger and Related Issues
+**Status:** ✅ COMPLETE
+
+### ✅ Problems Solved This Session:
+
+#### 1. **Microphone Capture Volume at 0%**
+- **Problem**: Recorded audio files had no sound (mean volume -84 dB = silence)
+- **Root Cause**: USB mic capture volume was at 0% in ALSA mixer
+- **Fix**: `amixer -c 2 sset 'Mic' 100% cap` + `sudo alsactl store`
+- **Result**: Recorded audio now has proper levels (mean -53 dB)
+
+#### 2. **LED Modes Not Changing During Recording**
+- **Problem**: Fire/chase LED modes not activating during recording
+- **Root Cause**: Code was calling `_neopixels.set_mode()` but `_neopixels` is raw NeoPixel object without `set_mode()` method
+- **Fix**: Changed all 4 occurrences to use `get_led_controller().set_mode()` instead
+- **File**: `api/server.py` (lines 2465-2606)
+
+#### 3. **Recording Double-Trigger (CRITICAL)**
+- **Problem**: Recording flow ran twice - beep+fire+record+playback+chase, then immediately beep+fire again
+- **Root Cause**: **TWO Xbox controller processes running simultaneously!**
+  - Process 1: Spawned by `main_treatbot.py` as morgan user
+  - Process 2: Spawned by `xbox-controller.service` as root user
+  - Both received button events and made API calls
+- **Fix**: Disabled standalone `xbox-controller.service` since treatbot already manages the controller internally
+- **Command**: `sudo systemctl disable xbox-controller.service`
+
+#### 4. **Added Server-Side Recording Lock**
+- Added `in_progress` flag to `_recording_state` dictionary
+- Set `True` at start of recording, `False` when done/error
+- Server rejects duplicate `/audio/record/start` requests
+- Status endpoint now returns `in_progress` for client-side checking
+
+### 📁 Files Modified:
+| File | Changes |
+|------|---------|
+| `api/server.py` | Fixed LED mode calls, added `in_progress` lock, error handling |
+| `xbox_hybrid_controller.py` | Added debug logging, `in_progress` check |
+| `services/media/usb_audio.py` | (already had SDL_AUDIODRIVER fix from earlier) |
+
+### 🔧 Services Configuration Change:
+| Service | Before | After |
+|---------|--------|-------|
+| `treatbot.service` | enabled | enabled (spawns Xbox controller internally) |
+| `xbox-controller.service` | enabled | **DISABLED** (duplicate - was causing double-triggers) |
+
+### ⚠️ IMPORTANT: Auto-Start Configuration
+- **Only `treatbot.service` should be enabled for auto-start**
+- Treatbot spawns the Xbox controller as a subprocess via `services/control/xbox_controller.py`
+- Having both services enabled causes duplicate button handling
+
+### 🎮 Recording Flow (Now Working):
+1. Press Start → beep + fire LED + 2 sec recording
+2. Automatic playback of recording
+3. Chase LED mode for 10 seconds (waiting for confirmation)
+4. Press Start again → saves to `VOICEMP3/talks/custom_*.mp3` + plays "good dog" + rainbow LED
+
+### 🔍 Debugging Technique Used:
+```bash
+# Found duplicate processes with:
+ps aux | grep xbox
+# Showed two processes (morgan + root) receiving same button events
+
+# Found parent process:
+ps -ef | grep <PID>
+# Showed morgan process spawned by main_treatbot.py (PID 48592)
+```
+
+### 📝 Next Session Notes:
+- Audio recording feature fully working
+- Mic volume persisted via `alsactl store`
+- Only treatbot.service needed for full functionality
+
+---
+
 ## Session: 2025-12-19 04:45 (Updated 05:17)
 **Goal:** Remote Demo Setup - Auto-start services + LED upgrades + Audio recording feature
 **Status:** ✅ COMPLETE (with post-reboot fixes)
