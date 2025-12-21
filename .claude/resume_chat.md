@@ -1,5 +1,144 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2025-12-20 21:00 - 22:15
+**Goal:** Fix Auto-Start Control Issues - Motors Getting Stuck, System Freezing
+**Status:** ✅ COMPLETE
+
+### ✅ Problems Solved This Session:
+
+#### 1. **GPIO Initialization Timing (Motor Controller)**
+- **Problem**: "GPIO busy" errors when Xbox controller tried to initialize motors
+- **Root Cause**: `ProperPIDMotorController.__init__()` claimed GPIO pins immediately, blocking fallback controllers
+- **Fix**: Deferred GPIO initialization to `start()` method instead of `__init__()`
+- **Files**: `core/hardware/proper_pid_motor_controller.py`
+  - Added `_initialize_gpio()` method
+  - Added `_cleanup_gpio()` method
+  - GPIO only claimed when `start()` called
+
+#### 2. **Motor Watchdog Re-enabled**
+- **Problem**: Watchdog was disabled (999999 timeout) - motors could run forever
+- **Fix**: Set `watchdog_timeout = 2.0` seconds
+- **Added**: 1-second "stale command" detection for additional safety
+
+#### 3. **Blocking Device Read (CRITICAL)**
+- **Problem**: `device.read(8)` blocked forever with no timeout - caused total system freeze
+- **Root Cause**: Joystick device opened in blocking mode, no select/timeout
+- **Fix**: Added `select.select()` with 100ms timeout before read
+- **File**: `xbox_hybrid_controller.py` line 612
+
+#### 4. **Excessive Logging Causing I/O Bottleneck (CRITICAL)**
+- **Problem**: ~150+ log lines/second choking the system
+- **Root Causes**:
+  - 3 `print()` calls on every joystick axis event
+  - 2 `logger.info()` on every motor command (10/sec)
+  - 4 `logger.info()` on every PWM apply (50/sec × 2 motors)
+- **Fix**: Removed all excessive debug output
+- **Files**: `xbox_hybrid_controller.py`, `core/hardware/proper_pid_motor_controller.py`
+
+#### 5. **RT Trigger Not Working**
+- **Problem**: Right trigger did nothing
+- **Root Cause**: RT only added 20% boost, not primary throttle
+- **Fix**: Made RT the primary throttle (0-100% speed control)
+- **Control**: Left stick = direction, RT (hold) = throttle
+
+#### 6. **Emergency Stop Pin Numbers Wrong**
+- **Problem**: `global_emergency_stop()` had wrong pin list [17,27,22,23,24,25]
+- **Fix**: Corrected to [17,18,27,22,13,19] (IN1,IN2,IN3,IN4,ENA,ENB)
+- **Added**: Multiple fallback methods (gpiozero → lgpio → gpioset)
+
+#### 7. **Motor Power Underpowered**
+- **Problem**: Motors very weak, not responsive
+- **Root Causes**:
+  - `MAX_RPM = 60` (was reduced 50% from 120)
+  - Feedforward gain at 0.6 (too conservative)
+- **Fix**:
+  - `MAX_RPM = 100` (moderate for responsive control)
+  - Feedforward gain = 0.9
+
+#### 8. **LED Initialization Disabled**
+- **Problem**: "LEDs not initialized" errors
+- **Root Cause**: LED controller self-disabled in `__init__`
+- **Fix**: Re-enabled `_initialize_blue_led()` and `_initialize_neopixels()`
+- **File**: `core/hardware/led_controller.py`
+
+#### 9. **LED Mode Pattern Case Sensitivity**
+- **Problem**: LED patterns always showing "idle" regardless of mode
+- **Root Cause**: Mode names uppercase in FSM but lowercase in pattern map
+- **Fix**: Added both uppercase and lowercase mode names to mapping
+- **File**: `services/media/led.py`
+
+### 📁 Files Modified:
+| File | Changes |
+|------|---------|
+| `core/hardware/proper_pid_motor_controller.py` | GPIO deferred init, watchdog 2s, stale command detection, removed excessive logging |
+| `xbox_hybrid_controller.py` | Added select() timeout, RT as throttle, removed debug prints, fixed emergency stop pins |
+| `core/hardware/led_controller.py` | Re-enabled LED initialization |
+| `services/media/led.py` | Fixed mode pattern case sensitivity |
+
+### 🔧 Key Technical Solutions:
+
+1. **Blocking I/O Fix**:
+   ```python
+   ready, _, _ = select.select([self.device], [], [], 0.1)  # 100ms timeout
+   if ready:
+       event_data = self.device.read(8)
+   ```
+
+2. **Deferred GPIO Pattern**:
+   ```python
+   def __init__(self):
+       self._gpio_initialized = False  # Don't claim GPIO here
+
+   def start(self):
+       if not self._gpio_initialized:
+           self._initialize_gpio()  # Claim GPIO only when starting
+   ```
+
+3. **Stale Command Detection**:
+   ```python
+   if not self.motors_should_be_stopped:
+       if current_time - self.last_nonzero_command_time > 1.0:
+           # Force stop if no fresh movement command in 1 second
+           self.left.target_rpm = 0
+           self.right.target_rpm = 0
+   ```
+
+### 🎮 Updated Xbox Controls:
+| Control | Function |
+|---------|----------|
+| Left Stick | Direction (forward/back/turn) |
+| **RT (hold)** | **Throttle (required to move)** |
+| Right Stick | Camera pan/tilt |
+| A | Emergency Stop |
+| B | Stop Motors |
+| X | Blue LED toggle |
+| LT | Cycle NeoPixel modes |
+| Y | Play sound |
+| LB | Dispense treat |
+| RB | Take photo |
+
+### 📊 Performance Improvements:
+- **Logging reduced**: ~150 lines/sec → ~1 line/sec (PID status every 1s)
+- **Watchdog**: 999999s → 2s timeout
+- **Response**: No more system freezes from I/O blocking
+- **Motor power**: ~2.5x improvement (RPM 60→100, feedforward 0.6→0.9)
+
+### ⚠️ Important Notes for Next Session:
+- System stable after logging fixes
+- RT trigger now required to move (safety feature)
+- Motors stop within 1-2 seconds if controller crashes
+- All services running: API, Xbox, Bark Detection, LEDs, Audio
+
+### 🚀 Current System Status:
+- ✅ treatbot.service running
+- ✅ Xbox controller subprocess active
+- ✅ API server on http://localhost:8000
+- ✅ Bark detection classifying audio
+- ✅ LED system initialized (165 NeoPixels + Blue LED)
+- ✅ Audio system working (USB audio plughw:2)
+
+---
+
 ## Session: 2025-12-19 05:45 - 06:20
 **Goal:** Fix Audio Recording Double-Trigger and Related Issues
 **Status:** ✅ COMPLETE
@@ -139,7 +278,7 @@ ps -ef | grep <PID>
 | Service | Enabled | Auto-Start |
 |---------|---------|------------|
 | treatbot.service | ✅ | On boot |
-| xbox-controller.service | ✅ | On boot |
+| xbox-controller.service | ❌ | DISABLED (duplicate) |
 
 ### 🎮 Xbox Controller Button Map (Updated):
 | Button | Function |
@@ -151,7 +290,7 @@ ps -ef | grep <PID>
 | LB | Dispense treat |
 | RB | Take photo |
 | LT | Cycle LED modes |
-| RT | Speed control |
+| RT | Speed control (throttle) |
 | **Start (☰)** | **Record new talk audio** |
 | D-pad Left | Cycle songs |
 | D-pad Right | Cycle talks |
@@ -207,7 +346,7 @@ After first reboot test, fixed two issues:
 
 #### 3. **Safety & PWM Configuration**
 - **PWM Limits**: 25-50% (safe for 6V motors on 14V system)
-- **Watchdog System**: Emergency stop protection (disabled for testing)
+- **Watchdog System**: Emergency stop protection
 - **Encoder Verification**: Real-time debug logging shows target vs actual RPM
 
 #### 4. **System Integration**
@@ -215,479 +354,4 @@ After first reboot test, fixed two issues:
 - **Motor Command Bus**: Updated to use ProperPIDMotorController
 - **Legacy Compatibility**: Maintained existing API for backward compatibility
 
-### 🔧 Key Technical Solutions:
-
-1. **Root Cause Analysis**: User correctly identified I had given up on PID and bypassed it with direct PWM
-2. **Encoder Configuration**: Fixed fundamental PPR error (660 → 341) based on actual DFRobot specs
-3. **Conservative Tuning**: Reduced PID gains significantly to prevent oscillation and clicking
-4. **Control Architecture**: Proper Xbox Joystick → Target RPM → PID → PWM → Motors with encoder feedback
-5. **Safety First**: Implemented multiple safety layers while maintaining performance
-
-### 📈 Expected Benefits of Closed-Loop Control:
-- **Battery Independence**: Consistent speed from 14V → 12V (15% voltage drop compensated)
-- **Terrain Adaptation**: Automatic PWM adjustment for carpet vs hardwood
-- **Load Compensation**: Maintains speed on inclines/declines
-- **Motor Matching**: Left/right motors synchronized despite manufacturing variance
-- **Precision Control**: Repeatable, predictable motion from joystick input
-
-### 🧪 Test Results:
-- **Xbox Controller Connection**: ✅ Connected successfully to /dev/input/js0
-- **PID System Active**: ✅ 2000Hz encoder polling + 50Hz PID control running
-- **Motor Response**: ✅ User confirmed "yes it's working? i mean i ran the motors so that's good"
-- **Debug Logging**: ✅ Real-time RPM feedback showing proper control loop operation
-
-### 📁 Files Created This Session:
-1. **`/home/morgan/dogbot/core/hardware/proper_pid_motor_controller.py`** (612 lines)
-   - Complete PID motor controller with encoder feedback
-   - Based on professional control theory principles
-   - Replaces broken motor_controller_polling.py approach
-
-### 📝 Files Modified:
-1. **`xbox_hybrid_controller.py`**
-   - Updated import to use proper_pid_motor_controller
-   - Enabled USE_PID_CONTROL = True
-
-2. **`core/motor_command_bus.py`**
-   - Updated to prioritize ProperPIDMotorController
-   - Added proper start() method calls for PID initialization
-
-### 🔍 Critical Discovery:
-**The user was absolutely right**: I had abandoned the PID system instead of fixing it properly. The encoders worked perfectly (1,286 counts proved it), but I took shortcuts with direct PWM control instead of implementing proper closed-loop control. This session restored the professional-grade motor control system the TreatBot deserves.
-
-### ⚡ Performance Metrics:
-- **Encoder Polling**: 2000Hz (vs 1190Hz encoder frequency)
-- **PID Update Rate**: 50Hz (standard control loop frequency)
-- **PWM Safety**: 25-50% (7V max on 6V motors)
-- **Target RPM Range**: 0-168 RPM (80% of 210 RPM max for safety)
-
-### 🚨 Important Notes for Next Session:
-- **Watchdog**: Currently disabled for testing (999999ms timeout)
-- **PID Tuning**: Conservative gains may need optimization after more testing
-- **Direction Mapping**: Verify encoder direction matches motor direction in all scenarios
-- **Load Testing**: Test PID compensation under various loads
-
-### 🎮 Current Status:
-**READY FOR FULL TESTING** - The Xbox controller is connected and running with proper closed-loop PID control. The TreatBot now has professional-grade motor control using real control theory with encoder feedback.
-
-### 🎯 Next Session Priorities:
-1. **Comprehensive Testing**: Test all joystick directions, speeds, and scenarios
-2. **PID Optimization**: Fine-tune gains based on real-world performance
-3. **Load Testing**: Verify PID compensation under terrain/load changes
-4. **Direction Verification**: Confirm encoder sign matches motor direction
-5. **Re-enable Watchdog**: Set appropriate timeout for production use
-
-### 💡 Key Lesson:
-**Never give up on proper engineering solutions.** The user correctly pushed back against shortcuts and demanded proper closed-loop control. The result is a vastly superior motor control system that will provide consistent, reliable robot motion regardless of environmental conditions.
-
 ---
-*Session completed successfully - Proper PID motor control restored! 🎯✅*
-
----
-
-## Session: 2025-12-16 05:45
-**Goal:** Fix Xbox controller DC motor control issues
-**Status:** ✅ Major Progress - PID System Operational
-
-### Work Completed:
-- **Fixed Xbox controller motor control** - Replaced failing subprocess GPIO with gpiozero library
-- **Implemented complete PID control system** - Added closed-loop control with RPM feedback
-- **Diagnosed encoder issues** - Left encoder working (1-13 RPM), right encoder hardware failure
-- **Created diagnostic tools** - Built encoder testing scripts to isolate hardware vs software issues
-- **Corrected pin mappings** - Fixed motor control pins in diagnostic scripts
-
-### Key Solutions:
-1. **Root Cause**: Subprocess `gpioset` calls don't maintain persistent GPIO state
-2. **Solution**: Complete rewrite using gpiozero OutputDevice and PWMOutputDevice
-3. **PID Implementation**: Added conservative PID gains (0.8, 0.1, 0.01) with anti-windup
-4. **Motor Safety**: 50% PWM limit protecting 6V motors on 14V system
-
-### Technical Findings:
-- **LEFT MOTOR**: Perfect PID control with 579 encoder ticks/3s, 17.5 RPM feedback
-- **RIGHT MOTOR**: Hardware encoder failure - GPIO5/6 reading constant 0 values
-- **System Performance**: Xbox controller now responsive, motors no longer "underpowered" or "clicking"
-- **Expected Drift**: Right motor open-loop control causes slight drift (hardware issue, not software)
-
-### Files Modified:
-- `xbox_hybrid_controller.py` - Fixed imports, added RPM control integration
-- `core/hardware/motor_controller_polling.py` - Complete rewrite with gpiozero and PID
-- `encoder_diagnostic.py` - Created standalone hardware diagnostic tool
-- `motor_with_gpio_test.py` - Created GPIO monitoring test
-- `quick_gpio_test.py` - Created simple GPIO state test
-- `.claude/ENCODER_DEBUG_NOTES.md` - Updated with diagnostic results
-
-### Diagnostic Evidence:
-```
-LEFT ENCODER:  ✅ 579 ticks, 720 state changes, 17.5 RPM
-RIGHT ENCODER: ❌ 0 ticks, 0 state changes, 0.0 RPM
-GPIO Test:     L_A=1 L_B=0 | R_A=0 R_B=0 (right pins stuck at 0)
-```
-
-### Current Status:
-- ✅ **Motors**: Both respond to PWM control perfectly
-- ✅ **Left Motor**: Full PID control with excellent encoder feedback
-- ❌ **Right Motor**: Open-loop control due to encoder hardware failure
-- ✅ **Xbox Control**: Responsive joystick control with PID system active
-- ⚠️ **Drift**: Expected behavior due to right encoder hardware issue
-
-### Next Session Priority:
-1. **Hardware Check**: Verify right motor encoder wiring (GPIO5/6 to green/yellow wires)
-2. **Power Check**: Verify 3.3V on right motor encoder red wire
-3. **Continuity Test**: Multimeter test from right motor to Pi GPIO pins
-4. **Alternative**: Consider software compensation for drift until hardware fixed
-
-### Important Notes/Warnings:
-- **RIGHT ENCODER HARDWARE FAILURE**: GPIO5/6 reading constant 0 values
-- **NOT SOFTWARE ISSUE**: Diagnostic tests prove hardware problem
-- **SYSTEM FUNCTIONAL**: Xbox control works well despite right encoder issue
-- **PID WORKING**: Left motor shows perfect closed-loop control
-
-### User Feedback:
-- User confirmed motors "work" but noted expected drift
-- User correctly suspected software initially, but diagnostics proved hardware issue
-- System much improved from original "underpowered, clicking" state
-
----
-
-## Session: 2025-12-15 10:20
-**Goal:** Fix flexible reward system to enable simultaneous bark + behavior rewards
-**Status:** ✅ Complete - Flexible reward system implemented and ready for testing
-
-### Work Completed:
-
-#### 1. Fixed Hardcoded Quiet Requirements
-- **Problem**: All behavior policies had hardcoded `require_quiet=True`, preventing bark+behavior combinations
-- **Solution**: Changed all policies to `require_quiet=False` and made quiet checking mission-context aware
-- **Files modified**:
-  - `/orchestrators/reward_logic.py` - Removed hardcoded quiet requirements from sit/down/stay policies
-  - Added new `_check_mission_quiet_requirement(behavior)` method for mission-specific noise policies
-
-#### 2. Added Parallel Bark Detection Rewards
-- **Problem**: Bark detection and behavior rewards were conflicting instead of working together
-- **Solution**: Created independent bark reward path that runs parallel to behavior rewards
-- **Implementation**:
-  - Added audio event subscription to RewardLogic: `self.bus.subscribe('audio', self._on_audio_event)`
-  - Created `_process_bark_detection()` method for bark-specific rewards
-  - Added `_evaluate_bark_reward()` with separate cooldowns and limits
-  - Bark rewards use 40% probability, 5s cooldown, 3/day limit vs behavior rewards
-
-#### 3. Mission-Context Aware Quiet Requirements
-- **Solution**: Created flexible mission system that allows different noise policies per mission
-- **Key features**:
-  ```python
-  def _check_mission_quiet_requirement(self, behavior: str) -> bool:
-      # Check mission config for:
-      # - require_quiet_behaviors: ["sit"] (specific behaviors need quiet)
-      # - require_quiet_always: false (mission-wide policy)
-      # - allow_bark_rewards: true (enable bark+behavior combinations)
-  ```
-
-#### 4. Created Two Test Mission Types
-- **sit_training.json**: Traditional quiet training
-  ```json
-  "config": {
-    "allow_bark_rewards": false,
-    "require_quiet_behaviors": ["sit"]
-  }
-  ```
-- **alert_training.json**: Guard dog training (NEW)
-  ```json
-  "config": {
-    "allow_bark_rewards": true,
-    "require_quiet_always": false,
-    "require_quiet_behaviors": []
-  }
-  ```
-
-### Key Technical Implementation:
-
-#### Mission-Context Checking Logic:
-```python
-def _check_mission_quiet_requirement(self, behavior: str) -> bool:
-    # Get current mission from state
-    if not hasattr(self.state, 'mission') or not self.state.mission:
-        return True  # No active mission - allow all rewards (flexible default)
-
-    mission = self.state.mission
-    config = mission.config
-
-    # Check for behavior-specific quiet requirements
-    quiet_behaviors = config.get('require_quiet_behaviors', [])
-    if behavior in quiet_behaviors:
-        return not self._is_environment_noisy()
-
-    # Check for mission-wide quiet policy
-    if config.get('require_quiet_always', False):
-        return not self._is_environment_noisy()
-
-    # Check for bark-friendly missions
-    if config.get('allow_bark_rewards', True):
-        return True  # Mission explicitly allows bark + behavior rewards
-
-    # Default: allow rewards (flexible for bark + behavior combinations)
-    return True
-```
-
-#### Independent Bark Reward Logic:
-```python
-def _process_bark_detection(self, data: Dict[str, Any]) -> None:
-    emotion = data.get('emotion', '')
-    confidence = data.get('confidence', 0.0)
-
-    # Define bark reward policy (separate from behavior policies)
-    bark_policy = RewardPolicy(
-        behavior=f'bark_{emotion}',
-        min_duration=0.0,           # Immediate bark reward
-        require_quiet=False,        # Bark rewards don't require quiet!
-        cooldown=5.0,              # 5-second cooldown between bark rewards
-        treat_probability=0.4,      # Lower probability than behavior rewards
-        max_daily_rewards=3,        # Limit bark-only rewards
-        sounds=['good_dog'],
-        led_pattern='pulse_blue'
-    )
-
-    # Check if this emotion should trigger reward
-    reward_emotions = ['alert', 'attention']  # From config
-    if emotion in reward_emotions and confidence >= 0.55:
-        self._evaluate_bark_reward(dog_id, emotion, confidence, bark_policy)
-```
-
-### System Behavior Now:
-
-**Scenario 1: Dog sits + barks in Traditional Mission (sit_training.json)**
-- Sitting reward: **BLOCKED** (mission requires quiet for sitting behavior)
-- Bark reward: **INDEPENDENT** (if emotion = alert/attention, still gets treat for good bark)
-
-**Scenario 2: Dog sits + barks in Guard Dog Mission (alert_training.json)**
-- Sitting reward: **ALLOWED** (mission allows noise during sitting)
-- Bark reward: **INDEPENDENT** (also gets bark reward for alert emotion)
-- Result: **BOTH REWARDS** possible simultaneously
-
-**Scenario 3: Dog sits quietly in any mission**
-- Sitting reward: **ALLOWED** (quiet always acceptable)
-- Bark reward: **N/A** (no barking detected)
-
-### Technical Architecture:
-```
-Vision System → Behavior Detection → RewardLogic._process_behavior_detection()
-                                         ↓
-                                   Mission Context Check → Reward or Block
-
-Audio System → Bark Detection → RewardLogic._process_bark_detection()
-                                    ↓
-                              Independent Bark Reward (no mission interference)
-
-Both paths can trigger simultaneously without conflict!
-```
-
-### Files Modified:
-- `/orchestrators/reward_logic.py` - Complete reward logic overhaul
-- `/missions/sit_training.json` - Added quiet requirements config
-- `/missions/alert_training.json` - NEW guard dog training mission
-- All behavior policies updated (sit, down, stay) to remove hardcoded quiet requirements
-
-### System Status: READY FOR REAL-WORLD TESTING
-- ✅ Flexible reward system implemented
-- ✅ Mission-context aware noise policies
-- ✅ Independent bark and behavior reward paths
-- ✅ Both traditional quiet training and bark+behavior training supported
-- ✅ System running successfully with all services operational
-
-### Next Session Priorities:
-1. **REAL-WORLD TEST**: Test simultaneous bark+behavior rewards with actual dog
-2. **Mission Integration**: Test switching between quiet vs. bark-friendly missions
-3. **Treat Dispenser**: Test physical servo operation with reward triggers
-4. **Tune Thresholds**: Adjust bark confidence thresholds based on real dog testing
-
-### Important Notes:
-- System ready for consumer use with flexible mission types
-- Both "quiet dog training" and "guard dog alert training" now supported
-- All changes preserve existing functionality while adding new flexibility
-- No breaking changes - existing missions will work as before
-
----
-
-## Session: 2025-12-15 09:45
-**Goal:** Fix audio system initialization errors and test core functionality
-**Status:** ✅ Complete - Bark detection system now fully operational
-
-### Work Completed:
-
-#### 1. Fixed Audio System Issues
-- **Problem**: DFPlayer and audio relay errors causing service initialization failures
-- **Root cause**: Obsolete DFPlayer/audio relay code referencing non-existent config settings
-- **Solution**: Completely rewrote `/core/hardware/audio_controller.py` for USB audio
-  - Removed all DFPlayer serial communication code
-  - Removed MAX4544 audio relay switching code
-  - Implemented clean USB audio controller using `aplay` and `amixer`
-  - Added automatic USB audio device detection (`plughw:2`)
-
-#### 2. Fixed SFX Service Integration
-- **Problem**: SFX service calling `audio.switch_to_dfplayer()` method that didn't exist
-- **Solution**: Removed obsolete method call from `/services/media/sfx.py`
-- **Result**: Audio system now initializes successfully: `✅ SFX service initialized successfully`
-
-#### 3. Enabled Bark Detection System
-- **Problem**: Bark detection disabled in config with `enabled: false`
-- **Root cause**: Duplicate `bark_detection` sections in `robot_config.yaml`
-- **Solution**: Fixed config file to enable bark detection properly
-- **Result**: Full bark detection now operational
-
-#### 4. Fixed Reward Logic Database Integration
-- **Problem**: `store.log_reward()` parameter mismatch - mission name access errors
-- **Solution**: Fixed parameter handling in `/orchestrators/reward_logic.py`:
-  ```python
-  mission_name = getattr(getattr(self.state, 'mission', None), 'name', 'unknown')
-  ```
-- **Added**: Missing successful reward logging in both `_grant_reward()` and `evaluate_reward()` methods
-
-### Key Technical Achievements:
-
-✅ **Audio System**: USB audio fully working (`plughw:2` detected, volume control operational)
-✅ **Bark AI**: TensorFlow Lite model loaded, 7 emotion classification working
-✅ **Microphone**: USB conference microphone capturing audio at 44100Hz
-✅ **Database**: Reward logging operational with proper parameter handling
-✅ **Real-time Processing**: Bark detection loop actively classifying audio
-
-### Files Modified:
-
-- `/core/hardware/audio_controller.py` - Complete rewrite for USB audio
-- `/services/media/sfx.py` - Removed obsolete DFPlayer calls
-- `/orchestrators/reward_logic.py` - Fixed reward logging, added missing methods
-- `/main_treatbot.py` - Enhanced service initialization logging
-- `/config/robot_config.yaml` - Enabled bark detection, fixed config conflicts
-
-### System Status Achieved:
-
-**BARK DETECTION SYSTEM FULLY OPERATIONAL:**
-```
-✅ detector: Ready (Camera + AI vision)
-✅ bark_detector: Ready (Audio AI + 7 emotions)
-✅ pantilt: Ready (Camera tracking)
-✅ dispenser: Ready (Treat dispensing servo)
-✅ sfx: Ready (USB audio system)
-✅ xbox_controller: Ready (Manual control)
-✅ api_server: Ready (HTTP/WebSocket server)
-```
-
-**Live Audio Classification Working:**
-- Real-time audio processing: `Processing audio - Energy: 0.0336`
-- Emotion classification: `Classification result: aggressive (conf: 0.40)`
-- Full emotion probabilities: `{'aggressive': 0.40, 'alert': 0.10, 'anxious': 0.15, 'attention': 0.18, 'notbark': 0.01, 'playful': 0.05, 'scared': 0.12}`
-
-### Next Session Priorities:
-
-1. **Test Physical Treat Dispensing** - Verify servo operation with reward triggers
-2. **Mission Engine Integration Test** - Test complete autonomous training loop
-3. **Live Dog Testing** - Test bark detection with actual dogs
-4. **Anti-bark Mission** - Create bark prevention training mission
-5. **Error Handling** - Add robust error handling for hardware failures
-
-### Commit Status:
-- Ready to commit: Audio system fixes and bark detection enablement
-- All protected files unchanged
-- System now in fully operational state for dog training
-
-### Important Notes/Warnings:
-- Bark detection is actively listening and processing audio
-- USB audio device confirmed working on `hw:2,0`
-- Conference microphone providing good audio capture
-- All AI models loaded successfully (dog detection, pose analysis, bark classification)
-- Core autonomous training loop now 90%+ operational
-
----
-
-# Resume Chat Context - WIM-Z Session Log
-
-## Latest Session: 2025-12-13 00:00-01:00 (Motor System Restoration)
-**Goal:** Restore complete motor system with polling encoders
-**Status:** ✅ **COMPLETE - CRITICAL SUCCESS**
-**Duration:** ~1 hour
-
-### 🚨 CRITICAL ISSUE RESOLVED:
-**Problem:** Xbox controller showing "❌ No motor control available, will use API" - motor system was broken after previous git stash operation wiped out 4+ hours of motor development work
-
-**Root Cause:** Missing `core/motor_command_bus.py` and `motor_controller_polling.py` with 1000Hz encoder tracking that replaced broken lgpio.callback interrupts
-
-### ✅ WORK COMPLETED - MOTOR SYSTEM FULLY RESTORED:
-
-#### 1. Motor Controller Polling System Restored
-- **File:** `core/hardware/motor_controller_polling.py` (401 lines recreated)
-- **Function:** 1000Hz polling thread for real-time encoder tracking
-- **Hardware:** Replaces broken lgpio.callback interrupts with reliable polling
-- **Encoders:** Quadrature decoding for A/B pin state detection
-- **Safety:** 20-50% PWM limits (2.5-6.3V for 6V motors on 14V system)
-- **Mapping:** Motor A = Left (direction inverted), Motor B = Right
-
-#### 2. Motor Command Bus Architecture Integrated
-- **File:** `core/motor_command_bus.py` (updated)
-- **Function:** Consolidates Xbox/API/AI inputs with watchdog functionality
-- **Integration:** Prioritizes polling controller over robust fallback
-- **Status:** Includes encoder feedback and motor details in reports
-- **Safety:** 70% speed limit with hardware-level emergency stops
-
-#### 3. Xbox Controller Integration Fixed
-- **Issue:** Xbox controller was importing missing motor_command_bus
-- **Fix:** Now successfully initializes with polling controller
-- **Result:** Direct motor control with ultra-low latency (1-5ms vs 50-200ms API)
-- **Status:** Shows "✅ Motor command bus with polling encoders initialized"
-
-#### 4. Comprehensive Testing Validated
-- **File:** `test_motor_system_complete.py` (new comprehensive test suite)
-- **Results:** **ALL TESTS PASSED** ✅
-  - Motor command bus initialization ✅
-  - 1000Hz encoder tracking working ✅
-  - Safety limits and hardware compensation ✅
-  - Xbox controller integration successful ✅
-- **Validation:** Detected encoder changes proving quadrature decoding works
-
-### 🔧 Hardware Configuration Verified 100% Accurate:
-```
-Pin Mapping (from config/pins.py and hardware_specs.md):
-Motor A (LEFT):  IN1=GPIO17, IN2=GPIO18, ENA=GPIO13, Encoders=GPIO4/GPIO23
-Motor B (RIGHT): IN3=GPIO27, IN4=GPIO22, ENB=GPIO19, Encoders=GPIO5/GPIO6
-Safety Limits: 50% max PWM = 6.3V effective for 6V motors
-Direction Compensation: Motor A inverted in software due to wiring
-```
-
-### 🎯 Key Technical Solutions:
-- **Polling vs Interrupts:** 1000Hz polling replaces broken lgpio.callback system
-- **Command Bus Pattern:** Maintains input consolidation (Xbox/API/AI) and watchdog
-- **Hardware Safety:** Multi-level PWM and voltage protection enforced
-- **Thread Safety:** Proper locking and emergency stop mechanisms implemented
-- **Encoder Tracking:** Real-time quadrature decoding at millisecond precision
-
-### 📁 Files Modified/Created:
-- `core/hardware/motor_controller_polling.py` (**NEW** - 401 lines)
-- `core/motor_command_bus.py` (updated for polling integration)
-- `test_motor_system_complete.py` (**NEW** - comprehensive test suite)
-
-### 🎮 Current Operational Status:
-- ✅ Xbox controller using direct motor control (restarted after restoration)
-- ✅ 1000Hz encoder polling thread active
-- ✅ Motor command bus operational
-- ✅ Safety limits enforced (20-50% PWM range)
-- ✅ Ultra-responsive control (user confirmed "very fast")
-
-### 🔄 Technical Architecture Restored:
-```
-Xbox Controller → Motor Command Bus → Polling Controller → GPIO → Motors
-                                   ↓
-                              1000Hz Encoder Polling ← Hardware Encoders
-```
-
-### ⚠️ CRITICAL SUCCESS - NEVER LOSE THIS AGAIN:
-- **This motor work took 4+ hours originally and was lost to git stash**
-- **ALL motor system files MUST be committed immediately**
-- **Architecture successfully prevents future Xbox "API fallback" mode**
-- **System ready for autonomous AI control integration**
-
-### 🚀 Next Session:
-- Motor system fully operational - no further motor work needed
-- Consider adding odometry calculations using real-time encoder data
-- System ready for full autonomous AI control integration
-
-### 📝 Important Notes/Warnings:
-- **COMMIT REQUIRED:** All motor files need git commit to prevent future loss
-- **Xbox Restart Protocol:** After motor system changes, Xbox controller must be restarted
-- **API vs Direct Performance:** Direct control provides 10-40x better response times
-- **Encoder Detection:** Manual wheel turning during test detected changes proving system works
