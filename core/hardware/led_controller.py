@@ -101,14 +101,32 @@ class LEDController:
         return (self.blue_chip is not None) or (self.pixels is not None)
 
     def blue_on(self):
-        """Blue LED now handled by API server"""
-        print("Blue LED: API server handles blue LED control")
-        return True
+        """Turn blue LED on"""
+        if not self.blue_chip:
+            print("Blue LED not initialized")
+            return False
+        try:
+            lgpio.gpio_write(self.blue_chip, self.pins.BLUE_LED, 1)
+            self.blue_is_on = True
+            print("Blue LED: ON")
+            return True
+        except Exception as e:
+            print(f"Blue LED on error: {e}")
+            return False
 
     def blue_off(self):
-        """Blue LED now handled by API server"""
-        print("Blue LED: API server handles blue LED control")
-        return True
+        """Turn blue LED off"""
+        if not self.blue_chip:
+            print("Blue LED not initialized")
+            return False
+        try:
+            lgpio.gpio_write(self.blue_chip, self.pins.BLUE_LED, 0)
+            self.blue_is_on = False
+            print("Blue LED: OFF")
+            return True
+        except Exception as e:
+            print(f"Blue LED off error: {e}")
+            return False
     
     def set_neopixel_brightness(self, level):
         """Set NeoPixel brightness (0.1 to 1.0)"""

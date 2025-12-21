@@ -111,6 +111,45 @@ class DirectNeoPixelController:
         self.current_mode = "off"
         self.animation_active = False
         self.animation_thread = None
+        self.blue_is_on = False
+        # Initialize blue LED GPIO
+        self._blue_chip = None
+        try:
+            self._blue_chip = lgpio.gpiochip_open(0)
+            lgpio.gpio_claim_output(self._blue_chip, BLUE_LED_PIN, lgpio.SET_PULL_NONE)
+            lgpio.gpio_write(self._blue_chip, BLUE_LED_PIN, 0)
+            logger.info(f"🔵 Blue LED initialized on GPIO{BLUE_LED_PIN}")
+        except Exception as e:
+            logger.warning(f"🔵 Blue LED init skipped (may be claimed by main LED service): {e}")
+            self._blue_chip = None
+
+    def blue_on(self):
+        """Turn blue LED on"""
+        if not self._blue_chip:
+            # Fallback to direct control
+            return blue_led_direct_control(True)
+        try:
+            lgpio.gpio_write(self._blue_chip, BLUE_LED_PIN, 1)
+            self.blue_is_on = True
+            logger.warning("🔵 Blue LED: ON")
+            return True
+        except Exception as e:
+            logger.error(f"🔵 Blue LED on error: {e}")
+            return False
+
+    def blue_off(self):
+        """Turn blue LED off"""
+        if not self._blue_chip:
+            # Fallback to direct control
+            return blue_led_direct_control(False)
+        try:
+            lgpio.gpio_write(self._blue_chip, BLUE_LED_PIN, 0)
+            self.blue_is_on = False
+            logger.warning("🔵 Blue LED: OFF")
+            return True
+        except Exception as e:
+            logger.error(f"🔵 Blue LED off error: {e}")
+            return False
 
     def stop_animation(self):
         """Stop any running animation forcefully - ONE AT A TIME"""
@@ -365,13 +404,23 @@ class DirectNeoPixelController:
         return {"mode": self.current_mode, "pixels_initialized": True, "animation_active": self.animation_active}
 
 def get_led_controller():
-    """Singleton LED controller to prevent animation conflicts"""
+    """Get LED controller - prefer main service's controller to avoid GPIO conflicts"""
     global _led_controller
     if _led_controller is None:
-        logger.warning("🏗️ Creating NEW LED controller singleton")
+        # Try to use main LED service first (avoids GPIO conflicts)
+        try:
+            from services.media.led import get_led_service
+            led_service = get_led_service()
+            if led_service.led_initialized and led_service.led:
+                logger.warning("🔗 Using main LED service controller")
+                _led_controller = led_service.led
+                return _led_controller
+        except Exception as e:
+            logger.warning(f"🔗 Main LED service not available: {e}")
+
+        # Fallback to DirectNeoPixelController
+        logger.warning("🏗️ Creating DirectNeoPixelController (fallback)")
         _led_controller = DirectNeoPixelController()
-    else:
-        logger.warning("🔄 Reusing existing LED controller singleton")
     return _led_controller
 
 # Models
@@ -2023,9 +2072,10 @@ async def stop_led_animation():
 @app.post("/leds/blue/on")
 async def blue_led_on():
     """Turn blue LED on"""
-    logger.warning("🔵 BLUE LED ON API CALLED! X BUTTON DETECTED!")
+    logger.warning("🔵 BLUE LED ON API CALLED!")
     try:
-        success = blue_led_direct_control(True)
+        leds = get_led_controller()
+        success = leds.blue_on()
         logger.warning(f"🔵 Blue LED ON result: {success}")
 
         return {
@@ -2040,7 +2090,8 @@ async def blue_led_on():
 async def blue_led_off():
     """Turn blue LED off"""
     try:
-        success = blue_led_direct_control(False)
+        leds = get_led_controller()
+        success = leds.blue_off()
         logger.warning(f"🔵 Blue LED OFF result: {success}")
 
         return {
