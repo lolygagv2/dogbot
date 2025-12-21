@@ -51,14 +51,9 @@ class LEDController:
         self.blue_chip = None
         self.pixels = None
         
-        # Blue LED disabled - now handled by API server only
-        self.blue_chip = None
-        self.blue_is_on = False
-        print("Blue LED control moved to API server")
-
-        # NeoPixels disabled - now handled by API server only
-        self.pixels = None
-        print("NeoPixel control moved to API server")
+        # Initialize hardware
+        self._initialize_blue_led()
+        self._initialize_neopixels()
     
     def _initialize_blue_led(self):
         """Initialize blue LED using proven lgpio method"""

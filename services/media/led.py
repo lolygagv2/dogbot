@@ -624,7 +624,16 @@ class LedService:
 
     def _update_led_for_system_mode(self, system_mode: str) -> None:
         """Update LED pattern based on system mode"""
+        # Handle both uppercase and lowercase mode names
         mode_to_led_pattern = {
+            'idle': 'idle',
+            'detection': 'searching',
+            'vigilant': 'searching',
+            'manual': 'manual_rc',
+            'photography': 'dog_detected',
+            'emergency': 'error',
+            'shutdown': 'off',
+            # Also support uppercase versions
             'IDLE': 'idle',
             'DETECTION': 'searching',
             'VIGILANT': 'searching',

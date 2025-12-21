@@ -16,6 +16,7 @@ import signal
 import threading
 import subprocess
 import atexit
+import select
 from threading import Thread, Event, Timer, Lock
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -64,15 +65,53 @@ def global_emergency_stop():
     """Emergency stop all motors - works even if Python is frozen"""
     logger = logging.getLogger('XboxFixed')
     logger.critical("GLOBAL EMERGENCY STOP TRIGGERED")
+
+    # CORRECT motor control pins from config/pins.py:
+    # Direction: IN1=17, IN2=18, IN3=27, IN4=22
+    # PWM Enable: ENA=13, ENB=19
+    motor_pins = [17, 18, 27, 22, 13, 19]
+
+    # Method 1: Try gpiozero (most reliable)
     try:
-        # Use subprocess to ensure GPIO cleanup even if threads are stuck
-        motor_pins = [17, 27, 22, 23, 24, 25]  # All motor control pins
+        from gpiozero import OutputDevice, PWMOutputDevice
+        for pin in motor_pins:
+            try:
+                if pin in [13, 19]:  # PWM pins
+                    d = PWMOutputDevice(pin)
+                    d.value = 0
+                else:
+                    d = OutputDevice(pin)
+                    d.off()
+                d.close()
+            except:
+                pass
+        logger.info("Motors stopped via gpiozero")
+        return
+    except:
+        pass
+
+    # Method 2: Try lgpio directly
+    try:
+        import lgpio
+        h = lgpio.gpiochip_open(0)
+        for pin in motor_pins:
+            try:
+                lgpio.gpio_claim_output(h, pin)
+                lgpio.gpio_write(h, pin, 0)
+            except:
+                pass
+        lgpio.gpiochip_close(h)
+        logger.info("Motors stopped via lgpio")
+        return
+    except:
+        pass
+
+    # Method 3: Fallback to subprocess gpioset
+    try:
         for pin in motor_pins:
             subprocess.run(['gpioset', 'gpiochip0', f'{pin}=0'],
                           capture_output=True, timeout=0.1)
-        logger.info("All motor pins cleared via emergency stop")
-        # Also kill any stuck gpioset processes
-        subprocess.run(['killall', 'gpioset'], capture_output=True, timeout=0.1)
+        logger.info("Motors stopped via gpioset")
     except Exception as e:
         logger.error(f"Error in emergency stop: {e}")
 
@@ -144,7 +183,7 @@ class XboxHybridControllerFixed:
     TURN_SPEED_FACTOR = 0.7  # Better turning response
 
     # RPM Control - Convert speed percentages to RPM targets
-    MAX_RPM = 60   # REDUCED for safe testing (was 120 - reduced by 50%)
+    MAX_RPM = 100  # Moderate RPM for responsive control (motors rated 210 RPM)
     USE_PID_CONTROL = True  # ENABLED - closed-loop control with encoder feedback
 
     # Motor calibration (fallback for direct PWM mode)
@@ -567,19 +606,21 @@ class XboxHybridControllerFixed:
         return False
 
     def read_event(self) -> Optional[Tuple]:
-        """Read a single joystick event"""
+        """Read a single joystick event with timeout to prevent blocking"""
         try:
-            event_data = self.device.read(8)
-            if event_data:
-                timestamp, value, event_type, number = struct.unpack('IhBB', event_data)
-                return (timestamp, value, event_type, number)
+            # Use select to add timeout - prevents hanging if device issues
+            ready, _, _ = select.select([self.device], [], [], 0.1)  # 100ms timeout
+            if ready:
+                event_data = self.device.read(8)
+                if event_data:
+                    timestamp, value, event_type, number = struct.unpack('IhBB', event_data)
+                    return (timestamp, value, event_type, number)
         except Exception as e:
             logger.error(f"Error reading event: {e}")
         return None
 
     def process_axis(self, number: int, value: int):
         """Process axis movement"""
-        print(f"🎯 RAW AXIS: number={number}, value={value}")  # DEBUG
         # Normalize to -1.0 to 1.0
         normalized = value / 32767.0
 
@@ -590,13 +631,11 @@ class XboxHybridControllerFixed:
         # Update state based on axis
         if number == 0:  # Left stick X
             self.state.left_x = normalized
-            print(f"🎮 LEFT STICK X: {normalized:.3f}")  # DEBUG
             if abs(normalized) > self.DEADZONE:
                 notify_manual_input()
 
         elif number == 1:  # Left stick Y (inverted for forward)
             self.state.left_y = -normalized
-            print(f"🎮 LEFT STICK Y: {-normalized:.3f}")  # DEBUG
             if abs(normalized) > self.DEADZONE:
                 notify_manual_input()
 
@@ -635,17 +674,19 @@ class XboxHybridControllerFixed:
 
     def update_motor_control(self):
         """Update motor speeds with calibration and safety"""
-        # Direct linear speed from stick position
-        stick_magnitude = max(abs(self.state.left_x), abs(self.state.left_y))
-        speed_multiplier = 0.50 + (stick_magnitude * 0.50)  # 50-100% range
+        # RT trigger is the THROTTLE (0-100% speed)
+        # Left stick controls direction
+        # No RT = no movement (safety feature)
 
-        # RT trigger adds extra boost
-        if self.state.right_trigger > 0.1:
-            speed_multiplier = min(1.0, speed_multiplier + 0.20)
+        throttle = self.state.right_trigger  # 0.0 to 1.0
 
-        # Calculate motor speeds from left stick
-        forward = self.state.left_y * self.MAX_SPEED * speed_multiplier
-        turn = -self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * speed_multiplier
+        # Minimum throttle required to move (prevents creep)
+        if throttle < 0.15:
+            throttle = 0
+
+        # Calculate motor speeds from left stick direction * throttle
+        forward = self.state.left_y * self.MAX_SPEED * throttle
+        turn = -self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * throttle
 
         # FIXED: Stick left should make robot turn left
         # When stick is left (negative X), after negation becomes positive turn value
@@ -668,18 +709,20 @@ class XboxHybridControllerFixed:
         left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
         right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
 
-        # FIXED: Minimal rate limiting to prevent stuttering
+        # Rate limiting - 10Hz max for motor commands
         current_time = time.time()
-
-        # Only rate limit if sending too frequently (10Hz max)
         if current_time - self.last_motor_update < 0.1:
             return
 
-        # Send if any meaningful change (lower threshold for smooth control)
-        if (abs(left_speed - self.state.last_left_speed) > 1 or
-            abs(right_speed - self.state.last_right_speed) > 1 or
-            (left_speed == 0 and right_speed == 0 and not self.state.motors_stopped)):
+        # ALWAYS send commands when moving (not just on change)
+        # This ensures the motor controller's safety timeout works
+        is_moving = abs(left_speed) > 1 or abs(right_speed) > 1
+        is_change = (abs(left_speed - self.state.last_left_speed) > 1 or
+                    abs(right_speed - self.state.last_right_speed) > 1)
+        is_stop_needed = (left_speed == 0 and right_speed == 0 and not self.state.motors_stopped)
 
+        # Send if moving (continuous), changed, or stopping
+        if is_moving or is_change or is_stop_needed:
             self.set_motor_speeds(left_speed, right_speed)
             self.state.last_left_speed = left_speed
             self.state.last_right_speed = right_speed
@@ -692,9 +735,6 @@ class XboxHybridControllerFixed:
 
         Converts speed percentages to RPM targets for precise control
         """
-        # Debug logging to see which control path is taken
-        logger.info(f"Motor control path: USE_PID={self.USE_PID_CONTROL}, motor_direct={self.motor_direct}, motor_controller={self.motor_controller is not None}")
-
         if self.USE_PID_CONTROL and self.motor_direct and self.motor_controller:
             try:
                 # Convert speed percentages to RPM targets
@@ -704,9 +744,6 @@ class XboxHybridControllerFixed:
                 # Use PID closed-loop control for precise motor matching
                 self.motor_controller.set_motor_rpm(left_rpm, right_rpm)
 
-                # Always log RPM targets to debug
-                logger.info(f"RPM Targets: L={left_rpm:.1f}, R={right_rpm:.1f} (from speeds L={left}, R={right})")
-
             except Exception as e:
                 logger.error(f"PID motor control error: {e}")
                 # Fallback to direct PWM control
@@ -714,7 +751,6 @@ class XboxHybridControllerFixed:
 
         elif self.motor_direct and self.motor_bus:
             try:
-                print(f"🚗 CLOSED-LOOP RPM CONTROL: Left={left}, Right={right}")  # DEBUG
                 # Use motor command bus for proper closed-loop control
                 cmd = create_motor_command(left, right, CommandSource.XBOX_CONTROLLER)
                 success = self.motor_bus.send_command(cmd)
@@ -1122,7 +1158,7 @@ class XboxHybridControllerFixed:
         self.running = True
         logger.info("Xbox Fixed Controller ready!")
         logger.info("=== FIXED CONTROLS ===")
-        logger.info("Movement: Left stick + RT for speed")
+        logger.info("Movement: Left stick = direction, RT = throttle (hold to move)")
         logger.info("Camera: Right stick")
         logger.info("A = Emergency Stop, B = Stop Motors")
         logger.info("X = Blue LED, LT = NeoPixel modes")
