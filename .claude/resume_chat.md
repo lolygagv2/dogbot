@@ -1,5 +1,41 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2025-12-20 22:30 - 23:00
+**Goal:** Fix Microphone Volume + Dynamic Audio List Reload
+**Status:** ✅ COMPLETE - Ready for standalone demo
+
+### ✅ Problems Solved This Session:
+
+#### 1. **Microphone Recording Volume Too Low**
+- **Problem**: Recorded audio played back much quieter than MP3 files
+- **Root Cause**: USB mic capture volume was at 0% in ALSA mixer
+- **Fix**: `amixer -c 2 sset 'Mic' 100% cap` → now at 23.00dB
+- **Saved**: `sudo alsactl store` for persistence across reboots
+
+#### 2. **New Recordings Not Appearing in D-Pad List**
+- **Problem**: After saving a recording, it didn't appear in D-pad Right cycling until controller restart
+- **Root Cause**: Audio folders scanned only once at startup in `_preload_audio_system()`
+- **Fix**: Refactored to rescan folders after recording confirmation
+- **File**: `xbox_hybrid_controller.py`
+  - Extracted `_scan_folder()` as reusable class method
+  - Created `_scan_audio_folders()` for refreshing track lists
+  - Added rescan call after successful recording confirmation
+
+### 📁 Files Modified:
+| File | Changes |
+|------|---------|
+| `xbox_hybrid_controller.py` | Dynamic audio rescan after recording save |
+
+### 🎮 Demo Ready - Standalone Operation:
+- ✅ `treatbot.service` enabled for auto-start on boot
+- ✅ Xbox controller works immediately on boot
+- ✅ All features functional without computer/desktop
+- ✅ New recordings immediately available in D-pad cycling
+
+### 📊 Current Talk Files: 22 custom recordings
+
+---
+
 ## Session: 2025-12-20 21:00 - 22:15
 **Goal:** Fix Auto-Start Control Issues - Motors Getting Stuck, System Freezing
 **Status:** ✅ COMPLETE

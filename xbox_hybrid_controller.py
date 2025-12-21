@@ -335,6 +335,52 @@ class XboxHybridControllerFixed:
         self.motor_direct = False
         MOTOR_DIRECT = False
 
+    def _scan_folder(self, folder_name):
+        """Scan a folder for MP3 files and return list of (api_path, display_name) tuples"""
+        import os
+        import glob
+
+        VOICEMP3_BASE = "/home/morgan/dogbot/VOICEMP3"
+        folder_path = os.path.join(VOICEMP3_BASE, folder_name)
+        tracks = []
+
+        if os.path.exists(folder_path):
+            mp3_files = sorted(glob.glob(os.path.join(folder_path, "*.mp3")))
+            for mp3_path in mp3_files:
+                filename = os.path.basename(mp3_path)
+                # Create API path format: /talks/filename.mp3 or /songs/filename.mp3
+                api_path = f"/{folder_name}/{filename}"
+                # Create display name: remove .mp3, replace underscores with spaces, title case
+                display_name = filename.replace(".mp3", "").replace("_", " ").title()
+                tracks.append((api_path, display_name))
+
+        return tracks
+
+    def _scan_audio_folders(self):
+        """Scan VOICEMP3 folders and update track lists. Can be called to refresh after new recordings."""
+        # Scan talks and songs folders
+        self.TALK_TRACKS = self._scan_folder("talks")
+        self.SONG_TRACKS = self._scan_folder("songs")
+
+        # Fallback if folders are empty
+        if not self.TALK_TRACKS:
+            self.TALK_TRACKS = [("/talks/treat.mp3", "Treat")]
+            logger.warning("No talks found, using fallback")
+        if not self.SONG_TRACKS:
+            self.SONG_TRACKS = [("/songs/scooby_snacks.mp3", "Scooby Snacks")]
+            logger.warning("No songs found, using fallback")
+
+        # Reset indices if they exceed new list bounds
+        if not hasattr(self, 'current_talk_index') or self.current_talk_index >= len(self.TALK_TRACKS):
+            self.current_talk_index = 0
+        if not hasattr(self, 'current_song_index') or self.current_song_index >= len(self.SONG_TRACKS):
+            self.current_song_index = 0
+
+        # Initialize queued track if not exists
+        if not hasattr(self, 'queued_track'):
+            self.queued_track = None
+            self.queued_type = "talk"
+
     def _preload_audio_system(self):
         """Preload audio system and dynamically discover sound tracks"""
         try:
@@ -345,46 +391,8 @@ class XboxHybridControllerFixed:
         except Exception as e:
             logger.warning(f"Audio preload error: {e}")
 
-        # Dynamically scan folders for MP3 files
-        import os
-        import glob
-
-        VOICEMP3_BASE = "/home/morgan/dogbot/VOICEMP3"
-
-        def scan_folder(folder_name):
-            """Scan a folder for MP3 files and return list of (api_path, display_name) tuples"""
-            folder_path = os.path.join(VOICEMP3_BASE, folder_name)
-            tracks = []
-
-            if os.path.exists(folder_path):
-                mp3_files = sorted(glob.glob(os.path.join(folder_path, "*.mp3")))
-                for mp3_path in mp3_files:
-                    filename = os.path.basename(mp3_path)
-                    # Create API path format: /talks/filename.mp3 or /songs/filename.mp3
-                    api_path = f"/{folder_name}/{filename}"
-                    # Create display name: remove .mp3, replace underscores with spaces, title case
-                    display_name = filename.replace(".mp3", "").replace("_", " ").title()
-                    tracks.append((api_path, display_name))
-
-            return tracks
-
-        # Scan talks and songs folders
-        self.TALK_TRACKS = scan_folder("talks")
-        self.SONG_TRACKS = scan_folder("songs")
-
-        # Fallback if folders are empty
-        if not self.TALK_TRACKS:
-            self.TALK_TRACKS = [("/talks/treat.mp3", "Treat")]
-            logger.warning("No talks found, using fallback")
-        if not self.SONG_TRACKS:
-            self.SONG_TRACKS = [("/songs/scooby_snacks.mp3", "Scooby Snacks")]
-            logger.warning("No songs found, using fallback")
-
-        # Track indices for navigation
-        self.current_talk_index = 0
-        self.current_song_index = 0
-        self.queued_track = None  # Will hold the track to play when Down D-pad is pressed
-        self.queued_type = "talk"  # "song" or "talk"
+        # Scan folders for audio files
+        self._scan_audio_folders()
 
         logger.info(f"Audio tracks discovered: {len(self.TALK_TRACKS)} talks, {len(self.SONG_TRACKS)} songs")
         logger.info(f"Talks: {[t[1] for t in self.TALK_TRACKS]}")
@@ -975,6 +983,9 @@ class XboxHybridControllerFixed:
             result = self.api_request('POST', '/audio/record/confirm')
             if result and result.get('success'):
                 logger.info(f"✅ Recording saved: {result.get('filename')}")
+                # Rescan folders to include the new recording in D-pad list
+                self._scan_audio_folders()
+                logger.info(f"🔄 Audio list refreshed: {len(self.TALK_TRACKS)} talks available")
             else:
                 logger.warning(f"Recording save failed: {result}")
         else:
