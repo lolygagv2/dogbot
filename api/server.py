@@ -464,17 +464,17 @@ class EmergencyStopRequest(BaseModel):
     """Emergency stop all motors"""
     reason: str = "emergency_stop"
 
-# DFPlayer models
-class DFPlayerPlayRequest(BaseModel):
+# USB Audio models
+class AudioPlayRequest(BaseModel):
     filepath: str
 
-class DFPlayerVolumeRequest(BaseModel):
-    volume: int  # 0-30
+class AudioVolumeRequest(BaseModel):
+    volume: int  # 0-100
 
-class DFPlayerNumberRequest(BaseModel):
+class AudioNumberRequest(BaseModel):
     number: int
 
-class DFPlayerSoundRequest(BaseModel):
+class AudioSoundRequest(BaseModel):
     sound_name: str
 
 # LED control models
@@ -1653,10 +1653,10 @@ async def camera_center():
         logger.error(f"Camera center error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# DFPlayer Control endpoints
+# USB Audio Control endpoints
 @app.get("/audio/status")
 async def get_audio_status():
-    """Get DFPlayer and audio relay status"""
+    """Get USB audio status"""
     try:
         audio = get_audio_controller()
         status = audio.get_status()
@@ -1703,7 +1703,7 @@ def get_audio_controller():
     return _audio_controller
 
 @app.post("/audio/play/file")
-async def play_audio_file(request: DFPlayerPlayRequest):
+async def play_audio_file(request: AudioPlayRequest):
     """Play audio file by path using USB audio service"""
     try:
         usb_audio_service = get_usb_audio_service()
@@ -1719,7 +1719,7 @@ async def play_audio_file(request: DFPlayerPlayRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/audio/play/number")
-async def play_audio_number(request: DFPlayerNumberRequest):
+async def play_audio_number(request: AudioNumberRequest):
     """Play audio file by number"""
     try:
         audio = get_audio_controller()
@@ -1735,7 +1735,7 @@ async def play_audio_number(request: DFPlayerNumberRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/audio/play/sound")
-async def play_audio_sound(request: DFPlayerSoundRequest):
+async def play_audio_sound(request: AudioSoundRequest):
     """Play audio by sound name (from AudioFiles)"""
     try:
         audio = get_audio_controller()
@@ -1751,11 +1751,11 @@ async def play_audio_sound(request: DFPlayerSoundRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/audio/volume")
-async def set_audio_volume(request: DFPlayerVolumeRequest):
-    """Set DFPlayer volume (0-30)"""
+async def set_audio_volume(request: AudioVolumeRequest):
+    """Set USB audio volume (0-100)"""
     try:
-        if not 0 <= request.volume <= 30:
-            raise HTTPException(status_code=400, detail="Volume must be between 0 and 30")
+        if not 0 <= request.volume <= 100:
+            raise HTTPException(status_code=400, detail="Volume must be between 0 and 100")
 
         audio = get_audio_controller()
         success = audio.set_volume(request.volume)
@@ -1814,56 +1814,27 @@ async def previous_audio():
         logger.error(f"Audio previous error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Legacy relay endpoints - USB audio only now (no relay switching needed)
 @app.post("/audio/relay/pi")
 async def switch_to_pi_audio():
-    """Switch audio relay to Pi USB audio"""
-    try:
-        audio = get_audio_controller()
-        success = audio.switch_to_pi_audio()
-
-        return {
-            "success": success,
-            "audio_path": "Pi USB Audio" if success else "DFPlayer (switch failed)",
-            "message": "Switched to Pi audio" if success else "Failed to switch to Pi audio"
-        }
-    except Exception as e:
-        logger.error(f"Audio relay Pi error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/audio/relay/dfplayer")
-async def switch_to_dfplayer_audio():
-    """Switch audio relay to DFPlayer"""
-    try:
-        audio = get_audio_controller()
-        success = audio.switch_to_dfplayer()
-
-        return {
-            "success": success,
-            "audio_path": "DFPlayer" if success else "Pi USB Audio (switch failed)",
-            "message": "Switched to DFPlayer" if success else "Failed to switch to DFPlayer"
-        }
-    except Exception as e:
-        logger.error(f"Audio relay DFPlayer error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    """Legacy endpoint - USB audio is always active"""
+    return {
+        "success": True,
+        "audio_path": "USB Audio",
+        "message": "USB audio is the only audio source"
+    }
 
 @app.get("/audio/relay/status")
 async def get_relay_status():
-    """Get audio relay status"""
-    try:
-        audio = get_audio_controller()
-        status = audio.get_relay_status()
-
-        return {
-            "success": True,
-            "relay_status": status
-        }
-    except Exception as e:
-        logger.error(f"Audio relay status error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    """Get audio status - USB audio only"""
+    return {
+        "success": True,
+        "relay_status": {"mode": "usb_audio", "active": True}
+    }
 
 @app.post("/audio/test")
 async def test_audio_system():
-    """Test audio system (relay switching)"""
+    """Test USB audio system"""
     try:
         audio = get_audio_controller()
         success = audio.test_relay_switching()
@@ -2379,7 +2350,7 @@ async def get_system_status():
 
 @app.post("/audio/play")
 async def play_audio(request: dict):
-    """Play audio track on DFPlayer"""
+    """Play audio track via USB audio"""
     try:
         usb_audio_service = get_usb_audio_service()
 
@@ -2404,7 +2375,7 @@ async def play_audio(request: dict):
 
 @app.post("/audio/play_file")
 async def play_audio_file(request: dict):
-    """Play audio file by path on DFPlayer"""
+    """Play audio file by path via USB audio"""
     try:
         usb_audio_service = get_usb_audio_service()
 

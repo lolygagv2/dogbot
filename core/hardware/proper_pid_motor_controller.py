@@ -91,8 +91,8 @@ class ProperPIDMotorController:
     MAX_RPM = 210          # No-load RPM at 6V
 
     # PWM Safety Limits (6V motors on 14V system)
-    PWM_MIN = 30           # Minimum to overcome static friction (lower = whining)
-    PWM_MAX = 75           # 75% of 14V ≈ 10.5V (normal mode uses 60% of this = ~6.3V)
+    PWM_MIN = 35           # Minimum to overcome static friction (increased to reduce whine)
+    PWM_MAX = 70           # 70% of 14V ≈ 10V (capped for safety, no turbo mode)
 
     # Control Loop Timing
     ENCODER_POLL_RATE = 2000  # Hz - faster than 1190Hz encoder frequency
@@ -574,7 +574,9 @@ class ProperPIDMotorController:
             pwm = -output
 
         # Apply PWM limits
-        if abs(target) < 5:  # Near zero = stop
+        # Increase threshold to 15 RPM to reduce motor whine at low speeds
+        # Motors can't move below ~30% PWM anyway, so just cut off cleanly
+        if abs(target) < 15:  # Near zero = stop completely to avoid whine
             pwm = 0
         else:
             pwm = max(self.PWM_MIN, min(self.PWM_MAX, abs(pwm)))

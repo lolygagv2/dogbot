@@ -1,11 +1,13 @@
 # WIM-Z (Watchful Intelligent Mobile Zen) Project - Development Rules
 
-## CRITICAL: DFPlayer Pro Audio System
-- **MUST use full file paths**, NOT track numbers (e.g., `/talks/0008.mp3` not track 8)
-- Audio files are on SD card in `/talks/` and `/02/` folders
-- To add new audio: Update track_map in `/services/media/sfx.py` with full path
-- Commands: `AT+PLAYFILE=/path/file.mp3` NOT `AT+PLAYNUM=`
-- See `/config/settings.py` AudioFiles class for all available audio files
+## CRITICAL: USB Audio System
+- **Audio device**: USB Audio on card 0 (plughw:0,0) - dual jack for mic/speaker
+- **Audio files**: Located in `/home/morgan/dogbot/VOICEMP3/` folder
+  - `/talks/` - Voice recordings and commands
+  - `/songs/` - Music files
+- **Playback**: Uses pygame mixer via `services/media/usb_audio.py`
+- **API endpoint**: POST `/audio/play/file` with `{"filepath": "/talks/good_dog.mp3"}`
+- **Volume control**: `amixer -c 0 sset 'Speaker' 90%`
 
 ## NEVER DELETE OR MODIFY
 - notes.txt (user's personal notes - IGNORE)

@@ -11,8 +11,9 @@ import threading
 from typing import Optional, Dict, Any
 
 # Set audio environment BEFORE importing pygame
+# USB Audio Device is on card 0 (not card 2 which is HDMI)
 os.environ['SDL_AUDIODRIVER'] = 'alsa'
-os.environ['AUDIODEV'] = 'plughw:2,0'
+os.environ['AUDIODEV'] = 'plughw:0,0'
 
 import pygame
 
@@ -31,7 +32,7 @@ class USBAudioService:
             # Initialize pygame mixer for audio playback (USB audio device)
             pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
             self.initialized = True
-            self.logger.info("USB Audio service initialized successfully (plughw:2,0)")
+            self.logger.info("USB Audio service initialized successfully (plughw:0,0)")
         except Exception as e:
             self.logger.error(f"USB Audio initialization failed: {e}")
             self.initialized = False
@@ -124,6 +125,31 @@ class USBAudioService:
                 "base_path": self.base_path
             }
         }
+
+    @property
+    def is_initialized(self) -> bool:
+        """Check if audio is initialized"""
+        return self.initialized
+
+    @property
+    def current_volume(self) -> int:
+        """Get current volume (0-100)"""
+        if self.initialized:
+            return int(pygame.mixer.music.get_volume() * 100)
+        return 0
+
+    def is_busy(self) -> bool:
+        """Check if audio is currently playing"""
+        if self.initialized:
+            return pygame.mixer.music.get_busy()
+        return False
+
+    def set_volume(self, volume: int) -> bool:
+        """Set volume (0-100)"""
+        if self.initialized:
+            pygame.mixer.music.set_volume(volume / 100.0)
+            return True
+        return False
 
 # Global instance
 _usb_audio_service = None

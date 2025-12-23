@@ -29,10 +29,10 @@ class SfxService:
         self.audio = None
         self.audio_initialized = False
 
-        # Sound library (map names to DFPlayer track numbers)
+        # Sound library (map names to audio commands)
         self.sound_library = {
             # Celebration sounds
-            'good_dog': 'GOOD_BOY',      # DFPlayer command
+            'good_dog': 'GOOD_BOY',      # Audio command name
             'excellent': 'GOOD_BOY',      # Using same for now
             'well_done': 'GOOD_BOY',
             'great_job': 'GOOD_BOY',
@@ -199,7 +199,7 @@ class SfxService:
                 return True
 
             try:
-                # DFPlayer doesn't have explicit stop, but we can track it
+                # Track playback state (USB audio handles actual stopping)
                 self.currently_playing = None
                 self.play_start_time = 0.0
 
@@ -218,9 +218,9 @@ class SfxService:
                 return False
 
     def set_volume(self, volume: int) -> bool:
-        """Set audio volume (0-30)"""
+        """Set audio volume (0-100 for USB audio)"""
         try:
-            volume = max(0, min(30, volume))
+            volume = max(0, min(100, volume))
             success = self.audio.set_volume(volume)
 
             if success:
@@ -289,7 +289,7 @@ class SfxService:
         self.logger.info(f"Added sound: {name} -> {command}")
 
     def play_track(self, track_number: int) -> bool:
-        """Play a specific track number on DFPlayer - using file paths"""
+        """Play a specific track number via USB audio - using file paths"""
         if not self.audio_initialized:
             self.logger.error("Audio not initialized")
             return False
@@ -359,7 +359,7 @@ class SfxService:
             'queue_length': len(self.play_queue),
             'current_volume': self.current_volume,
             'available_sounds': len(self.sound_library),
-            'audio_mode': 'dfplayer' if self.audio_initialized else 'unknown'
+            'audio_mode': 'usb_audio' if self.audio_initialized else 'unknown'
         }
 
     def cleanup(self) -> None:

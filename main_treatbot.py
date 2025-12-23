@@ -362,8 +362,11 @@ class TreatBotMain:
     def _on_detection_for_feedback(self, event) -> None:
         """Provide visual feedback for detection events"""
         try:
-            # Skip LED feedback in MANUAL mode (Xbox controller controls LEDs)
+            # Skip LED feedback when Xbox controller is active
+            # Check both mode AND controller connection status to prevent race conditions
             if self.state.current_mode == SystemMode.MANUAL:
+                return
+            if self.xbox_controller and self.xbox_controller.is_connected:
                 return
 
             if event.subtype == 'dog_detected':
@@ -392,8 +395,10 @@ class TreatBotMain:
     def _on_bark_for_feedback(self, event) -> None:
         """Provide feedback for bark detection events"""
         try:
-            # Skip LED feedback in MANUAL mode (Xbox controller controls LEDs)
+            # Skip LED feedback when Xbox controller is active
             if self.state.current_mode == SystemMode.MANUAL:
+                return
+            if self.xbox_controller and self.xbox_controller.is_connected:
                 return
 
             if event.subtype == 'bark_detected':
@@ -576,18 +581,11 @@ class TreatBotMain:
             if self.xbox_controller:
                 self.xbox_controller.stop()
 
-            # Stop audio explicitly
+            # Stop USB audio
             try:
-                if self.sfx and hasattr(self.sfx, 'audio') and self.sfx.audio:
-                    self.logger.info("Stopping DFPlayer audio...")
-                    # Send stop commands to DFPlayer
-                    if hasattr(self.sfx.audio, '_send_command'):
-                        self.sfx.audio._send_command('AT+STOP')
-                        self.sfx.audio._send_command('AT+VOL=0')
-                        self.sfx.audio._send_command('AT+AMP=OFF')
-                    # Close serial connection
-                    if hasattr(self.sfx.audio, 'serial_connection') and self.sfx.audio.serial_connection:
-                        self.sfx.audio.serial_connection.close()
+                if self.sfx:
+                    self.logger.info("Stopping USB audio...")
+                    self.sfx.stop_sound()
             except Exception as e:
                 self.logger.error(f"Error stopping audio: {e}")
 

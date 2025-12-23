@@ -51,11 +51,22 @@ class AudioController:
                     self.initialized = True
                     self.logger.info("Using default audio device")
 
-                # Initialize USB microphone to 100% capture (card 2)
-                # This prevents mic from defaulting to 0% on boot
+                # Initialize USB audio levels on card 0 (USB Audio Device)
+                # Speaker to 90% for good volume without distortion
                 try:
                     subprocess.run(
-                        ['amixer', '-c', '2', 'sset', 'Mic', '100%', 'cap'],
+                        ['amixer', '-c', '0', 'sset', 'Speaker', '90%'],
+                        capture_output=True, timeout=2
+                    )
+                    self.current_volume = 90
+                    self.logger.info("USB speaker set to 90%")
+                except Exception as spk_err:
+                    self.logger.warning(f"Could not set speaker volume: {spk_err}")
+
+                # Microphone to 100% capture
+                try:
+                    subprocess.run(
+                        ['amixer', '-c', '0', 'sset', 'Mic', '100%', 'cap'],
                         capture_output=True, timeout=2
                     )
                     self.logger.info("USB microphone set to 100% capture")
@@ -108,16 +119,16 @@ class AudioController:
             volume = max(0, min(100, volume))
             self.current_volume = volume
 
-            # Try to set USB audio volume
-            cmd = ['amixer', '-c', '1', 'set', 'Speaker', f'{volume}%']
+            # Set USB audio speaker volume (card 0)
+            cmd = ['amixer', '-c', '0', 'sset', 'Speaker', f'{volume}%']
             result = subprocess.run(cmd, capture_output=True)
 
             if result.returncode == 0:
-                self.logger.info(f"Volume set to {volume}%")
+                self.logger.info(f"USB Speaker volume set to {volume}%")
                 return True
             else:
                 # Fallback to master volume
-                cmd = ['amixer', 'set', 'Master', f'{volume}%']
+                cmd = ['amixer', 'sset', 'Master', f'{volume}%']
                 result = subprocess.run(cmd, capture_output=True)
                 if result.returncode == 0:
                     self.logger.info(f"Master volume set to {volume}%")

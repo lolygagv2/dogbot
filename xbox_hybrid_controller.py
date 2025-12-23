@@ -178,18 +178,18 @@ class XboxHybridControllerFixed:
     # API configuration
     API_BASE_URL = "http://localhost:8000"
 
-    # Controller configuration - FIXED FOR SMOOTH CONTROL
-    DEADZONE = 0.15  # 15% deadzone to handle stick drift
+    # Controller configuration - SIMPLIFIED FOR RELIABILITY
+    DEADZONE = 0.20  # 20% deadzone - larger for reliable stop detection
     TRIGGER_DEADZONE = 0.1
-    MAX_SPEED = 100
-    TURN_SPEED_FACTOR = 0.7  # Better turning response
+    MAX_SPEED = 75  # Capped at 75% for safety (no turbo mode)
+    TURN_SPEED_FACTOR = 0.6  # Reduced for smoother turns
 
     # RPM Control - Convert speed percentages to RPM targets
-    MAX_RPM = 180  # 85% of motor capability (210 RPM rated) - allows strong response
+    MAX_RPM = 150  # Conservative RPM target for smoother control
     USE_PID_CONTROL = True  # ENABLED - closed-loop control with encoder feedback
 
-    # Motor calibration - LEFT motor needs boost (right is stronger)
-    LEFT_MOTOR_BOOST = 1.35  # 35% boost to match right motor
+    # Motor calibration - RESET (let encoders handle balancing)
+    LEFT_MOTOR_BOOST = 1.0  # No boost - PID controller should handle this
 
     # Safety features - FIXED FOR SMOOTH CONTROL
     TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
@@ -762,59 +762,50 @@ class XboxHybridControllerFixed:
                 self.state.right_trigger = 0.0
 
     def update_motor_control(self):
-        """Update motor speeds with calibration and safety"""
-        # Left stick controls movement directly at 60% power
-        # RT trigger = TURBO mode (100% power)
+        """Update motor speeds - SIMPLIFIED, no turbo mode, reliable stopping"""
+        # Left stick controls movement at MAX_SPEED (75%)
+        # No turbo mode - consistent speed for safety
 
-        # Base power is 60%, RT adds remaining 40% for turbo
-        NORMAL_POWER = 0.6
-        TURBO_POWER = 1.0
+        # Check if stick is in deadzone (should stop)
+        stick_in_deadzone = (abs(self.state.left_y) < self.DEADZONE and
+                            abs(self.state.left_x) < self.DEADZONE)
 
-        # Calculate power multiplier based on RT
-        rt_value = self.state.right_trigger  # 0.0 to 1.0
-        if rt_value > 0.5:  # RT pressed = turbo mode
-            power_mult = TURBO_POWER
+        if stick_in_deadzone:
+            # Force stop when stick is centered
+            left_speed = 0
+            right_speed = 0
         else:
-            power_mult = NORMAL_POWER
+            # Calculate motor speeds from left stick position
+            forward = self.state.left_y * self.MAX_SPEED
+            turn = -self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR
 
-        # Calculate motor speeds from left stick * power multiplier
-        forward = self.state.left_y * self.MAX_SPEED * power_mult
-        turn = -self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * power_mult
+            # Tank drive mixing
+            left_speed = int(forward - turn)
+            right_speed = int(forward + turn)
 
-        # FIXED: Stick left should make robot turn left
-        # When stick is left (negative X), after negation becomes positive turn value
-        # which makes left motor faster than right (correct left turn)
-        left_speed = int(forward - turn)
-        right_speed = int(forward + turn)
+            # Clamp to valid range
+            left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
+            right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
 
-        # For pure turns (no forward movement), ensure minimum turning speeds
-        if abs(forward) < 5 and abs(turn) > 10:
-            # Pure turn - boost speeds to ensure movement
-            turn_boost = 1.5  # Boost turning by 50%
-            left_speed = int((forward - turn) * turn_boost)
-            right_speed = int((forward + turn) * turn_boost)
-
-        # Apply left motor boost ALWAYS (left motor is weaker than right)
-        left_speed = int(left_speed * self.LEFT_MOTOR_BOOST)
-
-        # Clamp to valid range
-        left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
-        right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
-
-        # Rate limiting - 10Hz max for motor commands
+        # Rate limiting - 20Hz for motor commands (faster response)
         current_time = time.time()
-        if current_time - self.last_motor_update < 0.1:
+        if current_time - self.last_motor_update < 0.05:
             return
 
-        # ALWAYS send commands when moving (not just on change)
-        # This ensures the motor controller's safety timeout works
-        is_moving = abs(left_speed) > 1 or abs(right_speed) > 1
-        is_change = (abs(left_speed - self.state.last_left_speed) > 1 or
-                    abs(right_speed - self.state.last_right_speed) > 1)
-        is_stop_needed = (left_speed == 0 and right_speed == 0 and not self.state.motors_stopped)
+        # ALWAYS send stop command immediately when stopping
+        # For moving, send on any change
+        should_send = False
+        if left_speed == 0 and right_speed == 0:
+            # Stop command - always send if not already stopped
+            if not self.state.motors_stopped:
+                should_send = True
+        else:
+            # Moving - send on change or periodically
+            is_change = (abs(left_speed - self.state.last_left_speed) > 2 or
+                        abs(right_speed - self.state.last_right_speed) > 2)
+            should_send = is_change or (current_time - self.last_motor_update > 0.2)
 
-        # Send if moving (continuous), changed, or stopping
-        if is_moving or is_change or is_stop_needed:
+        if should_send:
             self.set_motor_speeds(left_speed, right_speed)
             self.state.last_left_speed = left_speed
             self.state.last_right_speed = right_speed
