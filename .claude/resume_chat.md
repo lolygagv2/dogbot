@@ -1,5 +1,56 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2025-12-23 01:30
+**Goal:** Xbox Controller Stability & Audio Defaults
+**Status:** ✅ COMPLETE
+
+### ✅ Problems Solved This Session:
+
+#### 1. **RT Turbo Mode Not Activating**
+- **Problem**: RT trigger wouldn't activate turbo mode
+- **Root Cause**: Trigger normalization assumed -32767 to +32767 range, but Xbox triggers are 0 to 32767. At rest (value=0), normalized was 0.5, exactly at turbo threshold!
+- **Fix**: Changed `(value + 32767) / 65534.0` → `value / 32767.0`
+- **Result**: RT at rest = 0.0, half press = 0.5 triggers turbo, full = 1.0
+
+#### 2. **System Freezes on Rapid Button Presses**
+- **Problem**: Rapid button presses caused entire system to freeze
+- **Root Cause**: `api_lock` blocking with no timeout - commands queued and blocked main event loop
+- **Fix**: Replaced blocking lock with async command queue + 50ms debouncing
+- **Files**: `xbox_hybrid_controller.py` - added `_api_worker_loop()`, `api_queue`
+
+#### 3. **Motor Balance - Left Motor Weaker**
+- **Problem**: Vehicle drifted left, left motor underpowered
+- **Fix**: Changed RIGHT_MOTOR_BOOST → LEFT_MOTOR_BOOST = 1.35, applied to ALL movements
+
+#### 4. **Random LED Flashing in Manual Mode**
+- **Problem**: LEDs kept flashing during Xbox control
+- **Root Cause**: Detection/bark feedback handlers were triggering LED patterns
+- **Fix**: Added `if self.state.current_mode == SystemMode.MANUAL: return` to skip LED feedback
+
+#### 5. **Audio Levels Resetting on Startup**
+- **Problem**: Speaker at 23%, mic at 0% on every boot
+- **Root Cause**: `SfxService` hardcoded `default_volume = 23`, no mic init
+- **Fix**: Speaker → 75%, added mic init to 100% in `AudioController`
+
+### 📁 Files Modified:
+| File | Changes |
+|------|---------|
+| `xbox_hybrid_controller.py` | RT trigger fix, async API, motor balance, deadzone |
+| `main_treatbot.py` | Skip LED feedback in MANUAL mode |
+| `core/hardware/proper_pid_motor_controller.py` | PWM_MIN=30, PWM_MAX=75 |
+| `services/media/sfx.py` | default_volume = 75 |
+| `core/hardware/audio_controller.py` | USB mic init to 100% |
+
+### 📦 Commits:
+- `071474f6` - fix: Xbox controller - RT turbo, async API, motor balance
+- `6b5952b6` - fix: Set proper audio defaults on startup
+
+### 🧹 Cleanup Done:
+- Moved 59 test files from root → `/tests/` subdirectories
+- Discarded uncommitted motor_controller_polling.py changes
+
+---
+
 ## Session: 2025-12-20 22:30 - 23:00
 **Goal:** Fix Microphone Volume + Dynamic Audio List Reload
 **Status:** ✅ COMPLETE - Ready for standalone demo
