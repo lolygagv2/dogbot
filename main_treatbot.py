@@ -362,6 +362,10 @@ class TreatBotMain:
     def _on_detection_for_feedback(self, event) -> None:
         """Provide visual feedback for detection events"""
         try:
+            # Skip LED feedback in MANUAL mode (Xbox controller controls LEDs)
+            if self.state.current_mode == SystemMode.MANUAL:
+                return
+
             if event.subtype == 'dog_detected':
                 # Green LED for dog detected
                 if self.led:
@@ -388,29 +392,20 @@ class TreatBotMain:
     def _on_bark_for_feedback(self, event) -> None:
         """Provide feedback for bark detection events"""
         try:
+            # Skip LED feedback in MANUAL mode (Xbox controller controls LEDs)
+            if self.state.current_mode == SystemMode.MANUAL:
+                return
+
             if event.subtype == 'bark_detected':
                 emotion = event.data.get('emotion', 'unknown')
                 confidence = event.data.get('confidence', 0)
-
-                # Log bark detection
                 self.logger.info(f"🐕 Bark detected: {emotion} (conf: {confidence:.2f})")
-
-                # Visual feedback - flash LED based on emotion
-                if self.led and self.led.led_initialized:
-                    if emotion in ['alert', 'attention']:
-                        self.led.set_pattern('pulse_green', 2.0)
-                    elif emotion in ['anxious', 'scared']:
-                        self.led.set_pattern('spinning_dot', 2.0, color='yellow')
-                    elif emotion == 'aggressive':
-                        self.led.set_pattern('error', 2.0)
-                    elif emotion == 'playful':
-                        self.led.set_pattern('pulse_blue', 2.0)
 
             elif event.subtype == 'bark_rewarded':
                 emotion = event.data.get('emotion', 'unknown')
                 self.logger.info(f"🎁 Bark reward triggered for: {emotion}")
 
-                # Celebration feedback
+                # Celebration feedback - only for rewards (infrequent)
                 if self.led and self.led.led_initialized:
                     self.led.set_pattern('celebration', 3.0)
 

@@ -91,8 +91,8 @@ class ProperPIDMotorController:
     MAX_RPM = 210          # No-load RPM at 6V
 
     # PWM Safety Limits (6V motors on 14V system)
-    PWM_MIN = 25           # Minimum to overcome static friction
-    PWM_MAX = 50           # 50% of 14V ≈ 7V (safe for 6V motors)
+    PWM_MIN = 30           # Minimum to overcome static friction (lower = whining)
+    PWM_MAX = 75           # 75% of 14V ≈ 10.5V (normal mode uses 60% of this = ~6.3V)
 
     # Control Loop Timing
     ENCODER_POLL_RATE = 2000  # Hz - faster than 1190Hz encoder frequency
@@ -681,9 +681,8 @@ class MotorControllerPolling(ProperPIDMotorController):
         This allows existing code to work while getting PID benefits
         """
         # Convert speed percentage to approximate RPM
-        # 100% speed ≈ MAX_RPM (but reduced for safety)
-        max_safe_rpm = self.MAX_RPM * 0.8  # 80% of max for safety
-        target_rpm = (speed / 100.0) * max_safe_rpm
+        # 100% speed ≈ MAX_RPM (PWM_MAX provides the safety limit)
+        target_rpm = (speed / 100.0) * self.MAX_RPM
 
         # Apply direction
         if direction == 'backward':

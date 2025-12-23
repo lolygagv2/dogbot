@@ -20,6 +20,8 @@ import select
 from threading import Thread, Event, Timer, Lock
 from dataclasses import dataclass
 from typing import Optional, Tuple
+from queue import Queue, Empty
+from collections import defaultdict
 
 # Add project root to path for direct imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -177,17 +179,17 @@ class XboxHybridControllerFixed:
     API_BASE_URL = "http://localhost:8000"
 
     # Controller configuration - FIXED FOR SMOOTH CONTROL
-    DEADZONE = 0.01  # Almost no deadzone for testing
+    DEADZONE = 0.15  # 15% deadzone to handle stick drift
     TRIGGER_DEADZONE = 0.1
     MAX_SPEED = 100
     TURN_SPEED_FACTOR = 0.7  # Better turning response
 
     # RPM Control - Convert speed percentages to RPM targets
-    MAX_RPM = 100  # Moderate RPM for responsive control (motors rated 210 RPM)
+    MAX_RPM = 180  # 85% of motor capability (210 RPM rated) - allows strong response
     USE_PID_CONTROL = True  # ENABLED - closed-loop control with encoder feedback
 
-    # Motor calibration (fallback for direct PWM mode)
-    RIGHT_MOTOR_BOOST = 1.25  # 25% boost for right motor (legacy fallback only)
+    # Motor calibration - LEFT motor needs boost (right is stronger)
+    LEFT_MOTOR_BOOST = 1.35  # 35% boost to match right motor
 
     # Safety features - FIXED FOR SMOOTH CONTROL
     TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
@@ -214,8 +216,8 @@ class XboxHybridControllerFixed:
 
         # Thread safety locks
         self.motor_lock = Lock()
-        self.api_lock = Lock()
         self.treat_lock = Lock()
+        # REMOVED: api_lock - replaced with async queue (non-blocking)
 
         # Cooldown tracking
         self.last_treat_time = 0
@@ -264,6 +266,15 @@ class XboxHybridControllerFixed:
         # API session for non-motor functions
         self.session = requests.Session()
         self.session.headers.update({'Content-Type': 'application/json'})
+
+        # ASYNC COMMAND QUEUE - prevents main loop blocking
+        self.api_queue = Queue(maxsize=50)  # Bounded queue prevents memory issues
+        self.api_worker_running = False
+        self.api_worker_thread = None
+
+        # Command debouncing - prevents rapid duplicate commands
+        self.last_command_time = defaultdict(float)  # endpoint -> timestamp
+        self.DEBOUNCE_TIME = 0.05  # 50ms minimum between same commands
 
         # Motor control system
         self.motor_bus = None
@@ -398,26 +409,85 @@ class XboxHybridControllerFixed:
         logger.info(f"Talks: {[t[1] for t in self.TALK_TRACKS]}")
         logger.info(f"Songs: {[s[1] for s in self.SONG_TRACKS]}")
 
-    def api_request(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
-        """Thread-safe API request with error handling"""
-        with self.api_lock:
-            url = f"{self.API_BASE_URL}{endpoint}"
+    def _start_api_worker(self):
+        """Start the async API worker thread"""
+        if self.api_worker_running:
+            return
+        self.api_worker_running = True
+        self.api_worker_thread = Thread(target=self._api_worker_loop, daemon=True)
+        self.api_worker_thread.start()
+        logger.info("Async API worker started")
+
+    def _api_worker_loop(self):
+        """Worker thread that processes API commands from queue - NEVER blocks main loop"""
+        while self.api_worker_running:
             try:
-                timeout = 10.0 if 'audio' in endpoint else 2.0
+                # Wait for command with timeout (allows clean shutdown)
+                cmd = self.api_queue.get(timeout=0.1)
+                method, endpoint, data = cmd
 
-                if method == 'GET':
-                    response = self.session.get(url, timeout=timeout)
-                elif method == 'POST':
-                    response = self.session.post(url, json=data, timeout=timeout)
-                else:
-                    logger.error(f"Unsupported method: {method}")
-                    return None
+                # Execute the actual API call
+                self._api_request_sync(method, endpoint, data)
 
-                response.raise_for_status()
-                return response.json()
-            except requests.exceptions.RequestException as e:
-                logger.error(f"API request failed: {endpoint} - {e}")
+            except Empty:
+                continue
+            except Exception as e:
+                logger.error(f"API worker error: {e}")
+
+    def _api_request_sync(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
+        """Synchronous API request - called by worker thread only"""
+        url = f"{self.API_BASE_URL}{endpoint}"
+        try:
+            timeout = 10.0 if 'audio' in endpoint else 2.0
+
+            if method == 'GET':
+                response = self.session.get(url, timeout=timeout)
+            elif method == 'POST':
+                response = self.session.post(url, json=data, timeout=timeout)
+            else:
+                logger.error(f"Unsupported method: {method}")
                 return None
+
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API request failed: {endpoint} - {e}")
+            return None
+
+    def api_request(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
+        """NON-BLOCKING API request - queues command and returns immediately
+
+        This prevents button presses from blocking the main event loop.
+        Commands are processed asynchronously by the worker thread.
+        """
+        current_time = time.time()
+
+        # Debounce: skip if same command sent too recently
+        cmd_key = f"{method}:{endpoint}"
+        if current_time - self.last_command_time[cmd_key] < self.DEBOUNCE_TIME:
+            logger.debug(f"Debounced: {endpoint}")
+            return {"success": True, "debounced": True}
+
+        self.last_command_time[cmd_key] = current_time
+
+        # Queue the command (non-blocking)
+        try:
+            self.api_queue.put_nowait((method, endpoint, data))
+            return {"success": True, "queued": True}
+        except:
+            # Queue full - drop oldest and add new
+            try:
+                self.api_queue.get_nowait()  # Remove oldest
+                self.api_queue.put_nowait((method, endpoint, data))
+                logger.warning(f"API queue full, dropped oldest command")
+                return {"success": True, "queued": True}
+            except:
+                logger.error(f"Failed to queue API command: {endpoint}")
+                return None
+
+    def api_request_blocking(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
+        """BLOCKING API request - use ONLY when response is needed (e.g., recording status)"""
+        return self._api_request_sync(method, endpoint, data)
 
     def _start_watchdog(self):
         """Start watchdog thread for motor safety"""
@@ -641,14 +711,24 @@ class XboxHybridControllerFixed:
             self.state.left_x = normalized
             if abs(normalized) > self.DEADZONE:
                 notify_manual_input()
+            # SAFETY: If stick centered, ensure motors can stop
+            if normalized == 0.0 and abs(self.state.left_y) < self.DEADZONE:
+                self.state.motors_stopped = False  # Allow stop command to be sent
 
         elif number == 1:  # Left stick Y (inverted for forward)
             self.state.left_y = -normalized
             if abs(normalized) > self.DEADZONE:
                 notify_manual_input()
+            # SAFETY: If stick centered, immediately stop motors
+            if normalized == 0.0 and abs(self.state.left_x) < self.DEADZONE:
+                self.state.motors_stopped = False  # Allow stop command to be sent
+                with self.motor_lock:
+                    self.set_motor_speeds(0, 0)
+                    self.state.motors_stopped = True
 
         elif number == 2:  # Left trigger (LT)
-            normalized_trigger = (value + 32767) / 65534.0
+            # LT ranges from 0 to 32767 (not -32767 to 32767)
+            normalized_trigger = value / 32767.0
             previous_trigger = self.state.left_trigger
 
             # Add a trigger state tracker
@@ -674,7 +754,8 @@ class XboxHybridControllerFixed:
             # Store for smooth camera update loop
 
         elif number == 5:  # Right trigger (RT) - speed control
-            normalized_trigger = (value + 32767) / 65534.0
+            # RT ranges from 0 to 32767 (not -32767 to 32767)
+            normalized_trigger = value / 32767.0
             if normalized_trigger > self.TRIGGER_DEADZONE:
                 self.state.right_trigger = normalized_trigger
             else:
@@ -682,19 +763,23 @@ class XboxHybridControllerFixed:
 
     def update_motor_control(self):
         """Update motor speeds with calibration and safety"""
-        # RT trigger is the THROTTLE (0-100% speed)
-        # Left stick controls direction
-        # No RT = no movement (safety feature)
+        # Left stick controls movement directly at 60% power
+        # RT trigger = TURBO mode (100% power)
 
-        throttle = self.state.right_trigger  # 0.0 to 1.0
+        # Base power is 60%, RT adds remaining 40% for turbo
+        NORMAL_POWER = 0.6
+        TURBO_POWER = 1.0
 
-        # Minimum throttle required to move (prevents creep)
-        if throttle < 0.15:
-            throttle = 0
+        # Calculate power multiplier based on RT
+        rt_value = self.state.right_trigger  # 0.0 to 1.0
+        if rt_value > 0.5:  # RT pressed = turbo mode
+            power_mult = TURBO_POWER
+        else:
+            power_mult = NORMAL_POWER
 
-        # Calculate motor speeds from left stick direction * throttle
-        forward = self.state.left_y * self.MAX_SPEED * throttle
-        turn = -self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * throttle
+        # Calculate motor speeds from left stick * power multiplier
+        forward = self.state.left_y * self.MAX_SPEED * power_mult
+        turn = -self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR * power_mult
 
         # FIXED: Stick left should make robot turn left
         # When stick is left (negative X), after negation becomes positive turn value
@@ -709,9 +794,8 @@ class XboxHybridControllerFixed:
             left_speed = int((forward - turn) * turn_boost)
             right_speed = int((forward + turn) * turn_boost)
 
-        # Apply right motor boost for straight driving
-        if abs(turn) < 10:  # Going mostly straight
-            right_speed = int(right_speed * self.RIGHT_MOTOR_BOOST)
+        # Apply left motor boost ALWAYS (left motor is weaker than right)
+        left_speed = int(left_speed * self.LEFT_MOTOR_BOOST)
 
         # Clamp to valid range
         left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
@@ -846,21 +930,21 @@ class XboxHybridControllerFixed:
                 self.motor_controller.set_motor_speed('right', 0, 'forward')
                 return
 
-            # Apply right motor boost for hardware compensation
-            right_compensated = min(100, right * self.RIGHT_MOTOR_BOOST) if right != 0 else 0
+            # Apply left motor boost for hardware compensation (left is weaker)
+            left_compensated = min(100, left * self.LEFT_MOTOR_BOOST) if left != 0 else 0
 
             # Set motor speeds with direction control
-            if left >= 0:
-                self.motor_controller.set_motor_speed('left', abs(left), 'forward')
+            if left_compensated >= 0:
+                self.motor_controller.set_motor_speed('left', abs(left_compensated), 'forward')
             else:
-                self.motor_controller.set_motor_speed('left', abs(left), 'backward')
+                self.motor_controller.set_motor_speed('left', abs(left_compensated), 'backward')
 
-            if right_compensated >= 0:
-                self.motor_controller.set_motor_speed('right', abs(right_compensated), 'forward')
+            if right >= 0:
+                self.motor_controller.set_motor_speed('right', abs(right), 'forward')
             else:
-                self.motor_controller.set_motor_speed('right', abs(right_compensated), 'backward')
+                self.motor_controller.set_motor_speed('right', abs(right), 'backward')
 
-            logger.debug(f"Fallback PWM: L={left}, R={right} (compensated={right_compensated:.1f})")
+            logger.debug(f"Fallback PWM: L={left} (boosted={left_compensated:.1f}), R={right}")
 
         except Exception as e:
             logger.error(f"Fallback PWM control error: {e}")
@@ -968,8 +1052,8 @@ class XboxHybridControllerFixed:
         if not hasattr(self, '_last_record_button'):
             self._last_record_button = 0
 
-        # Check recording status FIRST
-        status = self.api_request('GET', '/audio/record/status')
+        # Check recording status FIRST (BLOCKING - needs response)
+        status = self.api_request_blocking('GET', '/audio/record/status')
         logger.warning(f"🎙️ Recording status: {status}")
 
         # If recording in progress, ignore (server will also reject)
@@ -978,9 +1062,9 @@ class XboxHybridControllerFixed:
             return
 
         if status and status.get('has_pending'):
-            # Second press - confirm and save
+            # Second press - confirm and save (BLOCKING - needs response)
             logger.info("🎙️ START BUTTON: Confirming recording save")
-            result = self.api_request('POST', '/audio/record/confirm')
+            result = self.api_request_blocking('POST', '/audio/record/confirm')
             if result and result.get('success'):
                 logger.info(f"✅ Recording saved: {result.get('filename')}")
                 # Rescan folders to include the new recording in D-pad list
@@ -996,7 +1080,7 @@ class XboxHybridControllerFixed:
 
             self._last_record_button = current_time
             logger.info("🎙️ START BUTTON: Starting new recording (2 seconds)")
-            result = self.api_request('POST', '/audio/record/start')
+            result = self.api_request_blocking('POST', '/audio/record/start')
             if result and result.get('success'):
                 logger.info("🎙️ Recording complete - press START again within 10s to save")
             else:
@@ -1166,19 +1250,21 @@ class XboxHybridControllerFixed:
             logger.error("Failed to connect to controller")
             return
 
+        # Start async API worker FIRST - prevents button blocking
+        self._start_api_worker()
+
         self.running = True
         logger.info("Xbox Fixed Controller ready!")
-        logger.info("=== FIXED CONTROLS ===")
-        logger.info("Movement: Left stick = direction, RT = throttle (hold to move)")
+        logger.info("=== CONTROLS ===")
+        logger.info("Movement: Left stick = 60% power, RT = TURBO (100%)")
         logger.info("Camera: Right stick")
         logger.info("A = Emergency Stop, B = Stop Motors")
         logger.info("X = Blue LED, LT = NeoPixel modes")
         logger.info("Y = Sound, LB = Treat (2s cooldown), RB = Photo")
-        logger.info("=== FIXES APPLIED ===")
-        logger.info("✅ Treat dispenser cooldown prevents freezing")
-        logger.info("✅ Motor control with timeout safety")
-        logger.info("✅ Right motor boost for straight driving")
-        logger.info("✅ Thread-safe API calls")
+        logger.info("=== ASYNC API QUEUE ===")
+        logger.info("✅ Non-blocking button presses")
+        logger.info("✅ 50ms command debouncing")
+        logger.info("✅ No more system freezes from rapid inputs")
 
         try:
             while self.running and not self.stop_event.is_set():
@@ -1217,7 +1303,11 @@ class XboxHybridControllerFixed:
         self.motor_update_running = False
         self.camera_update_running = False
         self.heartbeat_running = False
-        # REMOVED: Watchdog thread cleanup - no longer using Xbox watchdog
+        self.api_worker_running = False  # Stop async API worker
+
+        # Stop API worker thread
+        if self.api_worker_thread:
+            self.api_worker_thread.join(timeout=0.5)
 
         # Stop motor update thread
         if self.motor_update_thread:
