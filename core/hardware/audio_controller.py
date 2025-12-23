@@ -51,6 +51,17 @@ class AudioController:
                     self.initialized = True
                     self.logger.info("Using default audio device")
 
+                # Initialize USB microphone to 100% capture (card 2)
+                # This prevents mic from defaulting to 0% on boot
+                try:
+                    subprocess.run(
+                        ['amixer', '-c', '2', 'sset', 'Mic', '100%', 'cap'],
+                        capture_output=True, timeout=2
+                    )
+                    self.logger.info("USB microphone set to 100% capture")
+                except Exception as mic_err:
+                    self.logger.warning(f"Could not set mic volume: {mic_err}")
+
                 return True
             else:
                 self.logger.warning("No audio devices found")

@@ -60,9 +60,9 @@ class SfxService:
         self.play_queue = []
         self._play_lock = threading.Lock()
 
-        # Volume settings
-        self.default_volume = 23
-        self.current_volume = 23
+        # Volume settings - 75% is good balance for speaker output
+        self.default_volume = 75
+        self.current_volume = 75
 
     def initialize(self) -> bool:
         """Initialize audio controller"""
