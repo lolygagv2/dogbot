@@ -186,11 +186,11 @@ class RewardLogic:
         confidence = data.get('confidence', 0.0)
         timestamp = data.get('timestamp', time.time())
 
-        # Get dog from current state (assume the detected dog)
-        # In a multi-dog system, this would need better dog identification
-        dog_id = self.state.get_current_dog_id() if hasattr(self.state, 'get_current_dog_id') else 'unknown'
+        # Get dog from bark event (vision-audio fusion)
+        dog_id = data.get('dog_id') or 'unknown'
+        dog_name = data.get('dog_name') or 'unknown'
 
-        self.logger.info(f"Bark detected: {dog_id} {emotion} (conf: {confidence:.2f})")
+        self.logger.info(f"Bark detected: {dog_name} ({dog_id}) - {emotion} (conf: {confidence:.2f})")
 
         # Define bark reward policy
         bark_policy = RewardPolicy(

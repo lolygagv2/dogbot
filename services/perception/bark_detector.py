@@ -11,7 +11,7 @@ from typing import Dict, Optional, Any
 from datetime import datetime, timedelta
 
 # Core components
-from core.bus import get_bus, AudioEvent, RewardEvent, publish_audio_event, publish_reward_event
+from core.bus import get_bus, AudioEvent, RewardEvent, VisionEvent, publish_audio_event, publish_reward_event
 from core.state import get_state
 
 # Audio components
@@ -69,6 +69,11 @@ class BarkDetectorService:
         # Cooldown tracking
         self.last_reward_time = None
         self.last_detection_time = None
+
+        # Vision-audio fusion: track visible dogs for bark attribution
+        self._visible_dogs = {}  # dog_id -> {time, name}
+        self._visible_dogs_lock = threading.Lock()
+        self._dog_visibility_timeout = 1.0  # 1 second visibility window
 
         # Statistics
         self.stats = {
@@ -143,6 +148,9 @@ class BarkDetectorService:
             )
             self.detection_thread.start()
 
+            # Subscribe to vision events for dog visibility tracking
+            self.bus.subscribe(VisionEvent, self._on_vision_event)
+
             # Publish service started event
             publish_audio_event('service_started', {
                 'service': 'bark_detector',
@@ -178,6 +186,29 @@ class BarkDetectorService:
         })
 
         logger.info("Bark detection service stopped")
+
+    def _on_vision_event(self, event):
+        """Track visible dogs from vision events for bark attribution"""
+        if event.subtype == 'dog_detected':
+            dog_id = event.data.get('dog_id')  # Format: "aruco_315" or "aruco_832"
+            dog_name = event.data.get('dog_name')  # "Elsa" or "Bezik"
+            if dog_id:
+                with self._visible_dogs_lock:
+                    self._visible_dogs[dog_id] = {
+                        'time': time.time(),
+                        'name': dog_name
+                    }
+
+    def _get_visible_dogs(self):
+        """Get dogs visible within the timeout window"""
+        now = time.time()
+        with self._visible_dogs_lock:
+            # Filter to dogs seen recently
+            visible = {
+                dog_id: info for dog_id, info in self._visible_dogs.items()
+                if now - info['time'] < self._dog_visibility_timeout
+            }
+            return visible
 
     def _detection_loop(self):
         """Main detection loop running in background thread"""
@@ -259,15 +290,33 @@ class BarkDetectorService:
         self.stats['emotions_detected'][emotion] = \
             self.stats['emotions_detected'].get(emotion, 0) + 1
 
-        # Log detection
-        logger.info(f"Bark detected: {emotion} (confidence: {confidence:.2f})")
+        # Get currently visible dogs for bark attribution
+        visible_dogs = self._get_visible_dogs()
+        visible_ids = list(visible_dogs.keys())
 
-        # Publish bark detected event
+        # Attribution logic: only attribute if exactly 1 dog visible
+        if len(visible_dogs) == 1:
+            dog_id, dog_info = next(iter(visible_dogs.items()))
+            dog_name = dog_info.get('name', 'unknown')
+        else:
+            dog_id = None
+            dog_name = None
+
+        # Log detection with dog attribution
+        if dog_name:
+            logger.info(f"Bark detected: {dog_name} barked - {emotion} (confidence: {confidence:.2f})")
+        else:
+            logger.info(f"Bark detected: Dog barked - {emotion} (confidence: {confidence:.2f})")
+
+        # Publish bark detected event with dog attribution
         publish_audio_event('bark_detected', {
             'emotion': emotion,
             'confidence': confidence,
             'all_probabilities': result['all_probabilities'],
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'visible_dogs': visible_ids,
+            'dog_id': dog_id,
+            'dog_name': dog_name
         })
 
         # Check if this emotion triggers a reward
