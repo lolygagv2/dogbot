@@ -255,6 +255,9 @@ class BarkDetectorService:
                         # Check if 'notbark' has high confidence - if so, this is NOT a bark
                         notbark_confidence = result['all_probabilities'].get('notbark', 0.0)
 
+                        # Calculate loudness in dB for analytics
+                        loudness_db = 20 * np.log10(max(audio_energy, 1e-10))
+
                         # Only consider it a bark if:
                         # 1. The top prediction is NOT 'notbark'
                         # 2. The confidence is above threshold
@@ -262,7 +265,7 @@ class BarkDetectorService:
                         if (result['emotion'] != 'notbark' and
                             result['is_confident'] and
                             notbark_confidence < 0.5):
-                            self._handle_bark_detected(result)
+                            self._handle_bark_detected(result, loudness_db)
                         else:
                             logger.debug(f"Not a bark - emotion: {result['emotion']}, notbark conf: {notbark_confidence:.2f}")
 
@@ -275,12 +278,13 @@ class BarkDetectorService:
 
         logger.info("Bark detection loop ended")
 
-    def _handle_bark_detected(self, result: Dict):
+    def _handle_bark_detected(self, result: Dict, loudness_db: float = None):
         """
         Handle detected bark
 
         Args:
             result: Classification result from bark classifier
+            loudness_db: Loudness in decibels
         """
         emotion = result['emotion']
         confidence = result['confidence']
@@ -302,16 +306,42 @@ class BarkDetectorService:
             dog_id = None
             dog_name = None
 
+        # Store bark in database
+        try:
+            from core.bark_store import get_bark_store
+            bark_store = get_bark_store()
+            bark_store.log_bark(
+                emotion=emotion,
+                confidence=confidence,
+                loudness_db=loudness_db,
+                dog_id=dog_id,
+                dog_name=dog_name
+            )
+        except Exception as e:
+            logger.warning(f"Failed to store bark: {e}")
+
+        # Track bark frequency for mission triggers
+        try:
+            from core.bark_frequency_tracker import get_bark_frequency_tracker
+            tracker = get_bark_frequency_tracker()
+            freq_result = tracker.record_bark(dog_id or 'unknown')
+            if freq_result['threshold_exceeded']:
+                logger.info(f"Bark threshold exceeded for {dog_id or 'unknown'}: "
+                           f"{freq_result['bark_count']}/{freq_result['threshold']} in {freq_result['window_seconds']}s")
+        except Exception as e:
+            logger.warning(f"Failed to track bark frequency: {e}")
+
         # Log detection with dog attribution
         if dog_name:
-            logger.info(f"Bark detected: {dog_name} barked - {emotion} (confidence: {confidence:.2f})")
+            logger.info(f"Bark detected: {dog_name} barked - {emotion} (confidence: {confidence:.2f}, loudness: {loudness_db:.1f}dB)")
         else:
-            logger.info(f"Bark detected: Dog barked - {emotion} (confidence: {confidence:.2f})")
+            logger.info(f"Bark detected: Dog barked - {emotion} (confidence: {confidence:.2f}, loudness: {loudness_db:.1f}dB)")
 
         # Publish bark detected event with dog attribution
         publish_audio_event('bark_detected', {
             'emotion': emotion,
             'confidence': confidence,
+            'loudness_db': loudness_db,
             'all_probabilities': result['all_probabilities'],
             'timestamp': datetime.now().isoformat(),
             'visible_dogs': visible_ids,

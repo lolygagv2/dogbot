@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from core.bus import get_bus, publish_system_event
+from core.bus import get_bus, publish_system_event, AudioEvent
 from core.state import get_state, SystemMode
 from core.store import get_store
 from orchestrators.sequence_engine import get_sequence_engine
@@ -169,6 +169,7 @@ class MissionEngine:
     def _setup_event_handlers(self):
         """Subscribe to relevant events"""
         self.bus.subscribe("vision", self._on_vision_event)
+        self.bus.subscribe("audio", self._on_audio_event)
         self.bus.subscribe("reward", self._on_reward_event)
         self.bus.subscribe("system", self._on_system_event)
 
@@ -489,6 +490,19 @@ class MissionEngine:
         if event.subtype == "Completed":
             self._handle_reward_completed(event.data)
 
+    def _on_audio_event(self, event):
+        """Handle audio events (bark detection, quiet periods)"""
+        if not self.active_session:
+            return
+
+        event_data = event.data
+        subtype = event.subtype
+
+        if subtype == "bark_detected":
+            self._handle_bark_for_mission(event_data)
+        elif subtype == "quiet_period":
+            self._handle_quiet_period(event_data)
+
     def _on_system_event(self, event):
         """Handle system events"""
         if event.subtype == "EmergencyStop":
@@ -572,6 +586,101 @@ class MissionEngine:
         """Handle emergency stop"""
         if self.active_session:
             self.stop_mission("emergency_stop")
+
+    def _handle_bark_for_mission(self, event_data: Dict[str, Any]):
+        """
+        Handle bark detection for mission stage advancement
+
+        Supports success_event formats:
+        - "AudioEvent.BarkDetected" - any bark
+        - "AudioEvent.BarkDetected.alert" - specific emotion
+        - "AudioEvent.BarkDetected.scared" - specific emotion
+        """
+        session = self.active_session
+
+        if session.state != MissionState.WAITING_FOR_BEHAVIOR:
+            return
+
+        if session.current_stage >= len(session.mission.stages):
+            return
+
+        stage = session.mission.stages[session.current_stage]
+        success_event = stage.success_event
+
+        # Check if this stage expects a bark event
+        if not success_event.startswith("AudioEvent.Bark"):
+            return
+
+        emotion = event_data.get("emotion", "")
+        confidence = event_data.get("confidence", 0.0)
+        dog_id = event_data.get("dog_id")
+        dog_name = event_data.get("dog_name")
+
+        # Check emotion filter (e.g., "AudioEvent.BarkDetected.alert")
+        parts = success_event.split(".")
+        if len(parts) >= 3:
+            required_emotion = parts[2].lower()
+            if emotion.lower() != required_emotion:
+                self.logger.debug(f"Bark emotion {emotion} doesn't match required {required_emotion}")
+                return
+
+        # Check confidence threshold from conditions
+        conditions = stage.conditions
+        min_confidence = conditions.get("min_confidence", 0.5)
+        if confidence < min_confidence:
+            self.logger.debug(f"Bark confidence {confidence:.2f} below threshold {min_confidence}")
+            return
+
+        # Bark matches stage criteria - advance!
+        self.logger.info(f"Bark matched stage {stage.name}: {emotion} (conf: {confidence:.2f})")
+
+        # Update session dog if detected
+        if dog_id:
+            session.dog_id = dog_id
+
+        # Log event
+        session.events_log.append({
+            "type": "bark_detected",
+            "emotion": emotion,
+            "confidence": confidence,
+            "dog_id": dog_id,
+            "dog_name": dog_name,
+            "time": time.time()
+        })
+
+        # Execute sequence if defined
+        if stage.sequence:
+            self.sequence_engine.execute(stage.sequence, {
+                "dog_id": dog_id,
+                "dog_name": dog_name,
+                "emotion": emotion
+            })
+
+        # Advance to next stage
+        self._advance_stage()
+
+    def _handle_quiet_period(self, event_data: Dict[str, Any]):
+        """Handle quiet period detection for missions"""
+        session = self.active_session
+
+        if session.state != MissionState.WAITING_FOR_BEHAVIOR:
+            return
+
+        if session.current_stage >= len(session.mission.stages):
+            return
+
+        stage = session.mission.stages[session.current_stage]
+
+        # Check if this stage expects quiet period
+        if stage.success_event != "AudioEvent.QuietPeriod":
+            return
+
+        quiet_duration = event_data.get("duration", 0.0)
+        required_duration = stage.conditions.get("quiet_duration", 5.0)
+
+        if quiet_duration >= required_duration:
+            self.logger.info(f"Quiet period matched: {quiet_duration:.1f}s >= {required_duration}s")
+            self._advance_stage()
 
     def get_available_missions(self) -> List[Dict[str, Any]]:
         """Get list of available missions"""

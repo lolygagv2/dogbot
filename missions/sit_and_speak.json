@@ -1,0 +1,82 @@
+{
+  "name": "sit_and_speak",
+  "description": "Train dog to sit and bark on command for treat",
+  "enabled": true,
+  "schedule": "manual",
+  "max_rewards": 10,
+  "duration_minutes": 30,
+  "trigger": {
+    "type": "manual",
+    "api_endpoint": "/missions/start/sit_and_speak"
+  },
+  "stages": [
+    {
+      "name": "call_dog",
+      "timeout": 5,
+      "sequence": "call_dog",
+      "conditions": {}
+    },
+    {
+      "name": "wait_for_dog",
+      "timeout": 30,
+      "success_event": "VisionEvent.DogDetected",
+      "conditions": {}
+    },
+    {
+      "name": "command_sit",
+      "timeout": 5,
+      "sequence": "command_sit",
+      "conditions": {}
+    },
+    {
+      "name": "wait_for_sit",
+      "timeout": 15,
+      "success_event": "VisionEvent.Pose.Sit",
+      "min_duration": 2,
+      "conditions": {
+        "min_confidence": 0.7
+      }
+    },
+    {
+      "name": "command_speak",
+      "timeout": 5,
+      "sequence": "command_speak",
+      "conditions": {}
+    },
+    {
+      "name": "wait_for_bark",
+      "timeout": 15,
+      "success_event": "AudioEvent.BarkDetected",
+      "conditions": {
+        "min_confidence": 0.5,
+        "max_barks": 3,
+        "require_still_sitting": true
+      }
+    },
+    {
+      "name": "reward",
+      "timeout": 10,
+      "sequence": "celebrate"
+    },
+    {
+      "name": "capture_photo",
+      "timeout": 5,
+      "sequence": "capture_photo"
+    }
+  ],
+  "config": {
+    "allow_bark_rewards": true,
+    "require_quiet_always": false,
+    "audio_files": {
+      "come_here": "come_here",
+      "sit_command": "sit",
+      "speak_command": "speak",
+      "good_dog": "good_dog"
+    }
+  },
+  "completion": {
+    "success": "Dog successfully sat and spoke on command",
+    "timeout": "Dog did not complete sit and speak",
+    "partial": "Dog completed sit but not speak"
+  }
+}

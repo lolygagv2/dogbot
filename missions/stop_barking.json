@@ -1,0 +1,92 @@
+{
+  "name": "stop_barking",
+  "description": "Quiet training - reduces excessive barking with escalation",
+  "enabled": true,
+  "schedule": "continuous",
+  "max_rewards": 20,
+  "duration_minutes": 480,
+  "trigger": {
+    "type": "bark_frequency",
+    "threshold": 3,
+    "window_minutes": 1,
+    "emotions": ["alert", "attention", "aggressive", "anxious"]
+  },
+  "stages": [
+    {
+      "name": "detect_excessive_barking",
+      "timeout": 3600,
+      "success_event": "AudioEvent.BarkFrequencyExceeded",
+      "conditions": {
+        "barks_per_minute": 3
+      }
+    },
+    {
+      "name": "approach_dog",
+      "timeout": 30,
+      "success_event": "VisionEvent.DogDetected",
+      "sequence": "approach",
+      "conditions": {}
+    },
+    {
+      "name": "ask_about_treat",
+      "timeout": 5,
+      "sequence": "ask_treat",
+      "conditions": {}
+    },
+    {
+      "name": "wait_for_response",
+      "timeout": 4,
+      "conditions": {}
+    },
+    {
+      "name": "say_quiet",
+      "timeout": 30,
+      "sequence": "say_quiet",
+      "conditions": {
+        "max_repeats": 10,
+        "repeat_interval": 3
+      }
+    },
+    {
+      "name": "wait_for_quiet",
+      "timeout": 60,
+      "success_event": "AudioEvent.QuietPeriod",
+      "conditions": {
+        "quiet_duration": 5,
+        "escalate_to": 20,
+        "escalate_per_day": true
+      }
+    },
+    {
+      "name": "reward_quiet",
+      "timeout": 10,
+      "sequence": "celebrate"
+    },
+    {
+      "name": "capture_success",
+      "timeout": 5,
+      "sequence": "capture_photo"
+    }
+  ],
+  "escalation": {
+    "after_events": 5,
+    "actions": ["move_around", "say_no_no_no", "extra_quiet"],
+    "increase_quiet_duration": true,
+    "max_quiet_duration": 20
+  },
+  "config": {
+    "allow_bark_rewards": false,
+    "require_quiet_always": true,
+    "audio_files": {
+      "treat_question": "do_you_want_a_treat",
+      "quiet_command": "quiet",
+      "no_command": "no_no_no",
+      "good_dog": "good_dog"
+    }
+  },
+  "completion": {
+    "success": "Dog has been quiet for required duration",
+    "timeout": "Dog did not quiet down",
+    "max_attempts": "Reached maximum quiet attempts"
+  }
+}

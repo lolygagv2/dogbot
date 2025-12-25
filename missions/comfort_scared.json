@@ -1,0 +1,93 @@
+{
+  "name": "comfort_scared",
+  "description": "Comfort dog when scared or anxious barking detected",
+  "enabled": true,
+  "schedule": "continuous",
+  "max_rewards": 10,
+  "duration_minutes": 480,
+  "trigger": {
+    "type": "bark_emotion",
+    "emotions": ["scared", "anxious"]
+  },
+  "stages": [
+    {
+      "name": "detect_scared_bark",
+      "timeout": 3600,
+      "success_event": "AudioEvent.BarkDetected.scared",
+      "conditions": {
+        "min_confidence": 0.6,
+        "also_match": ["anxious"]
+      }
+    },
+    {
+      "name": "approach_dog",
+      "timeout": 30,
+      "success_event": "VisionEvent.DogDetected",
+      "sequence": "approach_gentle",
+      "conditions": {}
+    },
+    {
+      "name": "offer_treat",
+      "timeout": 5,
+      "sequence": "offer_treat",
+      "conditions": {}
+    },
+    {
+      "name": "wait_for_sit",
+      "timeout": 15,
+      "success_event": "VisionEvent.Pose.Sit",
+      "conditions": {
+        "min_duration": 2
+      }
+    },
+    {
+      "name": "command_spin",
+      "timeout": 5,
+      "sequence": "command_spin",
+      "conditions": {}
+    },
+    {
+      "name": "wait_for_spin",
+      "timeout": 20,
+      "success_event": "VisionEvent.Pose.Spin",
+      "conditions": {
+        "optional": true
+      }
+    },
+    {
+      "name": "wait_for_quiet",
+      "timeout": 30,
+      "success_event": "AudioEvent.QuietPeriod",
+      "conditions": {
+        "quiet_duration": 5
+      }
+    },
+    {
+      "name": "reward_calm",
+      "timeout": 10,
+      "sequence": "celebrate_calm"
+    },
+    {
+      "name": "capture_photo",
+      "timeout": 5,
+      "sequence": "capture_photo"
+    }
+  ],
+  "config": {
+    "allow_bark_rewards": false,
+    "require_quiet_always": false,
+    "gentle_mode": true,
+    "audio_files": {
+      "offer_treat": "wanna_treat",
+      "sit_command": "sit",
+      "spin_command": "spin",
+      "good_dog": "good_dog",
+      "calm_voice": "its_okay"
+    }
+  },
+  "completion": {
+    "success": "Dog calmed down and performed tricks",
+    "timeout": "Dog did not calm down",
+    "partial": "Dog partially completed tricks"
+  }
+}

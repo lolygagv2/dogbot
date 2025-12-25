@@ -202,6 +202,8 @@ class SequenceEngine:
             self._execute_treat_command(command, params)
         elif service == 'motion':
             self._execute_motion_command(command, params)
+        elif service == 'photo':
+            self._execute_photo_command(command, params, context)
         else:
             self.logger.warning(f"Unknown service: {service}")
 
@@ -278,6 +280,36 @@ class SequenceEngine:
             self.pantilt.center_camera()
         elif command == 'track':
             self.pantilt.set_tracking_enabled(True)
+
+    def _execute_photo_command(self, command: str, params: Dict[str, Any],
+                                context: Dict[str, Any]) -> None:
+        """Execute photo capture command"""
+        if command == 'capture':
+            try:
+                from core.vision.camera_manager import get_camera_manager
+                camera = get_camera_manager()
+
+                reason = params.get('reason', 'sequence')
+                dog_id = context.get('dog_id', 'unknown')
+                dog_name = context.get('dog_name', '')
+
+                # Generate filename with context
+                from datetime import datetime
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                prefix = f"{reason}_{dog_name or dog_id}_{timestamp}"
+
+                # Capture photo
+                filename = camera.capture_photo(
+                    prefix=prefix,
+                    directory="captures"
+                )
+
+                self.logger.info(f"Photo captured: {filename}")
+
+            except ImportError:
+                self.logger.warning("Camera manager not available for photo capture")
+            except Exception as e:
+                self.logger.error(f"Photo capture failed: {e}")
 
     def _substitute_context(self, params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Substitute context variables in parameters"""
