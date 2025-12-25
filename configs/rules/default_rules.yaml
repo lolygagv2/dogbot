@@ -1,0 +1,239 @@
+# WIM-Z Reward Rules Configuration
+# Customize behavior rewards, cooldowns, and escalation logic
+#
+# Rule Types:
+#   behavior       - Pose-based (sit, lie, spin, cross)
+#   bark           - Single bark emotion detection
+#   bark_frequency - Bark count threshold (e.g., 3 barks in 1 minute)
+#   quiet          - Silence duration reward
+#   combo          - Multiple conditions (e.g., sit + bark)
+
+global:
+  # Default settings for all rules
+  default_cooldown: 30
+  default_treat_probability: 0.8
+  require_dog_detection: true
+  photo_on_reward: false
+
+rules:
+  # ============================================
+  # BEHAVIOR RULES (Pose Detection)
+  # ============================================
+
+  sit:
+    type: behavior
+    enabled: true
+    min_duration: 2.0          # Hold sit for 2 seconds
+    min_confidence: 0.7
+    cooldown: 30               # 30 seconds between rewards
+    daily_limit: 15
+    hourly_limit: 5
+    treat_probability: 0.8     # 80% chance of treat
+    treat_count: 1
+    sounds:
+      - good_dog
+    led_pattern: celebration
+    sequence: celebrate
+    # Per-dog overrides
+    dog_overrides:
+      aruco_315:  # Elsa
+        treat_probability: 0.9
+        daily_limit: 20
+      aruco_832:  # Bezik
+        min_duration: 3.0      # Bezik needs to hold longer
+
+  lie:
+    type: behavior
+    enabled: true
+    min_duration: 3.0
+    min_confidence: 0.7
+    cooldown: 30
+    daily_limit: 12
+    hourly_limit: 4
+    treat_probability: 0.8
+    sounds:
+      - good_dog
+      - excellent
+    led_pattern: celebration
+    sequence: celebrate
+
+  spin:
+    type: behavior
+    enabled: true
+    min_duration: 0.5          # Spin is quick
+    min_confidence: 0.6
+    cooldown: 45
+    daily_limit: 8
+    hourly_limit: 3
+    treat_probability: 0.9     # Higher reward for harder trick
+    treat_count: 2             # Extra treat for spin!
+    sounds:
+      - excellent
+    led_pattern: rainbow
+    sequence: celebrate
+
+  cross:
+    type: behavior
+    enabled: true
+    min_duration: 2.0
+    min_confidence: 0.7
+    cooldown: 60
+    daily_limit: 8
+    hourly_limit: 3
+    treat_probability: 0.85
+    sounds:
+      - good_dog
+    led_pattern: celebration
+    sequence: celebrate
+
+  stand:
+    type: behavior
+    enabled: true
+    min_duration: 1.0
+    min_confidence: 0.6
+    cooldown: 60               # Long cooldown - easy behavior
+    daily_limit: 5
+    hourly_limit: 2
+    treat_probability: 0.5     # Lower probability for easy behavior
+    sounds:
+      - good_dog
+    led_pattern: pulse_green
+    sequence: celebrate
+
+  # ============================================
+  # BARK RULES
+  # ============================================
+
+  alert_bark:
+    type: bark
+    enabled: true
+    bark_emotions:
+      - alert
+      - attention
+    min_confidence: 0.6
+    cooldown: 60
+    daily_limit: 3             # Limited bark rewards
+    hourly_limit: 1
+    treat_probability: 0.4
+    sounds:
+      - good_dog
+    led_pattern: pulse_blue
+    sequence: celebrate
+
+  scared_bark:
+    type: bark
+    enabled: true
+    bark_emotions:
+      - scared
+      - anxious
+    min_confidence: 0.6
+    cooldown: 30
+    daily_limit: 5
+    hourly_limit: 2
+    treat_probability: 0.0     # No treat - trigger comfort mission
+    sequence: comfort_scared   # Start comfort mission
+
+  # ============================================
+  # BARK FREQUENCY RULES (Excessive Barking)
+  # ============================================
+
+  excessive_barking:
+    type: bark_frequency
+    enabled: true
+    threshold: 3               # 3 barks
+    window_minutes: 1          # in 1 minute
+    cooldown: 120              # 2 minute cooldown after handling
+    daily_limit: 20
+    treat_probability: 0.0     # No treat - trigger stop barking
+    sequence: stop_barking
+    escalation:
+      after_events: 5          # After 5 occurrences in a day
+      increase_quiet_duration: true
+      base_quiet: 5            # Start with 5 seconds required silence
+      max_quiet: 20            # Escalate up to 20 seconds
+      add_actions:
+        - move_around
+        - say_no_no_no
+
+  # ============================================
+  # QUIET RULES
+  # ============================================
+
+  quiet_reward:
+    type: quiet
+    enabled: true
+    quiet_duration: 30         # 30 seconds of silence
+    cooldown: 300              # 5 minutes between quiet rewards
+    daily_limit: 5
+    hourly_limit: 1
+    treat_probability: 0.6
+    sounds:
+      - good_dog
+    led_pattern: pulse_green
+    sequence: celebrate
+
+  post_bark_quiet:
+    type: quiet
+    enabled: true
+    quiet_duration: 5          # After stop_barking mission
+    cooldown: 60
+    daily_limit: 20
+    treat_probability: 0.8
+    sounds:
+      - good_dog
+    led_pattern: celebration
+    sequence: celebrate
+
+  # ============================================
+  # COMBO RULES (Multiple Conditions)
+  # ============================================
+
+  sit_and_speak:
+    type: combo
+    enabled: true
+    conditions:
+      - type: behavior
+        behavior: sit
+        min_duration: 2.0
+      - type: bark
+        max_barks: 2           # 1-2 barks only
+    cooldown: 60
+    daily_limit: 5
+    treat_probability: 0.95    # High reward for complex trick
+    treat_count: 2
+    sounds:
+      - excellent
+    led_pattern: rainbow
+    sequence: celebrate
+
+  # ============================================
+  # TRAINING RULES (Manual Missions)
+  # ============================================
+
+  training_sit:
+    type: behavior
+    enabled: true
+    min_duration: 1.0          # Shorter for training
+    min_confidence: 0.6
+    cooldown: 10               # Quick cooldown for training sessions
+    daily_limit: 50
+    hourly_limit: 20
+    treat_probability: 0.95
+    sounds:
+      - good_dog
+    led_pattern: celebration
+    sequence: celebrate
+
+  training_any:
+    type: behavior
+    enabled: true
+    min_duration: 0.5
+    min_confidence: 0.5
+    cooldown: 5
+    daily_limit: 100
+    hourly_limit: 30
+    treat_probability: 1.0     # Always reward during training
+    sounds:
+      - good_dog
+    led_pattern: pulse_green
+    sequence: celebrate
