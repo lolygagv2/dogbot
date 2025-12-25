@@ -5,7 +5,7 @@
   "prob_th": 0.7,
   "cooldown_s": {"stand":2,"sit":5,"lie":5,"cross":4,"spin":8},
   "aruco_dict": "DICT_4X4_1000",
-  "dogs": [{"id":"bezik","marker_id":315},{"id":"elsa","marker_id":832}],
+  "dogs": [{"id":"elsa","marker_id":315},{"id":"bezik","marker_id":832}],
   "assume_other_if_two_boxes_one_marker": true,
   "camera_rotation_deg": 90,
   "hef_path": "dogpose_14.hef",

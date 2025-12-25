@@ -137,7 +137,10 @@ class WIMZDetectionGUI:
     def get_frame(self):
         """Get a frame from the camera"""
         if self.camera and PICAMERA2_AVAILABLE:
-            return self.camera.capture_array()
+            frame = self.camera.capture_array()
+            # Fix color: Picamera2 BGR888 outputs RGB, convert to BGR for OpenCV
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            return frame
         else:
             # Create a mock frame for testing
             frame = np.zeros((self.camera_height, self.camera_width, 3), dtype=np.uint8)
