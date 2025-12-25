@@ -57,16 +57,15 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 ## 📊 Current Status: Unified Architecture Implementation
 
 ### ✅ COMPLETED - Hardware Foundation (Original Phase 1)
-- [x] Devastator chassis with 2x DC motors
+- [x] Devastator chassis with 2x DC motor with Encoders
 - [x] Raspberry Pi 5 + Hailo-8 (26 TOPS HAT)
 - [x] IMX500 camera with pan/tilt servos (2x)
 - [x] Treat dispenser carousel with servo
 - [x] YOLOv8s dog detection/pose inference working
-- [x] DFPlayer Pro audio system
-- [x] 300W amplifier + 2x speakers
+- [x] 50W amplifier + 2x speakers
 - [x] NeoPixels + Blue LED tube lighting
 - [x] 4S2P 21700 battery pack with BMS
-- [x] Power distribution (3x buck converters)
+- [x] Power distribution (4x buck converters)
 - [x] Basic motor/servo control tested
 
 ### ✅ COMPLETED - Unified Architecture (Oct 21-22, 2025)
@@ -125,19 +124,20 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 - ✅ **Complete Testing** - Recording/playback verified working
 - ✅ **Simplified architecture** - No DFPlayer, relays, or external amplifier needed
 
+**Charging Pads:** Roomba-style bare metal charging plates
+- **Connection:** Direct to P+/P- 
+- ✅ **Status:** Hardware working without errors, but power is throttled to 16.8V and maximum of 5A power.
+
 **Camera System:**
 - ✅ **Longer camera cable** installed
-- **⚠️ STATUS:** Need to test cable functionality and video quality
+- ✅ **STATUS:** Tested and functioning adequately
 
-**🔧 OFFLINE - POWER DEBUG NEEDED:**
+**🔧 OFFLINE - Postponed for future development:**
 - **IR Sensors:** 3x rear sensors installed (Left, Center, Right)
   - **Issue:** Caused Pi startup failure when connected
   - **Status:** Hardware present but disconnected
 
-- **Charging Pads:** Roomba-style bare metal charging plates
-  - **Connection:** Direct to P+/P- (may be causing power issues)
-  - **Issue:** May be contributing to Pi startup failure
-  - **Status:** Hardware present but disconnected
+
 
 **Sensor Additions (Still Planned):**
 - [ ] Bumper sensors (collision detection)
@@ -333,27 +333,59 @@ schedule:
   - [ ] Detection sensitivity sliders
   - [ ] Safe zone boundaries
 
-#### 5.2 Remote Control [Priority: MEDIUM]
-**Connectivity:** WiFi primary, Bluetooth secondary
+#### 5.2 Remote Control [Priority: MEDIUM] ✅ XBOX COMPLETE
+**Connectivity:** WiFi API + Bluetooth Xbox Controller
 
-- [ ] **Manual Control Mode**
-  - [ ] Tank-style driving (WASD/joystick)
-  - [ ] Camera pan/tilt control
-  - [ ] Manual treat dispense
-  - [ ] Emergency stop button
+**✅ COMPLETED - Xbox Wireless Controller (Dec 2025)**
+- [x] **Manual Control Mode**
+  - [x] Left stick for direction (forward/back/turn)
+  - [x] Right stick for camera pan/tilt
+  - [x] Emergency stop (A/B buttons)
+  - [x] Manual treat dispense (LB)
 
-- [ ] **Bluetooth Controller** (Optional)
-  - [ ] Cheap gamepad support
-  - [ ] Auto-detect on pairing
-  - [ ] Priority over web interface
-  - [ ] Toggle: "BT_PRIMARY" mode
+- [x] **Xbox Controller Features**
+  - [x] Auto-detect on Bluetooth pairing
+  - [x] Spawned as subprocess by treatbot.service
+  - [x] Priority over autonomous mode (AUTO → MANUAL transition)
+  - [x] 2-second watchdog timeout + stale command detection
 
-#### 5.3 Mobile App [Priority: LOW]
+- [x] **Button Mapping**
+  | Button | Function |
+  |--------|----------|
+  | Left Stick | Direction (forward/back/turn) |
+  | Right Stick | Camera pan/tilt |
+  | RT | Play "good dog" audio |
+  | LT | Cycle LED modes |
+  | A | Emergency stop |
+  | B | Stop motors |
+  | X | Toggle blue LED |
+  | Y | Play treat sound |
+  | LB | Dispense treat |
+  | RB | Take photo |
+  | Start (☰) | Record audio (2 sec) |
+  | D-pad Left | Cycle songs |
+  | D-pad Right | Cycle talks |
+  | D-pad Down | Play queued audio |
+  | D-pad Up | Stop audio |
+
+- [x] **Audio Recording (Start Button)**
+  - [x] Press Start → Beep + Fire LED + 2 sec recording
+  - [x] Automatic playback of recording
+  - [x] Press Start again within 10s → Save to VOICEMP3/talks/
+  - [x] Dynamic audio folder rescan after save
+
+**Implementation Files:**
+- `xbox_hybrid_controller.py` - Main controller logic
+- `core/hardware/proper_pid_motor_controller.py` - PID motor control
+- `core/motor_command_bus.py` - Motor command routing
+
+#### 5.3 Mobile App [Priority: HIGH - NEXT]
 **Platform:** React Native or Flutter
 - [ ] Responsive web app as MVP
 - [ ] Native app if needed (iOS/Android)
 - [ ] Push notifications
 - [ ] Photo gallery sync
+- [ ] Remote control via web interface
 
 ### **PHASE 6: Social & AI Integration (Mar 2026)**
 
@@ -397,16 +429,20 @@ schedule:
 ### API Server Design
 ```
 api/
-├── server.py           # FastAPI/Flask main
-├── websocket.py        # Real-time updates
-├── routes/
-│   ├── hardware.py     # Motor/servo/LED control
-│   ├── missions.py     # Training sequences
-│   ├── camera.py       # Stream/snapshot
-│   └── system.py       # Health/battery/logs
-└── models/
-    └── mission.py      # Mission data models
+├── server.py           # FastAPI main (monolithic - all routes inline)
+├── ws.py               # WebSocket server (real-time updates)
+└── static/             # Static assets for web interface
 ```
+
+**Current Endpoints in server.py:**
+- `/telemetry` - System health and status
+- `/mode/set`, `/mode/get` - Mode FSM control
+- `/motor/*` - Motor control (speed, stop, emergency)
+- `/servo/*` - Pan/tilt/carousel control
+- `/led/*` - LED patterns and modes
+- `/audio/*` - Playback, recording, file management
+- `/camera/*` - Snapshot, stream control
+- `/treat/dispense` - Treat dispenser trigger
 
 ### Mission Module System
 **Unified API for all scripts:**

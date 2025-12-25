@@ -1,13 +1,15 @@
 # WIM-Z (Watchful Intelligent Mobile Zen) Project - Development Rules
 
 ## CRITICAL: USB Audio System
-- **Audio device**: USB Audio on card 0 (plughw:0,0) - dual jack for mic/speaker
+- **Audio device**: USB Audio (card number detected dynamically - can be 0, 1, or 2)
+- **Dual jack**: Single USB port handles both microphone and speaker
 - **Audio files**: Located in `/home/morgan/dogbot/VOICEMP3/` folder
   - `/talks/` - Voice recordings and commands
   - `/songs/` - Music files
 - **Playback**: Uses pygame mixer via `services/media/usb_audio.py`
+- **Auto-detection**: Card number detected at startup via `aplay -l`
 - **API endpoint**: POST `/audio/play/file` with `{"filepath": "/talks/good_dog.mp3"}`
-- **Volume control**: `amixer -c 0 sset 'Speaker' 90%`
+- **Manual volume**: Find card with `aplay -l`, then `amixer -c <card> sset 'Speaker' 90%`
 
 ## NEVER DELETE OR MODIFY
 - notes.txt (user's personal notes - IGNORE)

@@ -13,7 +13,7 @@ steps:
         command: play
         params:
           sound: "startup"
-          volume: 20
+          volume: 75
         description: "Play startup sound"
 
       - service: led
@@ -45,7 +45,7 @@ steps:
     command: play
     params:
       sound: "dog_detected"  # "Ready" sound
-      volume: 18
+      volume: 75
     description: "Signal ready state"
 
 metadata:

@@ -23,7 +23,7 @@ steps:
         command: play
         params:
           sound: "$sound"        # Use sound from context
-          volume: 25
+          volume: 75
         description: "Play celebration sound"
 
       - service: led

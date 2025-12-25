@@ -13,7 +13,7 @@ steps:
         command: play
         params:
           sound: "shutdown"
-          volume: 18
+          volume: 75
         description: "Play shutdown sound"
 
       - service: led

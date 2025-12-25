@@ -753,11 +753,19 @@ class XboxHybridControllerFixed:
             self.state.right_y = -normalized
             # Store for smooth camera update loop
 
-        elif number == 5:  # Right trigger (RT) - speed control
+        elif number == 5:  # Right trigger (RT) - play "good dog" audio
             # RT ranges from 0 to 32767 (not -32767 to 32767)
             normalized_trigger = value / 32767.0
             if normalized_trigger > self.TRIGGER_DEADZONE:
                 self.state.right_trigger = normalized_trigger
+                # Play good_dog.mp3 with cooldown to prevent spam
+                current_time = time.time()
+                if not hasattr(self, '_last_rt_time'):
+                    self._last_rt_time = 0
+                if current_time - self._last_rt_time > 1.0:  # 1 second cooldown
+                    logger.info("RT: Playing good_dog.mp3")
+                    self.api_request('POST', '/audio/play/file', {"filepath": "/talks/good_dog.mp3"})
+                    self._last_rt_time = current_time
             else:
                 self.state.right_trigger = 0.0
 

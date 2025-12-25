@@ -237,7 +237,7 @@ class SequenceEngine:
         elif command == 'stop':
             self.sfx.stop_sound()
         elif command == 'volume':
-            volume = params.get('volume', 23)
+            volume = params.get('volume', 75)
             self.sfx.set_volume(volume)
 
     def _execute_led_command(self, command: str, params: Dict[str, Any]) -> None:

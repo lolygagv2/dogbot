@@ -109,7 +109,7 @@ class TreatDispenserRobot:
             'hardware': {'motors': {'default_speed': 50}},
             'detection': {'confidence_threshold': 0.7},
             'behavior': {'treat_cooldown_seconds': 30},
-            'audio': {'default_volume': 23},
+            'audio': {'default_volume': 75},
             'leds': {'brightness': 0.3},
             'missions': {'default_mode': 'tracking'},
             'safety': {'emergency_stop_timeout': 0.5}

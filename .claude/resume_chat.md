@@ -1,5 +1,65 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2025-12-23 13:30
+**Goal:** Fix 3 Demo Bugs (Audio, LED Flicker, Motor Control)
+**Status:** ✅ COMPLETE
+
+### ✅ Problems Solved This Session:
+
+#### 1. **NO SOUND (CRITICAL)**
+- **Problem**: Speakers had no audio output
+- **Root Cause**: USB audio is on card 0, but code used card 2 (HDMI)
+- **Fix**: Changed `plughw:2,0` → `plughw:0,0` in usb_audio.py and audio_controller.py
+- **Verified**: Audio playback working via API
+
+#### 2. **LED Flickering in Xbox Mode**
+- **Problem**: LEDs flickered/pulsed when switching from auto to xbox mode
+- **Root Cause**: Detection handlers fired before MANUAL mode transition completed
+- **Fix**: Added `xbox_controller.is_connected` check to LED feedback handlers
+- **Files**: `main_treatbot.py` (_on_detection_for_feedback, _on_bark_for_feedback)
+
+#### 3. **Motor Control Issues**
+- **Problem**: Motors too sensitive, didn't stop reliably, turbo not wanted
+- **Fix**: Per user request, simplified motor control:
+  - Removed turbo mode entirely (RT no longer used)
+  - Capped MAX_SPEED to 75%
+  - Increased DEADZONE 15% → 20% for reliable stop detection
+  - Increased PWM_MIN 30 → 35 to reduce motor whine
+  - Reduced MAX_RPM 180 → 150 for smoother control
+  - Reset LEFT_MOTOR_BOOST to 1.0 (let PID handle balance)
+
+#### 4. **DFPlayer Cleanup**
+- **Problem**: User confirmed DFPlayer removed, using USB audio only
+- **Fix**: Removed all DFPlayer references from active code
+- **Updated**: CLAUDE.md with USB audio instructions
+
+### 📁 Files Modified:
+| File | Changes |
+|------|---------|
+| `services/media/usb_audio.py` | Fixed audio card 2→0, added helper methods |
+| `core/hardware/audio_controller.py` | Fixed audio card, volume 75→90% |
+| `core/hardware/proper_pid_motor_controller.py` | PWM_MIN=35, PWM_MAX=70, stop threshold 15 RPM |
+| `xbox_hybrid_controller.py` | Simplified motor control, removed turbo, 20% deadzone |
+| `main_treatbot.py` | LED feedback checks xbox_controller.is_connected |
+| `api/server.py` | Renamed DFPlayer→Audio models, cleaned relay endpoints |
+| `services/media/sfx.py` | Removed DFPlayer references |
+| `.claude/CLAUDE.md` | USB audio instructions |
+
+### 📦 Commit:
+- `2d740d35` - fix: Audio card, LED flicker, motor control + DFPlayer cleanup
+
+### 🔧 Architecture Confirmed:
+- Both `main_treatbot.py` and `xbox_hybrid_controller.py` should run together
+- They communicate via API and event bus
+- Can run xbox_hybrid_controller.py standalone for manual-only mode
+
+### ⚠️ Notes for Next Session:
+- Test motor stopping behavior with controller
+- Verify audio works via xbox buttons
+- High-pitched motor whine is hardware limitation (mitigated, not eliminated)
+
+---
+
 ## Session: 2025-12-23 01:30
 **Goal:** Xbox Controller Stability & Audio Defaults
 **Status:** ✅ COMPLETE

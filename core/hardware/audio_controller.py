@@ -18,6 +18,7 @@ class AudioController:
         self.initialized = False
         self.current_volume = 50
         self.audio_device = None
+        self.usb_card_number = None  # Dynamically detected
 
         # Initialize USB audio
         self._initialize_usb_audio()
@@ -32,44 +33,46 @@ class AudioController:
                 # Look for USB audio devices
                 lines = result.stdout.split('\n')
                 for line in lines:
-                    if 'USB Audio' in line or 'usb' in line.lower():
-                        # Extract card number
+                    if 'USB Audio' in line:
+                        # Extract card number from "card X:"
                         if 'card' in line:
-                            parts = line.split()
-                            for i, part in enumerate(parts):
-                                if part == 'card' and i + 1 < len(parts):
-                                    card_info = parts[i + 1].rstrip(':')
-                                    self.audio_device = f"plughw:{card_info}"
-                                    break
+                            try:
+                                card_info = line.split('card ')[1].split(':')[0]
+                                self.usb_card_number = card_info
+                                self.audio_device = f"plughw:{card_info},0"
+                                break
+                            except (IndexError, ValueError):
+                                pass
 
                 if self.audio_device:
                     self.initialized = True
-                    self.logger.info(f"USB audio device found: {self.audio_device}")
+                    self.logger.info(f"USB audio device found: {self.audio_device} (card {self.usb_card_number})")
                 else:
                     # Fallback to default device
                     self.audio_device = "default"
+                    self.usb_card_number = '2'  # Common default
                     self.initialized = True
                     self.logger.info("Using default audio device")
 
-                # Initialize USB audio levels on card 0 (USB Audio Device)
+                # Initialize USB audio levels using detected card number
                 # Speaker to 90% for good volume without distortion
                 try:
                     subprocess.run(
-                        ['amixer', '-c', '0', 'sset', 'Speaker', '90%'],
+                        ['amixer', '-c', str(self.usb_card_number), 'sset', 'Speaker', '90%'],
                         capture_output=True, timeout=2
                     )
                     self.current_volume = 90
-                    self.logger.info("USB speaker set to 90%")
+                    self.logger.info(f"USB speaker set to 90% (card {self.usb_card_number})")
                 except Exception as spk_err:
                     self.logger.warning(f"Could not set speaker volume: {spk_err}")
 
                 # Microphone to 100% capture
                 try:
                     subprocess.run(
-                        ['amixer', '-c', '0', 'sset', 'Mic', '100%', 'cap'],
+                        ['amixer', '-c', str(self.usb_card_number), 'sset', 'Mic', '100%', 'cap'],
                         capture_output=True, timeout=2
                     )
-                    self.logger.info("USB microphone set to 100% capture")
+                    self.logger.info(f"USB microphone set to 100% capture (card {self.usb_card_number})")
                 except Exception as mic_err:
                     self.logger.warning(f"Could not set mic volume: {mic_err}")
 
@@ -119,12 +122,13 @@ class AudioController:
             volume = max(0, min(100, volume))
             self.current_volume = volume
 
-            # Set USB audio speaker volume (card 0)
-            cmd = ['amixer', '-c', '0', 'sset', 'Speaker', f'{volume}%']
+            # Set USB audio speaker volume using detected card
+            card = str(self.usb_card_number) if self.usb_card_number else '2'
+            cmd = ['amixer', '-c', card, 'sset', 'Speaker', f'{volume}%']
             result = subprocess.run(cmd, capture_output=True)
 
             if result.returncode == 0:
-                self.logger.info(f"USB Speaker volume set to {volume}%")
+                self.logger.info(f"USB Speaker volume set to {volume}% (card {card})")
                 return True
             else:
                 # Fallback to master volume

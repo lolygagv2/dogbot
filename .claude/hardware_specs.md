@@ -10,18 +10,18 @@
 **Control Method:** `kit.continuous_servo[2].throttle` (NOT `kit.servo[2].angle`)
 
 **Treat Dispensing Specifications:**
-- **Treat Positions:** 6 compartments around carousel
-- **Rotation per treat:** 60° (360° ÷ 6 positions)
+- **Treat Positions:** 8 compartments around carousel
+- **Rotation per treat:** 45° (360° ÷ 8 positions)
 - **Dispensing method:** Brief rotation to advance to next treat slot
 - **Duration:** 0.05 seconds per treat (50ms) - CALIBRATED
-- **Pulse Width:** 1580μs (slow forward rotation) - CALIBRATED
-- **Control:** `winch.duty_cycle = pulse_to_duty(1580)` for controlled dispensing
+- **Pulse Width:** 1700μs (slow forward rotation) - CALIBRATED
+- **Control:** `winch.duty_cycle = pulse_to_duty(1700)` for controlled dispensing
 
 **Safe Control:**
 ```python
 # ✅ CORRECT - Treat Dispensing (CALIBRATED VALUES)
 def dispense_one_treat():
-    winch.duty_cycle = pulse_to_duty(1580)  # 1580μs pulse
+    winch.duty_cycle = pulse_to_duty(1700)  # 1700μs pulse
     time.sleep(0.05)                        # 50ms duration
     controller.stop_carousel(gradual=True)  # Safe stop with ramp-down
 
@@ -58,7 +58,7 @@ kit.continuous_servo[2].throttle = 0.0  # Abrupt stop causes screech
 - **Up Extreme:** ~200° (looking up)
 - **Working Range:** 180° of tilt available
 
-**⚠️ CRITICAL - Camera Gimbal Calibration Completed (Dec 2024)**
+**⚠️ CRITICAL - Camera Gimbal Calibration Completed (Dec 2025)**
 **TRUE CENTER POSITION: Pan=140°, Tilt=50°**
 *This is the physically calibrated center - horizon level and centered left/right*
 
@@ -92,16 +92,16 @@ Pin # | Assignment
   5   | SCL1 → PCA9685 SCL
   6   | GND → Pi to GND HUB Direct (black wire)
   7   | GPIO4 → Encoder A1 (Motor 1)
-  8   | GPIO14 (TXD) → AVAILABLE (DFPlayer removed)
+  8   | GPIO14 (TXD) → AVAILABLE
   9   | GND
- 10   | GPIO15 (RXD) → AVAILABLE (DFPlayer removed)
+ 10   | GPIO15 (RXD) → AVAILABLE
  11   | GPIO17 → PWM IN1
  12   | GPIO18 → PWM IN2
  13   | GPIO27 → PWM IN3
  14   | GND → PCA9685 GND
  15   | GPIO22 → PWM IN4
  16   | GPIO23 → ENCODER B1 (Motor 1 left - right side of L298N)
- 17   | 3.3V → sensor/encoder VCC rail (encoders + 3× IR)
+ 17   | 3.3V → encoder VCC rail (encoders )
  18   | GPIO24
  19   | GPIO10 (MOSI)
  20   | GND
@@ -121,10 +121,10 @@ Pin # | Assignment
  34   | GND
  35   | GPIO19 → PWM ENB
  36   | GPIO16 → AVAILABLE (Audio relay removed)
- 37   | GPIO26 → Left IR OUT
- 38   | GPIO20 → Center IR OUT
+ 37   | GPIO26 → Left IR OUT (disabled)
+ 38   | GPIO20 → Center IR OUT (disabled)
  39   | GND
- 40   | GPIO21 → Right IR OUT
+ 40   | GPIO21 → Right IR OUT (disabled)
 ```
 
 ### Hailo-8 AI Accelerator HAT
@@ -220,8 +220,8 @@ Pin # | Assignment
   - **Max Current:** 2A per channel
   - **Effective Motor Voltage:** 12.6V (14V - 1.4V drop)
 - **Speed Control:** PWM on enable pins
-  - **Safe PWM Range:** 20-50% duty cycle (2.5-6.3V effective)
-  - **Maximum PWM:** 60% duty cycle (7.5V effective - absolute max)
+  - **Safe PWM Range:** 40-70% duty cycle 
+  - **Maximum PWM:** 75% duty cycle (9V effective - absolute max)
   - **⚠️ NEVER use 100% duty cycle (would supply 12.6V to 6V motors)**
 - **Turning:** Differential steering
 
@@ -245,14 +245,14 @@ Pin # | Assignment
 - **Model:** MG996R or similar (high-torque)
 - **Torque:** 10+ kg·cm
 - **Control:** PCA9685 PWM driver
-- **Rotation:** 60° per treat dispense
+- **Rotation:** 45° per treat dispense
 
 ---
 
 ## 💡 Lighting System
 
-### NeoPixels (WS2812B)
-- **Count:** 16-24 LEDs (ring or strip)
+### NeoPixels 
+- **Count:** 155 LEDs (ring or strip)
 - **Location:** Around base or under dome
 - **Control:** GPIO (SPI via RPi.GPIO)
 - **Modes:** 
@@ -261,7 +261,7 @@ Pin # | Assignment
   - Low battery warning (red flash)
 
 ### Blue LED Tube
-- **Type:** EL wire or LED strip (blue)
+- **Type:** LED spot light with fiber optic tube (blue)
 - **Length:** ~50cm
 - **Location:** Accent lighting around chassis
 - **Control:** On/off via relay or transistor
@@ -273,8 +273,8 @@ Pin # | Assignment
 
 ### Battery
 - **Type:** 4S2P 21700 Li-ion pack
-- **Nominal Voltage:** 14.8V (4x 3.7V cells in series)
-- **Capacity:** 6000mAh (2x 3000mAh in parallel)
+- **Nominal Voltage:** 14.8V (4x 3.6V cells in series)
+- **Capacity:** 8000mAh (2x 4000mAh in parallel)
 - **Max Voltage:** 16.8V (fully charged)
 - **Min Voltage:** 12.0V (cutoff)
 - **BMS:** HX-4S-F30A or Daly Smart BMS
@@ -291,27 +291,33 @@ Pin # | Assignment
 **Buck Converter 2:**
 - **Input:** 12-16.8V (battery)
 - **Output:** 5V @ 3A
-- **Load:** DFPlayer Pro, L298N logic
+- **Load:** NeoPixel LED, L298N logic
 
 **Buck Converter 3:**
 - **Input:** 12-16.8V (battery)
 - **Output:** 6V @ 2A
 - **Load:** PCA9685, Servo motors (3x)
 
+**Buck Converter 4:**
+- **Input:** 12-16.8V (battery)
+- **Output:** 12V @ 2A
+- **Load:** Amplifier, LED BLue Tube Light
+
+
 **Amplifier:**
-- **Direct Battery:** 12-16.8V
+- **Buck Convert 4
 - **Protection:** Fuse (5A)
 
 ### Charging System
 **Method 1: Manual (Current)**
 - **Connector:** XT60
 - **Charger:** External balance charger
-- **Time:** ~2 hours (6000mAh @ 3A)
+- **Time:** ~2 hours (8000mAh @ 4A)
 
-**Method 2: Docking (Planned)**
+**Method 2: Docking (Current)**
 - **Connector:** Pogo pins (magnetic)
 - **Charger:** Onboard CC/CV module (16.8V @ 1-2A)
-- **Docking:** IR-guided autonomous return-to-base
+- **Docking:** IR-guided autonomous return-to-base optional but disabled
 
 ---
 
@@ -331,10 +337,9 @@ Pin # | Assignment
   - **⚠️ ISSUE:** Caused Pi not to start when connected
   - **STATUS:** Hardware installed but disconnected pending power debug
 
-- [🔧] **Charging Pads** (Roomba-style charging)
+- [x] **Charging Pads** (Roomba-style charging)
   - **Design:** Bare metal plates wired directly to P+/P-
-  - **⚠️ ISSUE:** May be causing Pi startup failure
-  - **STATUS:** Hardware installed but disconnected pending power debug
+  - **STATUS:** Hardware installed and working, may not supply full power to run and charge at the same time but supplies adequate power.
   
 - [ ] **Bumper Sensors** (collision detection)
   - **Type:** Mechanical switches (Roomba-style)
@@ -438,9 +443,9 @@ Pin # | Assignment
 | **Total** | **5.5W** | **36W** | **99.5W** |
 
 **Battery Life:**
-- **Idle:** ~18 hours (6000mAh @ 5.5W)
-- **Active:** ~4-5 hours (6000mAh @ 36W)
-- **Peak:** ~1 hour (6000mAh @ 100W, brief bursts)
+- **Idle:** ~21.5 hours (8000mAh @ 5.5W)
+- **Active:** ~5-6 hours (8000mAh @ 36W)
+- **Peak:** ~1.5 hour (8000mAh @ 100W, brief bursts)
 
 ---
 

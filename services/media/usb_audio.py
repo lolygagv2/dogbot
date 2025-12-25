@@ -8,16 +8,33 @@ import os
 import time
 import logging
 import threading
+import subprocess
 from typing import Optional, Dict, Any
 
+def _detect_usb_audio_card() -> int:
+    """Detect which card number the USB Audio Device is on"""
+    try:
+        result = subprocess.run(['aplay', '-l'], capture_output=True, text=True, timeout=5)
+        for line in result.stdout.split('\n'):
+            if 'USB Audio' in line and 'card' in line:
+                # Parse "card 2: Device [USB Audio Device]"
+                card_num = int(line.split('card ')[1].split(':')[0])
+                return card_num
+    except Exception as e:
+        logging.warning(f"Could not detect USB audio card: {e}")
+    return 2  # Default fallback
+
+# Detect USB audio card dynamically (can be 0, 1, or 2 depending on boot order)
+USB_AUDIO_CARD = _detect_usb_audio_card()
+
 # Set audio environment BEFORE importing pygame
-# USB Audio Device is on card 0 (not card 2 which is HDMI)
 os.environ['SDL_AUDIODRIVER'] = 'alsa'
-os.environ['AUDIODEV'] = 'plughw:0,0'
+os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
 
 import pygame
 
 logger = logging.getLogger('USBAudio')
+logger.info(f"USB Audio detected on card {USB_AUDIO_CARD}")
 
 class USBAudioService:
     """USB Audio service using pygame mixer"""
