@@ -29,6 +29,7 @@ from services.motion.motor import get_motor_service
 from services.reward.dispenser import get_dispenser_service
 from services.media.sfx import get_sfx_service
 from services.media.led import get_led_service
+from services.media.usb_audio import get_usb_audio_service
 from services.control.bluetooth_esc import BluetoothESCController
 from services.control.xbox_controller import get_xbox_service
 from api.server import run_server
@@ -37,6 +38,10 @@ from api.server import run_server
 from orchestrators.sequence_engine import get_sequence_engine
 from orchestrators.reward_logic import get_reward_logic
 from orchestrators.mode_fsm import get_mode_fsm
+
+# Mode handlers
+from modes.silent_guardian import get_silent_guardian_mode
+from orchestrators.coaching_engine import get_coaching_engine
 
 
 class TreatBotMain:
@@ -68,14 +73,31 @@ class TreatBotMain:
         self.dispenser = None
         self.sfx = None
         self.led = None
+        self.usb_audio = None  # For voice announcements
         self.bluetooth_controller = None
         self.xbox_controller = None
         self.api_server = None
+
+        # Mode audio mappings - voice announcements for mode changes
+        self.mode_audio_files = {
+            'idle': '/home/morgan/dogbot/VOICEMP3/wimz/IdleMode.mp3',
+            'silent_guardian': '/home/morgan/dogbot/VOICEMP3/wimz/SilentGuardianMode.mp3',
+            'coach': '/home/morgan/dogbot/VOICEMP3/wimz/CoachMode.mp3',
+            'manual': '/home/morgan/dogbot/VOICEMP3/wimz/ManualMode.mp3',
+            'mission': '/home/morgan/dogbot/VOICEMP3/wimz/MissionMode.mp3',
+        }
+        self.startup_audio = '/home/morgan/dogbot/VOICEMP3/wimz/WimZOnline.mp3'
+        self.low_battery_audio = '/home/morgan/dogbot/VOICEMP3/wimz/BatteryLow.mp3'
+        self.low_battery_announced = False  # Prevent repeat announcements
 
         # Orchestrators
         self.sequence_engine = None
         self.reward_logic = None
         self.mode_fsm = None
+
+        # Mode handlers
+        self.silent_guardian_mode = None
+        self.coaching_engine = None
 
         # Main state
         self.running = False
@@ -244,6 +266,18 @@ class TreatBotMain:
             self.logger.error(f"LED service failed: {e}")
             services_status['led'] = False
 
+        # USB Audio service (voice announcements)
+        try:
+            self.usb_audio = get_usb_audio_service()
+            services_status['usb_audio'] = self.usb_audio.initialized
+            if services_status['usb_audio']:
+                self.logger.info("✅ USB Audio service initialized (voice announcements ready)")
+            else:
+                self.logger.warning("⚠️ USB Audio service failed to initialize")
+        except Exception as e:
+            self.logger.error(f"USB Audio service failed: {e}")
+            services_status['usb_audio'] = False
+
         # Bluetooth controller service - DISABLED (conflicts with Xbox controller)
         try:
             # self.bluetooth_controller = BluetoothESCController()
@@ -274,7 +308,9 @@ class TreatBotMain:
             services_status['api_server'] = False
 
         # Check critical services
-        critical_services = ['detector', 'dispenser']
+        # Note: detector is non-critical - Silent Guardian mode uses bark detection only
+        # Coach mode will log warning if detector unavailable
+        critical_services = ['dispenser']
         for service in critical_services:
             if not services_status.get(service, False):
                 self.logger.error(f"Critical service failed: {service}")
@@ -314,6 +350,14 @@ class TreatBotMain:
             self.mode_fsm = get_mode_fsm()
             self.logger.info("✅ Mode FSM ready")
 
+            # Silent Guardian mode handler
+            self.silent_guardian_mode = get_silent_guardian_mode()
+            self.logger.info("✅ Silent Guardian mode handler ready")
+
+            # Coaching engine
+            self.coaching_engine = get_coaching_engine()
+            self.logger.info("✅ Coaching engine ready")
+
             return True
 
         except Exception as e:
@@ -334,8 +378,11 @@ class TreatBotMain:
                 if self.pantilt.servo_initialized:
                     self.pantilt.start_tracking()
 
-            # Start detection (will be controlled by mode FSM)
+            # Start AI detection - runs in ALL operational modes
+            # Vision is a core perception layer, not mode-specific
             if self.detector.ai_initialized:
+                self.detector.start_detection()
+                self.logger.info("🧠 AI detection started (runs in all operational modes)")
                 # Subscribe to detection events for LED feedback
                 self.bus.subscribe('vision', self._on_detection_for_feedback)
 
@@ -345,6 +392,9 @@ class TreatBotMain:
                 # Subscribe to bark events for feedback
                 self.bus.subscribe('audio', self._on_bark_for_feedback)
                 self.logger.info("🎤 Bark detection started")
+
+            # Subscribe to mode changes to manage mode handlers
+            self.state.subscribe('mode_change', self._on_mode_change)
 
             # Start Bluetooth controller if available
             if self.bluetooth_controller and self.bluetooth_controller.is_connected:
@@ -364,7 +414,7 @@ class TreatBotMain:
         try:
             # Skip LED feedback when Xbox controller is active
             # Check both mode AND controller connection status to prevent race conditions
-            if self.state.current_mode == SystemMode.MANUAL:
+            if self.state.get_mode() == SystemMode.MANUAL:
                 return
             if self.xbox_controller and self.xbox_controller.is_connected:
                 return
@@ -396,7 +446,7 @@ class TreatBotMain:
         """Provide feedback for bark detection events"""
         try:
             # Skip LED feedback when Xbox controller is active
-            if self.state.current_mode == SystemMode.MANUAL:
+            if self.state.get_mode() == SystemMode.MANUAL:
                 return
             if self.xbox_controller and self.xbox_controller.is_connected:
                 return
@@ -417,20 +467,89 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"Bark feedback error: {e}")
 
-    def _run_startup_sequence(self) -> None:
-        """Run startup sequence"""
+    def _on_mode_change(self, data: Dict[str, Any]) -> None:
+        """Handle mode changes to start/stop mode handlers"""
         try:
-            # Execute startup sequence
-            sequence_id = self.sequence_engine.execute_sequence('startup')
-            if sequence_id:
-                self.logger.info(f"🎬 Startup sequence launched: {sequence_id}")
+            previous_mode = data.get('previous_mode')  # String value
+            new_mode = data.get('new_mode')  # String value
+
+            self.logger.info(f"🔄 Mode change: {previous_mode} → {new_mode}")
+
+            # Play voice announcement for mode change
+            self._announce_mode(new_mode)
+
+            # Stop Silent Guardian if leaving that mode
+            if previous_mode == 'silent_guardian':
+                if self.silent_guardian_mode and self.silent_guardian_mode.running:
+                    self.silent_guardian_mode.stop()
+                    self.logger.info("🛑 Silent Guardian mode stopped")
+
+            # Stop Coach mode if leaving that mode
+            if previous_mode == 'coach':
+                if self.coaching_engine and self.coaching_engine.running:
+                    self.coaching_engine.stop()
+                    self.logger.info("🛑 Coach mode stopped")
+                # NOTE: AI detection continues running in all modes (it's a perception layer)
+
+            # Start Silent Guardian if entering that mode
+            if new_mode == 'silent_guardian':
+                if self.silent_guardian_mode:
+                    self.silent_guardian_mode.start()
+                    self.logger.info("🛡️ Silent Guardian mode started")
+
+            # Start Coach mode if entering that mode
+            if new_mode == 'coach':
+                # NOTE: AI detection is already running (started at boot)
+                if self.coaching_engine:
+                    self.coaching_engine.start()
+                    self.logger.info("🎓 Coach mode started")
+
+        except Exception as e:
+            self.logger.error(f"Mode change handler error: {e}")
+
+    def _announce_mode(self, mode: str) -> None:
+        """Play voice announcement for mode change"""
+        try:
+            if not self.usb_audio or not self.usb_audio.initialized:
+                self.logger.debug("USB audio not available for mode announcement")
+                return
+
+            audio_file = self.mode_audio_files.get(mode)
+            if audio_file:
+                import os
+                if os.path.exists(audio_file):
+                    result = self.usb_audio.play_file(audio_file)
+                    if result.get('success'):
+                        self.logger.info(f"🔊 Mode announcement: {mode}")
+                    else:
+                        self.logger.warning(f"Mode announcement failed: {result.get('error')}")
+                else:
+                    self.logger.warning(f"Mode audio file not found: {audio_file}")
             else:
-                self.logger.warning("Startup sequence failed, using fallback")
-                # Fallback startup
-                if self.led:
-                    self.led.set_pattern('idle')
-                if self.sfx:
-                    self.sfx.play_system_sound('startup')
+                self.logger.debug(f"No audio file configured for mode: {mode}")
+        except Exception as e:
+            self.logger.error(f"Mode announcement error: {e}")
+
+    def _run_startup_sequence(self) -> None:
+        """Run startup sequence with voice announcement"""
+        try:
+            # Set LED to idle pattern
+            if self.led:
+                self.led.set_pattern('idle')
+
+            # Play startup announcement
+            if self.usb_audio and self.usb_audio.initialized:
+                import os
+                if os.path.exists(self.startup_audio):
+                    result = self.usb_audio.play_file(self.startup_audio)
+                    if result.get('success'):
+                        self.logger.info("🔊 WIM-Z Online announcement played")
+                    else:
+                        self.logger.warning(f"Startup audio failed: {result.get('error')}")
+                else:
+                    self.logger.warning(f"Startup audio file not found: {self.startup_audio}")
+            else:
+                self.logger.info("🤫 Silent startup (USB audio not available)")
 
         except Exception as e:
             self.logger.error(f"Startup sequence failed: {e}")
@@ -456,10 +575,15 @@ class TreatBotMain:
         )
         self.main_thread.start()
 
-        # Set initial mode - but don't override manual mode if Xbox controller is active
+        # Set initial mode - SILENT_GUARDIAN is the primary boot mode
+        # Don't override manual mode if Xbox controller is active
         current_mode = self.state.get_mode()
         if current_mode != SystemMode.MANUAL:
-            self.state.set_mode(SystemMode.DETECTION, "System ready - starting detection")
+            self.state.set_mode(SystemMode.SILENT_GUARDIAN, "System ready - Silent Guardian active")
+            # Start Silent Guardian mode handler
+            if self.silent_guardian_mode:
+                self.silent_guardian_mode.start()
+                self.logger.info("🛡️ Silent Guardian mode activated")
         else:
             self.logger.info("Xbox controller active - staying in MANUAL mode")
 
@@ -510,8 +634,40 @@ class TreatBotMain:
                 mode=self.state.mode.value
             )
 
+            # Check for low battery warning
+            self._check_battery_warning()
+
         except Exception as e:
             self.logger.error(f"Telemetry update failed: {e}")
+
+    def _check_battery_warning(self) -> None:
+        """Check battery level and play warning if low"""
+        try:
+            battery_voltage = self.state.hardware.battery_voltage
+            # Only check if we have valid battery reading
+            if battery_voltage <= 0:
+                return
+
+            # Low battery threshold (warning level from safety.py)
+            LOW_BATTERY_THRESHOLD = 12.0
+
+            if battery_voltage < LOW_BATTERY_THRESHOLD and not self.low_battery_announced:
+                # Play low battery warning
+                if self.usb_audio and self.usb_audio.initialized:
+                    import os
+                    if os.path.exists(self.low_battery_audio):
+                        result = self.usb_audio.play_file(self.low_battery_audio)
+                        if result.get('success'):
+                            self.logger.warning(f"🔋 Low battery warning: {battery_voltage:.1f}V")
+                            self.low_battery_announced = True
+                        else:
+                            self.logger.error(f"Battery warning audio failed: {result.get('error')}")
+            elif battery_voltage >= LOW_BATTERY_THRESHOLD + 0.5:
+                # Reset the announced flag if battery recovers (with hysteresis)
+                self.low_battery_announced = False
+
+        except Exception as e:
+            self.logger.error(f"Battery check error: {e}")
 
     def _log_system_status(self) -> None:
         """Log periodic system status"""
@@ -580,6 +736,12 @@ class TreatBotMain:
                 self.safety.stop_monitoring()
             if self.xbox_controller:
                 self.xbox_controller.stop()
+
+            # Stop mode handlers
+            if self.silent_guardian_mode:
+                self.silent_guardian_mode.stop()
+            if self.coaching_engine:
+                self.coaching_engine.stop()
 
             # Stop USB audio
             try:

@@ -1,5 +1,74 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2025-12-26 ~04:00
+**Goal:** Add Voice Announcements for Mode Changes + Xbox Controller Mode Cycling
+**Status:** ✅ COMPLETE
+
+### Work Completed This Session:
+
+#### 1. Voice Announcements for Mode Changes
+**Files in `/VOICEMP3/wimz/`:**
+- `WimZOnline.mp3` - Startup announcement
+- `IdleMode.mp3` - Entering Idle mode
+- `SilentGuardianMode.mp3` - Entering Silent Guardian mode
+- `CoachMode.mp3` - Entering Coach mode
+- `ManualMode.mp3` - Entering Manual mode
+- `MissionMode.mp3` - Entering Mission mode
+- `BatteryLow.mp3` - Low battery warning (<12V)
+
+**Implementation (`main_treatbot.py`):**
+- Added `mode_audio_files` dictionary mapping modes to voice files
+- Added `_announce_mode()` method - plays voice file on mode change
+- Updated `_on_mode_change()` to call announcement
+- Updated `_run_startup_sequence()` to play `WimZOnline.mp3`
+- Added `_check_battery_warning()` to play low battery audio with hysteresis
+
+#### 2. Xbox Controller Mode Cycling
+**Problem:** No way to change modes while using controller (absent CLI)
+
+**Solution (`xbox_hybrid_controller.py`):**
+- **SELECT button (button 6)** now cycles through: MANUAL → COACH → SILENT_GUARDIAN
+- Added `cycle_mode()` method with 1-second cooldown
+- Calls API `/mode/set` to change modes
+- Updated control instructions printout
+
+**Xbox Controller Updated Controls:**
+```
+Movement: Left stick = 60% power, RT = TURBO (100%)
+Camera: Right stick
+A = Emergency Stop, B = Stop Motors
+X = Blue LED, LT = NeoPixel modes
+Y = Sound, LB = Treat (2s cooldown), RB = Photo
+SELECT = Cycle modes (MANUAL→COACH→SILENT_GUARDIAN)  ← NEW
+START = Record audio
+```
+
+### Context From Previous Session (Summarized):
+This session continued from work on:
+- Fixing AI Detection to run in ALL modes (not just COACH)
+- Fixing Silent Guardian 120s blocking sleep causing emergency shutdowns
+- Fixing SafetyMonitor infinite emergency loop
+
+Those fixes were implemented in the prior conversation and this session built on top.
+
+### Files Modified This Session:
+| File | Changes |
+|------|---------|
+| `main_treatbot.py` | +80 lines: USB audio integration, mode announcements, startup audio, battery warning |
+| `xbox_hybrid_controller.py` | +36 lines: SELECT button mode cycling |
+
+### Protected Files:
+- `notes.txt` - ✅ Unchanged
+- `config/robot_config.yaml` - ⚠️ Modified (bark confidence 0.55→0.43) - prior session change
+
+### Next Session:
+1. Test mode cycling with Xbox controller
+2. Verify voice announcements play correctly on mode changes
+3. Test low battery warning audio (if applicable)
+4. Consider adding PHOTOGRAPHY mode to cycle list if needed
+
+---
+
 ## Session: 2025-12-26 03:00-03:25
 **Goal:** Fix Hailo Model Loading - Single Model Implementation
 **Status:** ✅ COMPLETE

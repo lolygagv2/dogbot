@@ -245,6 +245,12 @@ class XboxHybridControllerFixed:
         self.last_dpad_time = 0
         self.dpad_cooldown = 0.3  # 300ms cooldown between D-pad presses
 
+        # Mode cycling (SELECT/Back button)
+        self.cycle_modes = ['manual', 'coach', 'silent_guardian']
+        self.current_mode_index = 0  # Start with manual
+        self.last_mode_cycle_time = 0
+        self.mode_cycle_cooldown = 1.0  # 1 second cooldown to prevent rapid cycling
+
         # LED state tracking
         self.led_enabled = False
         self.current_led_mode = 0
@@ -1034,6 +1040,10 @@ class XboxHybridControllerFixed:
             if pressed:
                 self.center_camera()
 
+        elif number == 6:  # Select/Back button (⧉) - Cycle modes
+            if pressed:
+                self.cycle_mode()
+
         elif number == 7:  # Start/Menu button (☰) - Record new talk
             if pressed:
                 self.handle_record_button()
@@ -1145,6 +1155,30 @@ class XboxHybridControllerFixed:
             "tilt": 90,
             "smooth": True
         })
+
+    def cycle_mode(self):
+        """Cycle between MANUAL, COACH, and SILENT_GUARDIAN modes"""
+        current_time = time.time()
+
+        # Cooldown to prevent rapid cycling
+        if current_time - self.last_mode_cycle_time < self.mode_cycle_cooldown:
+            logger.debug("Mode cycle ignored (cooldown)")
+            return
+
+        self.last_mode_cycle_time = current_time
+
+        # Move to next mode in cycle
+        self.current_mode_index = (self.current_mode_index + 1) % len(self.cycle_modes)
+        new_mode = self.cycle_modes[self.current_mode_index]
+
+        logger.info(f"🔄 SELECT button: Cycling to {new_mode.upper()} mode")
+
+        # Call API to change mode
+        result = self.api_request('POST', '/mode/set', {"mode": new_mode})
+        if result:
+            logger.info(f"✅ Mode changed to: {new_mode}")
+        else:
+            logger.warning(f"Mode change request queued: {new_mode}")
 
     def toggle_led(self):
         """Toggle blue LED with cooldown to prevent double-triggers"""
@@ -1260,6 +1294,8 @@ class XboxHybridControllerFixed:
         logger.info("A = Emergency Stop, B = Stop Motors")
         logger.info("X = Blue LED, LT = NeoPixel modes")
         logger.info("Y = Sound, LB = Treat (2s cooldown), RB = Photo")
+        logger.info("SELECT = Cycle modes (MANUAL→COACH→SILENT_GUARDIAN)")
+        logger.info("START = Record audio")
         logger.info("=== ASYNC API QUEUE ===")
         logger.info("✅ Non-blocking button presses")
         logger.info("✅ 50ms command debouncing")
