@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-3-Stage AI Controller for TreatSensei DogBot - FIXED VERSION
-Using working HEF direct API instead of broken InferModel
-Stage 1: Dog Detection (dogdetector_14.hef) - 640x640
-Stage 2: Pose Estimation (dogpose_14.hef) - 640x640 crops
+3-Stage AI Controller for TreatSensei DogBot - SINGLE MODEL VERSION
+Uses dogpose_14.hef for BOTH detection and pose (YOLOv8-pose outputs both)
+Stage 1: Dog Detection + Pose from single inference
+Stage 2: (Combined with Stage 1 - no separate inference needed)
 Stage 3: Behavior Analysis (CPU) - temporal keypoint analysis
 """
 
@@ -12,6 +12,7 @@ import cv2
 import time
 import logging
 import json
+import torch
 from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 from collections import deque
@@ -77,13 +78,16 @@ class AI3StageControllerFixed:
         self.config_path = config_path
         self.config = None
 
-        # VDevice for sequential model loading
+        # VDevice for model loading
         self.vdevice = None
-        self.current_model = None  # "detection" or "pose"
+        self.model_loaded = False
 
-        # Model paths (store paths, load on demand)
-        self.detection_model_path = None
-        self.pose_model_path = None
+        # Single model path (pose model does both detection + pose)
+        self.model_path = None
+
+        # TorchScript behavior model
+        self.behavior_model = None
+        self.behavior_model_path = None
 
         # Currently active model components
         self.active_hef = None
@@ -94,13 +98,13 @@ class AI3StageControllerFixed:
         self.active_input_info = None
         self.active_output_infos = None
 
-        # Stage 3: Behavior (CPU)
-        self.behavior_history = deque(maxlen=30)  # T=30 frames (~1 second at 30fps)
-        self.behavior_cooldowns = {}
-        self.last_stable_behavior = None
-        self.behavior_confidence_threshold = 0.4  # Lowered to 40% confidence
-        self.min_consecutive_frames = 10  # Lowered to 10 frames (1/3 second)
-        self.cooldown_duration = 3.0  # 3 seconds between same behavior recognition
+        # Stage 3: Temporal behavior analysis
+        self.T = 16  # Temporal window size (frames)
+        self.pose_history = deque(maxlen=self.T)  # Stores list of keypoints per frame
+        self.behaviors = ["stand", "sit", "lie", "cross", "spin"]  # Behavior classes
+        self.behavior_cooldowns = {}  # Per-dog cooldowns
+        self.cooldown_timers = {}
+        self.prob_th = 0.7  # Behavior probability threshold
 
         # Camera settings
         self.camera_rotation = 0  # Fixed at 0 as per your notes
@@ -145,88 +149,69 @@ class AI3StageControllerFixed:
             }
 
     def initialize(self) -> bool:
-        """Initialize AI controller - prepare model paths only"""
+        """Initialize AI controller - load pose model (Hailo) and behavior model (TorchScript)"""
         if not HAILO_AVAILABLE:
             logger.error("Hailo platform not available")
             return False
 
         try:
-            # Create initial VDevice
-            logger.info("Creating VDevice for sequential model loading")
+            # Create VDevice
+            logger.info("Creating VDevice for single-model inference")
             self.vdevice = hpf.VDevice()
             logger.info("VDevice created successfully")
 
-            # Set up model paths (don't load yet)
-            self.detection_model_path = Path("ai/models") / self.config["detect_path"]
-            self.pose_model_path = Path("ai/models") / self.config["hef_path"]
+            # Use pose model for everything (it outputs both detection boxes and keypoints)
+            self.model_path = Path("ai/models") / self.config["hef_path"]  # dogpose_14.hef
 
-            # Verify models exist
-            if not self.detection_model_path.exists():
-                logger.error(f"Detection model not found: {self.detection_model_path}")
+            # Verify pose model exists
+            if not self.model_path.exists():
+                logger.error(f"Pose model not found: {self.model_path}")
                 return False
 
-            if not self.pose_model_path.exists():
-                logger.error(f"Pose model not found: {self.pose_model_path}")
+            logger.info(f"Using single model for detection+pose: {self.model_path.name}")
+
+            # Load the pose model (Hailo)
+            if not self._load_model():
+                logger.error("Failed to load pose model")
                 return False
+            logger.info("Pose model loaded successfully (provides both detection + keypoints)")
 
-            logger.info(f"Models ready: detection={self.detection_model_path.name}, pose={self.pose_model_path.name}")
+            # Load TorchScript behavior model (CPU)
+            self.behavior_model_path = Path("ai/models") / self.config.get("behavior_head_ts", "behavior_14.ts")
+            if self.behavior_model_path.exists():
+                self.behavior_model = torch.jit.load(str(self.behavior_model_path), map_location="cpu").eval()
+                logger.info(f"TorchScript behavior model loaded: {self.behavior_model_path.name}")
+            else:
+                logger.warning(f"Behavior model not found: {self.behavior_model_path}, using CPU heuristics")
+                self.behavior_model = None
 
-            # Stage 3: Behavior (CPU-based, no init needed)
-            logger.info("Stage 3: Behavior analysis ready (CPU)")
+            # Update config-based settings
+            self.T = self.config.get("T", 16)
+            self.behaviors = self.config.get("behaviors", ["stand", "sit", "lie", "cross", "spin"])
+            self.prob_th = self.config.get("prob_th", 0.7)
+            self.behavior_cooldowns = self.config.get("cooldown_s", {})
 
             self.initialized = True
-            logger.info("AI Controller initialized - models will load on-demand")
+            logger.info("AI Controller initialized with single-model Hailo + TorchScript behavior")
             return True
 
         except Exception as e:
             logger.error(f"Failed to initialize AI controller: {e}")
             return False
 
-    def _ensure_model_released(self):
-        """Completely release current model to free core-ops"""
-        if self.current_model:
-            pass  # Removed verbose logging
-
-            # Clear all model references
-            self.active_hef = None
-            self.active_network_group = None
-            self.active_network_group_params = None
-            self.active_input_vstreams_params = None
-            self.active_output_vstreams_params = None
-            self.active_input_info = None
-            self.active_output_infos = None
-
-            # CRITICAL: Reset VDevice to clear core-ops
-            if self.vdevice:
-                self.vdevice = None
-                # Create fresh VDevice to reset core-op count
-                self.vdevice = hpf.VDevice()
-                pass  # Removed verbose logging
-
-            self.current_model = None
-
-    def _load_model(self, model_type: str) -> bool:
-        """Load specific model (detection or pose)"""
-        if self.current_model == model_type:
+    def _load_model(self) -> bool:
+        """Load the pose model (does both detection and pose)"""
+        if self.model_loaded:
             return True  # Already loaded
 
+        # Verify VDevice is available
+        if self.vdevice is None:
+            logger.error("VDevice not available - cannot load model")
+            return False
+
         try:
-            # Release any current model first
-            self._ensure_model_released()
-
-            # Select model path
-            if model_type == "detection":
-                model_path = self.detection_model_path
-            elif model_type == "pose":
-                model_path = self.pose_model_path
-            else:
-                logger.error(f"Unknown model type: {model_type}")
-                return False
-
-            pass  # Removed verbose logging
-
             # Load HEF
-            self.active_hef = hpf.HEF(str(model_path))
+            self.active_hef = hpf.HEF(str(self.model_path))
 
             # Configure VDevice
             params = hpf.ConfigureParams.create_from_hef(
@@ -256,12 +241,12 @@ class AI3StageControllerFixed:
                 format_type=hpf.FormatType.FLOAT32
             )
 
-            self.current_model = model_type
-            pass  # Removed verbose logging
+            self.model_loaded = True
+            logger.info(f"Pose model loaded: {self.model_path.name}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load {model_type} model: {e}")
+            logger.error(f"Failed to load pose model: {e}")
             return False
 
 
@@ -330,25 +315,18 @@ class AI3StageControllerFixed:
 
     def process_frame(self, frame_4k: np.ndarray) -> Tuple[List[Detection], List[PoseKeypoints], List[BehaviorResult]]:
         """
-        Process full pipeline on 4K frame
+        Process full pipeline on 4K frame using single-model inference
         Returns: (detections, poses, behaviors)
         """
         if not self.initialized:
             return [], [], []
 
         try:
-            # Stage 1: Detect dogs at 640x640
-            detections = self._stage1_detect_dogs(frame_4k)
+            # Single inference gets both detections and poses
+            detections, poses = self._run_combined_inference(frame_4k)
 
             if not detections:
                 return detections, [], []
-
-            # Stage 2: Get poses for each detected dog
-            poses = []
-            for detection in detections:
-                pose = self._stage2_estimate_pose(frame_4k, detection)
-                if pose:
-                    poses.append(pose)
 
             # Stage 3: Analyze behaviors from pose history
             behaviors = self._stage3_analyze_behavior(poses)
@@ -359,161 +337,373 @@ class AI3StageControllerFixed:
             logger.error(f"Error processing frame: {e}")
             return [], [], []
 
-    def _stage1_detect_dogs(self, frame_4k: np.ndarray) -> List[Detection]:
-        """Stage 1: Dog detection on downsampled frame"""
-        try:
-            # Load detection model
-            if not self._load_model("detection"):
-                logger.error("Failed to load detection model")
-                return []
+    def _run_combined_inference(self, frame_4k: np.ndarray) -> Tuple[List[Detection], List[PoseKeypoints]]:
+        """Run single inference to get both detections and poses from pose model"""
+        detections = []
+        poses = []
 
-            # Downsample 4K to 640x640 for detection
+        try:
+            if not self.model_loaded:
+                logger.error("Model not loaded")
+                return [], []
+
+            # Downsample 4K to 640x640 for inference
             h_4k, w_4k = frame_4k.shape[:2]
             frame_640 = cv2.resize(frame_4k, self.input_size)
 
-            # Prepare input (BGR format gives best results)
-            frame_bgr = frame_640
+            # Prepare input (BGR format)
+            frame_input = frame_640
 
-            pass  # Removed verbose logging
+            if not self.active_network_group:
+                raise RuntimeError("No active network group")
 
-            # Run inference using active model
-            detections = []
+            with self.active_network_group.activate(self.active_network_group_params):
+                with hpf.InferVStreams(self.active_network_group,
+                                      self.active_input_vstreams_params,
+                                      self.active_output_vstreams_params) as infer_pipeline:
 
-            try:
-                if not self.active_network_group:
-                    raise RuntimeError("No active network group")
+                    # Prepare input - ensure UINT8 and correct shape
+                    input_tensor = np.expand_dims(frame_input, axis=0).astype(np.uint8)
+                    input_name = list(self.active_input_vstreams_params.keys())[0]
+                    input_data = {input_name: input_tensor}
 
-                with self.active_network_group.activate(self.active_network_group_params):
-                    with hpf.InferVStreams(self.active_network_group,
-                                          self.active_input_vstreams_params,
-                                          self.active_output_vstreams_params) as infer_pipeline:
+                    # Run inference
+                    output_data = infer_pipeline.infer(input_data)
 
-                        # Prepare input - ensure UINT8 and correct shape
-                        input_tensor = np.expand_dims(frame_bgr, axis=0).astype(np.uint8)
-                        input_name = list(self.active_input_vstreams_params.keys())[0]
-                        input_data = {input_name: input_tensor}
+                    # Parse BOTH detections and keypoints from pose model output
+                    detections, poses = self._parse_pose_model_output(output_data, w_4k, h_4k)
 
-                        # Run inference
-                        output_data = infer_pipeline.infer(input_data)
-
-                        # Parse detections and scale back to 4K coordinates
-                        detections = self._parse_detection_output(output_data, w_4k, h_4k)
-                        pass  # Removed verbose logging
-
-            except Exception as e:
-                logger.error(f"Stage 1 inference error: {e}")
-                # Fall back to mock detection for testing
-                mock_x1 = w_4k // 4
-                mock_y1 = h_4k // 4
-                mock_x2 = 3 * w_4k // 4
-                mock_y2 = 3 * h_4k // 4
-                mock_conf = 0.85
-                detections.append(Detection(mock_x1, mock_y1, mock_x2, mock_y2, mock_conf))
-                logger.info(f"Stage 1: Using mock detection due to inference error")
-
-            return detections
+            return detections, poses
 
         except Exception as e:
-            logger.error(f"Stage 1 detection error: {e}")
+            logger.error(f"Combined inference error: {e}")
             import traceback
             traceback.print_exc()
-            return []
+            return [], []
 
-    def _stage2_estimate_pose(self, frame_4k: np.ndarray, detection: Detection) -> Optional[PoseKeypoints]:
-        """Stage 2: Pose estimation on cropped region"""
+    def _parse_pose_model_output(self, outputs: Dict[str, np.ndarray], orig_w: int, orig_h: int) -> Tuple[List[Detection], List[PoseKeypoints]]:
+        """Parse pose model output to get both detections and keypoints"""
+        detections = []
+        poses = []
+
         try:
-            # Load pose model
-            if not self._load_model("pose"):
-                logger.error("Failed to load pose model")
-                return None
+            # Group outputs by scale for 640x640 input
+            # Expected scales for 640x640: 80x80, 40x40, 20x20
+            scales = {
+                '80x80': {'bbox': None, 'kpts': None, 'conf': None},
+                '40x40': {'bbox': None, 'kpts': None, 'conf': None},
+                '20x20': {'bbox': None, 'kpts': None, 'conf': None}
+            }
 
-            # Extract crop from 4K frame with padding
-            crop_4k = self._extract_crop_with_padding(frame_4k, detection, padding=0.1)
+            # Map outputs based on shape patterns
+            for layer_name, output in outputs.items():
+                if len(output.shape) != 4:
+                    continue
 
-            # Resize crop to 640x640 for pose model
-            crop_640 = cv2.resize(crop_4k, self.input_size)
+                h, w = output.shape[1], output.shape[2]
+                channels = output.shape[3]
 
-            # Prepare input (RGB format)
-            if len(crop_640.shape) == 3 and crop_640.shape[2] == 3:
-                # OpenCV gives BGR, convert to RGB
-                crop_rgb = cv2.cvtColor(crop_640, cv2.COLOR_BGR2RGB)
-            else:
-                crop_rgb = crop_640
+                scale_name = None
+                output_type = None
 
-            pass  # Removed verbose logging
+                if (h, w) == (80, 80):
+                    scale_name = '80x80'
+                elif (h, w) == (40, 40):
+                    scale_name = '40x40'
+                elif (h, w) == (20, 20):
+                    scale_name = '20x20'
 
-            # Run inference using active model
-            keypoints = None
+                if scale_name and channels == 64:
+                    output_type = 'bbox'
+                elif scale_name and channels == 72:
+                    output_type = 'kpts'
+                elif scale_name and channels == 1:
+                    output_type = 'conf'
 
-            try:
-                if not self.active_network_group:
-                    raise RuntimeError("No active network group")
+                if scale_name and output_type:
+                    scales[scale_name][output_type] = output
 
-                with self.active_network_group.activate(self.active_network_group_params):
-                    with hpf.InferVStreams(self.active_network_group,
-                                          self.active_input_vstreams_params,
-                                          self.active_output_vstreams_params) as infer_pipeline:
+            # Find detections across all scales
+            strides = [8, 16, 32]
+            scale_names = ['80x80', '40x40', '20x20']
+            scale_factors = (orig_w / 640, orig_h / 640)
 
-                        # Prepare input - ensure UINT8 and correct shape
-                        input_tensor = np.expand_dims(crop_rgb, axis=0).astype(np.uint8)
-                        input_name = list(self.active_input_vstreams_params.keys())[0]
-                        input_data = {input_name: input_tensor}
+            for scale_idx, scale_name in enumerate(scale_names):
+                scale_data = scales[scale_name]
 
-                        # Run inference
-                        output_data = infer_pipeline.infer(input_data)
+                if not all(scale_data[key] is not None for key in ['bbox', 'kpts', 'conf']):
+                    continue
 
-                        # Parse keypoints from pose output
-                        keypoints = self._parse_pose_output(output_data)
-                        pass  # Removed verbose logging
+                bbox_out = scale_data['bbox']
+                kpts_out = scale_data['kpts']
+                conf_out = scale_data['conf']
 
-            except Exception as e:
-                logger.error(f"Stage 2 inference error: {e}")
-                # Fall back to mock keypoints for testing
-                keypoints = np.random.rand(24, 3) * [640, 640, 1]  # x, y, confidence
-                keypoints[:, 2] = np.random.rand(24) * 0.5 + 0.5  # confidence 0.5-1.0
-                logger.info(f"Stage 2: Using mock keypoints due to inference error")
+                _, h, w, _ = bbox_out.shape
+                stride = strides[scale_idx]
 
-            if keypoints is not None:
-                return PoseKeypoints(keypoints, detection)
+                # Process cells with high confidence
+                for i in range(h):
+                    for j in range(w):
+                        conf_raw = conf_out[0, i, j, 0]
+                        conf_raw = np.clip(conf_raw, -500, 500)
+                        conf = 1.0 / (1.0 + np.exp(-conf_raw))  # Sigmoid
 
-            return None
+                        if conf < 0.3:  # Confidence threshold
+                            continue
+
+                        # Decode bounding box from DFL format (64 channels = 4 sides * 16 bins)
+                        bbox_raw = bbox_out[0, i, j, :]
+
+                        # DFL decode: reshape to (4, 16), softmax, weighted sum
+                        bbox_dfl = bbox_raw.reshape(4, 16)
+                        # Softmax
+                        bbox_dfl_exp = np.exp(bbox_dfl - np.max(bbox_dfl, axis=1, keepdims=True))
+                        bbox_probs = bbox_dfl_exp / np.sum(bbox_dfl_exp, axis=1, keepdims=True)
+                        # Weighted sum with bins 0-15
+                        bins = np.arange(16)
+                        dist = np.sum(bbox_probs * bins, axis=1)  # [left, top, right, bottom]
+
+                        # Convert to coordinates
+                        cx = (j + 0.5) * stride
+                        cy = (i + 0.5) * stride
+                        x1 = (cx - dist[0] * stride)
+                        y1 = (cy - dist[1] * stride)
+                        x2 = (cx + dist[2] * stride)
+                        y2 = (cy + dist[3] * stride)
+
+                        # Scale to original frame size
+                        x1_scaled = int(x1 * scale_factors[0])
+                        y1_scaled = int(y1 * scale_factors[1])
+                        x2_scaled = int(x2 * scale_factors[0])
+                        y2_scaled = int(y2 * scale_factors[1])
+
+                        # Clamp to frame bounds
+                        x1_scaled = max(0, min(x1_scaled, orig_w))
+                        y1_scaled = max(0, min(y1_scaled, orig_h))
+                        x2_scaled = max(0, min(x2_scaled, orig_w))
+                        y2_scaled = max(0, min(y2_scaled, orig_h))
+
+                        # Valid bounding box check
+                        if x2_scaled <= x1_scaled or y2_scaled <= y1_scaled:
+                            continue
+
+                        detection = Detection(x1_scaled, y1_scaled, x2_scaled, y2_scaled, float(conf))
+                        detections.append(detection)
+
+                        # Decode keypoints (72 channels = 24 keypoints * 3 [x, y, conf])
+                        kpts_raw = kpts_out[0, i, j, :]
+                        kpts = np.zeros((24, 3), dtype=np.float32)
+
+                        for k in range(24):
+                            kpts[k, 0] = (kpts_raw[k * 3] + j) * stride * scale_factors[0]
+                            kpts[k, 1] = (kpts_raw[k * 3 + 1] + i) * stride * scale_factors[1]
+                            kpts[k, 2] = 1.0 / (1.0 + np.exp(-kpts_raw[k * 3 + 2]))
+
+                        poses.append(PoseKeypoints(kpts, detection))
+
+            # Apply NMS to remove duplicate detections
+            if len(detections) > 1:
+                detections, poses = self._apply_nms(detections, poses, iou_threshold=0.5)
+
+            return detections, poses
 
         except Exception as e:
-            logger.error(f"Stage 2 pose error: {e}")
+            logger.error(f"Error parsing pose model output: {e}")
             import traceback
             traceback.print_exc()
-            return None
+            return [], []
+
+    def _apply_nms(self, detections: List[Detection], poses: List[PoseKeypoints], iou_threshold: float = 0.5) -> Tuple[List[Detection], List[PoseKeypoints]]:
+        """Apply Non-Maximum Suppression to remove duplicate detections"""
+        if len(detections) <= 1:
+            return detections, poses
+
+        # Sort by confidence
+        indices = sorted(range(len(detections)), key=lambda i: detections[i].confidence, reverse=True)
+        keep = []
+
+        while indices:
+            current = indices.pop(0)
+            keep.append(current)
+
+            remaining = []
+            for idx in indices:
+                iou = self._compute_iou(detections[current], detections[idx])
+                if iou < iou_threshold:
+                    remaining.append(idx)
+            indices = remaining
+
+        return [detections[i] for i in keep], [poses[i] for i in keep]
+
+    def _compute_iou(self, det1: Detection, det2: Detection) -> float:
+        """Compute IoU between two detections"""
+        x1 = max(det1.x1, det2.x1)
+        y1 = max(det1.y1, det2.y1)
+        x2 = min(det1.x2, det2.x2)
+        y2 = min(det1.y2, det2.y2)
+
+        inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+        area1 = det1.width * det1.height
+        area2 = det2.width * det2.height
+        union_area = area1 + area2 - inter_area
+
+        return inter_area / union_area if union_area > 0 else 0
 
     def _stage3_analyze_behavior(self, poses: List[PoseKeypoints]) -> List[BehaviorResult]:
-        """Stage 3: CPU-based behavior analysis"""
+        """Stage 3: Temporal behavior analysis using TorchScript model"""
         behaviors = []
 
         if not poses:
+            # Still add empty frame to history to maintain temporal consistency
+            self.pose_history.append([])
             return behaviors
 
         try:
-            # Add current poses to history
-            current_time = time.time()
-            self.behavior_history.append({
-                'timestamp': current_time,
-                'poses': poses
-            })
+            # Extract keypoints from poses for this frame
+            frame_keypoints = [pose.keypoints for pose in poses]
+            self.pose_history.append(frame_keypoints)
 
-            # Need enough history for temporal analysis
-            if len(self.behavior_history) < 8:
+            # Need enough temporal history
+            if len(self.pose_history) < self.T:
                 return behaviors
 
-            # Simple behavior analysis (can be enhanced)
-            for i, pose in enumerate(poses):
-                behavior = self._analyze_single_pose_sequence(pose, i)
-                if behavior:
-                    behaviors.append(BehaviorResult(behavior, 0.8, current_time))
+            # Use TorchScript model if available
+            if self.behavior_model is not None:
+                behaviors = self._analyze_with_torchscript(poses)
+            else:
+                # Fallback to simple heuristics
+                current_time = time.time()
+                for i, pose in enumerate(poses):
+                    behavior = self._classify_pose_heuristic(pose.keypoints)
+                    if behavior and self._check_cooldown(behavior, i):
+                        behaviors.append(BehaviorResult(behavior, 0.8, current_time))
+                        self._update_cooldown(behavior, i)
 
             return behaviors
 
         except Exception as e:
             logger.error(f"Stage 3 behavior error: {e}")
             return behaviors
+
+    def _analyze_with_torchscript(self, current_poses: List[PoseKeypoints]) -> List[BehaviorResult]:
+        """Analyze behavior using TorchScript temporal model"""
+        behaviors = []
+        current_time = time.time()
+
+        try:
+            # Get temporal sequence from history
+            sequence = list(self.pose_history)
+
+            # Build tensor from sequence: (T, num_dogs, 24, 2)
+            max_dogs = max(len(frame_kpts) for frame_kpts in sequence if frame_kpts)
+            if max_dogs == 0:
+                return behaviors
+
+            tensor_data = []
+            for frame_kpts in sequence:
+                frame_data = []
+                for i in range(max_dogs):
+                    if i < len(frame_kpts):
+                        # Take x, y only (drop confidence) - shape (24, 2)
+                        kpts = frame_kpts[i]
+                        if kpts.shape[0] >= 24 and kpts.shape[1] >= 2:
+                            pose_data = kpts[:24, :2]
+                        else:
+                            pose_data = np.zeros((24, 2))
+                        frame_data.append(pose_data)
+                    else:
+                        frame_data.append(np.zeros((24, 2)))
+                tensor_data.append(frame_data)
+
+            # Convert to tensor: (T, num_dogs, 24, 2)
+            tensor_input = torch.tensor(np.array(tensor_data), dtype=torch.float32)
+
+            # Reshape for model: (num_dogs, T, 48)
+            # From (T, num_dogs, 24, 2) to (num_dogs, T, 24*2)
+            T_len = len(tensor_data)
+            num_dogs = tensor_input.shape[1]
+
+            tensor_input = tensor_input.transpose(0, 1)  # (num_dogs, T, 24, 2)
+            tensor_input = tensor_input.reshape(num_dogs, T_len, -1)  # (num_dogs, T, 48)
+
+            # Run TorchScript model
+            with torch.no_grad():
+                output = self.behavior_model(tensor_input)
+
+            # Apply softmax to get probabilities
+            probs = torch.softmax(output, dim=-1).numpy()
+
+            # Handle different output shapes
+            if probs.ndim == 1:
+                probs = probs.reshape(1, -1)
+
+            # Get behaviors for each dog
+            for dog_idx in range(min(max_dogs, len(probs))):
+                dog_probs = probs[dog_idx]
+                max_idx = np.argmax(dog_probs)
+                max_prob = float(dog_probs[max_idx])
+
+                if max_prob > self.prob_th:
+                    if max_idx < len(self.behaviors):
+                        behavior_name = self.behaviors[max_idx]
+
+                        # Check cooldown
+                        if self._check_cooldown(behavior_name, dog_idx):
+                            behaviors.append(BehaviorResult(behavior_name, max_prob, current_time))
+                            self._update_cooldown(behavior_name, dog_idx)
+                            logger.info(f"🎯 BEHAVIOR: {behavior_name} (conf={max_prob:.2f})")
+
+            return behaviors
+
+        except Exception as e:
+            logger.error(f"TorchScript behavior analysis failed: {e}")
+            return behaviors
+
+    def _check_cooldown(self, behavior: str, dog_idx: int) -> bool:
+        """Check if behavior is off cooldown"""
+        key = f"{dog_idx}_{behavior}"
+        if key not in self.cooldown_timers:
+            return True
+
+        elapsed = time.time() - self.cooldown_timers[key]
+        cooldown_duration = self.behavior_cooldowns.get(behavior, 2.0)
+
+        return elapsed > cooldown_duration
+
+    def _update_cooldown(self, behavior: str, dog_idx: int):
+        """Update cooldown timer for behavior"""
+        key = f"{dog_idx}_{behavior}"
+        self.cooldown_timers[key] = time.time()
+
+    def _classify_pose_heuristic(self, keypoints: np.ndarray) -> Optional[str]:
+        """Simple heuristic fallback for pose classification"""
+        try:
+            if not isinstance(keypoints, np.ndarray) or len(keypoints) < 12:
+                return None
+
+            body_points = keypoints[:12]
+            if body_points.ndim == 2 and body_points.shape[1] >= 3:
+                conf_mask = body_points[:, 2] > 0.3
+                valid = body_points[conf_mask]
+                if len(valid) < 4:
+                    return None
+            else:
+                return None
+
+            avg_y = np.mean(valid[:, 1])
+            y_ratio = avg_y / 640
+
+            if y_ratio > 0.72:
+                return "lie"
+            elif y_ratio < 0.35:
+                return "stand"
+            elif 0.45 <= y_ratio <= 0.68:
+                return "sit"
+            else:
+                return "stand"
+
+        except Exception:
+            return None
 
     def _extract_crop_with_padding(self, frame: np.ndarray, detection: Detection, padding: float = 0.1) -> np.ndarray:
         """Extract crop from frame with padding"""
@@ -533,354 +723,18 @@ class AI3StageControllerFixed:
 
         return frame[y1:y2, x1:x2]
 
-    def _parse_detection_output(self, output_data: Dict[str, np.ndarray], orig_w: int, orig_h: int) -> List[Detection]:
-        """Parse dogdetector_14.hef NMS output (1,5,100) format"""
-        detections = []
-
-        try:
-            # Handle actual inference output format
-            pass  # Removed verbose logging
-            for output_name, output_tensor in output_data.items():
-                pass  # Removed verbose logging
-
-                # Convert list to numpy array if needed
-                if isinstance(output_tensor, list):
-                    if len(output_tensor) > 0:
-                        if isinstance(output_tensor[0], list):
-                            # Handle nested list format: [[numpy_array]]
-                            pass  # Removed verbose logging
-                            if len(output_tensor[0]) > 0:
-                                # Extract the actual numpy array from nested structure
-                                if isinstance(output_tensor[0][0], np.ndarray):
-                                    output_tensor = output_tensor[0][0]  # Get the actual tensor
-                                else:
-                                    output_tensor = np.array(output_tensor[0])
-                            else:
-                                continue
-                        elif isinstance(output_tensor[0], np.ndarray):
-                            output_tensor = output_tensor[0]  # Take first element if it's a list of arrays
-                        else:
-                            output_tensor = np.array(output_tensor)
-                    else:
-                        continue
-
-                if not isinstance(output_tensor, np.ndarray):
-                    pass  # Removed verbose logging
-                    continue
-
-                pass  # Removed verbose logging
-
-                # Handle NMS postprocessed format - multiple possible shapes
-                if len(output_tensor.shape) == 3 and output_tensor.shape[1] == 5:
-                    # Format: (1, 5, 100) - Remove batch dimension: (1, 5, 100) -> (5, 100)
-                    detections_data = output_tensor[0]  # Shape: (5, 100)
-                    # Transpose to get (100, 5) for easier processing
-                    detections_data = detections_data.T  # Shape: (100, 5)
-
-                # Handle single detection format (1, 5) -> (1, 5)
-                elif len(output_tensor.shape) == 2 and output_tensor.shape[0] == 1 and output_tensor.shape[1] == 5:
-                    detections_data = output_tensor  # Shape: (1, 5) - already correct
-
-                # Handle multiple detections format (N, 5)
-                elif len(output_tensor.shape) == 2 and output_tensor.shape[1] == 5:
-                    detections_data = output_tensor
-
-                else:
-                    pass  # Removed verbose logging
-                    continue
-
-                for detection in detections_data:
-                    x1, y1, x2, y2, conf = detection
-
-                    # Filter by confidence threshold (lowered to catch more dogs)
-                    if conf > 0.1:
-                        # Convert from normalized coordinates (0-1) to pixels, then scale to original frame
-                        # First convert to 640x640 pixel coordinates
-                        x1_640 = x1 * 640
-                        y1_640 = y1 * 640
-                        x2_640 = x2 * 640
-                        y2_640 = y2 * 640
-
-                        # Then scale to original frame size
-                        scale_x = orig_w / 640
-                        scale_y = orig_h / 640
-
-                        x1_scaled = int(x1_640 * scale_x)
-                        y1_scaled = int(y1_640 * scale_y)
-                        x2_scaled = int(x2_640 * scale_x)
-                        y2_scaled = int(y2_640 * scale_y)
-
-                        # Ensure coordinates are within bounds
-                        x1_scaled = max(0, min(x1_scaled, orig_w))
-                        y1_scaled = max(0, min(y1_scaled, orig_h))
-                        x2_scaled = max(0, min(x2_scaled, orig_w))
-                        y2_scaled = max(0, min(y2_scaled, orig_h))
-
-                        # Ensure valid bounding box
-                        if x2_scaled > x1_scaled and y2_scaled > y1_scaled:
-                            detections.append(Detection(x1_scaled, y1_scaled, x2_scaled, y2_scaled, float(conf)))
-
-                pass  # Removed verbose logging
-                break  # Use first valid output
-
-            return detections
-
-        except Exception as e:
-            logger.error(f"Error parsing detection output: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
-
-    def _parse_pose_output(self, outputs: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
-        """Parse dogpose_14.hef outputs (9 tensors, 72 channels) format"""
-        try:
-            pass  # Removed verbose logging
-
-            # Debug output shapes
-            for key, output in outputs.items():
-                pass  # Removed verbose logging
-
-            # Group outputs by scale for 640x640 input
-            # Expected scales for 640x640: 80x80, 40x40, 20x20
-            scales = {
-                '80x80': {'bbox': None, 'kpts': None, 'conf': None},
-                '40x40': {'bbox': None, 'kpts': None, 'conf': None},
-                '20x20': {'bbox': None, 'kpts': None, 'conf': None}
-            }
-
-            # Map conv layers based on shape patterns
-            for layer_name, output in outputs.items():
-                if len(output.shape) != 4:
-                    continue
-
-                h, w = output.shape[1], output.shape[2]
-                channels = output.shape[3]
-
-                # Determine scale and type based on shape
-                scale_name = None
-                output_type = None
-
-                if (h, w) == (80, 80):  # Large scale
-                    scale_name = '80x80'
-                elif (h, w) == (40, 40):  # Medium scale
-                    scale_name = '40x40'
-                elif (h, w) == (20, 20):  # Small scale
-                    scale_name = '20x20'
-
-                if scale_name and channels == 64:
-                    output_type = 'bbox'
-                elif scale_name and channels == 72:
-                    output_type = 'kpts'
-                elif scale_name and channels == 1:
-                    output_type = 'conf'
-
-                if scale_name and output_type:
-                    scales[scale_name][output_type] = output
-                    pass  # Removed verbose logging
-
-            # Find the best detection across all scales
-            best_detection = None
-            best_conf = 0.0
-
-            strides = [8, 16, 32]  # YOLOv11 strides
-            scale_names = ['80x80', '40x40', '20x20']
-
-            for scale_idx, scale_name in enumerate(scale_names):
-                scale_data = scales[scale_name]
-
-                if not all(scale_data[key] is not None for key in ['bbox', 'kpts', 'conf']):
-                    continue
-
-                bbox_out = scale_data['bbox']
-                kpts_out = scale_data['kpts']
-                conf_out = scale_data['conf']
-
-                _, h, w, _ = bbox_out.shape
-                h, w = int(h), int(w)
-                stride = strides[scale_idx]
-
-                # Process high-confidence cells
-                for i in range(h):
-                    for j in range(w):
-                        conf_raw = conf_out[0, i, j, 0]
-                        # Prevent overflow in exp function
-                        conf_raw = np.clip(conf_raw, -500, 500)
-                        conf = 1.0 / (1.0 + np.exp(-conf_raw))  # Sigmoid
-
-                        # Debug: Print confidence levels to understand what we're getting (disabled for cleaner output)
-                        # if conf > 0.1:  # Only show meaningful confidences
-                        #     print(f"🔍 Pose confidence: {conf:.3f} at ({i},{j})")
-
-                        if conf < 0.3:  # Confidence threshold (lowered back for better detection)
-                            continue
-
-                        if conf > best_conf:
-                            # Decode keypoints for best detection
-                            kpts_raw = kpts_out[0, i, j, :]
-                            kpts = np.zeros((24, 3), dtype=np.float32)
-
-                            for k in range(24):
-                                kpts[k, 0] = (kpts_raw[k * 3] + j) * stride
-                                kpts[k, 1] = (kpts_raw[k * 3 + 1] + i) * stride
-                                kpts[k, 2] = 1.0 / (1.0 + np.exp(-kpts_raw[k * 3 + 2]))
-
-                            best_detection = kpts
-                            best_conf = conf
-
-            if best_detection is not None:
-                pass  # Removed verbose logging
-                return best_detection
-            else:
-                pass  # Removed verbose logging
-                return None
-
-        except Exception as e:
-            logger.error(f"Error parsing pose output: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def _analyze_single_pose_sequence(self, current_pose: PoseKeypoints, pose_index: int) -> Optional[str]:
-        """Analyze behavior for a single pose over time with temporal smoothing"""
-        try:
-            keypoints = current_pose.keypoints
-            if len(keypoints) < 10:
-                return None
-
-            # Add current pose to history
-            self.behavior_history.append(keypoints)
-
-            # Need enough history for stable detection
-            if len(self.behavior_history) < self.min_consecutive_frames:
-                return self.last_stable_behavior
-
-            # Analyze current pose with improved heuristics
-            raw_behavior = self._classify_pose(keypoints)
-            print(f"🐕 Raw behavior detected: {raw_behavior}")
-
-            # Check if behavior has been consistent
-            recent_behaviors = []
-            for historical_pose in list(self.behavior_history)[-self.min_consecutive_frames:]:
-                behavior = self._classify_pose(historical_pose)
-                if behavior:
-                    recent_behaviors.append(behavior)
-
-            print(f"📊 Recent behaviors: {recent_behaviors} (need {max(4, int(self.min_consecutive_frames * 0.4))} for detection)")
-
-            # Require majority consensus for stability (non-consecutive)
-            if len(recent_behaviors) >= self.min_consecutive_frames * 0.4:  # 40% of frames need behavior
-                from collections import Counter
-                behavior_counts = Counter(recent_behaviors)
-                most_common_behavior, count = behavior_counts.most_common(1)[0]
-
-                # Check if this behavior is confident enough and not in cooldown
-                # Allow non-consecutive detection (e.g., 4 out of 10 frames = 40%)
-                if count >= max(4, self.min_consecutive_frames * 0.4):
-                    if self._check_behavior_cooldown(most_common_behavior):
-                        self.last_stable_behavior = most_common_behavior
-                        self._trigger_behavior_cooldown(most_common_behavior)
-                        print(f"🎯 BEHAVIOR DETECTED: {most_common_behavior.upper()} (confidence: {count}/{len(recent_behaviors)})")
-                        return most_common_behavior
-
-            return self.last_stable_behavior
-
-        except Exception as e:
-            logger.error(f"Error analyzing pose sequence: {e}")
-            return None
-
-    def _classify_pose(self, keypoints: np.ndarray) -> Optional[str]:
-        """Classify a single pose based on keypoint positions"""
-        try:
-            # Ensure keypoints is a numpy array
-            if not isinstance(keypoints, np.ndarray):
-                return None
-
-            # Improved pose classification with better thresholds
-            frame_height = 640
-            frame_width = 640
-
-            # Get body keypoints (adjust indices based on your model)
-            if len(keypoints) < 12:
-                return None
-
-            body_points = keypoints[:12]  # First 12 keypoints for body
-
-            # Fix: Properly filter by confidence (handle shape correctly)
-            if body_points.ndim == 2 and body_points.shape[1] >= 3:
-                confidence_mask = body_points[:, 2] > 0.3
-                valid_points = body_points[confidence_mask]
-
-                # Ensure valid_points is still a 2D array
-                if len(valid_points) == 0 or valid_points.ndim != 2:
-                    return None
-            else:
-                # Handle 1D case - assume it's flattened x,y,conf triplets
-                if body_points.ndim == 1 and len(body_points) >= 36:  # 12 points * 3 values each
-                    reshaped = body_points[:36].reshape(12, 3)
-                    confidence_mask = reshaped[:, 2] > 0.3
-                    valid_points = reshaped[confidence_mask]
-                    if len(valid_points) == 0:
-                        return None
-                else:
-                    return None
-
-            if len(valid_points) < 4:
-                return None
-
-            # Now safe to use slicing since we know valid_points is 2D
-            avg_y = np.mean(valid_points[:, 1])
-            avg_x = np.mean(valid_points[:, 0])
-
-            # Calculate pose characteristics
-            y_ratio = avg_y / frame_height
-
-            # Get limb positions for better classification
-            limb_spread = np.std(valid_points[:, 0]) if len(valid_points) > 1 else 0
-
-            # Debug logging to understand why poses aren't detected
-            print(f"🔍 Pose analysis: y_ratio={y_ratio:.3f}, limb_spread={limb_spread:.1f}, valid_points={len(valid_points)}")
-
-            # Improved classification logic - better lie detection
-            if y_ratio > 0.72:  # Lower threshold for lie detection (was 0.80)
-                # Additional check: low limb spread indicates lying down
-                if limb_spread < frame_width * 0.06:  # Very compact for lie
-                    return "lie"
-                elif y_ratio > 0.78:  # Very low in frame, definitely lying
-                    return "lie"
-                else:
-                    return "sit"  # High y_ratio but spread out might be sitting
-            elif y_ratio < 0.35:  # High in frame (more generous for stand)
-                return "stand"
-            elif 0.45 <= y_ratio <= 0.68:  # Narrower range for sit (was 0.50-0.75)
-                # Additional checks for sit vs other behaviors
-                if limb_spread < frame_width * 0.10:  # Compact pose required for sit (relaxed from 0.08)
-                    return "sit"
-                else:
-                    return "stand"  # Default to stand
-            else:
-                return "stand"  # Default behavior is always "stand"
-
-        except Exception as e:
-            logger.error(f"Error classifying pose: {e}")
-            return None
-
-    def _check_behavior_cooldown(self, behavior: str) -> bool:
-        """Check if behavior is not in cooldown"""
-        current_time = time.time()
-        if behavior in self.behavior_cooldowns:
-            time_since_last = current_time - self.behavior_cooldowns[behavior]
-            return time_since_last >= self.cooldown_duration
-        return True
-
-    def _trigger_behavior_cooldown(self, behavior: str):
-        """Start cooldown for a behavior"""
-        self.behavior_cooldowns[behavior] = time.time()
-
     def cleanup(self):
         """Clean up resources"""
         try:
-            # Release any active model
-            self._ensure_model_released()
+            # Clear model references
+            self.active_hef = None
+            self.active_network_group = None
+            self.active_network_group_params = None
+            self.active_input_vstreams_params = None
+            self.active_output_vstreams_params = None
+            self.active_input_info = None
+            self.active_output_infos = None
+            self.model_loaded = False
 
             # Final VDevice cleanup
             if self.vdevice:
@@ -897,9 +751,8 @@ class AI3StageControllerFixed:
         return {
             "initialized": self.initialized,
             "hailo_available": HAILO_AVAILABLE,
-            "detection_model": self.config.get("detect_path", "N/A") if self.config else "N/A",
-            "pose_model": self.config.get("hef_path", "N/A") if self.config else "N/A",
-            "current_model": self.current_model,
+            "model": self.config.get("hef_path", "N/A") if self.config else "N/A",
+            "model_loaded": self.model_loaded,
             "input_size": self.input_size,
             "behavior_history_length": len(self.behavior_history),
             "vdevice_ready": self.vdevice is not None,
