@@ -137,8 +137,6 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
   - **Issue:** Caused Pi startup failure when connected
   - **Status:** Hardware present but disconnected
 
-
-
 **Sensor Additions (Still Planned):**
 - [ ] Bumper sensors (collision detection)
 - [ ] Ultrasonic sensors (obstacle avoidance, optional)
@@ -197,17 +195,17 @@ Most AI pet robots (Sony Aibo, Tombot, Joy for All) simulate companionship for h
 - [ ] **Bark Detection** - Audio analysis for "quiet" training
 - [ ] **Behavioral Patterns** - Learning curves and analytics
 
-#### Navigation & Autonomy
-- [ ] **Return-to-Base** - IR beacon docking system
-- [ ] **Obstacle Avoidance** - Sensor integration
-- [ ] **Path Recording** - Dead reckoning with encoders
-
 #### User Interface
 - [ ] **Mobile Dashboard** - iOS-quality PWA
 - [ ] **Remote Control** - Bluetooth gamepad support
 - [ ] **Social Features** - Auto photo capture and sharing
 
 ### **FUTURE: Production Features**
+
+#### Navigation & Autonomy - [Optional]
+- [ ] **Return-to-Base** - IR beacon docking system
+- [ ] **Obstacle Avoidance** - Sensor integration
+- [ ] **Path Recording** - Dead reckoning with encoders
 
 #### Navigation Enhancements [Optional]
 - [ ] **Waypoint Mapping System**
@@ -271,9 +269,9 @@ schedule:
   - [ ] Collar-mounted marker detection
   - [ ] Fallback: pose + location for ID
 
-### **PHASE 4: Navigation & Autonomy (Jan 2026)**
+### **PHASE 4: Navigation & Autonomy**  [Optional]
 
-#### 4.1 Obstacle Avoidance [Priority: HIGH]
+#### 4.1 Obstacle Avoidance [Priority: HIGH]  [Optional]
 **Sensor Strategy:**
 - **IR Sensors:** Primary (short-range, 0-30cm)
 - **Cliff Sensors:** Edge detection (prevent falls)
@@ -286,7 +284,7 @@ schedule:
 - [ ] Emergency stop on bumper hit
 - [ ] Safe zone boundaries
 
-#### 4.2 Return-to-Base Navigation [Priority: MEDIUM]
+#### 4.2 Return-to-Base Navigation [Priority: MEDIUM]  [Optional]
 **Approach:** Dead Reckoning + IR Beacon
 
 **Dead Reckoning:**
@@ -311,7 +309,7 @@ schedule:
 - [ ] SMS/app notification: "Help needed at 73%"
 - [ ] Manual remote control override
 
-### **PHASE 5: User Interface (Feb 2026)**
+### **PHASE 5: User Interface (Now)**
 
 #### 5.1 Web Dashboard [Priority: HIGH]
 **Tech Stack:** Flask/FastAPI + React/Vue

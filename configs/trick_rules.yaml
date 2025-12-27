@@ -1,0 +1,125 @@
+# Trick Rules Configuration - Layer 2
+# =====================================
+# Defines what each trick requires - NOT how to detect it.
+# Detection logic lives in core/behavior_interpreter.py
+#
+# This config is READ by coaching_engine, mission_engine, and other
+# reward systems. Changes here affect ALL systems consistently.
+
+tricks:
+  # ===== BASIC TRICKS =====
+
+  sit:
+    description: "Dog sits on haunches"
+    required_behavior: "sit"
+    hold_duration_sec: 1.0        # Must hold pose this long
+    detection_window_sec: 10      # Time allowed to perform trick
+    alternative_behaviors: []     # No alternatives - must be "sit"
+    confidence_threshold: 0.65    # Lower for fluffy dogs
+    difficulty: 1
+    audio_command: "sit.mp3"
+
+  down:
+    description: "Dog lies down (any position)"
+    required_behavior: "lie"
+    hold_duration_sec: 1.5
+    detection_window_sec: 10
+    alternative_behaviors: ["cross"]  # Accept crossed paws as "down"
+    confidence_threshold: 0.65
+    difficulty: 2
+    audio_command: "lie_down.mp3"
+
+  stand:
+    description: "Dog stands on all fours"
+    required_behavior: "stand"
+    hold_duration_sec: 2.0        # Longer hold - standing is natural
+    detection_window_sec: 10
+    alternative_behaviors: []
+    confidence_threshold: 0.70
+    difficulty: 1
+    audio_command: "stand.mp3"
+
+  # ===== ADVANCED TRICKS =====
+
+  crosses:
+    description: "Dog lies with paws crossed"
+    required_behavior: "cross"
+    hold_duration_sec: 1.5
+    detection_window_sec: 10
+    alternative_behaviors: []     # Must be specifically crossed paws
+    confidence_threshold: 0.60    # Lower - hard to detect on fluffy dogs
+    difficulty: 3
+    audio_command: "crosses.mp3"
+
+  spin:
+    description: "Dog spins in a circle"
+    required_behavior: "spin"
+    hold_duration_sec: 0.3        # Short - spin is a motion, not a hold
+    detection_window_sec: 15      # Longer window for complex trick
+    alternative_behaviors: []
+    confidence_threshold: 0.70
+    difficulty: 3
+    audio_command: "spin.mp3"
+
+  # ===== AUDIO-BASED TRICKS =====
+
+  speak:
+    description: "Dog barks on command"
+    required_behavior: "bark"     # Special: uses bark detection, not pose
+    hold_duration_sec: 0          # N/A for barking
+    detection_window_sec: 5       # Quick response expected
+    alternative_behaviors: []
+    confidence_threshold: 0.60
+    difficulty: 2
+    audio_command: "speak.mp3"
+    # Speak-specific settings
+    min_barks: 1
+    max_barks: 2                  # Too many barks = fail
+
+# ===== REWARD SETTINGS =====
+# These can be overridden per-mission
+
+rewards:
+  default_treats: 1
+  difficulty_bonus:
+    1: 0    # Easy tricks - no bonus
+    2: 0    # Medium tricks - no bonus
+    3: 1    # Hard tricks - 1 extra treat
+
+# ===== DETECTION TUNING =====
+# Model-specific settings for behavior detection
+
+detection:
+  # Per-behavior confidence thresholds
+  # Lower thresholds help with fluffy dogs where pose is harder to detect
+  confidence_overrides:
+    sit: 0.65
+    lie: 0.65
+    cross: 0.60
+    stand: 0.70
+    spin: 0.70
+
+  # Temporal smoothing
+  smoothing_frames: 5           # Consecutive frames needed to confirm
+  hysteresis_sec: 0.5           # Time to maintain state after detection stops
+
+  # Fluffy dog compensation (future use)
+  fluffy_dog_mode: true
+  fluffy_confidence_reduction: 0.05  # Reduce thresholds by this for fluffy dogs
+
+# ===== COACHING SESSION SETTINGS =====
+
+coaching:
+  attention_duration_sec: 2.5   # Dog must be still this long before session
+  cooldown_duration_sec: 300    # 5 minutes between sessions per dog
+  trick_rotation_history: 3     # Avoid last N tricks per dog
+
+# ===== AUDIO FILES =====
+# Paths are relative to /home/morgan/dogbot/VOICEMP3/talks/
+
+audio:
+  success: "good_dog.mp3"
+  failure: "no.mp3"
+  greeting_elsa: "elsa.mp3"
+  greeting_bezik: "bezik.mp3"
+  greeting_unknown: "hey.mp3"

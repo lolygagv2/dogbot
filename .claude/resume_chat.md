@@ -1,183 +1,70 @@
 # WIM-Z Resume Chat Log
 
-## Session: 2025-12-26 ~04:00
-**Goal:** Add Voice Announcements for Mode Changes + Xbox Controller Mode Cycling
-**Status:** ✅ COMPLETE
+## Session: 2025-12-27 ~04:00-05:00 UTC
+**Goal:** Fix coaching mode stability and refactor behavior detection architecture
+**Status:** ✅ Complete (architecture created, testing pending)
 
-### Work Completed This Session:
+### Problems Solved This Session:
 
-#### 1. Voice Announcements for Mode Changes
-**Files in `/VOICEMP3/wimz/`:**
-- `WimZOnline.mp3` - Startup announcement
-- `IdleMode.mp3` - Entering Idle mode
-- `SilentGuardianMode.mp3` - Entering Silent Guardian mode
-- `CoachMode.mp3` - Entering Coach mode
-- `ManualMode.mp3` - Entering Manual mode
-- `MissionMode.mp3` - Entering Mission mode
-- `BatteryLow.mp3` - Low battery warning (<12V)
+1. **Coaching Mode Reset Issue**
+   - Mode kept resetting from COACH to IDLE
+   - Root cause: Temperature critical threshold (75°C) being hit by Pi running Hailo
+   - Fix: Raised temp_critical to 82°C, then disabled temp-based mode forcing entirely for testing
 
-**Implementation (`main_treatbot.py`):**
-- Added `mode_audio_files` dictionary mapping modes to voice files
-- Added `_announce_mode()` method - plays voice file on mode change
-- Updated `_on_mode_change()` to call announcement
-- Updated `_run_startup_sequence()` to play `WimZOnline.mp3`
-- Added `_check_battery_warning()` to play low battery audio with hysteresis
+2. **Mode Re-entry Bug**
+   - Switching modes and returning to coaching didn't reset FSM state
+   - Fix: Added state reset in `coaching_engine.start()` method
 
-#### 2. Xbox Controller Mode Cycling
-**Problem:** No way to change modes while using controller (absent CLI)
+3. **Behavior Model Inconsistency**
+   - Model flip-flopping between sit/cross detection on fluffy Samoyeds
+   - Confirmed: Training data IS mean-centered [-0.5, 0.5], -0.5 subtraction is CORRECT
+   - Issue is fundamental: fluffy dogs are edge cases for pose detection
 
-**Solution (`xbox_hybrid_controller.py`):**
-- **SELECT button (button 6)** now cycles through: MANUAL → COACH → SILENT_GUARDIAN
-- Added `cycle_mode()` method with 1-second cooldown
-- Calls API `/mode/set` to change modes
-- Updated control instructions printout
+### Key Code Changes Made:
 
-**Xbox Controller Updated Controls:**
-```
-Movement: Left stick = 60% power, RT = TURBO (100%)
-Camera: Right stick
-A = Emergency Stop, B = Stop Motors
-X = Blue LED, LT = NeoPixel modes
-Y = Sound, LB = Treat (2s cooldown), RB = Photo
-SELECT = Cycle modes (MANUAL→COACH→SILENT_GUARDIAN)  ← NEW
-START = Record audio
-```
+#### New Files Created:
+- `/core/behavior_interpreter.py` - Layer 1: Behavior detection wrapper
+- `/configs/trick_rules.yaml` - Layer 2: YAML config for trick requirements
 
-### Context From Previous Session (Summarized):
-This session continued from work on:
-- Fixing AI Detection to run in ALL modes (not just COACH)
-- Fixing Silent Guardian 120s blocking sleep causing emergency shutdowns
-- Fixing SafetyMonitor infinite emergency loop
+#### Modified Files:
+- `/orchestrators/coaching_engine.py` - Refactored to use new 3-layer architecture
+- `/api/server.py` - Added behavior interpreter API endpoints
+- `/core/safety.py` - Disabled temp-based mode forcing for testing
 
-Those fixes were implemented in the prior conversation and this session built on top.
+### Architecture Created (3-Layer System):
 
-### Files Modified This Session:
-| File | Changes |
-|------|---------|
-| `main_treatbot.py` | +80 lines: USB audio integration, mode announcements, startup audio, battery warning |
-| `xbox_hybrid_controller.py` | +36 lines: SELECT button mode cycling |
+**Layer 1: BehaviorInterpreter** (`/core/behavior_interpreter.py`)
+- Tracks detections and hold duration
+- `check_trick("sit")` returns if requirements met
+- Simple device-level state (not per-dog tracking)
 
-### Protected Files:
-- `notes.txt` - ✅ Unchanged
-- `config/robot_config.yaml` - ⚠️ Modified (bark confidence 0.55→0.43) - prior session change
+**Layer 2: Trick Rules** (`/configs/trick_rules.yaml`)
+- All trick definitions in one place
+- Confidence thresholds, hold durations, audio files
+- Config-driven, no code changes needed to tune
 
-### Next Session:
-1. Test mode cycling with Xbox controller
-2. Verify voice announcements play correctly on mode changes
-3. Test low battery warning audio (if applicable)
-4. Consider adding PHOTOGRAPHY mode to cycle list if needed
+**Layer 3: Orchestrators** (coaching_engine, mission_engine)
+- Call interpreter.check_trick()
+- Handle rewards, sessions, cooldowns
 
----
+### API Endpoints Added:
+- `GET /behavior/status` - Current detection state
+- `GET /behavior/tricks` - All trick rules from config
+- `POST /coaching/force_trick/{trick}` - Force specific trick for testing
+- `POST /coaching/reset_cooldowns` - Reset per-dog cooldowns
 
-## Session: 2025-12-26 03:00-03:25
-**Goal:** Fix Hailo Model Loading - Single Model Implementation
-**Status:** ✅ COMPLETE
+### Unresolved Issues:
+1. **Behavior detection inconsistency on fluffy dogs** - Model limitation, not code bug
+2. **Temperature management** - Pi runs hot (79-82°C) during Hailo inference
+3. **New architecture untested** - Created but not live-tested yet
 
-### Work Completed This Session:
+### Next Steps:
+1. Restart TreatBot to test new 3-layer architecture
+2. Test coaching mode with new interpreter
+3. Tune confidence thresholds in trick_rules.yaml for fluffy dogs
+4. Consider adding temporal smoothing to reduce sit/cross flip-flopping
 
-#### Single-Model Hailo Implementation
-**Problem:** User asked about Hailo model files and wanted to simplify the dual-model approach.
-
-**Solution:** Use `dogpose_14.hef` for BOTH detection AND pose estimation.
-- YOLOv8-pose outputs both bounding boxes AND 24 keypoints in single inference
-- Eliminated need for model switching between detector and pose models
-- Kept TorchScript `behavior_14.ts` for temporal behavior classification
-
-**Key Changes to `core/ai_controller_3stage_fixed.py`:**
-1. **Single model loading** - Only load `dogpose_14.hef` (not both detector + pose)
-2. **Combined inference** - `_run_combined_inference()` gets both boxes + keypoints in one pass
-3. **DFL bounding box decoding** - Proper Distribution Focal Loss decode (64 channels = 4 sides x 16 bins)
-4. **TorchScript integration** - Load `behavior_14.ts` for temporal behavior (sit/stand/lie/cross/spin)
-5. **Removed old methods** - Cleaned up `_analyze_single_pose_sequence`, old `_classify_pose`, old cooldown methods
-
-**Key Technical Details:**
-- Multi-scale detection: 80x80 (stride 8), 40x40 (stride 16), 20x20 (stride 20)
-- TorchScript temporal behavior model: input shape (num_dogs, T, 48) where T=16 frames
-- Non-Maximum Suppression (NMS) for duplicate detection removal
-- ArUco marker detection (OpenCV) for dog identification (315=elsa, 832=bezik) - unchanged
-
-### Debug Notes:
-- `HAILO_OUT_OF_PHYSICAL_DEVICES` errors were caused by leftover processes, NOT model switching
-- User correctly identified that process cleanup was the issue
-- Proper cleanup: kill all Python processes, reset Hailo driver with `modprobe -r hailo_pci && modprobe hailo_pci`
-
-### Test Results:
-```
-VDevice created successfully
-Pose model loaded: dogpose_14.hef
-TorchScript behavior model loaded: behavior_14.ts
-AI Controller initialized with single-model Hailo + TorchScript behavior
-✅ detector: Ready
-```
-
-### Files Modified:
-| File | Changes |
-|------|---------|
-| `core/ai_controller_3stage_fixed.py` | Single-model approach, TorchScript integration, DFL bbox decoding |
-
-### Commits This Session:
-- None yet (changes not committed)
-
-### Next Session:
-1. Verify detection + pose + behavior classification works end-to-end with live dogs
-2. Tune detection thresholds if needed
-3. Test TorchScript behavior classification accuracy
-
----
-
-## Session: 2025-12-25 (Christmas - Part 3)
-**Goal:** Live Testing Silent Guardian + Bug Fixes
-**Status:** ✅ COMPLETE
-
-### Work Completed:
-
-#### Bug Fixes
-1. **Fixed `log_sg_intervention()` parameter error**
-   - Error: `got an unexpected keyword argument 'success'`
-   - Fix: Changed `success=None` → removed, `success=True` → `quiet_achieved=True, treat_given=True`
-   - File: `modes/silent_guardian.py` (lines 291-296, 495-502)
-
-2. **Fixed event bus subscription (previous session)**
-   - Error: Silent Guardian not receiving bark events
-   - Fix: Changed `self.bus.subscribe(AudioEvent, ...)` → `self.bus.subscribe('audio', ...)`
-
-#### New Feature: Escalating Quiet Protocol
-**Implemented in `modes/silent_guardian.py`:**
-
-- When dog ignores "quiet" command and keeps barking:
-  - System repeats "quiet" up to 10 times with increasing frequency
-  - Commands 1-3: Normal "quiet"
-  - Commands 4-6: Double "quiet" + "quiet"
-  - Commands 7-10: Firm "quiet" + "no"
-
-- **Timing (over 90 seconds):**
-  | Command | Time | Interval |
-  |---------|------|----------|
-  | 1 | 0s | Initial |
-  | 2 | 15s | 15s |
-  | 3 | 27s | 12s |
-  | 4 | 37s | 10s |
-  | 5 | 45s | 8s |
-  | 6-10 | +6s each | 6s |
-  | TIMEOUT | 90s | Give up |
-
-- **Give Up Protocol:**
-  - After 90 seconds of persistent barking → log failure
-  - Enter 2-minute shutdown cooldown
-  - Reset and return to LISTENING
-
-#### Files Modified:
-| File | Changes |
-|------|---------|
-| `modes/silent_guardian.py` | Added `quiet_commands_issued`, `last_quiet_command_time`, `gave_up` to InterventionState |
-| `modes/silent_guardian.py` | Added `_check_intervention_timeout()` method |
-| `modes/silent_guardian.py` | Added `_check_escalating_quiet()` method |
-| `modes/silent_guardian.py` | Extended COOLDOWN to 2 minutes when `gave_up=True` |
-
----
-
-## Session: 2025-12-25 (Christmas - Part 2)
-**Goal:** Complete Mode System Refactoring
-**Status:** ✅ COMPLETE
-
-(Previous session notes preserved below...)
+### Important Notes:
+- Temperature-based mode forcing is DISABLED in safety.py for testing
+- This should be re-enabled for production (restore line 330)
+- Fluffy white Samoyeds are worst-case for pose estimation

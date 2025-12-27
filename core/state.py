@@ -16,12 +16,28 @@ import logging
 class SystemMode(Enum):
     """System operation modes"""
     IDLE = "idle"
-    DETECTION = "detection"
-    VIGILANT = "vigilant"
+    SILENT_GUARDIAN = "silent_guardian"  # Primary mode - bark-focused passive monitoring
+    COACH = "coach"                       # Opportunistic trick training when dog approaches
     PHOTOGRAPHY = "photography"
     MANUAL = "manual"
     EMERGENCY = "emergency"
     SHUTDOWN = "shutdown"
+
+    # Backward compatibility aliases (deprecated)
+    @classmethod
+    def _missing_(cls, value):
+        """Handle deprecated mode names"""
+        deprecated_map = {
+            "detection": cls.COACH,
+            "vigilant": cls.SILENT_GUARDIAN,
+        }
+        if value in deprecated_map:
+            import logging
+            logging.getLogger('SystemMode').warning(
+                f"Deprecated mode name '{value}' used. Use '{deprecated_map[value].value}' instead."
+            )
+            return deprecated_map[value]
+        return None
 
 
 class MissionState(Enum):
@@ -372,7 +388,7 @@ if __name__ == "__main__":
     # Test mode changes
     print("Initial mode:", state.get_mode())
 
-    state.set_mode(SystemMode.DETECTION, "Starting detection")
+    state.set_mode(SystemMode.SILENT_GUARDIAN, "Starting Silent Guardian mode")
     print("New mode:", state.get_mode())
     print("Mode duration:", state.get_mode_duration())
 

@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-Camera mode state machine
-Handles automatic mode transitions between IDLE, DETECTION, VIGILANT, PHOTOGRAPHY
+WIM-Z Mode State Machine
+Handles automatic mode transitions between IDLE, SILENT_GUARDIAN, COACH, PHOTOGRAPHY, MANUAL
+
+Mode Hierarchy:
+- SILENT_GUARDIAN: Primary mode - bark-focused passive monitoring (boot default)
+- COACH: Opportunistic trick training when dog approaches
+- IDLE: True standby mode
+- MANUAL: Xbox controller control
+- PHOTOGRAPHY: High-res capture mode
 """
 
 import threading
@@ -51,20 +58,20 @@ class ModeFSM:
 
         # Transition timeouts (seconds)
         self.timeouts = {
-            'no_motion_timeout': 10.0,      # DETECTION -> VIGILANT
-            'vigilant_timeout': 30.0,       # VIGILANT -> IDLE
-            'detection_timeout': 5.0,       # No dogs -> VIGILANT
-            'manual_timeout': 120.0,        # MANUAL -> AUTO (2 minutes)
-            'override_timeout': 300.0       # Max override duration (5 min)
+            'silent_guardian_timeout': 0,      # SILENT_GUARDIAN: No auto-timeout (persistent)
+            'coach_timeout': 0,                # COACH: No auto-timeout (persistent training mode)
+            'manual_timeout': 120.0,           # MANUAL -> previous mode (2 minutes no input)
+            'override_timeout': 86400.0        # Max override duration (24 hours - effectively indefinite)
         }
 
         # Transition rules
+        # Note: SILENT_GUARDIAN <-> COACH requires manual switch (API/schedule)
         self.valid_transitions = {
-            SystemMode.IDLE: [SystemMode.DETECTION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY],
-            SystemMode.DETECTION: [SystemMode.VIGILANT, SystemMode.IDLE, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY],
-            SystemMode.VIGILANT: [SystemMode.DETECTION, SystemMode.IDLE, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY],
-            SystemMode.PHOTOGRAPHY: [SystemMode.IDLE, SystemMode.DETECTION, SystemMode.EMERGENCY],
-            SystemMode.MANUAL: [SystemMode.IDLE, SystemMode.DETECTION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY],
+            SystemMode.IDLE: [SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.SILENT_GUARDIAN: [SystemMode.IDLE, SystemMode.COACH, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.COACH: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.PHOTOGRAPHY: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.MANUAL: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY],
             SystemMode.EMERGENCY: [SystemMode.SHUTDOWN]
         }
 
@@ -150,11 +157,11 @@ class ModeFSM:
         if current_state_mode == SystemMode.IDLE:
             self._evaluate_idle_transitions(time_since_motion, time_since_detection)
 
-        elif current_state_mode == SystemMode.DETECTION:
-            self._evaluate_detection_transitions(time_since_motion, time_since_detection, time_in_mode)
+        elif current_state_mode == SystemMode.SILENT_GUARDIAN:
+            self._evaluate_silent_guardian_transitions(time_in_mode)
 
-        elif current_state_mode == SystemMode.VIGILANT:
-            self._evaluate_vigilant_transitions(time_since_motion, time_since_detection, time_in_mode)
+        elif current_state_mode == SystemMode.COACH:
+            self._evaluate_coach_transitions(time_since_detection, time_in_mode)
 
         elif current_state_mode == SystemMode.PHOTOGRAPHY:
             # Photography mode should be manually controlled
@@ -165,39 +172,29 @@ class ModeFSM:
 
     def _evaluate_idle_transitions(self, time_since_motion: float, time_since_detection: float) -> None:
         """Evaluate transitions from IDLE mode"""
-        # Motion detected -> DETECTION
-        if time_since_motion < 2.0:
-            self._transition_to(SystemMode.DETECTION, ModeTransition.MOTION_DETECTED)
+        # IDLE is a true standby - no automatic transitions
+        # User must explicitly switch to SILENT_GUARDIAN or COACH via API/schedule
+        pass
 
-        # Recent dog detection -> DETECTION
-        elif time_since_detection < 5.0:
-            self._transition_to(SystemMode.DETECTION, ModeTransition.DOG_DETECTED)
+    def _evaluate_silent_guardian_transitions(self, time_in_mode: float) -> None:
+        """Evaluate transitions from SILENT_GUARDIAN mode"""
+        # SILENT_GUARDIAN is the primary mode - stays active until:
+        # 1. User switches to COACH or IDLE
+        # 2. Very long inactivity timeout (5 min with no barks/interventions)
+        # Note: The Silent Guardian handler manages bark-based behavior internally
 
-    def _evaluate_detection_transitions(self, time_since_motion: float,
-                                      time_since_detection: float, time_in_mode: float) -> None:
-        """Evaluate transitions from DETECTION mode"""
-        # No motion for a while -> VIGILANT
-        if time_since_motion > self.timeouts['no_motion_timeout']:
-            self._transition_to(SystemMode.VIGILANT, ModeTransition.NO_MOTION)
+        # For now, no auto-transitions from Silent Guardian
+        # The mode handler (modes/silent_guardian.py) will manage internal state
+        pass
 
-        # No detection for a while -> VIGILANT
-        elif time_since_detection > self.timeouts['detection_timeout'] and time_in_mode > 10.0:
-            self._transition_to(SystemMode.VIGILANT, ModeTransition.DOG_LOST)
-
-    def _evaluate_vigilant_transitions(self, time_since_motion: float,
-                                     time_since_detection: float, time_in_mode: float) -> None:
-        """Evaluate transitions from VIGILANT mode"""
-        # Motion detected -> DETECTION
-        if time_since_motion < 2.0:
-            self._transition_to(SystemMode.DETECTION, ModeTransition.MOTION_DETECTED)
-
-        # Dog detected -> DETECTION
-        elif time_since_detection < 3.0:
-            self._transition_to(SystemMode.DETECTION, ModeTransition.DOG_DETECTED)
-
-        # Long time in vigilant -> IDLE
-        elif time_in_mode > self.timeouts['vigilant_timeout']:
+    def _evaluate_coach_transitions(self, time_since_detection: float, time_in_mode: float) -> None:
+        """Evaluate transitions from COACH mode"""
+        # COACH mode is a persistent training mode - no auto-timeout
+        # Setting coach_timeout to 0 disables automatic transition
+        coach_timeout = self.timeouts.get('coach_timeout', 0)
+        if coach_timeout > 0 and time_since_detection > coach_timeout and time_in_mode > 30.0:
             self._transition_to(SystemMode.IDLE, ModeTransition.TIMEOUT)
+        # Otherwise stay in Coach mode indefinitely until manually switched
 
     def _evaluate_manual_transitions(self, now: float) -> None:
         """Evaluate transitions from MANUAL mode"""
@@ -220,19 +217,10 @@ class ModeFSM:
 
         time_since_manual = now - self.last_manual_input_time
 
-        # Manual timeout -> return to appropriate autonomous mode
+        # Manual timeout -> return to SILENT_GUARDIAN (primary mode)
         if time_since_manual > self.timeouts['manual_timeout']:
-            # Choose autonomous mode based on recent activity
-            time_since_motion = now - self.last_motion_time if self.last_motion_time > 0 else 999
-            time_since_detection = now - self.last_detection_time if self.last_detection_time > 0 else 999
-
-            if time_since_detection < 10.0:
-                target_mode = SystemMode.DETECTION
-            elif time_since_motion < 30.0:
-                target_mode = SystemMode.VIGILANT
-            else:
-                target_mode = SystemMode.IDLE
-
+            # Default to SILENT_GUARDIAN as the primary autonomous mode
+            target_mode = SystemMode.SILENT_GUARDIAN
             self._transition_to(target_mode, ModeTransition.MANUAL_TIMEOUT)
 
     def _transition_to(self, new_mode: SystemMode, trigger: ModeTransition) -> None:
@@ -299,28 +287,15 @@ class ModeFSM:
             self.logger.info("Xbox controller connected")
 
         elif event.subtype == 'controller_disconnected':
-            # Controller disconnected - if in manual mode, switch to appropriate autonomous mode
+            # Controller disconnected - if in manual mode, switch to SILENT_GUARDIAN (primary mode)
             current_mode = self.state.get_mode()
             if current_mode == SystemMode.MANUAL:
-                self.logger.info("Controller disconnected while in manual mode, switching to autonomous")
-
-                # Choose appropriate autonomous mode based on recent activity
-                now = time.time()
-                time_since_motion = now - self.last_motion_time if self.last_motion_time > 0 else 999
-                time_since_detection = now - self.last_detection_time if self.last_detection_time > 0 else 999
-
-                if time_since_detection < 10.0:
-                    target_mode = SystemMode.DETECTION
-                elif time_since_motion < 30.0:
-                    target_mode = SystemMode.VIGILANT
-                else:
-                    target_mode = SystemMode.IDLE
-
-                self._transition_to(target_mode, ModeTransition.USER_OVERRIDE)
+                self.logger.info("Controller disconnected while in manual mode, switching to Silent Guardian")
+                self._transition_to(SystemMode.SILENT_GUARDIAN, ModeTransition.USER_OVERRIDE)
 
     def set_mode_override(self, mode: SystemMode, duration: float = None) -> bool:
         """Override automatic mode transitions"""
-        if mode not in [SystemMode.PHOTOGRAPHY, SystemMode.MANUAL, SystemMode.DETECTION, SystemMode.IDLE]:
+        if mode not in [SystemMode.PHOTOGRAPHY, SystemMode.MANUAL, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.IDLE]:
             self.logger.error(f"Cannot override to mode: {mode.value}")
             return False
 

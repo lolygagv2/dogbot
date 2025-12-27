@@ -33,6 +33,8 @@ from orchestrators.sequence_engine import get_sequence_engine
 from orchestrators.reward_logic import get_reward_logic
 from orchestrators.mode_fsm import get_mode_fsm
 from orchestrators.mission_engine import get_mission_engine
+from orchestrators.coaching_engine import get_coaching_engine
+from core.behavior_interpreter import get_behavior_interpreter
 from core.hardware.audio_controller import AudioController
 from core.hardware.led_controller import LEDController, LEDMode
 from config.settings import AudioFiles
@@ -41,6 +43,7 @@ import lgpio
 # AI Detection imports
 try:
     from core.ai_controller_3stage_fixed import AI3StageControllerFixed
+    from services.perception.detector import get_detector_service
     AI_AVAILABLE = True
 except ImportError:
     AI_AVAILABLE = False
@@ -555,32 +558,30 @@ def cleanup_camera():
             _camera = None
 
 def get_ai_controller():
-    """Get or initialize AI controller instance"""
+    """Get AI controller from detector service (shared instance)"""
     global _ai_controller
     with _ai_lock:
         if _ai_controller is None and AI_AVAILABLE:
             try:
-                _ai_controller = AI3StageControllerFixed()
-                if _ai_controller.initialize():
-                    logger.info("AI Controller initialized for detection overlays")
+                # Use the shared detector service's AI controller instead of creating new one
+                detector = get_detector_service()
+                if detector and detector.ai_initialized:
+                    _ai_controller = detector.ai
+                    logger.info("Using shared AI Controller from detector service")
                 else:
-                    logger.error("AI Controller failed to initialize")
-                    _ai_controller = None
+                    logger.warning("Detector service AI not available")
             except Exception as e:
-                logger.error(f"Failed to initialize AI controller: {e}")
+                logger.error(f"Failed to get AI controller from detector service: {e}")
                 _ai_controller = None
         return _ai_controller
 
 def cleanup_ai():
-    """Clean up AI controller resources"""
+    """Clean up AI controller resources - just release our reference"""
     global _ai_controller
     with _ai_lock:
         if _ai_controller:
-            try:
-                # AI controller doesn't have explicit cleanup method, just release reference
-                logger.info("AI controller cleaned up")
-            except Exception as e:
-                logger.error(f"Error cleaning up AI controller: {e}")
+            # Just release our reference - detector service owns the actual AI controller
+            logger.info("Released reference to shared AI controller")
             _ai_controller = None
 
 def draw_detection_overlays(frame, detections, poses=None, behaviors=None):
@@ -858,6 +859,50 @@ async def clear_mode_override():
     mode_fsm = get_mode_fsm()
     mode_fsm.clear_override("API request")
     return {"success": True}
+
+# Coaching endpoints (for testing)
+@app.get("/coaching/status")
+async def get_coaching_status():
+    """Get coaching engine status"""
+    engine = get_coaching_engine()
+    return engine.get_status()
+
+@app.post("/coaching/reset_cooldowns")
+async def reset_coaching_cooldowns(dog_id: str = None):
+    """Reset coaching cooldowns for testing"""
+    engine = get_coaching_engine()
+    result = engine.reset_cooldowns(dog_id)
+    return result
+
+@app.post("/coaching/force_trick/{trick}")
+async def force_coaching_trick(trick: str):
+    """Force a specific trick for testing (e.g., 'sit', 'down', 'spin')"""
+    engine = get_coaching_engine()
+    result = engine.set_forced_trick(trick)
+    return result
+
+@app.post("/coaching/clear_forced_trick")
+async def clear_forced_trick():
+    """Clear forced trick - return to random selection"""
+    engine = get_coaching_engine()
+    result = engine.set_forced_trick(None)
+    return result
+
+# Behavior Interpreter endpoints (Layer 1)
+@app.get("/behavior/status")
+async def get_behavior_status():
+    """Get behavior interpreter status - current detection state"""
+    interpreter = get_behavior_interpreter()
+    return interpreter.get_status()
+
+@app.get("/behavior/tricks")
+async def get_behavior_tricks():
+    """Get all defined tricks and their rules (Layer 2 config)"""
+    interpreter = get_behavior_interpreter()
+    return {
+        'tricks': interpreter.trick_rules,
+        'confidence_thresholds': interpreter.confidence_thresholds,
+    }
 
 # Mission endpoints
 @app.get("/missions/status")

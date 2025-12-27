@@ -102,9 +102,14 @@ class AI3StageControllerFixed:
         self.T = 16  # Temporal window size (frames)
         self.pose_history = deque(maxlen=self.T)  # Stores list of keypoints per frame
         self.behaviors = ["stand", "sit", "lie", "cross", "spin"]  # Behavior classes
+
+        # Frame dimensions for behavior normalization (updated each frame)
+        self.current_frame_w = 640
+        self.current_frame_h = 640
         self.behavior_cooldowns = {}  # Per-dog cooldowns
         self.cooldown_timers = {}
         self.prob_th = 0.7  # Behavior probability threshold
+        self.behavior_confidence_threshold = 0.7  # Alias for behavior publishing
 
         # Camera settings
         self.camera_rotation = 0  # Fixed at 0 as per your notes
@@ -349,6 +354,9 @@ class AI3StageControllerFixed:
 
             # Downsample 4K to 640x640 for inference
             h_4k, w_4k = frame_4k.shape[:2]
+            # Store frame dimensions for proper behavior normalization
+            self.current_frame_w = w_4k
+            self.current_frame_h = h_4k
             frame_640 = cv2.resize(frame_4k, self.input_size)
 
             # Prepare input (BGR format)
@@ -495,6 +503,8 @@ class AI3StageControllerFixed:
                         kpts = np.zeros((24, 3), dtype=np.float32)
 
                         for k in range(24):
+                            # Keypoint decoding: raw values are offsets from anchor cell
+                            # Must add cell position (j, i) before scaling to get pixel coords
                             kpts[k, 0] = (kpts_raw[k * 3] + j) * stride * scale_factors[0]
                             kpts[k, 1] = (kpts_raw[k * 3 + 1] + i) * stride * scale_factors[1]
                             kpts[k, 2] = 1.0 / (1.0 + np.exp(-kpts_raw[k * 3 + 2]))
@@ -559,9 +569,8 @@ class AI3StageControllerFixed:
             return behaviors
 
         try:
-            # Extract keypoints from poses for this frame
-            frame_keypoints = [pose.keypoints for pose in poses]
-            self.pose_history.append(frame_keypoints)
+            # Store full PoseKeypoints objects (including bboxes) for proper normalization
+            self.pose_history.append(poses)
 
             # Need enough temporal history
             if len(self.pose_history) < self.T:
@@ -591,23 +600,33 @@ class AI3StageControllerFixed:
         current_time = time.time()
 
         try:
-            # Get temporal sequence from history
+            # Get temporal sequence from history (now contains full PoseKeypoints objects)
             sequence = list(self.pose_history)
 
             # Build tensor from sequence: (T, num_dogs, 24, 2)
-            max_dogs = max(len(frame_kpts) for frame_kpts in sequence if frame_kpts)
+            max_dogs = max(len(frame_poses) for frame_poses in sequence if frame_poses)
             if max_dogs == 0:
                 return behaviors
 
             tensor_data = []
-            for frame_kpts in sequence:
+
+            for frame_idx, frame_poses in enumerate(sequence):
                 frame_data = []
                 for i in range(max_dogs):
-                    if i < len(frame_kpts):
-                        # Take x, y only (drop confidence) - shape (24, 2)
-                        kpts = frame_kpts[i]
+                    if i < len(frame_poses):
+                        pose = frame_poses[i]
+                        kpts = pose.keypoints
                         if kpts.shape[0] >= 24 and kpts.shape[1] >= 2:
-                            pose_data = kpts[:24, :2]
+                            pose_data = kpts[:24, :2].copy()
+
+                            # Normalize keypoints RELATIVE TO BOUNDING BOX (as model was trained)
+                            det = pose.detection
+                            x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
+                            w = max(x2 - x1, 1e-6)
+                            h = max(y2 - y1, 1e-6)
+
+                            pose_data[:, 0] = np.clip((pose_data[:, 0] - x1) / w, 0, 1)
+                            pose_data[:, 1] = np.clip((pose_data[:, 1] - y1) / h, 0, 1)
                         else:
                             pose_data = np.zeros((24, 2))
                         frame_data.append(pose_data)
@@ -617,6 +636,10 @@ class AI3StageControllerFixed:
 
             # Convert to tensor: (T, num_dogs, 24, 2)
             tensor_input = torch.tensor(np.array(tensor_data), dtype=torch.float32)
+
+            # Center the input around 0 (training data was mean-centered)
+            # Shift from [0, 1] to [-0.5, 0.5]
+            tensor_input = tensor_input - 0.5
 
             # Reshape for model: (num_dogs, T, 48)
             # From (T, num_dogs, 24, 2) to (num_dogs, T, 24*2)
@@ -642,6 +665,15 @@ class AI3StageControllerFixed:
                 dog_probs = probs[dog_idx]
                 max_idx = np.argmax(dog_probs)
                 max_prob = float(dog_probs[max_idx])
+
+                # Debug: log all probabilities periodically
+                if dog_idx == 0:
+                    if not hasattr(self, '_behavior_log_counter'):
+                        self._behavior_log_counter = 0
+                    self._behavior_log_counter += 1
+                    if self._behavior_log_counter % 15 == 0:  # Every 15 frames
+                        prob_str = ", ".join([f"{b}:{p:.2f}" for b, p in zip(self.behaviors, dog_probs)])
+                        logger.info(f"Behavior probs: [{prob_str}]")
 
                 if max_prob > self.prob_th:
                     if max_idx < len(self.behaviors):

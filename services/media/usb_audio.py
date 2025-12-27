@@ -54,8 +54,13 @@ class USBAudioService:
             self.logger.error(f"USB Audio initialization failed: {e}")
             self.initialized = False
 
-    def play_file(self, filepath: str) -> Dict[str, Any]:
-        """Play an audio file"""
+    def play_file(self, filepath: str, loop: bool = False) -> Dict[str, Any]:
+        """Play an audio file
+
+        Args:
+            filepath: Path to audio file
+            loop: If True, loop the audio indefinitely until stopped
+        """
         if not self.initialized:
             return {"success": False, "error": "Audio not initialized"}
 
@@ -77,13 +82,16 @@ class USBAudioService:
 
                 # Play the audio file
                 pygame.mixer.music.load(full_path)
-                pygame.mixer.music.play()
+                # -1 = loop indefinitely, 0 = play once
+                pygame.mixer.music.play(-1 if loop else 0)
 
-                self.logger.info(f"Playing audio: {full_path}")
+                loop_msg = " (looping)" if loop else ""
+                self.logger.info(f"Playing audio{loop_msg}: {full_path}")
                 return {
                     "success": True,
                     "filepath": filepath,
-                    "message": f"Playing {filepath}"
+                    "loop": loop,
+                    "message": f"Playing {filepath}{loop_msg}"
                 }
 
             except Exception as e:

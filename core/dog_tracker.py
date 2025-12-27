@@ -29,6 +29,10 @@ class DogTracker:
         self.persistence_time = config.get('persistence_seconds', 30)
         self.last_known_positions = {}  # {dog_id: {'time': timestamp, 'bbox': [x1,y1,x2,y2], 'confidence': float}}
 
+        # Grace period: wait for ArUco identification before falling back to default
+        self.aruco_grace_period = config.get('aruco_grace_period', 10.0)  # seconds
+        self.unidentified_dogs = {}  # {detection_idx: first_seen_time}
+
         # Tracking state
         self.frame_count = 0
         self.active_dogs = set()
@@ -59,6 +63,9 @@ class DogTracker:
         # Clean up old persistence data
         self._cleanup_old_tracking(current_time)
 
+        # Track which detection indices are still in view
+        current_detections = set()
+
         # Process each detection box
         for idx, detection in enumerate(detections):
             if idx >= self.max_dogs:  # Rule 6: Max dogs limit
@@ -67,6 +74,8 @@ class DogTracker:
             bbox = self._get_bbox(detection)
             if not bbox:
                 continue
+
+            current_detections.add(idx)
 
             # Try to find ArUco marker in this bbox
             dog_id = self._find_marker_in_bbox(bbox, valid_markers)
@@ -77,12 +86,41 @@ class DogTracker:
                 assignments[idx] = dog_name
                 # Rule 2: Update persistence tracking
                 self._update_tracking(dog_id, bbox, current_time, confidence=1.0)
+                # Clear from unidentified tracking (ArUco found!)
+                if idx in self.unidentified_dogs:
+                    del self.unidentified_dogs[idx]
 
             else:
                 # No marker found, try persistence rules
                 dog_name = self._apply_persistence_rules(bbox, valid_markers, len(detections), current_time)
+
                 if dog_name:
-                    assignments[idx] = dog_name
+                    # Check if this is the default name (bezik)
+                    if dog_name == self.default_dog_name:
+                        # Apply grace period - only use default after waiting
+                        if idx not in self.unidentified_dogs:
+                            # First time seeing this unidentified dog
+                            self.unidentified_dogs[idx] = current_time
+
+                        time_waiting = current_time - self.unidentified_dogs[idx]
+                        if time_waiting < self.aruco_grace_period:
+                            # Still within grace period - don't assign default yet
+                            # Return None to let coaching engine wait
+                            pass
+                        else:
+                            # Grace period expired - use default
+                            assignments[idx] = dog_name
+                    else:
+                        # Not the default - it's a real identification
+                        assignments[idx] = dog_name
+                        # Clear from unidentified
+                        if idx in self.unidentified_dogs:
+                            del self.unidentified_dogs[idx]
+
+        # Clean up unidentified dogs that are no longer in view
+        expired_unidentified = [idx for idx in self.unidentified_dogs if idx not in current_detections]
+        for idx in expired_unidentified:
+            del self.unidentified_dogs[idx]
 
         return assignments
 
@@ -98,6 +136,15 @@ class DogTracker:
                                   total_detections: int, current_time: float) -> Optional[str]:
         """Apply persistence rules to identify dog without direct marker detection"""
 
+        # Rule 0: Single dog + single marker = same dog (collar might be outside bbox)
+        if total_detections == 1 and len(valid_markers) == 1:
+            marker_id = valid_markers[0][0]
+            dog_name = self.valid_dog_ids.get(marker_id)
+            if dog_name:
+                # Update tracking for this dog
+                self._update_tracking(marker_id, bbox, current_time, confidence=0.9)
+                return dog_name
+
         # Rule 3: Proximity matching with persistence
         closest_dog = self._find_closest_tracked_dog(bbox, current_time)
         if closest_dog:
@@ -111,9 +158,21 @@ class DogTracker:
                 if dog_id != detected_id and dog_id in self.active_dogs:
                     return self.valid_dog_ids[dog_id]
 
-        # Rule 4: Single dog mode - use default
-        if total_detections == 1 and len(self.active_dogs) <= 1:
-            return self.default_dog_name
+        # Rule 4: Single dog mode - use last known dog if we have one
+        if total_detections == 1:
+            # If we have exactly one active dog tracked, use that (persistence)
+            if len(self.active_dogs) == 1:
+                last_dog_id = list(self.active_dogs)[0]
+                return self.valid_dog_ids.get(last_dog_id)
+            # If no dogs tracked yet, check last known position for proximity
+            elif len(self.last_known_positions) > 0:
+                # Find closest recent dog
+                closest = self._find_closest_tracked_dog(bbox, current_time)
+                if closest:
+                    return self.valid_dog_ids.get(closest)
+            # Only use default if we've never seen any identified dog
+            elif len(self.active_dogs) == 0:
+                return self.default_dog_name
 
         return None
 
@@ -163,8 +222,13 @@ class DogTracker:
 
     def _get_bbox(self, detection) -> List[float]:
         """Extract bbox from detection object"""
+        # Handle Detection dataclass with x1, y1, x2, y2 attributes
+        if hasattr(detection, 'x1') and hasattr(detection, 'y2'):
+            return [detection.x1, detection.y1, detection.x2, detection.y2]
+        # Handle objects with bbox attribute
         if hasattr(detection, 'bbox'):
             return detection.bbox[:4] if len(detection.bbox) >= 4 else None
+        # Handle dict format
         elif isinstance(detection, dict):
             return detection.get('bbox', [])[:4] if len(detection.get('bbox', [])) >= 4 else None
         return None

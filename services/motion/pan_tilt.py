@@ -32,13 +32,14 @@ class PanTiltService:
         # Tracking state
         self.tracking_enabled = False
         self.target_position = None  # (x, y) in frame coordinates
+        self.smoothed_target = None  # Smoothed target for less jitter
         self.last_detection_time = 0.0
         self.lost_target_time = 3.0  # seconds before starting scan
 
-        # PID parameters
+        # PID parameters - REDUCED for smoother tracking
         self.pid_params = {
-            'pan': {'kp': 0.5, 'ki': 0.01, 'kd': 0.1},
-            'tilt': {'kp': 0.3, 'ki': 0.01, 'kd': 0.05}
+            'pan': {'kp': 0.15, 'ki': 0.005, 'kd': 0.08},   # Reduced from 0.5/0.01/0.1
+            'tilt': {'kp': 0.10, 'ki': 0.005, 'kd': 0.04}   # Reduced from 0.3/0.01/0.05
         }
 
         # PID state
@@ -47,11 +48,14 @@ class PanTiltService:
             'tilt': {'error_sum': 0.0, 'last_error': 0.0}
         }
 
+        # Smoothing factor for target position (0.0 = no smoothing, 0.95 = very smooth)
+        self.target_smoothing = 0.85
+
         # Camera parameters
         self.frame_width = 640
         self.frame_height = 640
         self.frame_center = (320, 320)
-        self.deadzone = 30  # pixels
+        self.deadzone = 50  # pixels - INCREASED from 30 for less jitter
 
         # Servo limits
         self.pan_limits = (10, 200)   # degrees
@@ -167,18 +171,18 @@ class PanTiltService:
                 dt = now - last_update
                 last_update = now
 
-                if current_mode == SystemMode.DETECTION:
-                    self._handle_detection_mode(dt)
-                elif current_mode == SystemMode.VIGILANT:
-                    self._handle_vigilant_mode(dt)
+                if current_mode == SystemMode.COACH:
+                    self._handle_coach_mode(dt)
+                elif current_mode == SystemMode.SILENT_GUARDIAN:
+                    self._handle_silent_guardian_mode(dt)
                 elif current_mode == SystemMode.IDLE:
                     self._handle_idle_mode()
 
             except Exception as e:
                 self.logger.error(f"Control loop error: {e}")
 
-    def _handle_detection_mode(self, dt: float) -> None:
-        """Handle tracking in detection mode"""
+    def _handle_coach_mode(self, dt: float) -> None:
+        """Handle tracking in coaching mode - active dog tracking for training"""
         if not self.tracking_enabled:
             return
 
@@ -204,15 +208,11 @@ class PanTiltService:
             # No target, scan
             self._scan_for_target()
 
-    def _handle_vigilant_mode(self, dt: float) -> None:
-        """Handle scanning in vigilant mode"""
-        # Check if we're in manual mode - if so, don't auto-scan
-        current_mode = self.state.get_mode()
-        if current_mode == SystemMode.MANUAL:
-            # Manual mode - stop autonomous scanning
-            return
-
-        self._scan_for_target()
+    def _handle_silent_guardian_mode(self, dt: float) -> None:
+        """Handle camera in Silent Guardian mode - stationary wide shot, no scanning"""
+        # Silent Guardian = fixed camera position for passive bark monitoring
+        # Camera stays stationary - no scanning or tracking
+        pass
 
     def _handle_idle_mode(self) -> None:
         """Handle idle mode - center camera"""
@@ -226,13 +226,26 @@ class PanTiltService:
             self.center_camera()
 
     def _track_target(self, target: Tuple[float, float], dt: float) -> None:
-        """Track target using PID control"""
+        """Track target using PID control with smoothing"""
         target_x, target_y = target
         center_x, center_y = self.frame_center
 
-        # Calculate errors
-        error_x = target_x - center_x
-        error_y = target_y - center_y
+        # Apply exponential smoothing to target position to reduce jitter
+        if self.smoothed_target is None:
+            self.smoothed_target = (target_x, target_y)
+        else:
+            smooth = self.target_smoothing
+            self.smoothed_target = (
+                smooth * self.smoothed_target[0] + (1 - smooth) * target_x,
+                smooth * self.smoothed_target[1] + (1 - smooth) * target_y
+            )
+
+        # Use smoothed target for error calculation
+        smooth_x, smooth_y = self.smoothed_target
+
+        # Calculate errors from smoothed position
+        error_x = smooth_x - center_x
+        error_y = smooth_y - center_y
 
         # Check if target is in deadzone
         if abs(error_x) < self.deadzone and abs(error_y) < self.deadzone:
@@ -274,8 +287,8 @@ class PanTiltService:
         # Combine terms
         output = p_term + i_term + d_term
 
-        # Limit output
-        max_output = 10.0  # degrees per iteration
+        # Limit output - REDUCED for smoother movement
+        max_output = 3.0  # degrees per iteration (was 10.0)
         return max(-max_output, min(max_output, output))
 
     def _scan_for_target(self) -> None:

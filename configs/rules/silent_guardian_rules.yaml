@@ -1,0 +1,152 @@
+# Silent Guardian Mode Configuration
+# WIM-Z's PRIMARY product mode - bark-focused passive monitoring with positive reinforcement
+
+mode_config:
+  name: "Silent Guardian"
+  description: "Passive bark monitoring with escalating intervention and treat rewards"
+  session_duration_hours: 8
+  max_treats_per_session: 11
+
+# Dog identification via ArUco markers
+dog_identification:
+  elsa:
+    aruco_id: 315
+    audio_name: "elsa.mp3"
+    audio_quiet: "quiet.mp3"  # Generic quiet for now
+    audio_come: "dogs_come.mp3"
+  bezik:
+    aruco_id: 832
+    audio_name: "bezik.mp3"
+    audio_quiet: "quiet.mp3"
+    audio_come: "dogs_come.mp3"
+
+# Bark detection thresholds
+bark_detection:
+  threshold: 2                    # Barks to trigger intervention
+  window_seconds: 60              # Time window for counting barks
+  confidence_minimum: 0.65        # Lowered for testing
+
+# Intervention sequences by escalation level
+intervention_sequences:
+  # Level 1: First bark event in the hour
+  level_1:
+    name: "Initial Quiet Request"
+    commands:
+      - type: audio
+        file: "$dog_quiet"        # "[Dog name], quiet" or just "quiet.mp3"
+        wait_after: 1.0
+    quiet_required_seconds: 10
+    reward_on_success: true
+
+  # Level 2: Second bark event within 1 hour
+  level_2:
+    name: "Firm Quiet Request"
+    commands:
+      - type: audio
+        file: "quiet.mp3"
+        wait_after: 0.5
+      - type: audio
+        file: "quiet.mp3"
+        wait_after: 0.5
+      - type: audio
+        file: "no.mp3"
+        wait_after: 1.0
+      - type: audio
+        file: "dogs_come.mp3"
+        wait_after: 2.0
+      - type: audio
+        file: "quiet.mp3"
+        wait_after: 1.0
+    quiet_required_seconds: 30
+    reward_on_success: true
+
+  # Level 3+: Third or more bark events within 1 hour
+  level_3:
+    name: "Calming Music Mode"
+    commands:
+      - type: audio
+        file: "quiet.mp3"
+        wait_after: 1.0
+    play_calming_music: true
+    calming_music_file: "songs/DOG DESENSITISATION MUSIC! to help train your dog, improve behaviour. Sound effects included.mp3"
+    quiet_periods_required: 2
+    quiet_period_duration: 20     # Each quiet period must be 20 seconds
+    reduce_treats: true           # Fewer treats at this escalation level
+    reward_on_success: true
+
+# Reward sequence (when dog successfully achieves quiet)
+reward_sequence:
+  enabled: true
+  commands:
+    - type: audio
+      file: "dogs_come.mp3"
+      wait_after: 2.0
+    - type: audio
+      file: "treat.mp3"           # "Do you want a treat?"
+      wait_after: 10.0
+    - type: camera_scan           # Scan to find dog via ArUco
+      duration: 5.0
+    - type: audio
+      file: "sit.mp3"
+      wait_after: 1.5
+    - type: audio
+      file: "quiet.mp3"
+      wait_after: 3.0
+
+  # Conditions for treat dispensing
+  treat_conditions:
+    quiet_only_seconds: 10        # 10 seconds of quiet = treat
+    sit_and_quiet_seconds: 5      # OR 5 seconds of sit + quiet = treat
+
+# Escalation tracking
+escalation:
+  window_minutes: 60              # Events within this window increase level
+  reset_after_quiet_minutes: 60   # Level resets after this much quiet time
+  max_level: 3                    # Cap at level 3
+
+# Session limits
+session_limits:
+  max_treats: 11                  # Maximum treats per 8-hour session
+  max_interventions_per_hour: 10  # Safety limit
+  min_time_between_treats: 30     # Minimum seconds between treats
+
+# Logging configuration
+logging:
+  log_barks: true
+  log_interventions: true
+  log_escalations: true
+  log_treats: true
+  log_quiet_periods: true
+
+  # Analytics fields to track
+  analytics:
+    - bark_frequency
+    - intervention_count
+    - success_duration
+    - escalation_levels
+    - treats_dispensed
+    - quiet_periods_achieved
+
+# Audio file paths (relative to /home/morgan/dogbot/VOICEMP3/)
+audio_paths:
+  base: "/home/morgan/dogbot/VOICEMP3"
+  talks: "/home/morgan/dogbot/VOICEMP3/talks"
+  songs: "/home/morgan/dogbot/VOICEMP3/songs"
+
+  # Specific files
+  quiet: "talks/quiet.mp3"
+  no: "talks/no.mp3"
+  come: "talks/dogs_come.mp3"
+  sit: "talks/sit.mp3"
+  treat: "talks/treat.mp3"
+  good_dog: "talks/good_dog.mp3"
+  elsa: "talks/elsa.mp3"
+  bezik: "talks/bezik.mp3"
+  calming_music: "songs/DOG DESENSITISATION MUSIC! to help train your dog, improve behaviour. Sound effects included.mp3"
+
+# Camera settings for Silent Guardian mode
+camera:
+  mode: "fixed"                   # Stationary wide shot
+  scan_on_bark: true              # Only scan when looking for dog after intervention
+  scan_duration: 5.0              # Seconds to scan
+  aruco_detection: true           # Enable ArUco for dog identification

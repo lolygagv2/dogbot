@@ -396,6 +396,9 @@ class TreatBotMain:
             # Subscribe to mode changes to manage mode handlers
             self.state.subscribe('mode_change', self._on_mode_change)
 
+            # Subscribe to controller events for mode transitions
+            self.bus.subscribe('system', self._on_system_event)
+
             # Start Bluetooth controller if available
             if self.bluetooth_controller and self.bluetooth_controller.is_connected:
                 self.bluetooth_controller.start()
@@ -507,6 +510,26 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"Mode change handler error: {e}")
 
+    def _on_system_event(self, event) -> None:
+        """Handle system events (controller connect/disconnect, etc.)"""
+        try:
+            if event.subtype == 'controller_disconnected':
+                # Controller disconnected - return to Silent Guardian mode
+                current_mode = self.state.get_mode()
+                if current_mode == SystemMode.MANUAL:
+                    self.logger.info("🎮 Xbox controller disconnected - returning to Silent Guardian")
+                    self.mode_fsm.request_mode(SystemMode.SILENT_GUARDIAN, "Controller disconnected")
+
+            elif event.subtype == 'controller_connected':
+                # Controller connected - switch to Manual mode
+                current_mode = self.state.get_mode()
+                if current_mode != SystemMode.MANUAL:
+                    self.logger.info("🎮 Xbox controller connected - switching to Manual mode")
+                    self.mode_fsm.request_mode(SystemMode.MANUAL, "Xbox controller connected")
+
+        except Exception as e:
+            self.logger.error(f"System event handler error: {e}")
+
     def _announce_mode(self, mode: str) -> None:
         """Play voice announcement for mode change"""
         try:
@@ -600,12 +623,16 @@ class TreatBotMain:
                 self.loop_count += 1
                 current_time = time.time()
 
-                # Send heartbeat to safety monitor
+                # CRITICAL: Send heartbeat FIRST, before any potentially blocking calls
+                # This ensures safety monitor knows we're alive even if other operations block
                 self.safety.heartbeat()
                 self.last_heartbeat = current_time
 
-                # Update system telemetry
-                self._update_telemetry()
+                # Update system telemetry (non-blocking, will skip if can't acquire lock)
+                try:
+                    self._update_telemetry()
+                except Exception as e:
+                    self.logger.debug(f"Telemetry update skipped: {e}")
 
                 # Check for emergency conditions
                 if self.state.is_emergency():

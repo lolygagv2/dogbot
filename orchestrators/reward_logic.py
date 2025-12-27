@@ -120,8 +120,11 @@ class RewardLogic:
 
     def _on_vision_event(self, event) -> None:
         """Handle vision events"""
-        if event.subtype == 'behavior_detected':
-            self._process_behavior_detection(event.data)
+        # NOTE: Behavior rewards are now handled by CoachingEngine
+        # RewardLogic only processes behaviors when explicitly requested
+        # (e.g., from mission engine or external trigger)
+        # This prevents unwanted rewards for random behaviors
+        pass
 
     def _on_audio_event(self, event) -> None:
         """Handle audio events for bark-based rewards"""

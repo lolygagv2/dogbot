@@ -113,12 +113,67 @@ class TreatBotStore:
                     )
                 ''')
 
+                # Silent Guardian sessions table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS silent_guardian_sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_start REAL NOT NULL,
+                        session_end REAL,
+                        total_barks INTEGER DEFAULT 0,
+                        interventions INTEGER DEFAULT 0,
+                        successful_quiets INTEGER DEFAULT 0,
+                        treats_dispensed INTEGER DEFAULT 0,
+                        max_escalation_level INTEGER DEFAULT 0,
+                        quiet_periods_json TEXT,
+                        dog_bark_counts_json TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
+                # Silent Guardian interventions table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS sg_interventions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id INTEGER,
+                        timestamp REAL NOT NULL,
+                        escalation_level INTEGER DEFAULT 0,
+                        dog_id TEXT,
+                        dog_name TEXT,
+                        barks_triggering INTEGER DEFAULT 0,
+                        quiet_achieved BOOLEAN DEFAULT 0,
+                        quiet_duration REAL DEFAULT 0,
+                        treat_given BOOLEAN DEFAULT 0,
+                        music_played BOOLEAN DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (session_id) REFERENCES silent_guardian_sessions(id)
+                    )
+                ''')
+
+                # Coaching sessions table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS coaching_sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp REAL NOT NULL,
+                        dog_id TEXT,
+                        dog_name TEXT,
+                        trick_requested TEXT NOT NULL,
+                        trick_completed BOOLEAN DEFAULT 0,
+                        attention_duration REAL DEFAULT 0,
+                        response_time REAL DEFAULT 0,
+                        treat_dispensed BOOLEAN DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
                 # Create indexes for performance
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_type ON events (type, subtype)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_rewards_timestamp ON rewards (timestamp)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_rewards_dog ON rewards (dog_id)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_timestamp ON telemetry (timestamp)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_sg_sessions_start ON silent_guardian_sessions (session_start)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_sg_interventions_session ON sg_interventions (session_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_coaching_timestamp ON coaching_sessions (timestamp)')
 
                 conn.commit()
                 self.logger.info("Database initialized successfully")
@@ -209,8 +264,12 @@ class TreatBotStore:
 
     def log_reward(self, dog_id: Optional[str], behavior: str, confidence: float,
                    success: bool, treats_dispensed: int = 1, mission_name: str = "") -> int:
-        """Log a reward event"""
-        with self._lock:
+        """Log a reward event (non-blocking - skips if lock busy)"""
+        # Use non-blocking lock to avoid blocking caller
+        if not self._lock.acquire(timeout=0.5):
+            self.logger.warning("log_reward skipped - lock busy")
+            return -1
+        try:
             conn = sqlite3.connect(self.db_path)
             try:
                 cursor = conn.cursor()
@@ -239,12 +298,19 @@ class TreatBotStore:
                 return -1
             finally:
                 conn.close()
+        finally:
+            self._lock.release()
 
     def log_telemetry(self, battery_pct: float = None, battery_voltage: float = None,
                      temperature: float = None, mode: str = None, cpu_usage: float = None,
                      memory_usage: float = None, disk_usage: float = None) -> bool:
-        """Log system telemetry"""
-        with self._lock:
+        """Log system telemetry (non-blocking - skips if lock busy)"""
+        # Use non-blocking lock to avoid blocking main loop heartbeat
+        if not self._lock.acquire(timeout=0.1):
+            self.logger.debug("Telemetry skipped - lock busy")
+            return False
+
+        try:
             conn = sqlite3.connect(self.db_path)
             try:
                 cursor = conn.cursor()
@@ -264,6 +330,8 @@ class TreatBotStore:
                 return False
             finally:
                 conn.close()
+        finally:
+            self._lock.release()
 
     def start_mission(self, name: str, target_rewards: int = 5, config: Dict[str, Any] = None) -> int:
         """Start a new mission"""
@@ -497,6 +565,218 @@ class TreatBotStore:
 
             except Exception as e:
                 self.logger.error(f"Failed to get database stats: {e}")
+                return {}
+            finally:
+                conn.close()
+
+    # ========== Silent Guardian Methods ==========
+
+    def start_silent_guardian_session(self) -> int:
+        """Start a new Silent Guardian session (non-blocking)"""
+        if not self._lock.acquire(timeout=0.5):
+            self.logger.warning("start_silent_guardian_session skipped - lock busy")
+            return -1
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO silent_guardian_sessions (session_start)
+                    VALUES (?)
+                ''', (time.time(),))
+
+                session_id = cursor.lastrowid
+                conn.commit()
+                self.logger.info(f"Silent Guardian session started (ID: {session_id})")
+                return session_id
+
+            except Exception as e:
+                self.logger.error(f"Failed to start SG session: {e}")
+                conn.rollback()
+                return -1
+            finally:
+                conn.close()
+        finally:
+            self._lock.release()
+
+    def end_silent_guardian_session(self, session_id: int, total_barks: int = 0,
+                                    interventions: int = 0, successful_quiets: int = 0,
+                                    treats_dispensed: int = 0, max_escalation: int = 0,
+                                    quiet_periods: List = None, dog_bark_counts: Dict = None) -> bool:
+        """End a Silent Guardian session with summary data (non-blocking)"""
+        if not self._lock.acquire(timeout=0.5):
+            self.logger.warning("end_silent_guardian_session skipped - lock busy")
+            return False
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE silent_guardian_sessions
+                    SET session_end = ?, total_barks = ?, interventions = ?,
+                        successful_quiets = ?, treats_dispensed = ?, max_escalation_level = ?,
+                        quiet_periods_json = ?, dog_bark_counts_json = ?
+                    WHERE id = ?
+                ''', (time.time(), total_barks, interventions, successful_quiets,
+                      treats_dispensed, max_escalation, json.dumps(quiet_periods or []),
+                      json.dumps(dog_bark_counts or {}), session_id))
+
+                conn.commit()
+                self.logger.info(f"Silent Guardian session ended (ID: {session_id})")
+                return True
+
+            except Exception as e:
+                self.logger.error(f"Failed to end SG session: {e}")
+                conn.rollback()
+                return False
+            finally:
+                conn.close()
+        finally:
+            self._lock.release()
+
+    def log_sg_intervention(self, session_id: int, escalation_level: int = 0,
+                           dog_id: str = None, dog_name: str = None,
+                           barks_triggering: int = 0, quiet_achieved: bool = False,
+                           quiet_duration: float = 0, treat_given: bool = False,
+                           music_played: bool = False) -> int:
+        """Log a Silent Guardian intervention event (non-blocking)"""
+        if not self._lock.acquire(timeout=0.5):
+            self.logger.warning("log_sg_intervention skipped - lock busy")
+            return -1
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO sg_interventions
+                    (session_id, timestamp, escalation_level, dog_id, dog_name,
+                     barks_triggering, quiet_achieved, quiet_duration, treat_given, music_played)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (session_id, time.time(), escalation_level, dog_id, dog_name,
+                      barks_triggering, quiet_achieved, quiet_duration, treat_given, music_played))
+
+                intervention_id = cursor.lastrowid
+                conn.commit()
+                return intervention_id
+
+            except Exception as e:
+                self.logger.error(f"Failed to log SG intervention: {e}")
+                conn.rollback()
+                return -1
+            finally:
+                conn.close()
+        finally:
+            self._lock.release()
+
+    def get_sg_session_stats(self, session_id: int = None, days: int = 7) -> Dict[str, Any]:
+        """Get Silent Guardian session statistics"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+
+                if session_id:
+                    # Get specific session
+                    cursor.execute('''
+                        SELECT * FROM silent_guardian_sessions WHERE id = ?
+                    ''', (session_id,))
+                    row = cursor.fetchone()
+                    if row:
+                        return {
+                            'id': row[0], 'session_start': row[1], 'session_end': row[2],
+                            'total_barks': row[3], 'interventions': row[4],
+                            'successful_quiets': row[5], 'treats_dispensed': row[6],
+                            'max_escalation_level': row[7]
+                        }
+                    return {}
+                else:
+                    # Get sessions from last N days
+                    cutoff = time.time() - (days * 86400)
+                    cursor.execute('''
+                        SELECT COUNT(*), SUM(total_barks), SUM(interventions),
+                               SUM(successful_quiets), SUM(treats_dispensed), MAX(max_escalation_level)
+                        FROM silent_guardian_sessions
+                        WHERE session_start > ?
+                    ''', (cutoff,))
+                    row = cursor.fetchone()
+                    return {
+                        'sessions': row[0] or 0,
+                        'total_barks': row[1] or 0,
+                        'total_interventions': row[2] or 0,
+                        'total_successful_quiets': row[3] or 0,
+                        'total_treats': row[4] or 0,
+                        'max_escalation': row[5] or 0
+                    }
+
+            except Exception as e:
+                self.logger.error(f"Failed to get SG stats: {e}")
+                return {}
+            finally:
+                conn.close()
+
+    # ========== Coaching Methods ==========
+
+    def log_coaching_session(self, dog_id: str, dog_name: str, trick_requested: str,
+                            trick_completed: bool = False, attention_duration: float = 0,
+                            response_time: float = 0, treat_dispensed: bool = False) -> int:
+        """Log a coaching interaction"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO coaching_sessions
+                    (timestamp, dog_id, dog_name, trick_requested, trick_completed,
+                     attention_duration, response_time, treat_dispensed)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (time.time(), dog_id, dog_name, trick_requested, trick_completed,
+                      attention_duration, response_time, treat_dispensed))
+
+                session_id = cursor.lastrowid
+                conn.commit()
+                return session_id
+
+            except Exception as e:
+                self.logger.error(f"Failed to log coaching session: {e}")
+                conn.rollback()
+                return -1
+            finally:
+                conn.close()
+
+    def get_coaching_stats(self, dog_id: str = None, days: int = 7) -> Dict[str, Any]:
+        """Get coaching statistics"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cutoff = time.time() - (days * 86400)
+
+                if dog_id:
+                    cursor.execute('''
+                        SELECT COUNT(*), SUM(trick_completed), SUM(treat_dispensed),
+                               AVG(response_time)
+                        FROM coaching_sessions
+                        WHERE dog_id = ? AND timestamp > ?
+                    ''', (dog_id, cutoff))
+                else:
+                    cursor.execute('''
+                        SELECT COUNT(*), SUM(trick_completed), SUM(treat_dispensed),
+                               AVG(response_time)
+                        FROM coaching_sessions
+                        WHERE timestamp > ?
+                    ''', (cutoff,))
+
+                row = cursor.fetchone()
+                return {
+                    'total_sessions': row[0] or 0,
+                    'tricks_completed': row[1] or 0,
+                    'treats_given': row[2] or 0,
+                    'avg_response_time': row[3] or 0,
+                    'success_rate': (row[1] / row[0] * 100) if row[0] > 0 else 0
+                }
+
+            except Exception as e:
+                self.logger.error(f"Failed to get coaching stats: {e}")
                 return {}
             finally:
                 conn.close()

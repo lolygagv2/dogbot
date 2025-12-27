@@ -1,7 +1,31 @@
-# Camera mode configurations for TreatBot
+# WIM-Z Camera Mode Configurations
 # Defines resolution, FPS, and AI settings for each mode
 
 modes:
+  silent_guardian:
+    description: "Primary mode - bark-focused passive monitoring"
+    resolution: [1280, 720]   # HD for ArUco detection
+    fps: 15
+    ai_enabled: false         # No heavy AI inference - bark detection is primary
+    aruco_enabled: true       # Dog identification via markers
+    bark_detection: true      # Primary input method
+    scan_pattern: "fixed"     # Camera stays stationary
+    power_saving: true
+    detection_overlay: false
+
+  coach:
+    description: "Opportunistic trick training when dog approaches"
+    resolution: [640, 640]    # Square format for AI models
+    fps: 30
+    ai_enabled: true
+    aruco_enabled: true
+    single_frame: true
+    auto_exposure: true
+    gain_control: "auto"
+    detection_threshold: 0.7
+    pose_threshold: 0.6
+    behavior_threshold: 0.8
+
   photography:
     description: "High-quality photography mode with manual controls"
     resolution: [4056, 3040]  # Full resolution
@@ -14,41 +38,17 @@ modes:
     quality: 95
     burst_mode: false
 
-  ai_detection:
-    description: "Real-time AI detection optimized for speed"
-    resolution: [640, 640]   # Square format for AI models
-    fps: 30
-    ai_enabled: true
-    single_frame: true
-    auto_exposure: true
-    gain_control: "auto"
-    detection_threshold: 0.7
-    pose_threshold: 0.6
-    behavior_threshold: 0.8
-
-  vigilant:
-    description: "Wide area monitoring with tiled display"
-    resolution: [1920, 1080]  # HD resolution
-    fps: 15
-    ai_enabled: true
-    tiling: true
-    tiles: 4  # 2x2 grid
-    pan_scan: true
-    scan_pattern: "sweep"
-    scan_speed: "slow"
-    detection_overlay: true
-
   idle:
     description: "Low power standby mode"
-    resolution: [640, 480]   # Minimal resolution
+    resolution: [640, 480]    # Minimal resolution
     fps: 5
     ai_enabled: false
     power_saving: true
     preview_only: true
 
   manual:
-    description: "Manual control for testing and calibration"
-    resolution: [1280, 720]  # 720p for testing
+    description: "Xbox controller manual control mode"
+    resolution: [1280, 720]   # 720p for real-time control
     fps: 20
     ai_enabled: false
     manual_controls: true
@@ -57,11 +57,10 @@ modes:
 
 # Mode transition settings
 transitions:
-  auto_mode_switching: true
-  motion_detection_threshold: 0.3
-  no_motion_timeout: 10.0      # seconds before switching to vigilant
-  vigilant_timeout: 30.0       # seconds before switching to idle
-  detection_timeout: 5.0       # seconds without dogs before vigilant
+  auto_mode_switching: false   # Manual switching between SILENT_GUARDIAN and COACH
+  silent_guardian_timeout: 300.0  # 5 min inactivity -> stays in mode (no auto-idle)
+  coach_timeout: 60.0            # 1 min no dogs -> IDLE
+  manual_timeout: 120.0          # 2 min no input -> SILENT_GUARDIAN
 
 # Performance settings
 performance:
@@ -70,3 +69,10 @@ performance:
   processing_threads: 2
   gpu_acceleration: true
   memory_limit_mb: 512
+
+# Backward compatibility aliases (deprecated)
+# These map old mode names to new ones
+aliases:
+  ai_detection: coach
+  detection: coach
+  vigilant: silent_guardian

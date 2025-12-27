@@ -43,7 +43,7 @@ class DispenserService:
 
         # Dispensing parameters (from working test scripts)
         self.dispense_pulse = 1300  # microseconds - changed from 1700 for different rotation
-        self.dispense_duration = 0.05  # seconds - final optimized duration
+        self.dispense_duration = 0.12  # seconds - increased from 0.05 to ensure treat drops
 
         # Thread safety
         self._dispense_lock = threading.Lock()

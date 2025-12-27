@@ -4,6 +4,10 @@ Test Phase 1 core infrastructure
 Tests event bus, state manager, store, and safety monitor
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 import time
 import threading
 import json
@@ -58,8 +62,8 @@ def test_state_manager():
     state.subscribe('mode_change', mode_change_handler)
 
     # Test mode changes
-    assert state.set_mode(SystemMode.DETECTION, "Starting detection")
-    assert state.get_mode() == SystemMode.DETECTION
+    assert state.set_mode(SystemMode.SILENT_GUARDIAN, "Starting Silent Guardian")
+    assert state.get_mode() == SystemMode.SILENT_GUARDIAN
 
     # Test hardware updates
     state.update_hardware(battery_voltage=13.8, temperature=45.2)

@@ -7,12 +7,28 @@ Publishes pose events to event bus
 import threading
 import time
 import logging
-from typing import Optional, Dict, Any, List
+import cv2
+import numpy as np
+from typing import Optional, Dict, Any, List, Tuple
 
 from core.bus import get_bus, publish_vision_event
 from core.state import get_state, SystemMode
 from core.store import get_store
 from core.ai_controller_3stage_fixed import AI3StageControllerFixed
+
+# Camera imports
+try:
+    from picamera2 import Picamera2
+    PICAMERA_AVAILABLE = True
+except ImportError:
+    PICAMERA_AVAILABLE = False
+
+# ArUco detection
+ARUCO_DICT = cv2.aruco.DICT_4X4_1000
+DOG_MARKERS = {
+    315: 'elsa',
+    832: 'bezik'
+}
 
 
 class DetectorService:
@@ -31,6 +47,15 @@ class DetectorService:
         self.ai = None
         self.ai_initialized = False
 
+        # Camera
+        self.camera = None
+        self.camera_initialized = False
+
+        # ArUco detector
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
+        self.aruco_params = cv2.aruco.DetectorParameters()
+        self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+
         # Detection state
         self.running = False
         self.detection_thread = None
@@ -42,15 +67,19 @@ class DetectorService:
         self.current_fps = 0.0
 
     def initialize(self) -> bool:
-        """Initialize AI controller"""
+        """Initialize AI controller and camera"""
         try:
+            # Initialize camera first
+            self._initialize_camera()
+
+            # Initialize AI controller
             self.ai = AI3StageControllerFixed()
             success = self.ai.initialize()
 
             if success:
                 self.ai_initialized = True
                 self.logger.info("AI controller initialized")
-                self.state.update_hardware(camera_initialized=True)
+                self.state.update_hardware(camera_initialized=self.camera_initialized)
                 return True
             else:
                 self.logger.error("AI controller initialization failed")
@@ -59,6 +88,67 @@ class DetectorService:
         except Exception as e:
             self.logger.error(f"AI controller initialization error: {e}")
             return False
+
+    def _initialize_camera(self) -> bool:
+        """Initialize camera for frame capture"""
+        try:
+            if PICAMERA_AVAILABLE:
+                self.logger.info("Initializing Picamera2 for detection...")
+                self.camera = Picamera2()
+                config = self.camera.create_preview_configuration(
+                    main={"size": (640, 640), "format": "RGB888"}
+                )
+                self.camera.configure(config)
+                self.camera.start()
+                self.camera_initialized = True
+                self.logger.info("Picamera2 initialized for detection")
+                return True
+            else:
+                self.logger.warning("Picamera2 not available, detection disabled")
+                return False
+        except Exception as e:
+            self.logger.error(f"Camera initialization error: {e}")
+            return False
+
+    def _capture_frame(self):
+        """Capture a frame from the camera"""
+        if not self.camera_initialized or self.camera is None:
+            return None
+        try:
+            frame = self.camera.capture_array()
+            # Rotate if needed (90 degrees as per config)
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            return frame
+        except Exception as e:
+            self.logger.error(f"Frame capture error: {e}")
+            return None
+
+    def _detect_aruco_markers(self, frame) -> List[Tuple[int, float, float]]:
+        """Detect ArUco markers in frame and return (marker_id, cx, cy) tuples"""
+        markers = []
+        try:
+            # Convert to grayscale for ArUco detection
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+            # Detect markers
+            corners, ids, rejected = self.aruco_detector.detectMarkers(gray)
+
+            if ids is not None:
+                for i, marker_id in enumerate(ids.flatten()):
+                    # Get center of marker
+                    corner = corners[i][0]
+                    cx = float(np.mean(corner[:, 0]))
+                    cy = float(np.mean(corner[:, 1]))
+                    markers.append((int(marker_id), cx, cy))
+
+                    # Log known dog markers
+                    if marker_id in DOG_MARKERS:
+                        self.logger.info(f"ArUco marker {marker_id} ({DOG_MARKERS[marker_id]}) at ({cx:.0f}, {cy:.0f})")
+
+        except Exception as e:
+            self.logger.error(f"ArUco detection error: {e}")
+
+        return markers
 
     def is_initialized(self) -> bool:
         """Check if detector service is initialized"""
@@ -103,7 +193,7 @@ class DetectorService:
         publish_vision_event('detection_stopped', {}, 'detector_service')
 
     def _detection_loop(self) -> None:
-        """Main detection loop"""
+        """Main detection loop - runs in all operational modes"""
         self.logger.info("Detection loop started")
         self.last_fps_time = time.time()
         self.frame_count = 0
@@ -111,13 +201,33 @@ class DetectorService:
         while not self._stop_event.is_set():
             try:
                 # Check if we should be running based on mode
+                # AI vision runs in ALL operational modes for:
+                # - COACH: Active training (full detection + behavior)
+                # - SILENT_GUARDIAN: Dog visibility checks for treat dispensing
+                # - IDLE: Background monitoring
+                # - PHOTOGRAPHY: Frame capture assistance
+                # NOT in: MANUAL (controller takes over), SHUTDOWN, EMERGENCY
                 current_mode = self.state.get_mode()
-                if current_mode not in [SystemMode.DETECTION, SystemMode.VIGILANT]:
+                if current_mode in [SystemMode.MANUAL, SystemMode.SHUTDOWN, SystemMode.EMERGENCY]:
                     time.sleep(0.1)
                     continue
 
-                # Process frame using existing AI controller
-                dogs, poses, behaviors = self.ai.process_frame(None)  # AI controller handles frame capture
+                # Capture frame from camera
+                frame = self._capture_frame()
+                if frame is None:
+                    self.logger.warning("No frame captured, waiting...")
+                    time.sleep(0.1)
+                    continue
+
+                # Detect ArUco markers for dog identification
+                aruco_markers = self._detect_aruco_markers(frame)
+
+                # Process frame with dog identification
+                result = self.ai.process_frame_with_dogs(frame, aruco_markers)
+                dogs = result.get('detections', [])
+                poses = result.get('poses', [])
+                behaviors = result.get('behaviors', [])
+                dog_assignments = result.get('dog_assignments', {})
 
                 # Update FPS
                 self.frame_count += 1
@@ -126,10 +236,11 @@ class DetectorService:
                     self.current_fps = self.frame_count / (now - self.last_fps_time)
                     self.frame_count = 0
                     self.last_fps_time = now
+                    self.logger.info(f"Detection FPS: {self.current_fps:.1f}")
 
                 # Process results
                 if dogs:
-                    self._process_detections(dogs, poses, behaviors)
+                    self._process_detections(dogs, poses, behaviors, dog_assignments)
                 else:
                     # No dogs detected
                     self.state.update_detection(
@@ -148,8 +259,17 @@ class DetectorService:
 
         self.logger.info("Detection loop stopped")
 
-    def _process_detections(self, dogs: List[Dict], poses: List[Dict], behaviors: List[Dict]) -> None:
-        """Process detection results and publish events"""
+    def _process_detections(self, dogs, poses, behaviors, dog_assignments: Dict[int, str] = None) -> None:
+        """Process detection results and publish events
+
+        Args:
+            dogs: List of Detection dataclass objects
+            poses: List of PoseKeypoints dataclass objects
+            behaviors: List of BehaviorResult dataclass objects
+            dog_assignments: Dict mapping detection index to dog name (from ArUco)
+        """
+        if dog_assignments is None:
+            dog_assignments = {}
 
         # Update state
         num_dogs = len(dogs)
@@ -158,48 +278,61 @@ class DetectorService:
             last_detection_time=time.time()
         )
 
-        # Process each dog
+        # Process each dog (Detection dataclass)
         for i, dog in enumerate(dogs):
-            dog_id = f"dog_{i}"  # Simple ID for now
+            # Use ArUco-identified name if available, otherwise generic ID
+            dog_name = dog_assignments.get(i)
+            dog_id = dog_name if dog_name else f"dog_{i}"
+
+            bbox = [dog.x1, dog.y1, dog.x2, dog.y2]
+            center = dog.center
 
             # Publish dog detection event
             publish_vision_event('dog_detected', {
                 'dog_id': dog_id,
-                'confidence': dog.get('confidence', 0.0),
-                'bbox': dog.get('bbox', [0, 0, 0, 0]),
-                'center': self._get_bbox_center(dog.get('bbox', [0, 0, 0, 0])),
+                'dog_name': dog_name,  # Will be None if not identified
+                'confidence': dog.confidence,
+                'bbox': bbox,
+                'center': list(center),
                 'timestamp': time.time()
             }, 'detector_service')
 
             # Log to store
             self.store.log_event('vision', 'dog_detected', 'detector_service', {
                 'dog_id': dog_id,
-                'confidence': dog.get('confidence', 0.0),
-                'bbox': dog.get('bbox', [0, 0, 0, 0])
+                'dog_name': dog_name,
+                'confidence': dog.confidence,
+                'bbox': bbox
             })
 
             # Update dog seen in store
             self.store.update_dog_seen(dog_id)
 
-        # Process poses if available
+        # Process poses if available (PoseKeypoints dataclass)
         if poses:
             for i, pose in enumerate(poses):
-                dog_id = f"dog_{i}"
+                # Use ArUco-identified name if available
+                dog_name = dog_assignments.get(i)
+                dog_id = dog_name if dog_name else f"dog_{i}"
+                keypoints = pose.keypoints.tolist() if hasattr(pose.keypoints, 'tolist') else list(pose.keypoints)
 
                 publish_vision_event('pose_detected', {
                     'dog_id': dog_id,
-                    'keypoints': pose.get('keypoints', []),
-                    'confidence': pose.get('confidence', 0.0),
-                    'num_keypoints': len(pose.get('keypoints', [])),
+                    'dog_name': dog_name,
+                    'keypoints': keypoints,
+                    'confidence': pose.detection.confidence if pose.detection else 0.0,
+                    'num_keypoints': len(keypoints),
                     'timestamp': time.time()
                 }, 'detector_service')
 
-        # Process behaviors if available
+        # Process behaviors if available (BehaviorResult dataclass)
         if behaviors:
             for i, behavior in enumerate(behaviors):
-                dog_id = f"dog_{i}"
-                behavior_name = behavior.get('behavior', 'unknown')
-                confidence = behavior.get('confidence', 0.0)
+                # Use ArUco-identified name if available
+                dog_name = dog_assignments.get(i)
+                dog_id = dog_name if dog_name else f"dog_{i}"
+                behavior_name = behavior.behavior
+                confidence = behavior.confidence
 
                 # Update state with primary dog's behavior
                 if i == 0:
@@ -213,9 +346,10 @@ class DetectorService:
                 # Publish behavior event
                 publish_vision_event('behavior_detected', {
                     'dog_id': dog_id,
+                    'dog_name': dog_name,
                     'behavior': behavior_name,
                     'confidence': confidence,
-                    'duration': behavior.get('duration', 0.0),
+                    'duration': getattr(behavior, 'duration', 0.0),
                     'timestamp': time.time()
                 }, 'detector_service')
 
@@ -246,6 +380,16 @@ class DetectorService:
     def cleanup(self) -> None:
         """Clean shutdown"""
         self.stop_detection()
+        # Clean up camera
+        if self.camera:
+            try:
+                self.camera.stop()
+                self.camera.close()
+                self.logger.info("Camera closed")
+            except Exception as e:
+                self.logger.error(f"Camera cleanup error: {e}")
+            self.camera = None
+            self.camera_initialized = False
         if self.ai:
             self.ai.cleanup()
         self.logger.info("Detector service cleaned up")

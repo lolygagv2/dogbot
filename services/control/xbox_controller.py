@@ -215,11 +215,11 @@ class XboxControllerService:
 
             logger.info(f"Manual timeout ({self.manual_timeout}s), switching to autonomous")
 
-            # Switch to appropriate autonomous mode
+            # Switch to Silent Guardian (primary autonomous mode)
             if self.is_connected:
-                self.state.set_mode(SystemMode.VIGILANT, "Manual timeout - controller connected")
+                self.state.set_mode(SystemMode.SILENT_GUARDIAN, "Manual timeout - controller connected")
             else:
-                self.state.set_mode(SystemMode.IDLE, "Manual timeout - no controller")
+                self.state.set_mode(SystemMode.SILENT_GUARDIAN, "Manual timeout - no controller")
 
             # Publish timeout event
             publish_system_event('manual_timeout', {

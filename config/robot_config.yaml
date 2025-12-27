@@ -127,7 +127,7 @@ bark_detection:
   audio_gain: 30.0  # High amplification needed for quiet lavalier mic
 
   # Detection settings
-  confidence_threshold: 0.55  # Minimum confidence for valid bark
+  confidence_threshold: 0.43  # Minimum confidence for valid bark (lowered for testing)
   reward_emotions:  # Emotions that trigger treat dispensing
     - alert
     - attention

@@ -441,14 +441,24 @@ class SequenceEngine:
         self.led.set_pattern('error', 5.0)
 
     def get_status(self) -> Dict[str, Any]:
-        """Get sequence engine status"""
-        with self._lock:
+        """Get sequence engine status (non-blocking)"""
+        if not self._lock.acquire(timeout=0.2):
+            # Return safe defaults if can't acquire lock
+            return {
+                'active_sequences': 0,
+                'sequence_ids': [],
+                'sequence_counter': self.sequence_counter,
+                'builtin_sequences': []
+            }
+        try:
             return {
                 'active_sequences': len(self.active_sequences),
                 'sequence_ids': list(self.active_sequences.keys()),
                 'sequence_counter': self.sequence_counter,
                 'builtin_sequences': list(self.builtin_sequences.keys())
             }
+        finally:
+            self._lock.release()
 
     def cleanup(self) -> None:
         """Clean shutdown"""
