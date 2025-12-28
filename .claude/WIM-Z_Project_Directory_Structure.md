@@ -1,5 +1,5 @@
 # WIM-Z Project Directory Structure
-*Last Updated: 2025-10-27 - Session with ArUco, Bark Detection, and Bluetooth Control*
+*Last Updated: 2025-12-28 - Session with Weekly Reporting and Mission Scheduler*
 
 ## ⚠️ IMPORTANT NOTES
 - **Duplicate vision folders** need consolidation:
@@ -31,6 +31,9 @@
       state.py                     System state manager
       store.py                     SQLite database (IMPLEMENTED)
       safety.py                    Safety monitor
+      behavior_interpreter.py      🆕 Behavior detection wrapper (Layer 1)
+      weekly_summary.py            🆕 Weekly report generation
+      mission_scheduler.py         🆕 Mission auto-scheduling
       camera_mode_controller.py    Camera mode management
       camera_positioning_system.py  Camera positioning
       vision/                      # Vision modules (CORRECT LOCATION)
@@ -111,6 +114,10 @@
 
    📂 data/                        # Runtime data (ACTIVE)
       treatbot.db                  SQLite database file
+      dogbot.db                    Alternative database file
+
+   📂 reports/                     # 🆕 Exported reports (ACTIVE)
+      weekly_report_*.md           Weekly summary exports
 
    📂 Archive/                     # Obsolete files (DO NOT USE)
       ai/                          Old AI implementations
@@ -190,6 +197,27 @@ When answering questions about functionality:
 5. **For "hardware control"** → Check `/services/` (new) or `/hardware/` (legacy)
 6. **For "autonomous modes"** → Check `/modes/` folder
 7. **For "dog identification"** → Check ArUco files and `/live_gui_with_aruco.py`
+
+## ✨ Session Additions (2025-12-28)
+
+### New Capabilities Added:
+1. **Weekly Summary Reporting** - Comprehensive weekly stats and trends
+2. **Mission Scheduler** - Auto-start missions based on time/day config
+3. **8-Week Trend Analysis** - Historical behavior pattern tracking
+4. **Per-Dog Progress Reports** - Individual dog analytics
+5. **11 New API Endpoints** - Reports + Scheduler APIs
+
+### Files Created This Session:
+- `/core/weekly_summary.py` - Weekly report generation (~700 lines)
+  - generate_weekly_report() - Full weekly stats
+  - get_behavior_trends(weeks=8) - Multi-week trends
+  - export_report() - Markdown/CSV export
+- `/core/mission_scheduler.py` - Mission auto-scheduling
+  - Time window enforcement
+  - Day-of-week filtering
+- `/reports/` directory - Exported report storage
+
+---
 
 ## ✨ Session Additions (2025-10-27)
 
