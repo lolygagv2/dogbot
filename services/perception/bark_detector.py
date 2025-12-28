@@ -1,6 +1,11 @@
 """
 Bark detection service for TreatBot
-Integrates bark emotion classifier with event-driven architecture
+Uses 3-stage bark detection: BarkGate (signal processing) -> Emotion -> Analytics
+
+Updated to use new core/audio/bark_detector.py system which:
+- Stage 1: BarkGate - Signal processing detection (works with AGC OFF)
+- Stage 2: Emotion classification (spectral analysis, works with AGC OFF)
+- Stage 3: Per-dog analytics
 """
 
 import threading
@@ -14,10 +19,15 @@ from datetime import datetime, timedelta
 from core.bus import get_bus, AudioEvent, RewardEvent, VisionEvent, publish_audio_event, publish_reward_event
 from core.state import get_state
 
-# Audio components
-from ai.bark_classifier import BarkClassifier
-# Use arecord-based buffer to avoid USB freezing
+# New 3-stage bark detection system
+from core.audio.bark_detector import BarkDetector, BarkEvent
+from core.audio.bark_gate import BarkGateConfig
+
+# Audio buffer for capturing audio
 from audio.bark_buffer_arecord import BarkAudioBufferArecord as BarkAudioBuffer
+
+# AGC control
+from services.media.usb_audio import set_agc
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +36,14 @@ class BarkDetectorService:
     """
     Service that continuously monitors for dog barks and classifies emotions
 
+    Uses 3-stage detection:
+    - Stage 1: BarkGate (signal processing, no ML) - determines IF it's a bark
+    - Stage 2: Emotion classifier (TFLite) - determines WHAT KIND of bark
+    - Stage 3: Analytics - per-dog tracking
+
     Features:
     - Real-time audio capture and buffering
+    - Reliable bark detection via energy thresholds (AGC OFF)
     - Bark emotion classification
     - Reward triggering for specific emotions
     - Cooldown management
@@ -56,12 +72,11 @@ class BarkDetectorService:
         self.consumer_mode = config.get('consumer_friendly', True)
         self.detection_thread = None
 
-        # Initialize components
-        self.classifier = None
+        # Initialize components - using new 3-stage system
+        self.bark_detector = None  # BarkDetector (3-stage)
         self.audio_buffer = None
 
         # Detection parameters
-        # Raised default from 0.55 to 0.70 to reduce false positives
         self.confidence_threshold = config.get('confidence_threshold', 0.70)
         self.reward_emotions = config.get('reward_emotions', ['alert', 'attention'])
         self.check_interval = config.get('check_interval', 0.5)
@@ -98,31 +113,38 @@ class BarkDetectorService:
             return False
 
         try:
-            # Initialize classifier
-            model_path = self.config.get('model_path', '/home/morgan/dogbot/ai/models/dog_bark_classifier.tflite')
-            emotion_mapping_path = self.config.get('emotion_mapping_path', '/home/morgan/dogbot/ai/models/emotion_mapping.json')
-
-            self.classifier = BarkClassifier(
-                model_path=model_path,
-                emotion_mapping_path=emotion_mapping_path,
-                sample_rate=self.config.get('sample_rate', 22050),
-                duration=self.config.get('duration', 3.0),
-                n_mels=self.config.get('n_mels', 128)
+            # Initialize 3-stage bark detector with emotion classification enabled
+            gate_config = BarkGateConfig(
+                base_threshold=0.25,      # Minimum energy (calibrated for AGC OFF)
+                thresh_close=0.50,        # Close/loud bark
+                thresh_mid=0.35,          # Medium distance bark
+                thresh_far=0.25,          # Far/quiet bark
+                min_bark_duration_ms=30,  # Reject clicks
+                max_bark_duration_ms=2000,# Cap duration
+                grace_period_ms=100,      # Wait for bark "tail"
+                bark_cooldown_ms=1000     # Cooldown between barks
             )
 
-            # Initialize audio buffer with correct parameters
-            # Note: USB device records at 44100Hz, model expects 22050Hz
+            self.bark_detector = BarkDetector(
+                config=gate_config,
+                enable_emotion=True  # Enable Stage 2 emotion classification
+            )
+
+            # Initialize audio buffer
+            # Note: USB device records at 44100Hz, need 1.0s minimum for arecord
             self.audio_buffer = BarkAudioBuffer(
                 sample_rate=44100,  # USB device native rate
-                chunk_duration=self.config.get('duration', 3.0),
+                chunk_duration=1.0,  # 1 second chunks (arecord minimum)
                 gain=self.config.get('audio_gain', 30.0)  # Amplification for quiet mic
             )
 
-            logger.info("Bark detection components initialized successfully")
+            logger.info("Bark detection components initialized (3-stage system)")
             return True
 
         except Exception as e:
             logger.error(f"Failed to initialize bark detection: {e}")
+            import traceback
+            traceback.print_exc()
             self.enabled = False
             return False
 
@@ -137,6 +159,13 @@ class BarkDetectorService:
             return
 
         try:
+            # Disable AGC for reliable bark detection (raw energy levels)
+            set_agc(False)
+            logger.info("AGC disabled for bark detection")
+
+            # Start the 3-stage bark detector
+            self.bark_detector.start()
+
             # Start audio capture
             self.audio_buffer.start()
 
@@ -158,7 +187,7 @@ class BarkDetectorService:
                 'timestamp': datetime.now().isoformat()
             })
 
-            logger.info("Bark detection service started")
+            logger.info("Bark detection service started (3-stage with AGC OFF)")
 
         except Exception as e:
             logger.error(f"Failed to start bark detection: {e}")
@@ -172,6 +201,10 @@ class BarkDetectorService:
         logger.info("Stopping bark detection service...")
         self.is_running = False
 
+        # Stop the 3-stage bark detector
+        if self.bark_detector:
+            self.bark_detector.stop()
+
         # Stop audio capture
         if self.audio_buffer:
             self.audio_buffer.stop()
@@ -179,6 +212,10 @@ class BarkDetectorService:
         # Wait for thread to finish
         if self.detection_thread:
             self.detection_thread.join(timeout=2.0)
+
+        # Re-enable AGC when stopping bark detection
+        set_agc(True)
+        logger.info("AGC re-enabled")
 
         # Publish service stopped event
         publish_audio_event('service_stopped', {
@@ -213,7 +250,7 @@ class BarkDetectorService:
 
     def _detection_loop(self):
         """Main detection loop running in background thread"""
-        logger.info("Bark detection loop started")
+        logger.info("Bark detection loop started (3-stage system)")
         detection_count = 0
 
         while self.is_running:
@@ -223,89 +260,104 @@ class BarkDetectorService:
 
                 if audio_chunk is not None:
                     detection_count += 1
-                    # Log every 10th chunk to avoid spam
-                    if detection_count % 10 == 0:
-                        logger.debug(f"Processing audio chunk #{detection_count}, shape: {audio_chunk.shape}")
 
-                    # Check audio energy level (RMS is better than mean absolute)
+                    # Calculate audio energy (RMS)
                     audio_energy = np.sqrt(np.mean(audio_chunk**2))
 
-                    # Log energy every 10th chunk to debug
-                    if detection_count % 10 == 0:
-                        logger.info(f"Audio energy check - RMS: {audio_energy:.6f}, Max: {np.max(np.abs(audio_chunk)):.6f}")
+                    # Log energy periodically for debugging
+                    if detection_count % 30 == 0:
+                        logger.debug(f"Audio energy: {audio_energy:.4f}")
 
-                    # Very low threshold since mic is quiet and we're amplifying by 30x
-                    if audio_energy > 0.001:  # Process almost any audio
-                        logger.info(f"Processing audio - Energy: {audio_energy:.4f}")
+                    # Get visible dogs for bark attribution
+                    visible_dogs = self._get_visible_dogs()
+                    dog_id = None
+                    dog_name = None
 
-                        # Resample from 44100Hz to 22050Hz for the model
-                        from scipy import signal
-                        audio_resampled = signal.resample(
-                            audio_chunk,
-                            int(len(audio_chunk) * 22050 / 44100)
-                        )
+                    # Attribution: only attribute if exactly 1 dog visible
+                    if len(visible_dogs) == 1:
+                        dog_id, dog_info = next(iter(visible_dogs.items()))
+                        dog_name = dog_info.get('name', 'unknown')
 
-                        # Classify bark emotion
-                        result = self.classifier.predict(
-                            audio_resampled,
-                            confidence_threshold=self.confidence_threshold
-                        )
+                    # Resample audio for emotion classifier (44100Hz -> 22050Hz)
+                    from scipy import signal
+                    audio_resampled = signal.resample(
+                        audio_chunk,
+                        int(len(audio_chunk) * 22050 / 44100)
+                    )
 
-                        logger.info(f"Classification result: {result['emotion']} (conf: {result['confidence']:.2f}), all probs: {result['all_probabilities']}")
+                    # Process through 3-stage bark detector
+                    # Stage 1: BarkGate determines IF it's a bark (energy thresholds)
+                    # Stage 2: If bark, classify emotion
+                    # Stage 3: Track per-dog analytics
+                    bark_event = self.bark_detector.process_audio(
+                        audio_data=audio_resampled,
+                        energy=audio_energy,
+                        dog_id=dog_id,
+                        dog_name=dog_name
+                    )
 
-                        # Check if 'notbark' has high confidence - if so, this is NOT a bark
-                        notbark_confidence = result['all_probabilities'].get('notbark', 0.0)
-
-                        # Calculate loudness in dB for analytics
+                    if bark_event:
+                        # Bark detected! Build result dict for handler
                         loudness_db = 20 * np.log10(max(audio_energy, 1e-10))
 
-                        # Only consider it a bark if:
-                        # 1. The top prediction is NOT 'notbark'
-                        # 2. The confidence is above threshold
-                        # 3. The 'notbark' confidence is below 0.5 (model thinks it's NOT "not a bark")
-                        if (result['emotion'] != 'notbark' and
-                            result['is_confident'] and
-                            notbark_confidence < 0.5):
-                            self._handle_bark_detected(result, loudness_db)
-                        else:
-                            logger.debug(f"Not a bark - emotion: {result['emotion']}, notbark conf: {notbark_confidence:.2f}")
+                        result = {
+                            'emotion': bark_event.emotion or 'unknown',
+                            'confidence': bark_event.emotion_confidence,
+                            'distance': bark_event.distance,
+                            'peak_energy': bark_event.peak_energy,
+                            'duration_ms': bark_event.duration_ms,
+                            'all_probabilities': {}  # Not available from BarkEvent
+                        }
+
+                        self._handle_bark_detected(result, loudness_db, bark_event)
 
                 # Brief pause
-                time.sleep(0.1)
+                time.sleep(0.05)
 
             except Exception as e:
                 logger.error(f"Error in detection loop: {e}")
+                import traceback
+                traceback.print_exc()
                 time.sleep(1.0)
 
         logger.info("Bark detection loop ended")
 
-    def _handle_bark_detected(self, result: Dict, loudness_db: float = None):
+    def _handle_bark_detected(self, result: Dict, loudness_db: float = None, bark_event: BarkEvent = None):
         """
         Handle detected bark
 
         Args:
-            result: Classification result from bark classifier
+            result: Classification result dict with emotion, confidence, distance, etc.
             loudness_db: Loudness in decibels
+            bark_event: Optional BarkEvent from 3-stage detector
         """
-        emotion = result['emotion']
-        confidence = result['confidence']
+        emotion = result.get('emotion', 'unknown')
+        confidence = result.get('confidence', 0.0)
+        distance = result.get('distance', 'unknown')
 
         # Update statistics
         self.stats['total_barks'] += 1
         self.stats['emotions_detected'][emotion] = \
             self.stats['emotions_detected'].get(emotion, 0) + 1
 
-        # Get currently visible dogs for bark attribution
+        # Get dog info from bark_event if available, otherwise from visible dogs
+        if bark_event and bark_event.dog_id:
+            dog_id = bark_event.dog_id
+            dog_name = bark_event.dog_name
+        else:
+            # Get currently visible dogs for bark attribution
+            visible_dogs = self._get_visible_dogs()
+
+            # Attribution logic: only attribute if exactly 1 dog visible
+            if len(visible_dogs) == 1:
+                dog_id, dog_info = next(iter(visible_dogs.items()))
+                dog_name = dog_info.get('name', 'unknown')
+            else:
+                dog_id = None
+                dog_name = None
+
         visible_dogs = self._get_visible_dogs()
         visible_ids = list(visible_dogs.keys())
-
-        # Attribution logic: only attribute if exactly 1 dog visible
-        if len(visible_dogs) == 1:
-            dog_id, dog_info = next(iter(visible_dogs.items()))
-            dog_name = dog_info.get('name', 'unknown')
-        else:
-            dog_id = None
-            dog_name = None
 
         # Store bark in database
         try:
@@ -334,16 +386,21 @@ class BarkDetectorService:
 
         # Log detection with dog attribution
         if dog_name:
-            logger.info(f"Bark detected: {dog_name} barked - {emotion} (confidence: {confidence:.2f}, loudness: {loudness_db:.1f}dB)")
+            logger.info(f"Bark detected: {dog_name} barked - {distance} {emotion} "
+                       f"(conf: {confidence:.2f}, loudness: {loudness_db:.1f}dB)")
         else:
-            logger.info(f"Bark detected: Dog barked - {emotion} (confidence: {confidence:.2f}, loudness: {loudness_db:.1f}dB)")
+            logger.info(f"Bark detected: {distance} {emotion} "
+                       f"(conf: {confidence:.2f}, loudness: {loudness_db:.1f}dB)")
 
-        # Publish bark detected event with dog attribution
+        # Publish bark detected event with dog attribution and distance
         publish_audio_event('bark_detected', {
             'emotion': emotion,
             'confidence': confidence,
+            'distance': distance,  # 'close', 'mid', 'far' from BarkGate
             'loudness_db': loudness_db,
-            'all_probabilities': result['all_probabilities'],
+            'peak_energy': result.get('peak_energy', 0.0),
+            'duration_ms': result.get('duration_ms', 0),
+            'all_probabilities': result.get('all_probabilities', {}),
             'timestamp': datetime.now().isoformat(),
             'visible_dogs': visible_ids,
             'dog_id': dog_id,

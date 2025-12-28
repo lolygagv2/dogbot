@@ -29,14 +29,14 @@ from core.store import get_store
 from core.bark_frequency_tracker import get_bark_frequency_tracker
 
 # Services
-from services.media.usb_audio import get_usb_audio_service
+from services.media.usb_audio import get_usb_audio_service, set_agc
 from services.reward.dispenser import get_dispenser_service
 from services.media.led import get_led_service
 
 logger = logging.getLogger(__name__)
 
 # Dog visibility timeout - how recently must we have seen a dog
-DOG_VISIBILITY_TIMEOUT = 60.0  # 60 seconds - dog seen within last minute
+DOG_VISIBILITY_TIMEOUT = 10.0  # 10 seconds - dog seen within last 10 seconds
 
 
 class SGState(Enum):
@@ -201,6 +201,10 @@ class SilentGuardianMode:
             return True
 
         try:
+            # Disable AGC for bark detection (raw energy levels needed)
+            set_agc(False)
+            logger.info("AGC disabled for Silent Guardian mode (bark detection)")
+
             # Start a new session in database
             self.session_id = self.store.start_silent_guardian_session()
             self.session_start_time = time.time()
@@ -257,6 +261,10 @@ class SilentGuardianMode:
         # Wait for thread
         if self.mode_thread and self.mode_thread.is_alive():
             self.mode_thread.join(timeout=2.0)
+
+        # Re-enable AGC when leaving Silent Guardian mode
+        set_agc(True)
+        logger.info("AGC re-enabled (leaving Silent Guardian mode)")
 
         # Publish stop event
         publish_system_event('silent_guardian_stopped', {

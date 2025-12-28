@@ -185,3 +185,88 @@ def get_usb_audio_service() -> USBAudioService:
     if _usb_audio_service is None:
         _usb_audio_service = USBAudioService()
     return _usb_audio_service
+
+
+# =============================================================================
+# AGC (Auto Gain Control) Management
+# =============================================================================
+
+def set_agc(enabled: bool) -> bool:
+    """
+    Enable or disable Auto Gain Control on USB microphone.
+
+    AGC normalizes audio levels which is bad for bark detection (makes barks
+    and ambient noise similar energy) but good for voice commands/dictation.
+
+    Args:
+        enabled: True to enable AGC, False to disable
+
+    Returns:
+        True if successful, False otherwise
+    """
+    state = 'on' if enabled else 'off'
+    try:
+        result = subprocess.run(
+            ['amixer', '-c', str(USB_AUDIO_CARD), 'set', 'Auto Gain Control', state],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            logging.info(f"AGC {'enabled' if enabled else 'disabled'} on card {USB_AUDIO_CARD}")
+            return True
+        else:
+            logging.error(f"Failed to set AGC: {result.stderr}")
+            return False
+    except Exception as e:
+        logging.error(f"AGC control error: {e}")
+        return False
+
+
+def get_agc_state() -> Optional[bool]:
+    """
+    Get current AGC state.
+
+    Returns:
+        True if AGC is on, False if off, None if error
+    """
+    try:
+        result = subprocess.run(
+            ['amixer', '-c', str(USB_AUDIO_CARD), 'get', 'Auto Gain Control'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            # Parse output like "Mono: Playback [on]" or "[off]"
+            if '[on]' in result.stdout:
+                return True
+            elif '[off]' in result.stdout:
+                return False
+        return None
+    except Exception as e:
+        logging.error(f"AGC state check error: {e}")
+        return None
+
+
+def set_mic_volume(volume: int) -> bool:
+    """
+    Set USB microphone capture volume.
+
+    Args:
+        volume: Volume level 0-100
+
+    Returns:
+        True if successful
+    """
+    try:
+        result = subprocess.run(
+            ['amixer', '-c', str(USB_AUDIO_CARD), 'set', 'Mic Capture Volume', f'{volume}%'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except Exception as e:
+        logging.error(f"Mic volume error: {e}")
+        return False

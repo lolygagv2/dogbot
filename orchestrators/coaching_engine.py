@@ -33,7 +33,7 @@ from core.store import get_store
 from core.behavior_interpreter import get_behavior_interpreter
 
 # Services
-from services.media.usb_audio import get_usb_audio_service
+from services.media.usb_audio import get_usb_audio_service, set_agc
 from services.reward.dispenser import get_dispenser_service
 from services.media.led import get_led_service
 
@@ -175,6 +175,10 @@ class CoachingEngine:
             return True
 
         try:
+            # Disable AGC for bark detection (raw energy levels needed)
+            set_agc(False)
+            logger.info("AGC disabled for coaching mode (bark detection)")
+
             # Reset FSM state on start (fixes mode re-entry)
             self.fsm_state = CoachState.WAITING_FOR_DOG
             self.current_session = None
@@ -225,6 +229,10 @@ class CoachingEngine:
 
         if self.engine_thread and self.engine_thread.is_alive():
             self.engine_thread.join(timeout=2.0)
+
+        # Re-enable AGC when leaving coaching mode
+        set_agc(True)
+        logger.info("AGC re-enabled (leaving coaching mode)")
 
         publish_system_event('coaching_stopped', {
             'sessions_today': self.sessions_today,

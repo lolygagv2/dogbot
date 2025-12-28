@@ -13,7 +13,7 @@ global:
   default_cooldown: 30
   default_treat_probability: 0.8
   require_dog_detection: true
-  photo_on_reward: false
+  photo_on_reward: false   #enable later for investors/demos
 
 rules:
   # ============================================
@@ -40,12 +40,12 @@ rules:
         treat_probability: 0.9
         daily_limit: 20
       aruco_832:  # Bezik
-        min_duration: 3.0      # Bezik needs to hold longer
+        min_duration: 2.0      # Bezik needs to hold longer
 
   lie:
     type: behavior
     enabled: true
-    min_duration: 3.0
+    min_duration: 2.0
     min_confidence: 0.7
     cooldown: 30
     daily_limit: 12
@@ -53,7 +53,6 @@ rules:
     treat_probability: 0.8
     sounds:
       - good_dog
-      - excellent
     led_pattern: celebration
     sequence: celebrate
 
