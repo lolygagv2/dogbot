@@ -35,6 +35,8 @@ from orchestrators.mode_fsm import get_mode_fsm
 from orchestrators.mission_engine import get_mission_engine
 from orchestrators.coaching_engine import get_coaching_engine
 from core.behavior_interpreter import get_behavior_interpreter
+from core.weekly_summary import get_weekly_summary
+from core.mission_scheduler import get_mission_scheduler
 from core.hardware.audio_controller import AudioController
 from core.hardware.led_controller import LEDController, LEDMode
 from config.settings import AudioFiles
@@ -2738,6 +2740,164 @@ async def get_recording_status():
     }
 
 # ============== END AUDIO RECORDING ENDPOINTS ==============
+
+# ============== REPORTS ENDPOINTS ==============
+
+@app.get("/reports/weekly")
+async def get_weekly_report():
+    """Get current week summary"""
+    try:
+        summary = get_weekly_summary()
+        report = summary.generate_weekly_report()
+        return {"success": True, "report": report}
+    except Exception as e:
+        logger.error(f"Weekly report error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/weekly/{date}")
+async def get_weekly_report_for_date(date: str):
+    """Get weekly report for specific date (format: YYYY-MM-DD)"""
+    try:
+        from datetime import datetime
+        end_date = datetime.strptime(date, "%Y-%m-%d")
+        summary = get_weekly_summary()
+        report = summary.generate_weekly_report(end_date=end_date)
+        return {"success": True, "report": report}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    except Exception as e:
+        logger.error(f"Weekly report error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/trends")
+async def get_behavior_trends(weeks: int = 8):
+    """Get multi-week behavior trends"""
+    try:
+        if weeks < 1 or weeks > 52:
+            raise HTTPException(status_code=400, detail="Weeks must be between 1 and 52")
+        summary = get_weekly_summary()
+        trends = summary.get_behavior_trends(weeks=weeks)
+        return {"success": True, "trends": trends}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Trends error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/dog/{dog_id}")
+async def get_dog_progress(dog_id: str, weeks: int = 8):
+    """Get individual dog progress report"""
+    try:
+        if weeks < 1 or weeks > 52:
+            raise HTTPException(status_code=400, detail="Weeks must be between 1 and 52")
+        summary = get_weekly_summary()
+        progress = summary.get_dog_progress(dog_id=dog_id, weeks=weeks)
+        return {"success": True, "progress": progress}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dog progress error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/compare")
+async def compare_dogs():
+    """Compare all dogs performance"""
+    try:
+        summary = get_weekly_summary()
+        comparison = summary.compare_dogs()
+        return {"success": True, "comparison": comparison}
+    except Exception as e:
+        logger.error(f"Compare dogs error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/reports/export")
+async def export_report(format: str = "markdown"):
+    """Export weekly report to file"""
+    try:
+        if format not in ["markdown", "csv"]:
+            raise HTTPException(status_code=400, detail="Format must be 'markdown' or 'csv'")
+        summary = get_weekly_summary()
+        report = summary.generate_weekly_report()
+        filepath = summary.export_report(report, format=format)
+        return {
+            "success": True,
+            "filepath": filepath,
+            "format": format
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============== END REPORTS ENDPOINTS ==============
+
+# ============== MISSION SCHEDULER ENDPOINTS ==============
+
+@app.get("/missions/schedule")
+async def get_schedule_status():
+    """Get mission scheduler status"""
+    try:
+        scheduler = get_mission_scheduler()
+        return {"success": True, "scheduler": scheduler.get_status()}
+    except Exception as e:
+        logger.error(f"Scheduler status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/missions/schedule/enable")
+async def enable_scheduler():
+    """Enable auto-scheduling"""
+    try:
+        scheduler = get_mission_scheduler()
+        success = scheduler.enable()
+        return {
+            "success": success,
+            "message": "Scheduler enabled" if success else "Failed to enable scheduler"
+        }
+    except Exception as e:
+        logger.error(f"Enable scheduler error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/missions/schedule/disable")
+async def disable_scheduler():
+    """Disable auto-scheduling"""
+    try:
+        scheduler = get_mission_scheduler()
+        success = scheduler.disable()
+        return {
+            "success": success,
+            "message": "Scheduler disabled" if success else "Failed to disable scheduler"
+        }
+    except Exception as e:
+        logger.error(f"Disable scheduler error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/missions/schedule/list")
+async def list_scheduled_missions():
+    """Get list of missions with auto-start schedules"""
+    try:
+        scheduler = get_mission_scheduler()
+        missions = scheduler.get_scheduled_missions()
+        return {"success": True, "missions": missions}
+    except Exception as e:
+        logger.error(f"List scheduled error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/missions/schedule/force/{mission_name}")
+async def force_start_mission(mission_name: str):
+    """Force start a scheduled mission regardless of schedule"""
+    try:
+        scheduler = get_mission_scheduler()
+        success = scheduler.force_start(mission_name)
+        return {
+            "success": success,
+            "message": f"Mission {mission_name} started" if success else f"Failed to start {mission_name}"
+        }
+    except Exception as e:
+        logger.error(f"Force start error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============== END MISSION SCHEDULER ENDPOINTS ==============
 
 def create_app():
     """Create FastAPI app (for external use)"""
