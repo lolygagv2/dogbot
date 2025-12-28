@@ -529,43 +529,69 @@ class XboxHybridControllerFixed:
                 self.emergency_stop()
 
     def connect(self) -> bool:
-        """Connect to the Xbox controller"""
-        try:
-            # Check if API is available
-            health = self.api_request('GET', '/health')
-            if health:
-                logger.info(f"API health check: {health}")
-            else:
-                logger.warning("API server not responding - only motor control will work")
+        """Connect to the Xbox controller with retry logic for first-connect issues"""
+        max_retries = 3
+        retry_delay = 1.5  # seconds
 
-            # Open the joystick device
-            self.device = open(self.device_path, 'rb')
-            logger.info(f"Connected to Xbox controller at {self.device_path}")
+        for attempt in range(max_retries):
+            try:
+                # Check if API is available
+                health = self.api_request('GET', '/health')
+                if health:
+                    logger.info(f"API health check: {health}")
+                else:
+                    logger.warning("API server not responding - only motor control will work")
 
-            # Start motor update thread for smooth control
-            self.motor_update_running = True
-            self.motor_update_thread = Thread(target=self._motor_update_loop, daemon=True)
-            self.motor_update_thread.start()
+                # Open the joystick device
+                self.device = open(self.device_path, 'rb')
+                logger.info(f"Connected to Xbox controller at {self.device_path}")
 
-            # Start camera update thread for smooth control
-            self.camera_update_running = True
-            self.camera_update_thread = Thread(target=self._camera_update_loop, daemon=True)
-            self.camera_update_thread.start()
+                # Wait briefly for device to stabilize on first connect
+                if attempt == 0:
+                    time.sleep(0.5)
 
-            # Start heartbeat thread to keep MANUAL mode active
-            self.heartbeat_running = True
-            self.heartbeat_thread = Thread(target=self._heartbeat_loop, daemon=True)
-            self.heartbeat_thread.start()
-            logger.info("Heartbeat thread started to maintain MANUAL mode")
+                # Test read to verify device is responding
+                ready, _, _ = select.select([self.device], [], [], 0.5)
+                if not ready and attempt < max_retries - 1:
+                    logger.warning(f"Controller not responding (attempt {attempt + 1}/{max_retries}), retrying...")
+                    self.device.close()
+                    time.sleep(retry_delay)
+                    continue
 
-            return True
+                # Start motor update thread for smooth control
+                self.motor_update_running = True
+                self.motor_update_thread = Thread(target=self._motor_update_loop, daemon=True)
+                self.motor_update_thread.start()
 
-        except FileNotFoundError:
-            logger.error(f"Controller not found at {self.device_path}")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to connect: {e}")
-            return False
+                # Start camera update thread for smooth control
+                self.camera_update_running = True
+                self.camera_update_thread = Thread(target=self._camera_update_loop, daemon=True)
+                self.camera_update_thread.start()
+
+                # Start heartbeat thread to keep MANUAL mode active
+                self.heartbeat_running = True
+                self.heartbeat_thread = Thread(target=self._heartbeat_loop, daemon=True)
+                self.heartbeat_thread.start()
+                logger.info("Heartbeat thread started to maintain MANUAL mode")
+
+                return True
+
+            except FileNotFoundError:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Controller not found (attempt {attempt + 1}/{max_retries}), waiting...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"Controller not found at {self.device_path} after {max_retries} attempts")
+                    return False
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Connection failed (attempt {attempt + 1}/{max_retries}): {e}, retrying...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"Failed to connect after {max_retries} attempts: {e}")
+                    return False
+
+        return False
 
     def _camera_update_loop(self):
         """Separate thread for smooth camera control"""

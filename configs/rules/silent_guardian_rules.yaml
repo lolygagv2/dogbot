@@ -22,9 +22,9 @@ dog_identification:
 
 # Bark detection thresholds
 bark_detection:
-  threshold: 2                    # Barks to trigger intervention
+  threshold: 3                    # Barks to trigger intervention
   window_seconds: 60              # Time window for counting barks
-  confidence_minimum: 0.65        # Lowered for testing
+  confidence_minimum: 0.80        # Raised to reduce false positives
 
 # Intervention sequences by escalation level
 intervention_sequences:
@@ -35,7 +35,7 @@ intervention_sequences:
       - type: audio
         file: "$dog_quiet"        # "[Dog name], quiet" or just "quiet.mp3"
         wait_after: 1.0
-    quiet_required_seconds: 10
+    quiet_required_seconds: 20
     reward_on_success: true
 
   # Level 2: Second bark event within 1 hour
@@ -107,8 +107,8 @@ escalation:
 # Session limits
 session_limits:
   max_treats: 11                  # Maximum treats per 8-hour session
-  max_interventions_per_hour: 10  # Safety limit
-  min_time_between_treats: 30     # Minimum seconds between treats
+  max_interventions_per_hour: 6  # Safety limit
+  min_time_between_treats: 60     # Minimum seconds between treats
 
 # Logging configuration
 logging:
@@ -148,5 +148,5 @@ audio_paths:
 camera:
   mode: "fixed"                   # Stationary wide shot
   scan_on_bark: true              # Only scan when looking for dog after intervention
-  scan_duration: 5.0              # Seconds to scan
+  scan_duration: 15.0              # Seconds to scan
   aruco_detection: true           # Enable ArUco for dog identification

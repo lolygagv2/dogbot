@@ -61,7 +61,8 @@ class BarkDetectorService:
         self.audio_buffer = None
 
         # Detection parameters
-        self.confidence_threshold = config.get('confidence_threshold', 0.55)
+        # Raised default from 0.55 to 0.70 to reduce false positives
+        self.confidence_threshold = config.get('confidence_threshold', 0.70)
         self.reward_emotions = config.get('reward_emotions', ['alert', 'attention'])
         self.check_interval = config.get('check_interval', 0.5)
         self.cooldown_period = config.get('cooldown_period', 5.0)

@@ -561,6 +561,9 @@ class TreatBotMain:
                 self.led.set_pattern('idle')
 
             # Play startup announcement
+            # Wait 1.5 seconds for audio subsystem to fully initialize
+            time.sleep(1.5)
+
             if self.usb_audio and self.usb_audio.initialized:
                 import os
                 if os.path.exists(self.startup_audio):
