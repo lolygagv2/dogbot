@@ -6,8 +6,8 @@ Refactored from proven pca9685_test.py with all working servo movements
 
 import time
 import board
-import busio
 from adafruit_pca9685 import PCA9685
+from core.hardware.i2c_bus import get_i2c_bus
 
 # Import configuration
 import sys
@@ -39,11 +39,15 @@ class ServoController:
     def _initialize_pca9685(self):
         """Initialize PCA9685 servo controller using proven configuration"""
         try:
-            # Initialize I2C bus
-            self.i2c = busio.I2C(board.SCL, board.SDA)
+            # Use shared I2C bus for compatibility with other I2C devices
+            self.i2c = get_i2c_bus()
             
-            # Initialize PCA9685
+            # Initialize PCA9685 with reset to clear any bad state
             self.pca = PCA9685(self.i2c)
+            self.pca.reset()
+            time.sleep(0.1)
+            # Ensure MODE2 has correct settings (OUTDRV=1, INVRT=0)
+            self.pca.mode2 = 0x04
             self.pca.frequency = self.settings.SERVO_FREQUENCY  # 50Hz standard
             
             # Assign channels (from proven test script)

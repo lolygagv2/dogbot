@@ -46,6 +46,7 @@ import lgpio
 try:
     from core.ai_controller_3stage_fixed import AI3StageControllerFixed
     from services.perception.detector import get_detector_service
+    from services.perception.bark_detector import get_bark_detector_service
     AI_AVAILABLE = True
 except ImportError:
     AI_AVAILABLE = False
@@ -1145,6 +1146,31 @@ async def reset_bark_statistics():
     bark_detector.reset_statistics()
     return {"success": True, "message": "Statistics reset"}
 
+# Battery monitoring endpoints
+@app.get("/battery/status")
+async def get_battery_status():
+    """Get battery voltage and status"""
+    try:
+        from services.power.battery_monitor import get_battery_monitor
+        battery = get_battery_monitor()
+        return battery.get_status()
+    except Exception as e:
+        return {"error": str(e), "initialized": False}
+
+@app.get("/battery/voltage")
+async def get_battery_voltage():
+    """Get current battery voltage"""
+    try:
+        from services.power.battery_monitor import get_battery_monitor
+        battery = get_battery_monitor()
+        voltage = battery.get_voltage()
+        return {
+            "voltage": round(voltage, 2),
+            "percentage": battery.get_percentage()
+        }
+    except Exception as e:
+        return {"error": str(e), "voltage": 0.0}
+
 # Telemetry endpoints
 @app.get("/telemetry")
 async def get_telemetry():
@@ -1493,10 +1519,20 @@ async def motor_stop(request: Optional[EmergencyStopRequest] = None):
 # Camera Control endpoints
 @app.post("/camera/photo")
 async def capture_photo_imx500():
-    """Capture photo using IMX500 PCIe camera via rpicam-still"""
+    """Capture 4K photo using IMX500 PCIe camera (MANUAL MODE ONLY)"""
     import subprocess
     from datetime import datetime
     import os
+    from core.state import get_state, SystemMode
+
+    # Check if we're in MANUAL mode - camera is only free when detector is paused
+    state = get_state()
+    current_mode = state.get_mode()
+    if current_mode != SystemMode.MANUAL:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Photo capture only available in Manual mode (current: {current_mode.value})"
+        )
 
     try:
         # Create captures directory if needed
@@ -1506,12 +1542,7 @@ async def capture_photo_imx500():
         filename = f"photo_{timestamp}.jpg"
         filepath = f"/home/morgan/dogbot/captures/{filename}"
 
-        # Use rpicam-still for IMX500 camera
-        # --width 4056 --height 3040 : Full resolution
-        # --quality 95 : JPEG quality
-        # --timeout 1000 : 1 second timeout
-        # --nopreview : No preview window
-        # --immediate : Capture immediately
+        # Use rpicam-still for IMX500 camera - full 4K resolution
         cmd = [
             "rpicam-still",
             "--width", "4056",
@@ -1526,9 +1557,8 @@ async def capture_photo_imx500():
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
 
         if result.returncode == 0 and os.path.exists(filepath):
-            # Get file size for verification
             file_size = os.path.getsize(filepath)
-            logger.info(f"IMX500 photo captured: {filepath} ({file_size} bytes)")
+            logger.info(f"4K photo captured: {filepath} ({file_size} bytes)")
 
             return {
                 "success": True,

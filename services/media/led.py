@@ -52,7 +52,11 @@ class LedService:
             # New patterns for 165 LED strip
             'gradient_flow': self._pattern_gradient_flow,
             'chase': self._pattern_chase,
-            'fire': self._pattern_fire
+            'fire': self._pattern_fire,
+            # Silent Guardian product patterns
+            'attention': self._pattern_attention,
+            'waiting_quiet': self._pattern_waiting_quiet,
+            'dog_visible': self._pattern_dog_visible
         }
 
         # Pattern state
@@ -589,6 +593,93 @@ class LedService:
         else: r, g, b = v, p, q
 
         return (int(r * 255), int(g * 255), int(b * 255))
+
+    # ========== SILENT GUARDIAN PRODUCT PATTERNS ==========
+
+    def _pattern_attention(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """
+        Attention pattern for bark intervention - RED pulse flashes
+        Used when Silent Guardian starts an intervention
+        """
+        if not self.led.pixels:
+            return
+
+        duration = duration or 3.0
+        start_time = time.time()
+        flash_count = 0
+
+        while not self._stop_pattern.is_set() and (time.time() - start_time) < duration:
+            # Quick red flash
+            self.led.set_solid_color('red')
+            time.sleep(0.15)
+            self.led.set_solid_color('off')
+            time.sleep(0.15)
+            flash_count += 1
+
+            # Brief pause every 3 flashes
+            if flash_count % 3 == 0:
+                time.sleep(0.2)
+
+        # End with LEDs off
+        self.led.set_solid_color('off')
+
+    def _pattern_waiting_quiet(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """
+        Waiting for quiet pattern - slow AMBER breathing pulse
+        Used while waiting for dog to calm down after intervention
+        """
+        if not self.led.pixels:
+            return
+
+        duration = duration or 60.0  # Can run for up to 90 seconds
+        start_time = time.time()
+        # Amber color (orange-ish)
+        amber = (255, 140, 0)
+
+        while not self._stop_pattern.is_set() and (time.time() - start_time) < duration:
+            # Breathe in (fade up) - 1.5 seconds
+            for brightness in range(0, 100, 5):
+                if self._stop_pattern.is_set():
+                    break
+                factor = brightness / 100.0
+                r = int(amber[0] * factor)
+                g = int(amber[1] * factor)
+                b = int(amber[2] * factor)
+                self.led.pixels.fill((r, g, b))
+                self.led.pixels.show()
+                time.sleep(0.075)
+
+            # Breathe out (fade down) - 1.5 seconds
+            for brightness in range(100, 0, -5):
+                if self._stop_pattern.is_set():
+                    break
+                factor = brightness / 100.0
+                r = int(amber[0] * factor)
+                g = int(amber[1] * factor)
+                b = int(amber[2] * factor)
+                self.led.pixels.fill((r, g, b))
+                self.led.pixels.show()
+                time.sleep(0.075)
+
+        # End with LEDs off
+        self.led.set_solid_color('off')
+
+    def _pattern_dog_visible(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """
+        Dog visible and came when called - solid GREEN
+        Used when dog responds to calling sequence
+        """
+        if not self.led.pixels:
+            return
+
+        duration = duration or 5.0
+        self.led.set_solid_color('green')
+
+        start_time = time.time()
+        while not self._stop_pattern.is_set() and (time.time() - start_time) < duration:
+            time.sleep(0.1)
+
+        # Don't turn off - let celebration pattern take over
 
     # ========== END NEW PATTERNS ==========
 
