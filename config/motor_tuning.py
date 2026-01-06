@@ -49,7 +49,7 @@ class LudicrousMode:
 
 # SELECT YOUR PROFILE HERE
 # Change this to adjust speed vs motor life
-CURRENT_PROFILE = SportMode  # <-- CHANGE THIS!
+CURRENT_PROFILE = YoloMode  # <-- CHANGE THIS!
 
 # Export the current settings
 MAX_MOTOR_PWM = CURRENT_PROFILE.MAX_PWM

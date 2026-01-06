@@ -30,6 +30,7 @@ from services.reward.dispenser import get_dispenser_service
 from services.media.sfx import get_sfx_service
 from services.media.led import get_led_service
 from services.media.usb_audio import get_usb_audio_service
+from services.power.battery_monitor import get_battery_monitor
 from services.control.bluetooth_esc import BluetoothESCController
 from services.control.xbox_controller import get_xbox_service
 from api.server import run_server
@@ -221,7 +222,7 @@ class TreatBotMain:
             # self.motor = get_motor_service()
             # services_status['motor'] = self.motor.initialize()
             services_status['motor'] = False  # Disabled to prevent GPIO conflicts
-            self.logger.info("🚗 Main motor service disabled (Xbox controller has direct control)")
+            self.logger.info("🚗 Motor service disabled (Xbox has direct control)")
         except Exception as e:
             self.logger.error(f"Motor service failed: {e}")
             services_status['motor'] = False
@@ -277,6 +278,20 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"USB Audio service failed: {e}")
             services_status['usb_audio'] = False
+
+        # Battery monitor service (ADS1115 on I2C)
+        try:
+            self.battery_monitor = get_battery_monitor()
+            services_status['battery'] = self.battery_monitor.initialize()
+            if services_status['battery']:
+                self.battery_monitor.start_monitoring()
+                status = self.battery_monitor.get_status()
+                self.logger.info(f"✅ Battery monitor: {status['voltage']:.1f}V ({status['percentage']}%)")
+            else:
+                self.logger.warning("⚠️ Battery monitor failed to initialize")
+        except Exception as e:
+            self.logger.error(f"Battery monitor failed: {e}")
+            services_status['battery'] = False
 
         # Bluetooth controller service - DISABLED (conflicts with Xbox controller)
         try:
@@ -413,43 +428,54 @@ class TreatBotMain:
             return False
 
     def _on_detection_for_feedback(self, event) -> None:
-        """Provide visual feedback for detection events"""
+        """Provide visual feedback for detection events (COACH mode only)"""
         try:
+            current_mode = self.state.get_mode()
+
+            # Skip LED feedback in Silent Guardian - LEDs reserved for meaningful events
+            # (interventions, rewards handled by silent_guardian.py itself)
+            if current_mode == SystemMode.SILENT_GUARDIAN:
+                return
+
             # Skip LED feedback when Xbox controller is active
-            # Check both mode AND controller connection status to prevent race conditions
-            if self.state.get_mode() == SystemMode.MANUAL:
+            if current_mode == SystemMode.MANUAL:
                 return
             if self.xbox_controller and self.xbox_controller.is_connected:
                 return
 
-            if event.subtype == 'dog_detected':
-                # Green LED for dog detected
-                if self.led:
-                    self.led.set_pattern('dog_detected')
-                self.logger.info(f"🐕 Dog detected: {event.data.get('dog_id', 'unknown')}")
-
-            elif event.subtype == 'dog_lost':
-                # Blue LED for searching
-                if self.led:
-                    self.led.set_pattern('searching')
-                self.logger.info("👀 Dog lost, searching...")
-
-            elif event.subtype == 'pose':
-                behavior = event.data.get('behavior')
-                if behavior:
-                    self.logger.info(f"🎯 Behavior detected: {behavior}")
-                    # Pulse for behavior detection
+            # Only show debug LED patterns in COACH mode
+            if current_mode == SystemMode.COACH:
+                if event.subtype == 'dog_detected':
                     if self.led:
-                        self.led.pulse_color('yellow')
+                        self.led.set_pattern('dog_detected')
+                    self.logger.info(f"🐕 Dog detected: {event.data.get('dog_id', 'unknown')}")
+
+                elif event.subtype == 'dog_lost':
+                    if self.led:
+                        self.led.set_pattern('searching')
+                    self.logger.info("👀 Dog lost, searching...")
+
+                elif event.subtype == 'pose':
+                    behavior = event.data.get('behavior')
+                    if behavior:
+                        self.logger.info(f"🎯 Behavior detected: {behavior}")
+                        if self.led:
+                            self.led.pulse_color('yellow')
 
         except Exception as e:
             self.logger.error(f"Detection feedback error: {e}")
 
     def _on_bark_for_feedback(self, event) -> None:
-        """Provide feedback for bark detection events"""
+        """Provide feedback for bark detection events (COACH mode only)"""
         try:
+            current_mode = self.state.get_mode()
+
+            # Skip in Silent Guardian - LED feedback handled by silent_guardian.py
+            if current_mode == SystemMode.SILENT_GUARDIAN:
+                return
+
             # Skip LED feedback when Xbox controller is active
-            if self.state.get_mode() == SystemMode.MANUAL:
+            if current_mode == SystemMode.MANUAL:
                 return
             if self.xbox_controller and self.xbox_controller.is_connected:
                 return
@@ -463,7 +489,7 @@ class TreatBotMain:
                 emotion = event.data.get('emotion', 'unknown')
                 self.logger.info(f"🎁 Bark reward triggered for: {emotion}")
 
-                # Celebration feedback - only for rewards (infrequent)
+                # Celebration feedback - only for rewards in COACH mode
                 if self.led and self.led.led_initialized:
                     self.led.set_pattern('celebration', 3.0)
 
@@ -518,20 +544,20 @@ class TreatBotMain:
                 current_mode = self.state.get_mode()
                 if current_mode == SystemMode.MANUAL:
                     self.logger.info("🎮 Xbox controller disconnected - returning to Silent Guardian")
-                    self.mode_fsm.request_mode(SystemMode.SILENT_GUARDIAN, "Controller disconnected")
+                    self.mode_fsm.force_mode(SystemMode.SILENT_GUARDIAN, "Controller disconnected")
 
             elif event.subtype == 'controller_connected':
                 # Controller connected - switch to Manual mode
                 current_mode = self.state.get_mode()
                 if current_mode != SystemMode.MANUAL:
                     self.logger.info("🎮 Xbox controller connected - switching to Manual mode")
-                    self.mode_fsm.request_mode(SystemMode.MANUAL, "Xbox controller connected")
+                    self.mode_fsm.force_mode(SystemMode.MANUAL, "Xbox controller connected")
 
         except Exception as e:
             self.logger.error(f"System event handler error: {e}")
 
     def _announce_mode(self, mode: str) -> None:
-        """Play voice announcement for mode change"""
+        """Play voice announcement for mode change (waits for current audio to finish)"""
         try:
             if not self.usb_audio or not self.usb_audio.initialized:
                 self.logger.debug("USB audio not available for mode announcement")
@@ -541,6 +567,17 @@ class TreatBotMain:
             if audio_file:
                 import os
                 if os.path.exists(audio_file):
+                    # Wait for any current audio to finish (max 3 seconds)
+                    # This prevents mode announcements from interrupting important audio
+                    wait_count = 0
+                    while self.usb_audio.is_busy() and wait_count < 30:
+                        time.sleep(0.1)
+                        wait_count += 1
+
+                    if wait_count >= 30:
+                        self.logger.debug(f"Skipping mode announcement - audio still playing after 3s")
+                        return
+
                     result = self.usb_audio.play_file(audio_file)
                     if result.get('success'):
                         self.logger.info(f"🔊 Mode announcement: {mode}")

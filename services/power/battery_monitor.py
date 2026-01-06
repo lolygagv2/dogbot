@@ -30,8 +30,8 @@ class BatteryMonitorService:
     """
 
     # Calibration: empirically determined from actual measurements
-    # 15.15V battery = 3.843V at ADC input
-    CALIBRATION_FACTOR = 3.942
+    # Updated 2026-01-05: Recalibrated voltage divider factor
+    CALIBRATION_FACTOR = 4.308
 
     # 4S LiPo voltage thresholds
     VOLTAGE_MIN = 12.0      # Empty (3.0V per cell)

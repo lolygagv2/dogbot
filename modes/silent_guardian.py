@@ -297,6 +297,12 @@ class SilentGuardianMode:
             logger.debug(f"Ignoring quiet bark: {loudness_db:.1f}dB < {loudness_threshold}dB")
             return
 
+        # Check confidence threshold - ignore low-confidence detections (non-barks)
+        confidence_minimum = bark_config.get('confidence_minimum', 0.80)
+        if confidence < confidence_minimum:
+            logger.debug(f"Ignoring low-confidence bark: {confidence:.2f} < {confidence_minimum} (likely not a bark)")
+            return
+
         logger.info(f"Bark detected: dog={dog_name or dog_id} (confidence: {confidence:.2f}, loudness: {loudness_db:.1f}dB)")
 
         self.last_bark_time = time.time()
@@ -507,6 +513,9 @@ class SilentGuardianMode:
             self._execute_intervention()
             self.fsm_state = SGState.WAITING_FOR_QUIET
             self.intervention.quiet_start_time = time.time()
+            # Start amber breathing LED while waiting for quiet
+            if self.led:
+                self.led.set_pattern('waiting_quiet', duration=90.0)
 
         elif self.fsm_state == SGState.WAITING_FOR_QUIET:
             # Check for timeout (90 seconds of persistent barking)
@@ -521,6 +530,9 @@ class SilentGuardianMode:
                 # Stop calming music before calling sequence
                 if self.calming_music_playing:
                     self._stop_calming_music()
+                # Stop waiting_quiet LED pattern
+                if self.led:
+                    self.led.set_pattern('off')
                 # Start calling dog sequence
                 self.fsm_state = SGState.CALLING_DOG
                 self.intervention.calling_started_at = time.time()
@@ -547,6 +559,9 @@ class SilentGuardianMode:
             # Initialize cooldown timer if not set
             if not hasattr(self, '_cooldown_start') or self._cooldown_start is None:
                 self._cooldown_start = time.time()
+                # Turn off LEDs when entering cooldown
+                if self.led:
+                    self.led.set_pattern('off')
                 if self.intervention and self.intervention.gave_up:
                     self._cooldown_duration = 120.0  # 2 minutes for gave_up
                     logger.info("2-minute shutdown cooldown started (dog ignored commands)")
@@ -659,6 +674,9 @@ class SilentGuardianMode:
         # Dog visible but not sitting - issue SIT command once
         if not hasattr(self.intervention, 'sit_command_issued') or not self.intervention.sit_command_issued:
             logger.info("Dog visible - issuing SIT command")
+            # Show green LED - dog responded to calling
+            if self.led:
+                self.led.set_pattern('dog_visible', duration=10.0)
             self._play_audio('sit.mp3')
             self.intervention.sit_command_issued = True
             self.intervention.quiet_start_time = now  # Start quiet timer

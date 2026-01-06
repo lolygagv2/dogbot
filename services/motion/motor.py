@@ -461,6 +461,32 @@ class MotorService:
         else:
             self.motor_controller.stop()
 
+    def set_motor_speeds(self, left_speed: int, right_speed: int, duration: float = None) -> bool:
+        """Set individual motor speeds for API control
+
+        Args:
+            left_speed: Left motor speed (-100 to 100)
+            right_speed: Right motor speed (-100 to 100)
+            duration: Optional duration in seconds
+
+        Returns:
+            True if successful
+        """
+        try:
+            self._differential_drive(left_speed, right_speed)
+
+            # Set auto-stop timer if duration specified
+            if duration and duration > 0:
+                if self._auto_stop_timer:
+                    self._auto_stop_timer.cancel()
+                self._auto_stop_timer = threading.Timer(duration, self._auto_stop_callback)
+                self._auto_stop_timer.start()
+
+            return True
+        except Exception as e:
+            print(f"❌ Motor speed error: {e}")
+            return False
+
     def cleanup(self):
         """Clean up motor service"""
         print("🧹 Cleaning up motor service...")

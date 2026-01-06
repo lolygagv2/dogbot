@@ -103,10 +103,10 @@ Pin # | Assignment
  16   | GPIO23 → ENCODER B1 (Motor 1 left - right side of L298N)
  17   | 3.3V → encoder VCC rail (encoders )
  18   | GPIO24
- 19   | GPIO10 (MOSI)
+ 19   | GPIO10 (MOSI) → NeoPixel signal (black wire base)
  20   | GND
  21   | GPIO9 (MISO)
- 22   | GPIO25 → (GREEN Wire Pure MoSFET controlled)
+ 22   | GPIO25 → Blue LED (GREEN Wire, MOSFET controlled)
  23   | GPIO11 (SCLK)
  24   | GPIO8 (CE0)
  25   | GND
@@ -116,7 +116,7 @@ Pin # | Assignment
  29   | GPIO5 → ENCODER A2 (Motor 2)
  30   | GND
  31   | GPIO6 → ENCODER B2 (Motor 2)
- 32   | GPIO12 → NeoPixel signal (black wire base)
+ 32   | GPIO12 → AVAILABLE
  33   | GPIO13 → PWM ENA
  34   | GND
  35   | GPIO19 → PWM ENB

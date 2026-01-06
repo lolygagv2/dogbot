@@ -310,6 +310,10 @@ class ModeFSM:
             self.current_mode = mode
             self.mode_start_time = time.time()
 
+            # Reset manual input time when overriding to MANUAL mode
+            if mode == SystemMode.MANUAL:
+                self.last_manual_input_time = time.time()
+
             publish_system_event('mode_override_set', {
                 'mode': mode.value,
                 'duration': duration
@@ -342,6 +346,11 @@ class ModeFSM:
         if success:
             self.current_mode = mode
             self.mode_start_time = time.time()
+
+            # Reset manual input time when forcing to MANUAL mode
+            # This prevents immediate timeout if last input was > 120s ago
+            if mode == SystemMode.MANUAL:
+                self.last_manual_input_time = time.time()
 
             publish_system_event('mode_forced', {
                 'mode': mode.value,

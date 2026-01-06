@@ -48,6 +48,48 @@ logger = logging.getLogger('XboxFixed')
 # Disable direct servo control - use API for reliability
 # Direct servo control can freeze due to GPIO cleanup issues
 servo_controller = None
+
+# =============================================================================
+# Singleton Enforcement - Kill any existing instances before starting
+# =============================================================================
+def ensure_single_instance():
+    """Ensure only one instance of this controller is running"""
+    my_pid = os.getpid()
+    script_name = 'xbox_hybrid_controller.py'
+
+    try:
+        # Find all processes running this script
+        result = subprocess.run(
+            ['pgrep', '-f', script_name],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if result.returncode == 0:
+            pids = [int(p.strip()) for p in result.stdout.strip().split('\n') if p.strip()]
+
+            # Kill any instances that aren't us
+            killed = []
+            for pid in pids:
+                if pid != my_pid:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        killed.append(pid)
+                    except ProcessLookupError:
+                        pass  # Already dead
+                    except PermissionError:
+                        pass  # Can't kill it
+
+            if killed:
+                print(f"[XboxController] Killed {len(killed)} existing instance(s): {killed}")
+                time.sleep(0.5)  # Brief pause to let them die
+
+    except Exception as e:
+        print(f"[XboxController] Singleton check error (non-fatal): {e}")
+
+# Run singleton check immediately on import
+ensure_single_instance()
 SERVO_DIRECT = False
 logger.info("Using API for servo control (more reliable)")
 
@@ -188,8 +230,10 @@ class XboxHybridControllerFixed:
     MAX_RPM = 150  # Conservative RPM target for smoother control
     USE_PID_CONTROL = True  # ENABLED - closed-loop control with encoder feedback
 
-    # Motor calibration - RESET (let encoders handle balancing)
-    LEFT_MOTOR_BOOST = 1.0  # No boost - PID controller should handle this
+    # Motor calibration - per-motor power adjustment for hardware imbalance
+    # Left motor was overpowered (spinning out), right motor was weak
+    LEFT_MOTOR_MULTIPLIER = 0.5   # Reduce left motor to 50%
+    RIGHT_MOTOR_MULTIPLIER = 1.2  # Boost right motor by 20%
 
     # Safety features - FIXED FOR SMOOTH CONTROL
     TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
@@ -858,6 +902,14 @@ class XboxHybridControllerFixed:
 
         Converts speed percentages to RPM targets for precise control
         """
+        # Apply per-motor calibration for hardware imbalance
+        left = int(left * self.LEFT_MOTOR_MULTIPLIER)
+        right = int(right * self.RIGHT_MOTOR_MULTIPLIER)
+
+        # Clamp to valid range after calibration
+        left = max(-self.MAX_SPEED, min(self.MAX_SPEED, left))
+        right = max(-self.MAX_SPEED, min(self.MAX_SPEED, right))
+
         if self.USE_PID_CONTROL and self.motor_direct and self.motor_controller:
             try:
                 # Convert speed percentages to RPM targets
@@ -953,29 +1005,39 @@ class XboxHybridControllerFixed:
                 except:
                     pass
 
+        else:
+            # No direct motor control available - use API fallback
+            try:
+                self.api_request('POST', '/motor/control', {
+                    'left_speed': left,
+                    'right_speed': right
+                })
+            except Exception as e:
+                logger.error(f"API motor control error: {e}")
+
     def _fallback_pwm_control(self, left: int, right: int):
-        """Fallback to direct PWM control when PID fails"""
+        """Fallback to direct PWM control when PID fails
+
+        Note: Motor calibration is already applied in set_motor_speeds()
+        """
         try:
             if left == 0 and right == 0:
                 self.motor_controller.set_motor_speed('left', 0, 'forward')
                 self.motor_controller.set_motor_speed('right', 0, 'forward')
                 return
 
-            # Apply left motor boost for hardware compensation (left is weaker)
-            left_compensated = min(100, left * self.LEFT_MOTOR_BOOST) if left != 0 else 0
-
-            # Set motor speeds with direction control
-            if left_compensated >= 0:
-                self.motor_controller.set_motor_speed('left', abs(left_compensated), 'forward')
+            # Set motor speeds with direction control (calibration already applied)
+            if left >= 0:
+                self.motor_controller.set_motor_speed('left', abs(left), 'forward')
             else:
-                self.motor_controller.set_motor_speed('left', abs(left_compensated), 'backward')
+                self.motor_controller.set_motor_speed('left', abs(left), 'backward')
 
             if right >= 0:
                 self.motor_controller.set_motor_speed('right', abs(right), 'forward')
             else:
                 self.motor_controller.set_motor_speed('right', abs(right), 'backward')
 
-            logger.debug(f"Fallback PWM: L={left} (boosted={left_compensated:.1f}), R={right}")
+            logger.debug(f"Fallback PWM: L={left}, R={right}")
 
         except Exception as e:
             logger.error(f"Fallback PWM control error: {e}")
@@ -1034,13 +1096,11 @@ class XboxHybridControllerFixed:
                 logger.info("A button: Emergency stop")
                 self.emergency_stop()
 
-        elif number == 1:  # B button - EMERGENCY STOP (CRITICAL SAFETY)
+        elif number == 1:  # B button - Play "sit" command
             self.state.b_button = pressed
             if pressed:
-                logger.critical("B BUTTON EMERGENCY STOP - All motors halted immediately")
-                self._emergency_stop_all_motors()
-                # Also trigger global emergency stop as backup
-                global_emergency_stop()
+                logger.info("B button: Playing 'sit' command")
+                self.api_request('POST', '/audio/play/file', {"filepath": "/talks/sit.mp3"})
 
         elif number == 2:  # X button - Toggle LED
             self.state.x_button = pressed
@@ -1288,20 +1348,23 @@ class XboxHybridControllerFixed:
             self.state.dpad_up = (value < 0)
             self.state.dpad_down = (value > 0)
 
+            # Add cooldown to prevent rapid audio triggering (same as X axis)
+            current_time = time.time()
+            if current_time - self.last_dpad_time < self.dpad_cooldown:
+                return
+
             if value < 0:  # Up - Stop audio
                 logger.info("D-pad up: Stop audio")
                 self.api_request('POST', '/audio/stop')
+                self.last_dpad_time = current_time
             elif value > 0:  # Down - Play the QUEUED track
-                # Add cooldown to prevent rapid audio triggering
-                current_time = time.time()
-                if current_time - self.last_dpad_time >= self.dpad_cooldown:
-                    if self.queued_track is not None:
-                        file_path, track_name = self.queued_track
-                        logger.info(f"▶️ PLAYING {self.queued_type.upper()}: {track_name} ({file_path})")
-                        self.api_request('POST', '/audio/play/file', {"filepath": file_path})
-                    else:
-                        logger.info("No track queued - use LEFT/RIGHT D-pad first")
-                    self.last_dpad_time = current_time
+                if self.queued_track is not None:
+                    file_path, track_name = self.queued_track
+                    logger.info(f"▶️ PLAYING {self.queued_type.upper()}: {track_name} ({file_path})")
+                    self.api_request('POST', '/audio/play/file', {"filepath": file_path})
+                else:
+                    logger.info("No track queued - use LEFT/RIGHT D-pad first")
+                self.last_dpad_time = current_time
 
     def run(self):
         """Main control loop"""
@@ -1317,7 +1380,7 @@ class XboxHybridControllerFixed:
         logger.info("=== CONTROLS ===")
         logger.info("Movement: Left stick = 60% power, RT = TURBO (100%)")
         logger.info("Camera: Right stick")
-        logger.info("A = Emergency Stop, B = Stop Motors")
+        logger.info("A = Emergency Stop, B = Play 'sit' command")
         logger.info("X = Blue LED, LT = NeoPixel modes")
         logger.info("Y = Sound, LB = Treat (2s cooldown), RB = Photo")
         logger.info("SELECT = Cycle modes (MANUAL→COACH→SILENT_GUARDIAN)")

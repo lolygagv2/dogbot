@@ -154,7 +154,7 @@ class LEDController:
     
     def __init__(self):
         """Initialize LED controller"""
-        self.NEOPIXEL_PIN = board.D12  # GPIO 12
+        self.NEOPIXEL_PIN = board.D10  # GPIO10 (Pin 19)
         self.NEOPIXEL_COUNT = 16       # 16 LED ring
         self.DOME_LED_PIN = 13         # GPIO 13 for blue dome
         

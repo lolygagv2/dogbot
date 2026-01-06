@@ -44,13 +44,13 @@ class CleanLEDController:
             import neopixel
             
             self.pixels = neopixel.NeoPixel(
-                board.D12, 
+                board.D10,  # GPIO10 (Pin 19)
                 self.neopixel_count, 
                 brightness=neopixel_brightness, 
                 auto_write=False,
                 pixel_order=neopixel.GRB
             )
-            print(f"✅ NeoPixel ring initialized: {self.neopixel_count} LEDs on GPIO12")
+            print(f"✅ NeoPixel ring initialized: {self.neopixel_count} LEDs on GPIO10 (Pin 19)")
             
         except Exception as e:
             print(f"❌ NeoPixel initialization failed: {e}")

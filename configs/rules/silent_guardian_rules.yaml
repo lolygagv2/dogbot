@@ -24,7 +24,7 @@ dog_identification:
 bark_detection:
   threshold: 3                    # Barks to trigger intervention
   window_seconds: 60              # Time window for counting barks
-  confidence_minimum: 0.80        # Raised to reduce false positives
+  confidence_minimum: 0.70        # Threshold for bark classification confidence
 
 # Intervention sequences by escalation level
 intervention_sequences:
@@ -108,7 +108,7 @@ escalation:
 session_limits:
   max_treats: 11                  # Maximum treats per 8-hour session
   max_interventions_per_hour: 6  # Safety limit
-  min_time_between_treats: 60     # Minimum seconds between treats
+  min_time_between_treats: 120     # Minimum seconds between treats
 
 # Logging configuration
 logging:

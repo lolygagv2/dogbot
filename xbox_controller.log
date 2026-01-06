@@ -1,8 +1,0 @@
-INFO:XboxAPI:Xbox API Controller initialized for /dev/input/js0
-INFO:XboxAPI:API endpoint: http://localhost:8000
-INFO:XboxAPI:API health check: {'status': 'healthy', 'mode': 'idle', 'emergency': False, 'uptime': 129.62783002853394, 'timestamp': 1761930536.6544182}
-INFO:XboxAPI:Connected to Xbox controller at /dev/input/js0
-INFO:XboxAPI:Set to manual control mode
-INFO:XboxAPI:Xbox controller ready! Use left stick to move, right stick for camera
-INFO:XboxAPI:Controls: LB=treat, RB=photo, Y=sound, A=emergency stop
-INFO:XboxAPI:D-pad left/right to select sounds, D-pad down to play
