@@ -232,6 +232,10 @@ class ModeFSM:
             self.logger.warning(f"Invalid transition: {current_mode.value} -> {new_mode.value}")
             return
 
+        # CRITICAL: Set manual input time BEFORE mode change to avoid race condition
+        if new_mode == SystemMode.MANUAL:
+            self.last_manual_input_time = time.time()
+
         # Execute transition
         success = self.state.set_mode(new_mode, f"FSM: {trigger.value}")
 
@@ -303,16 +307,16 @@ class ModeFSM:
         self.override_mode = mode
         self.override_until = time.time() + duration
 
+        # CRITICAL: Set manual input time BEFORE mode change to avoid race condition
+        if mode == SystemMode.MANUAL:
+            self.last_manual_input_time = time.time()
+
         # Force transition to override mode
         success = self.state.set_mode(mode, f"User override for {duration}s")
 
         if success:
             self.current_mode = mode
             self.mode_start_time = time.time()
-
-            # Reset manual input time when overriding to MANUAL mode
-            if mode == SystemMode.MANUAL:
-                self.last_manual_input_time = time.time()
 
             publish_system_event('mode_override_set', {
                 'mode': mode.value,
@@ -341,16 +345,16 @@ class ModeFSM:
 
     def force_mode(self, mode: SystemMode, reason: str = "manual") -> bool:
         """Force immediate mode change (bypass FSM)"""
+        # CRITICAL: Set manual input time BEFORE mode change to avoid race condition
+        # The FSM thread could check timeout between set_mode() and time update
+        if mode == SystemMode.MANUAL:
+            self.last_manual_input_time = time.time()
+
         success = self.state.set_mode(mode, f"Force: {reason}")
 
         if success:
             self.current_mode = mode
             self.mode_start_time = time.time()
-
-            # Reset manual input time when forcing to MANUAL mode
-            # This prevents immediate timeout if last input was > 120s ago
-            if mode == SystemMode.MANUAL:
-                self.last_manual_input_time = time.time()
 
             publish_system_event('mode_forced', {
                 'mode': mode.value,
