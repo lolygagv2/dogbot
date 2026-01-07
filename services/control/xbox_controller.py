@@ -114,8 +114,8 @@ class XboxControllerService:
                 if self.is_connected:
                     self._check_device_activity()
 
-                # Check manual input timeout
-                self._check_manual_timeout()
+                # NOTE: Manual timeout is handled by mode_fsm.py with proper pgrep detection
+                # Do NOT check timeout here - it causes race conditions with mode cycling
 
                 time.sleep(2.0)  # Check every 2 seconds
 
