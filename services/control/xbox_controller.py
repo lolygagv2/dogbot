@@ -156,10 +156,9 @@ class XboxControllerService:
         """Start the Xbox hybrid controller process"""
         try:
             # Start the working xbox_hybrid_controller.py
+            # NOTE: Removed stdout/stderr PIPE so logs go to systemd journal
             self.controller_process = subprocess.Popen(
-                ['python3', self.controller_script],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                ['python3', '-u', self.controller_script],  # -u for unbuffered output
                 preexec_fn=os.setsid  # Create new process group
             )
 

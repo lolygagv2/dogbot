@@ -1,5 +1,75 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-07 ~11:55-12:55
+**Goal:** Fix Xbox controller RB photo button and mode cycling issues
+**Status:** ✅ Fixes Implemented (Testing Pending)
+
+### Work Completed:
+
+#### 1. Diagnosed RB Photo Button Issues - ✅ FIXED
+- **Problem:** RB button wasn't taking photos; buttons were switching to MANUAL mode
+- **Root Cause:** `notify_manual_input()` was called on EVERY button press in `process_button()`, which triggered mode switch to MANUAL
+- **Fix:** Removed global `notify_manual_input()` from `process_button()` - joystick/triggers already have it in `process_axis()`
+
+#### 2. Fixed Subprocess Logging - ✅ FIXED
+- **Problem:** Xbox controller subprocess logs went to PIPE and were never read (invisible)
+- **Fix:** Removed `stdout=subprocess.PIPE, stderr=subprocess.PIPE` from subprocess.Popen
+- **Added:** `-u` flag for unbuffered Python output
+- Now controller logs appear in `journalctl -u treatbot`
+
+#### 3. Updated take_photo() Logic - ✅ FIXED
+- **Problem:** take_photo() always tried 4K first, fell back to snapshot
+- **Fix:** Now explicitly checks current mode FIRST:
+  - MANUAL mode → 4K photo (camera released)
+  - Other modes → Snapshot from AI stream (640x640)
+- Added `_get_current_mode()` helper that queries `/mode` API
+
+#### 4. Fixed Mode Cycle Sync - ✅ FIXED
+- **Problem:** `current_mode_index` was never synced with actual system mode
+- **Fix:** `cycle_mode()` now queries actual mode before incrementing
+- Changed to blocking API request for mode changes
+
+#### 5. Fixed api_request_blocking() Timeout Parameter - ✅ FIXED
+- **Problem:** `take_photo()` passed `timeout=8` but `api_request_blocking()` didn't accept it
+- **Fix:** Added `timeout` parameter to both `api_request_blocking()` and `_api_request_sync()`
+
+### Files Modified:
+- `xbox_hybrid_controller.py`:
+  - Removed `notify_manual_input()` from `process_button()` (line ~1229)
+  - Added `_get_current_mode()` helper method
+  - Rewrote `take_photo()` to check mode explicitly
+  - Updated `cycle_mode()` to sync with actual mode
+  - Fixed `api_request_blocking()` to accept timeout parameter
+  - Fixed `_api_request_sync()` to accept timeout parameter
+- `services/control/xbox_controller.py`:
+  - Removed PIPE capturing from subprocess
+  - Added `-u` flag for unbuffered output
+
+### Key Behavior Changes:
+1. **Button presses no longer auto-switch to MANUAL mode**
+2. **RB in COACH/SILENT_GUARDIAN** → Takes 640x640 snapshot from AI stream
+3. **RB in MANUAL** → Takes 4K photo (4056x3040)
+4. **Mode cycling** → Now correctly syncs with actual system mode before cycling
+5. **Controller logs** → Now visible in systemd journal
+
+### User Requirements Confirmed:
+1. RB in COACH/SILENT_GUARDIAN → Take snapshot, STAY in current mode
+2. RB in MANUAL → Take 4K photo
+3. No manual mode timeout when Xbox controller connected
+
+### Next Session:
+1. **TEST:** Mode cycling with SELECT button
+2. **TEST:** RB photo in different modes
+3. **TEST:** Verify photos saved correctly
+4. Consider committing changes after testing
+
+### Important Notes/Warnings:
+- **Testing pending:** User needs to test SELECT and RB buttons
+- **Photo locations:** `/home/morgan/dogbot/captures/photo_*.jpg` (4K), `snapshot_*.jpg` (640x640)
+- **Logs now visible:** Use `journalctl -u treatbot -f` to see Xbox controller output
+
+---
+
 ## Session: 2026-01-07 ~05:00-06:00
 **Goal:** Fix Xbox controller freeze/lock issues, camera photo system
 **Status:** ✅ Complete
@@ -34,36 +104,9 @@
 - Created `config/config_loader.py` with `CameraConfig` class
 - Detector reads rotation from config
 
-### Files Modified:
-- `core/hardware/proper_pid_motor_controller.py` - Motor safety in open-loop mode
-- `xbox_hybrid_controller.py` - Non-blocking events, photo fallback logic
-- `api/server.py` - Camera photo/snapshot endpoints, Xbox detection
-- `services/perception/detector.py` - Camera release/reacquire, config rotation
-- `config/config_loader.py` (new) - CameraConfig class
-- `config/robot_profiles/treatbot.yaml` - Added camera.rotation: 90
-- `config/robot_profiles/treatbot2.yaml` - Added camera.rotation: 0
-
-### Files Archived:
-- `Archive/servo_control_module.py`
-- `Archive/treat_dispenser_robot.py`
-
-### Commits:
-- `b6112bd6` - feat: Motor safety, camera system, and per-robot config
-- `060c86f1` - Merge with remote (synced mode_fsm.py fix)
-
 ### Photos Save To:
 - `/home/morgan/dogbot/captures/photo_*.jpg` (4K)
 - `/home/morgan/dogbot/captures/snapshot_*.jpg` (640x640)
-
-### Next Session:
-1. Test motor safety on original treatbot after git pull
-2. Verify camera rotation is correct on treatbot (90° should be right)
-3. Fine-tune PID parameters if encoder issues resolved
-
-### Important Notes/Warnings:
-- **treatbot sync required:** Run `git pull origin main && sudo systemctl restart treatbot`
-- **Camera rotation:** treatbot=90°, treatbot2=0° - verify after testing
-- **Motor safety:** 1-second stale command detection now active in open-loop mode
 
 ---
 
@@ -75,47 +118,8 @@
 
 #### 1. Motor PWM Control - ✅ FIXED
 - **Problem:** Motors responded as on/off (binary) instead of gradual speed
-- **Root Cause:** WIRING ERROR - GPIO pins were connected wrong:
-  - ENA was on pin 31, should be pin 33 (GPIO13)
-  - ENB was on pin 33, should be pin 35 (GPIO19)
-  - Encoder A2/B2 wires were also swapped
+- **Root Cause:** WIRING ERROR - GPIO pins were connected wrong
 - **User fixed the hardware wiring**
-
-#### 2. Code Improvements Made:
-- Rewrote `set_motor_speeds()` in `xbox_hybrid_controller.py`:
-  - Proper joystick → PWM mapping (20-70% range)
-  - Removed double-clamping that caused binary jumps
-  - Multipliers now applied correctly after PWM calculation
-- Updated `proper_pid_motor_controller.py`:
-  - Added `open_loop_mode` flag
-  - Removed PWM_MIN clamping in `set_motor_pwm_direct()`
-- Updated `treatbot2.yaml`: left_multiplier=0.5, right_multiplier=1.0
-
-### Key Solutions:
-- **Config auto-loading:** Uses hostname detection (treatbot2 → treatbot2.yaml)
-- **PWM mapping:** Joystick (0-1) maps to PWM (20-70%), then multiplier applied
-- **Open-loop mode:** Bypasses PID when USE_PID_CONTROL=false
-
-### Files Modified:
-- `core/hardware/proper_pid_motor_controller.py` (+105 lines)
-- `xbox_hybrid_controller.py` (+144 lines)
-- `config/robot_profiles/treatbot2.yaml` (motor calibration)
-
-### Files Created:
-- `tests/hardware/test_simple_joystick_motor.py`
-- `tests/hardware/test_joystick_gpio_direct.py`
-
-### Commit: 0d944455 - fix: Motor PWM control - gradual speed instead of binary on/off
-
-### Next Session:
-1. Fine-tune motor multipliers (left=0.5, right=1.0) if balance still off
-2. Test encoders now that wiring is fixed (right encoder was reading 0)
-3. Consider re-enabling PID control once encoders verified working
-
-### Important Notes/Warnings:
-- **WIRING:** All motor/encoder wires now in correct positions per pins.py
-- **Multipliers:** Left motor is overpowered (1.6Ω), right is weak (4.5Ω, defective)
-- **Right motor replacement:** Still on order
 
 ---
 
@@ -124,43 +128,6 @@
 **Status:** ✅ Partially Complete
 
 ### Work Completed:
-
-#### 1. Battery Monitor (ADS1115) - ✅ FIXED
-- Created `services/power/battery_monitor.py` - ADS1115 ADC monitoring
-- Created `core/hardware/i2c_bus.py` - Shared I2C bus singleton with RLock
-- Calibration: 15.15V battery = 3.843V at ADC (factor: 3.942)
-- Voltage divider: 10k + 2.2k resistors
-- API endpoints: `/battery/status`, `/battery/voltage`
-- Working: 15.13V reading confirmed
-
-#### 2. Servo/PCA9685 I2C Conflict - ✅ FIXED
-- **Root Cause:** MODE2 register INVRT bit was set (inverting all PWM outputs)
-- **Fix:** Added `pca.reset()` and `pca.mode2 = 0x04` to servo initialization
-- Updated `core/hardware/servo_controller.py` to use shared I2C bus
-- Both battery monitor and servos now work together on shared I2C
-
-#### 3. LEDs (NeoPixels + Blue LED) - ❌ HARDWARE ISSUE
-- GPIO25 confirmed outputting HIGH via pinctrl
-- No light visible = hardware wiring issue on treatbot2
-- User will check physical connections
-
-### Key Solutions:
-- **I2C Bus Sharing:** Created singleton with `threading.RLock()` for thread-safe access
-- **PCA9685 Fix:** `pca.mode2 = 0x04` ensures OUTDRV=1, INVRT=0
-- **Install Script:** Created `install_treatbot2_updates.sh` for replicating on other device
-
-### Files Created:
-- `core/hardware/i2c_bus.py` (new) - Shared I2C bus singleton
-- `services/power/battery_monitor.py` (new) - Battery monitoring service
-- `services/power/__init__.py` (new) - Package init
-- `install_treatbot2_updates.sh` (new) - Installation script for other device
-
-### Files Modified:
-- `core/hardware/servo_controller.py` - Use shared I2C, add MODE2 fix
-- `api/server.py` - Add battery API endpoints
-- `services/media/led.py` - Added Silent Guardian patterns (from previous session)
-
-### Important Notes/Warnings:
-- **PCA9685 MODE2:** If servos stop working, check if INVRT bit got set again
-- **LEDs on treatbot2:** Confirmed software working, hardware disconnected
-- **Pi 5 GPIO:** Uses lgpio (not RPi.GPIO), gpiochip4 is the main chip
+- Battery Monitor (ADS1115) - FIXED
+- Servo/PCA9685 I2C Conflict - FIXED
+- LEDs - Hardware issue (GPIO25 working, physical wiring needs check)

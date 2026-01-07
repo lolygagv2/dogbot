@@ -541,11 +541,12 @@ class XboxHybridControllerFixed:
             except Exception as e:
                 logger.error(f"API worker error: {e}")
 
-    def _api_request_sync(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
+    def _api_request_sync(self, method: str, endpoint: str, data: Optional[dict] = None, timeout: float = None) -> Optional[dict]:
         """Synchronous API request - called by worker thread only"""
         url = f"{self.API_BASE_URL}{endpoint}"
         try:
-            timeout = 10.0 if 'audio' in endpoint else 2.0
+            if timeout is None:
+                timeout = 10.0 if 'audio' in endpoint else 2.0
 
             if method == 'GET':
                 response = self.session.get(url, timeout=timeout)
@@ -592,9 +593,9 @@ class XboxHybridControllerFixed:
                 logger.error(f"Failed to queue API command: {endpoint}")
                 return None
 
-    def api_request_blocking(self, method: str, endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
+    def api_request_blocking(self, method: str, endpoint: str, data: Optional[dict] = None, timeout: float = None) -> Optional[dict]:
         """BLOCKING API request - use ONLY when response is needed (e.g., recording status)"""
-        return self._api_request_sync(method, endpoint, data)
+        return self._api_request_sync(method, endpoint, data, timeout=timeout)
 
     def _start_watchdog(self):
         """Start watchdog thread for motor safety"""
@@ -1224,8 +1225,9 @@ class XboxHybridControllerFixed:
     def process_button(self, number: int, pressed: bool):
         """Process button press with proper cooldowns"""
         if pressed:
-            logger.debug(f"Button {number} pressed")
-            notify_manual_input()
+            logger.info(f"🔘 Button {number} pressed")
+            # NOTE: notify_manual_input() removed here - buttons should NOT auto-switch to MANUAL
+            # Joystick movement and triggers already call notify_manual_input() in process_axis()
 
         if number == 0:  # A button - Emergency stop
             self.state.a_button = pressed
@@ -1351,39 +1353,53 @@ class XboxHybridControllerFixed:
         except Exception as e:
             logger.error(f"Treat dispense error: {e}")
 
+    def _get_current_mode(self) -> str:
+        """Get current system mode from API"""
+        try:
+            result = self.api_request_blocking('GET', '/mode', timeout=2)
+            if result and 'current_mode' in result:
+                return result.get('current_mode', 'unknown')
+        except Exception as e:
+            logger.warning(f"Could not get current mode: {e}")
+        return 'unknown'
+
     def take_photo(self):
-        """Take photo with cooldown - tries 4K photo first, falls back to stream snapshot"""
+        """Take photo based on current mode:
+        - MANUAL mode: Use 4K photo (camera is released)
+        - Other modes: Use snapshot from AI stream (camera is busy)
+        """
         current_time = time.time()
         if current_time - self.last_photo_time < self.photo_cooldown:
             return
 
-        logger.info("📸 RB pressed: Taking photo...")
         self.last_photo_time = current_time
 
-        # Try 4K photo first (works in MANUAL mode with camera released)
-        try:
-            result = self.api_request_blocking('POST', '/camera/photo', timeout=8)
-            if result and result.get('success'):
-                logger.info(f"✅ 4K Photo saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
-                return
-            elif result and result.get('detail'):
-                logger.warning(f"⚠️ 4K photo failed: {result.get('detail')}, trying snapshot...")
-            else:
-                logger.warning(f"⚠️ 4K photo failed, trying snapshot...")
-        except Exception as e:
-            logger.warning(f"⚠️ 4K photo error: {e}, trying snapshot...")
+        # Check current mode FIRST to decide which photo method to use
+        current_mode = self._get_current_mode()
+        logger.info(f"📸 RB pressed: Taking photo (mode: {current_mode})...")
 
-        # Fallback to stream snapshot (works in any mode, lower resolution)
-        try:
-            result = self.api_request_blocking('POST', '/camera/snapshot', timeout=3)
-            if result and result.get('success'):
-                logger.info(f"✅ Snapshot saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
-            elif result and result.get('detail'):
-                logger.error(f"❌ Snapshot also failed: {result.get('detail')}")
-            else:
-                logger.error(f"❌ Snapshot also failed: {result}")
-        except Exception as e:
-            logger.error(f"❌ Snapshot error: {e}")
+        if current_mode == 'manual':
+            # MANUAL mode: Camera is released, use 4K photo
+            try:
+                result = self.api_request_blocking('POST', '/camera/photo', timeout=8)
+                if result and result.get('success'):
+                    logger.info(f"✅ 4K Photo saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
+                    return
+                else:
+                    logger.warning(f"⚠️ 4K photo failed: {result.get('detail', 'unknown error')}")
+            except Exception as e:
+                logger.error(f"❌ 4K photo error: {e}")
+        else:
+            # Other modes: AI is running, grab snapshot from stream
+            try:
+                result = self.api_request_blocking('POST', '/camera/snapshot', timeout=3)
+                if result and result.get('success'):
+                    logger.info(f"✅ Snapshot saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
+                    return
+                else:
+                    logger.warning(f"⚠️ Snapshot failed: {result.get('detail', 'unknown error')}")
+            except Exception as e:
+                logger.error(f"❌ Snapshot error: {e}")
 
     def center_camera(self):
         """Center the camera to default position"""
@@ -1411,18 +1427,24 @@ class XboxHybridControllerFixed:
 
         self.last_mode_cycle_time = current_time
 
+        # Sync index with actual system mode first
+        actual_mode = self._get_current_mode()
+        if actual_mode in self.cycle_modes:
+            self.current_mode_index = self.cycle_modes.index(actual_mode)
+            logger.debug(f"Synced mode index to {actual_mode} (index {self.current_mode_index})")
+
         # Move to next mode in cycle
         self.current_mode_index = (self.current_mode_index + 1) % len(self.cycle_modes)
         new_mode = self.cycle_modes[self.current_mode_index]
 
-        logger.info(f"🔄 SELECT button: Cycling to {new_mode.upper()} mode")
+        logger.info(f"🔄 SELECT button: Cycling from {actual_mode} to {new_mode.upper()} mode")
 
-        # Call API to change mode
-        result = self.api_request('POST', '/mode/set', {"mode": new_mode})
-        if result:
+        # Call API to change mode (use blocking request to ensure it completes)
+        result = self.api_request_blocking('POST', '/mode/set', {"mode": new_mode}, timeout=2)
+        if result and result.get('success'):
             logger.info(f"✅ Mode changed to: {new_mode}")
         else:
-            logger.warning(f"Mode change request queued: {new_mode}")
+            logger.warning(f"⚠️ Mode change may have failed: {result}")
 
     def toggle_led(self):
         """Toggle blue LED with cooldown to prevent double-triggers"""
