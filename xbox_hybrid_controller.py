@@ -34,6 +34,12 @@ except ImportError:
     MOTOR_BUS_AVAILABLE = False
 
 try:
+    from config.config_loader import get_config
+    CONFIG_AVAILABLE = True
+except ImportError:
+    CONFIG_AVAILABLE = False
+
+try:
     from core.hardware.proper_pid_motor_controller import MotorControllerPolling
     MOTOR_CONTROLLER_AVAILABLE = True
 except ImportError:
@@ -220,20 +226,21 @@ class XboxHybridControllerFixed:
     # API configuration
     API_BASE_URL = "http://localhost:8000"
 
-    # Controller configuration - SIMPLIFIED FOR RELIABILITY
+    # Default controller configuration - OVERRIDDEN BY ROBOT CONFIG
+    # These defaults are fallbacks if config loading fails
     DEADZONE = 0.20  # 20% deadzone - larger for reliable stop detection
     TRIGGER_DEADZONE = 0.1
-    MAX_SPEED = 75  # Capped at 75% for safety (no turbo mode)
-    TURN_SPEED_FACTOR = 0.6  # Reduced for smoother turns
+    MAX_SPEED = 50   # Capped speed percentage
+    TURN_SPEED_FACTOR = 0.8  # Reduced for smoother turns
 
     # RPM Control - Convert speed percentages to RPM targets
-    MAX_RPM = 150  # Conservative RPM target for smoother control
+    MAX_RPM = 90     # Conservative RPM target for smoother control
     USE_PID_CONTROL = True  # ENABLED - closed-loop control with encoder feedback
 
     # Motor calibration - per-motor power adjustment for hardware imbalance
-    # Left motor was overpowered (spinning out), right motor was weak
-    LEFT_MOTOR_MULTIPLIER = 0.5   # Reduce left motor to 50%
-    RIGHT_MOTOR_MULTIPLIER = 1.2  # Boost right motor by 20%
+    LEFT_MOTOR_MULTIPLIER = 0.20   # Default - will be overridden by config
+    RIGHT_MOTOR_MULTIPLIER = 2.0   # Default - will be overridden by config
+    MIN_PWM_THRESHOLD = 0          # Minimum PWM to overcome motor deadzone
 
     # Safety features - FIXED FOR SMOOTH CONTROL
     TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
@@ -257,6 +264,9 @@ class XboxHybridControllerFixed:
         self.running = False
         self.state = ControllerState()
         self.stop_event = Event()
+
+        # Load robot-specific configuration
+        self._load_robot_config()
 
         # Thread safety locks
         self.motor_lock = Lock()
@@ -395,6 +405,36 @@ class XboxHybridControllerFixed:
         logger.warning("❌ No motor control available, will use API")
         self.motor_direct = False
         MOTOR_DIRECT = False
+
+    def _load_robot_config(self):
+        """Load robot-specific configuration from YAML profile"""
+        if not CONFIG_AVAILABLE:
+            logger.warning("Config loader not available, using default values")
+            return
+
+        try:
+            config = get_config()
+            controller_config = config.controller
+
+            # Override class defaults with robot-specific values
+            self.DEADZONE = controller_config.xbox_deadzone
+            self.MAX_SPEED = controller_config.max_speed
+            self.TURN_SPEED_FACTOR = controller_config.turn_speed_factor
+            self.MAX_RPM = controller_config.max_rpm
+            self.USE_PID_CONTROL = controller_config.use_pid_control
+            self.LEFT_MOTOR_MULTIPLIER = controller_config.left_motor_multiplier
+            self.RIGHT_MOTOR_MULTIPLIER = controller_config.right_motor_multiplier
+            self.MIN_PWM_THRESHOLD = controller_config.min_pwm_threshold
+
+            logger.info(f"[Config] Robot profile loaded: {config.robot_id}")
+            logger.info(f"[Config] MAX_SPEED={self.MAX_SPEED}, MAX_RPM={self.MAX_RPM}")
+            logger.info(f"[Config] LEFT_MULT={self.LEFT_MOTOR_MULTIPLIER}, RIGHT_MULT={self.RIGHT_MOTOR_MULTIPLIER}")
+            logger.info(f"[Config] DEADZONE={self.DEADZONE}, MIN_PWM_THRESHOLD={self.MIN_PWM_THRESHOLD}")
+            logger.info(f"[Config] USE_PID_CONTROL={self.USE_PID_CONTROL}")
+
+        except Exception as e:
+            logger.error(f"Failed to load robot config: {e}")
+            logger.warning("Using default controller values")
 
     def _scan_folder(self, folder_name):
         """Scan a folder for MP3 files and return list of (api_path, display_name) tuples"""
@@ -867,6 +907,9 @@ class XboxHybridControllerFixed:
             left_speed = int(forward - turn)
             right_speed = int(forward + turn)
 
+            # DEBUG: Log raw joystick to motor conversion (always log when moving)
+            logger.warning(f"🎮 JOY Y={self.state.left_y:.2f} → L={left_speed} R={right_speed}")
+
             # Clamp to valid range
             left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
             right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
@@ -898,18 +941,95 @@ class XboxHybridControllerFixed:
 
     def set_motor_speeds(self, left: int, right: int):
         """
-        Set motor speeds using closed-loop RPM control or fallback methods
+        Set motor speeds with proper PWM mapping for open-loop control.
 
-        Converts speed percentages to RPM targets for precise control
+        Input: left/right in range -MAX_SPEED to +MAX_SPEED (e.g., -60 to +60)
+        Output: PWM in usable range 35-70% with motor balance correction
         """
-        # Apply per-motor calibration for hardware imbalance
+        # PWM limits - wider range for gradual control
+        PWM_MIN = 20  # Low starting point - motors may not move below ~30%
+        PWM_MAX = 70  # Safety limit for 6V motors on 14V system
+
+        # OPEN-LOOP MODE: Map speed to PWM range directly
+        if not self.USE_PID_CONTROL:
+            # Calculate PWM for each motor
+            def speed_to_pwm(speed, multiplier):
+                if speed == 0:
+                    return 0
+                # Get direction
+                direction = 1 if speed > 0 else -1
+                magnitude = abs(speed)
+                # Map magnitude (0 to MAX_SPEED) to PWM (PWM_MIN to PWM_MAX)
+                # At magnitude=1, PWM=PWM_MIN; at magnitude=MAX_SPEED, PWM=PWM_MAX
+                pwm = PWM_MIN + (magnitude / self.MAX_SPEED) * (PWM_MAX - PWM_MIN)
+                # Apply balance multiplier
+                pwm = pwm * multiplier
+                # Only cap at max, let low values through (motor deadzone handles it)
+                pwm = min(PWM_MAX, pwm)
+                return direction * pwm
+
+            left_pwm = speed_to_pwm(left, self.LEFT_MOTOR_MULTIPLIER)
+            right_pwm = speed_to_pwm(right, self.RIGHT_MOTOR_MULTIPLIER)
+
+            logger.warning(f"🔧 OPEN-LOOP: Speed L={left} R={right} → PWM L={left_pwm:.1f}% R={right_pwm:.1f}%")
+
+            # Send to motor controller
+            if self.motor_controller and hasattr(self.motor_controller, 'set_motor_pwm_direct'):
+                try:
+                    self.motor_controller.set_motor_pwm_direct(left_pwm, right_pwm)
+                    logger.warning(f"✅ Sent to motor controller")
+                    return
+                except Exception as e:
+                    logger.error(f"Direct PWM error: {e}")
+            elif self.motor_bus and hasattr(self.motor_bus, 'motor_controller'):
+                try:
+                    self.motor_bus.motor_controller.set_motor_pwm_direct(left_pwm, right_pwm)
+                    return
+                except Exception as e:
+                    logger.error(f"Motor bus PWM error: {e}")
+            logger.warning("⚠️ No motor control available!")
+            return
+
+        # PID MODE (legacy path - not used when USE_PID_CONTROL=false)
+        # Apply old calibration for PID mode
         left = int(left * self.LEFT_MOTOR_MULTIPLIER)
         right = int(right * self.RIGHT_MOTOR_MULTIPLIER)
-
-        # Clamp to valid range after calibration
         left = max(-self.MAX_SPEED, min(self.MAX_SPEED, left))
         right = max(-self.MAX_SPEED, min(self.MAX_SPEED, right))
 
+        if self.MIN_PWM_THRESHOLD > 0:
+            if left > 0 and left < self.MIN_PWM_THRESHOLD:
+                left = self.MIN_PWM_THRESHOLD
+            elif left < 0 and left > -self.MIN_PWM_THRESHOLD:
+                left = -self.MIN_PWM_THRESHOLD
+            if right > 0 and right < self.MIN_PWM_THRESHOLD:
+                right = self.MIN_PWM_THRESHOLD
+            elif right < 0 and right > -self.MIN_PWM_THRESHOLD:
+                right = -self.MIN_PWM_THRESHOLD
+
+        # PID MODE: Use direct PWM when PID is disabled - LEGACY FALLBACK
+        if not self.USE_PID_CONTROL:
+            # Try direct PWM control first (preferred for open-loop)
+            if self.motor_controller and hasattr(self.motor_controller, 'set_motor_pwm_direct'):
+                try:
+                    self.motor_controller.set_motor_pwm_direct(float(left), float(right))
+                    logger.info(f"🔧 PWM: L={left} R={right}")
+                    return
+                except Exception as e:
+                    logger.error(f"Direct PWM error: {e}")
+            # Fallback to motor_bus if available
+            elif self.motor_bus and hasattr(self.motor_bus, 'motor_controller'):
+                try:
+                    self.motor_bus.motor_controller.set_motor_pwm_direct(float(left), float(right))
+                    logger.debug(f"🔧 Open-loop PWM (via bus): L={left}%, R={right}%")
+                    return
+                except Exception as e:
+                    logger.error(f"Motor bus PWM error: {e}")
+            # Last resort - log error
+            logger.warning(f"⚠️ No open-loop motor control available! motor_controller={self.motor_controller}, motor_bus={self.motor_bus}")
+            return
+
+        # PID MODE: Use closed-loop RPM control
         if self.USE_PID_CONTROL and self.motor_direct and self.motor_controller:
             try:
                 # Convert speed percentages to RPM targets

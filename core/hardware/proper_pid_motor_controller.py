@@ -91,7 +91,7 @@ class ProperPIDMotorController:
     MAX_RPM = 210          # No-load RPM at 6V
 
     # PWM Safety Limits (6V motors on 14V system)
-    PWM_MIN = 35           # Minimum to overcome static friction (increased to reduce whine)
+    PWM_MIN = 35           # Minimum to overcome motor dead zone
     PWM_MAX = 70           # 70% of 14V ≈ 10V (capped for safety, no turbo mode)
 
     # Control Loop Timing
@@ -134,6 +134,10 @@ class ProperPIDMotorController:
         # Additional safety: track if motors should be running
         self.motors_should_be_stopped = True  # Start in stopped state
         self.last_nonzero_command_time = 0  # Track when we last got a non-zero command
+
+        # Open-loop mode: when True, PID loop skips PWM application
+        # Used when xbox_hybrid_controller uses set_motor_pwm_direct() instead of PID
+        self.open_loop_mode = False
 
         # Target ramping for smooth acceleration
         self.ramp_rate = 300  # RPM per second max change
@@ -273,6 +277,9 @@ class ProperPIDMotorController:
             self.right.target_rpm = right_rpm
             self.last_command_time = current_time
             self.emergency_stopped = False
+
+            # Disable open-loop mode - PID loop controls PWM
+            self.open_loop_mode = False
 
             # Track if we're commanding non-zero movement
             if abs(left_rpm) > 1 or abs(right_rpm) > 1:
@@ -472,9 +479,11 @@ class ProperPIDMotorController:
                     left_pwm = self._update_pid(self.left, self.left_gains, self.ramped_left_target)
                     right_pwm = self._update_pid(self.right, self.right_gains, self.ramped_right_target)
 
-                # Apply PWM outputs to hardware
-                self._apply_pwm(self.left, left_pwm)
-                self._apply_pwm(self.right, right_pwm)
+                # Apply PWM outputs to hardware (only if NOT in open-loop mode)
+                # In open-loop mode, set_motor_pwm_direct() handles PWM directly
+                if not self.open_loop_mode:
+                    self._apply_pwm(self.left, left_pwm)
+                    self._apply_pwm(self.right, right_pwm)
 
                 # Debug logging every 1 second (50 cycles at 50Hz)
                 debug_counter += 1
@@ -662,6 +671,50 @@ class ProperPIDMotorController:
         self._cleanup_gpio()
         logger.info("✅ GPIO devices closed")
 
+    def set_motor_pwm_direct(self, left_pwm: float, right_pwm: float):
+        """
+        OPEN-LOOP MODE: Set PWM directly without PID feedback
+
+        Use this when encoders are not working or for manual calibration.
+        PWM values are percentages (0-100, negative for reverse).
+        Applies PWM_MIN/PWM_MAX limits automatically.
+        """
+        with self.lock:
+            # Update command time to prevent watchdog timeout
+            self.last_command_time = time.time()
+            self.emergency_stopped = False
+
+            # Enable open-loop mode - tells PID loop to skip PWM overwrite
+            self.open_loop_mode = True
+
+            # Left motor - NO min clamping, xbox controller handles PWM range
+            if left_pwm == 0:
+                self.left.direction = 'stop'
+                self.left.pwm_output = 0
+            elif left_pwm > 0:
+                self.left.direction = 'forward'
+                self.left.pwm_output = min(self.PWM_MAX, left_pwm)
+            else:
+                self.left.direction = 'backward'
+                self.left.pwm_output = min(self.PWM_MAX, abs(left_pwm))
+
+            # Right motor - NO min clamping, xbox controller handles PWM range
+            if right_pwm == 0:
+                self.right.direction = 'stop'
+                self.right.pwm_output = 0
+            elif right_pwm > 0:
+                self.right.direction = 'forward'
+                self.right.pwm_output = min(self.PWM_MAX, right_pwm)
+            else:
+                self.right.direction = 'backward'
+                self.right.pwm_output = min(self.PWM_MAX, abs(right_pwm))
+
+            # Apply directly to hardware (bypass PID loop)
+            self._apply_pwm(self.left, self.left.pwm_output)
+            self._apply_pwm(self.right, self.right.pwm_output)
+
+            logger.debug(f"📍 Direct PWM: L={left_pwm:.1f}% ({self.left.direction}), R={right_pwm:.1f}% ({self.right.direction})")
+
 
 # Legacy compatibility interface
 class MotorControllerPolling(ProperPIDMotorController):
@@ -701,6 +754,50 @@ class MotorControllerPolling(ProperPIDMotorController):
             self.set_motor_rpm(current_left, target_rpm)
 
         return True
+
+    def set_motor_pwm_direct(self, left_pwm: float, right_pwm: float):
+        """
+        OPEN-LOOP MODE: Set PWM directly without PID feedback
+
+        Use this when encoders are not working or for manual calibration.
+        PWM values are percentages (0-100, negative for reverse).
+        Applies PWM_MIN/PWM_MAX limits automatically.
+        """
+        with self.lock:
+            # Update command time to prevent watchdog timeout
+            self.last_command_time = time.time()
+            self.emergency_stopped = False
+
+            # Enable open-loop mode - tells PID loop to skip PWM overwrite
+            self.open_loop_mode = True
+
+            # Left motor - NO min clamping, xbox controller handles PWM range
+            if left_pwm == 0:
+                self.left.direction = 'stop'
+                self.left.pwm_output = 0
+            elif left_pwm > 0:
+                self.left.direction = 'forward'
+                self.left.pwm_output = min(self.PWM_MAX, left_pwm)
+            else:
+                self.left.direction = 'backward'
+                self.left.pwm_output = min(self.PWM_MAX, abs(left_pwm))
+
+            # Right motor - NO min clamping, xbox controller handles PWM range
+            if right_pwm == 0:
+                self.right.direction = 'stop'
+                self.right.pwm_output = 0
+            elif right_pwm > 0:
+                self.right.direction = 'forward'
+                self.right.pwm_output = min(self.PWM_MAX, right_pwm)
+            else:
+                self.right.direction = 'backward'
+                self.right.pwm_output = min(self.PWM_MAX, abs(right_pwm))
+
+            # Apply directly to hardware (bypass PID loop)
+            self._apply_pwm(self.left, self.left.pwm_output)
+            self._apply_pwm(self.right, self.right.pwm_output)
+
+            logger.debug(f"📍 Direct PWM: L={left_pwm:.1f}% ({self.left.direction}), R={right_pwm:.1f}% ({self.right.direction})")
 
 
 if __name__ == "__main__":

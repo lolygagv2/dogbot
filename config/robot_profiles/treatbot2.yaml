@@ -1,0 +1,40 @@
+# TreatBot2 Backup Unit - Mismatched Motors
+# Hardware: 2.3Ω + 4.9Ω DC motors (significant imbalance), servo needs wider pulse
+# KNOWN ISSUE: Binary motor control (0 or 100, no gradual) - needs Xbox/PID recalibration
+
+robot_id: "treatbot2"
+description: "Backup unit with motor compensation required"
+
+# Dispenser settings (dispenser.py)
+dispenser:
+  dispense_duration: 0.3
+
+# Servo settings (servo_controller.py)
+servo:
+  slow_pulse: 1600        # rotate_winch 'slow' direction pulse value (wider than treatbot)
+
+# Motor/Controller settings (xbox_hybrid_controller.py)
+controller:
+  max_speed: 60           # Lower cap due to motor mismatch
+  turn_speed_factor: 0.8  # Multiplier for turn smoothness
+  max_rpm: 100            # Conservative RPM target
+  use_pid_control: false  # DISABLED - right encoder broken, using open-loop until motor replaced
+  min_pwm_threshold: 0    # DISABLED - was causing binary jump behavior
+
+  # Per-motor calibration for hardware imbalance
+  # NOW: Multipliers applied AFTER PWM mapping
+  # Left motor (1.6Ω) is ~3x more powerful than right (4.5Ω), needs big reduction
+  motor_calibration:
+    left_multiplier: 0.65    # Heavily reduce left motor (way too powerful)
+    right_multiplier: 1.0   # Keep right at full (it's weak/defective)
+
+  # Xbox controller calibration - NEEDS TUNING
+  xbox:
+    joystick_deadzone: 0.15   # May need adjustment after diagnostics
+    joystick_scale: 1.0       # May need adjustment after diagnostics
+
+  # PID tuning parameters - NEEDS TUNING
+  pid:
+    kp: 1.0                   # May need reduction to prevent binary behavior
+    ki: 0.0                   # Integral gain
+    kd: 0.0                   # Derivative gain
