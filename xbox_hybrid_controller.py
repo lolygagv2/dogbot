@@ -183,16 +183,33 @@ atexit.register(global_emergency_stop)
 
 logging.basicConfig(level=logging.INFO)
 
+# Rate limit for manual input notifications (prevents thread spam)
+_last_manual_notify_time = 0
+_MANUAL_NOTIFY_INTERVAL = 0.1  # Max 10 notifications per second
+
 def notify_manual_input():
-    """Notify the system that manual input occurred"""
+    """Notify the system that manual input occurred - NON-BLOCKING with rate limit"""
+    global _last_manual_notify_time
+
+    # Rate limit to prevent thread spam on rapid button presses
+    current_time = time.time()
+    if current_time - _last_manual_notify_time < _MANUAL_NOTIFY_INTERVAL:
+        return
+    _last_manual_notify_time = current_time
+
     if event_bus:
-        try:
-            publish_system_event('manual_input_detected', {
-                'timestamp': time.time(),
-                'source': 'xbox_controller'
-            }, 'xbox_hybrid_controller')
-        except Exception as e:
-            logger.warning(f"Failed to notify manual input: {e}")
+        # Use a thread to prevent blocking main loop if event bus is slow
+        def _notify():
+            try:
+                publish_system_event('manual_input_detected', {
+                    'timestamp': time.time(),
+                    'source': 'xbox_controller'
+                }, 'xbox_hybrid_controller')
+            except Exception as e:
+                logger.warning(f"Failed to notify manual input: {e}")
+
+        # Fire and forget - don't wait for event bus
+        threading.Thread(target=_notify, daemon=True).start()
 
 @dataclass
 class ControllerState:
@@ -1335,17 +1352,38 @@ class XboxHybridControllerFixed:
             logger.error(f"Treat dispense error: {e}")
 
     def take_photo(self):
-        """Take photo with cooldown"""
+        """Take photo with cooldown - tries 4K photo first, falls back to stream snapshot"""
         current_time = time.time()
         if current_time - self.last_photo_time < self.photo_cooldown:
             return
 
-        logger.info("RB pressed: Taking photo")
+        logger.info("📸 RB pressed: Taking photo...")
         self.last_photo_time = current_time
 
-        result = self.api_request('POST', '/camera/photo')
-        if result and result.get('success'):
-            logger.info(f"Photo saved: {result.get('filename', 'unknown')}")
+        # Try 4K photo first (works in MANUAL mode with camera released)
+        try:
+            result = self.api_request_blocking('POST', '/camera/photo', timeout=8)
+            if result and result.get('success'):
+                logger.info(f"✅ 4K Photo saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
+                return
+            elif result and result.get('detail'):
+                logger.warning(f"⚠️ 4K photo failed: {result.get('detail')}, trying snapshot...")
+            else:
+                logger.warning(f"⚠️ 4K photo failed, trying snapshot...")
+        except Exception as e:
+            logger.warning(f"⚠️ 4K photo error: {e}, trying snapshot...")
+
+        # Fallback to stream snapshot (works in any mode, lower resolution)
+        try:
+            result = self.api_request_blocking('POST', '/camera/snapshot', timeout=3)
+            if result and result.get('success'):
+                logger.info(f"✅ Snapshot saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
+            elif result and result.get('detail'):
+                logger.error(f"❌ Snapshot also failed: {result.get('detail')}")
+            else:
+                logger.error(f"❌ Snapshot also failed: {result}")
+        except Exception as e:
+            logger.error(f"❌ Snapshot error: {e}")
 
     def center_camera(self):
         """Center the camera to default position"""

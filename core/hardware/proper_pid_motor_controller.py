@@ -680,12 +680,22 @@ class ProperPIDMotorController:
         Applies PWM_MIN/PWM_MAX limits automatically.
         """
         with self.lock:
+            current_time = time.time()
+
             # Update command time to prevent watchdog timeout
-            self.last_command_time = time.time()
+            self.last_command_time = current_time
             self.emergency_stopped = False
 
             # Enable open-loop mode - tells PID loop to skip PWM overwrite
             self.open_loop_mode = True
+
+            # CRITICAL FIX: Track non-zero commands for stale detection
+            # This enables the safety check in _pid_loop() to work in open-loop mode
+            if abs(left_pwm) > 1 or abs(right_pwm) > 1:
+                self.motors_should_be_stopped = False
+                self.last_nonzero_command_time = current_time
+            else:
+                self.motors_should_be_stopped = True
 
             # Left motor - NO min clamping, xbox controller handles PWM range
             if left_pwm == 0:
@@ -764,12 +774,22 @@ class MotorControllerPolling(ProperPIDMotorController):
         Applies PWM_MIN/PWM_MAX limits automatically.
         """
         with self.lock:
+            current_time = time.time()
+
             # Update command time to prevent watchdog timeout
-            self.last_command_time = time.time()
+            self.last_command_time = current_time
             self.emergency_stopped = False
 
             # Enable open-loop mode - tells PID loop to skip PWM overwrite
             self.open_loop_mode = True
+
+            # CRITICAL FIX: Track non-zero commands for stale detection
+            # This enables the safety check in _pid_loop() to work in open-loop mode
+            if abs(left_pwm) > 1 or abs(right_pwm) > 1:
+                self.motors_should_be_stopped = False
+                self.last_nonzero_command_time = current_time
+            else:
+                self.motors_should_be_stopped = True
 
             # Left motor - NO min clamping, xbox controller handles PWM range
             if left_pwm == 0:

@@ -15,6 +15,7 @@ from core.bus import get_bus, publish_vision_event
 from core.state import get_state, SystemMode
 from core.store import get_store
 from core.ai_controller_3stage_fixed import AI3StageControllerFixed
+from config.config_loader import get_config
 
 # Camera imports
 try:
@@ -60,6 +61,12 @@ class DetectorService:
         self.running = False
         self.detection_thread = None
         self._stop_event = threading.Event()
+
+        # Camera pause state (for MANUAL mode)
+        self._camera_paused = False
+        self._last_frame = None  # Store last frame for snapshots
+        self._last_frame_time = 0
+        self._frame_lock = threading.Lock()
 
         # Performance tracking
         self.frame_count = 0
@@ -116,12 +123,65 @@ class DetectorService:
             return None
         try:
             frame = self.camera.capture_array()
-            # Rotate if needed (90 degrees as per config)
-            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+
+            # Apply rotation from robot config (0, 90, 180, 270 degrees clockwise)
+            config = get_config()
+            rotation = config.camera.rotation
+            if rotation == 90:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            elif rotation == 180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+            elif rotation == 270:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            # rotation == 0: no rotation needed
+
+            # Store last frame for snapshots (thread-safe)
+            with self._frame_lock:
+                self._last_frame = frame.copy()
+                self._last_frame_time = time.time()
+
             return frame
         except Exception as e:
             self.logger.error(f"Frame capture error: {e}")
             return None
+
+    def _release_camera(self) -> None:
+        """Release camera for external use (e.g., rpicam-still in MANUAL mode)"""
+        if self.camera is not None and self.camera_initialized:
+            try:
+                self.camera.stop()
+                self.camera.close()
+                self.camera = None
+                self.camera_initialized = False
+                self._camera_paused = True
+                self.logger.info("📷 Camera released for MANUAL mode")
+            except Exception as e:
+                self.logger.error(f"Camera release error: {e}")
+
+    def _reacquire_camera(self) -> bool:
+        """Re-acquire camera after MANUAL mode"""
+        if self._camera_paused:
+            self.logger.info("📷 Re-acquiring camera from MANUAL mode...")
+            result = self._initialize_camera()
+            if result:
+                self._camera_paused = False
+                self.logger.info("📷 Camera re-acquired successfully")
+            return result
+        return self.camera_initialized
+
+    def get_last_frame(self) -> Optional[np.ndarray]:
+        """Get last captured frame for snapshots (thread-safe)"""
+        with self._frame_lock:
+            if self._last_frame is not None:
+                return self._last_frame.copy()
+        return None
+
+    def get_last_frame_age(self) -> float:
+        """Get age of last frame in seconds"""
+        with self._frame_lock:
+            if self._last_frame_time > 0:
+                return time.time() - self._last_frame_time
+        return float('inf')
 
     def _detect_aruco_markers(self, frame) -> List[Tuple[int, float, float]]:
         """Detect ArUco markers in frame and return (marker_id, cx, cy) tuples"""
@@ -209,8 +269,18 @@ class DetectorService:
                 # NOT in: MANUAL (controller takes over), SHUTDOWN, EMERGENCY
                 current_mode = self.state.get_mode()
                 if current_mode in [SystemMode.MANUAL, SystemMode.SHUTDOWN, SystemMode.EMERGENCY]:
+                    # Release camera in MANUAL mode so rpicam-still can use it
+                    if not self._camera_paused and self.camera_initialized:
+                        self._release_camera()
                     time.sleep(0.1)
                     continue
+
+                # Re-acquire camera if we were paused (leaving MANUAL mode)
+                if self._camera_paused:
+                    if not self._reacquire_camera():
+                        self.logger.error("Failed to re-acquire camera")
+                        time.sleep(1.0)
+                        continue
 
                 # Capture frame from camera
                 frame = self._capture_frame()

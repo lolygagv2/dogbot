@@ -15,6 +15,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.pins import TreatBotPins
 from config.settings import SystemSettings
+from config.config_loader import get_config
 
 class ServoController:
     """PCA9685-based servo control for camera positioning and treat carousel"""
@@ -195,15 +196,17 @@ class ServoController:
         if not self.pca:
             print("Servo controller not initialized")
             return False
-            
+
         try:
             # Use proven pulse values from test script
+            # 'slow' pulse loaded from robot-specific config
+            robot_config = get_config()
             if direction == 'forward':
                 pulse = 1700  # Forward rotation
             elif direction == 'backward':
                 pulse = 1300  # Backward rotation
             elif direction == 'slow':
-                pulse = 1590  # Slightly faster forward - controlled rotation
+                pulse = robot_config.servo.slow_pulse  # Robot-specific slow pulse
             else:
                 print(f"Invalid winch direction: {direction}")
                 return False
@@ -225,7 +228,7 @@ class ServoController:
             return False
     
     def winch_burst_sequence(self, direction='forward', bursts=2, burst_duration=0.12, pause_duration=0.3):
-        """Execute winch burst sequence (from proven test script)"""
+        """Execute winch burst sequence (from proven test script) --updated 2 bursts to 5 bursts now"""
         if not self.pca:
             return False
             

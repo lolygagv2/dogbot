@@ -1519,20 +1519,48 @@ async def motor_stop(request: Optional[EmergencyStopRequest] = None):
 # Camera Control endpoints
 @app.post("/camera/photo")
 async def capture_photo_imx500():
-    """Capture 4K photo using IMX500 PCIe camera (MANUAL MODE ONLY)"""
+    """Capture 4K photo using IMX500 PCIe camera"""
     import subprocess
     from datetime import datetime
     import os
     from core.state import get_state, SystemMode
 
-    # Check if we're in MANUAL mode - camera is only free when detector is paused
     state = get_state()
     current_mode = state.get_mode()
-    if current_mode != SystemMode.MANUAL:
+
+    # Check if Xbox controller is active - if so, allow photo even if not in MANUAL mode
+    xbox_active = False
+    try:
+        result = subprocess.run(['pgrep', '-f', 'xbox_hybrid_controller'],
+                              capture_output=True, text=True, timeout=0.5)
+        xbox_active = (result.returncode == 0)
+        logger.info(f"📸 Xbox check: rc={result.returncode}, active={xbox_active}, pids={result.stdout.strip()}")
+    except Exception as e:
+        logger.error(f"📸 Xbox check failed: {e}")
+
+    # Allow photo if in MANUAL mode OR Xbox controller is active
+    if current_mode != SystemMode.MANUAL and not xbox_active:
         raise HTTPException(
             status_code=400,
-            detail=f"Photo capture only available in Manual mode (current: {current_mode.value})"
+            detail=f"Photo capture only available in Manual mode or with Xbox controller (current: {current_mode.value})"
         )
+
+    # If Xbox is active but not in MANUAL mode, force switch to MANUAL
+    if xbox_active and current_mode != SystemMode.MANUAL:
+        logger.info(f"Xbox controller active, switching from {current_mode.value} to MANUAL for photo")
+        state.set_mode(SystemMode.MANUAL, "photo_capture")
+
+        # Wait for detector to release camera (polls every 100ms, max 2 seconds)
+        import time
+        from services.perception.detector import get_detector_service
+        detector = get_detector_service()
+        for _ in range(20):  # 20 x 100ms = 2 seconds max
+            if detector._camera_paused or not detector.camera_initialized:
+                logger.info("📷 Camera released by detector, proceeding with photo")
+                break
+            time.sleep(0.1)
+        else:
+            logger.warning("⚠️ Camera may still be held by detector, attempting photo anyway")
 
     try:
         # Create captures directory if needed
@@ -1578,6 +1606,70 @@ async def capture_photo_imx500():
     except Exception as e:
         logger.error(f"Photo capture error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/camera/snapshot")
+async def capture_snapshot_from_stream():
+    """
+    Capture snapshot from AI detection stream (works in ANY mode)
+    Grabs the last frame from the detector - instant, no camera conflict
+    Resolution: 640x640 (detection resolution)
+    """
+    import cv2
+    from datetime import datetime
+    import os
+    from services.perception.detector import get_detector_service
+
+    try:
+        detector = get_detector_service()
+
+        # Get last frame from detector stream
+        frame = detector.get_last_frame()
+        frame_age = detector.get_last_frame_age()
+
+        if frame is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No frame available - detector may not be running"
+            )
+
+        if frame_age > 5.0:
+            logger.warning(f"Frame is {frame_age:.1f}s old - detector may be paused")
+
+        # Create captures directory if needed
+        os.makedirs("/home/morgan/dogbot/captures", exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"snapshot_{timestamp}.jpg"
+        filepath = f"/home/morgan/dogbot/captures/{filename}"
+
+        # Save the frame
+        # Frame is RGB from Picamera2, convert to BGR for cv2.imwrite
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(filepath, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+        file_size = os.path.getsize(filepath)
+        height, width = frame.shape[:2]
+
+        logger.info(f"📸 Snapshot captured: {filepath} ({width}x{height}, {file_size} bytes, age={frame_age:.2f}s)")
+
+        return {
+            "success": True,
+            "filename": filename,
+            "filepath": filepath,
+            "resolution": f"{width}x{height}",
+            "size_bytes": file_size,
+            "frame_age_seconds": round(frame_age, 2),
+            "method": "stream_snapshot",
+            "note": "Captured from AI detection stream"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Snapshot error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/camera/photo_opencv")
 async def capture_photo_opencv():

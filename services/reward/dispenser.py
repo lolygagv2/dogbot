@@ -2,6 +2,7 @@
 """
 Treat dispensing service
 Uses ServoController carousel servo to dispense treats
+This is for testing and development purposes
 """
 
 import threading
@@ -13,6 +14,7 @@ from core.bus import get_bus, publish_reward_event
 from core.state import get_state
 from core.store import get_store
 from core.hardware.servo_controller import ServoController
+from config.config_loader import get_config
 
 
 class DispenserService:
@@ -35,15 +37,16 @@ class DispenserService:
         self.treats_dispensed_today = 0
         self.last_dispense_time = 0.0
         self.min_dispense_interval = 0.0  # TESTING: removed cooldown - was 1.0 seconds between dispenses
-        self.daily_limit = 50  # max treats per day
+        self.daily_limit = 300  # max treats per day
 
         # Per-dog tracking
         self.dog_treat_counts = {}  # dog_id -> count
         self.dog_cooldowns = {}     # dog_id -> last_dispense_time
 
-        # Dispensing parameters (from working test scripts)
-        self.dispense_pulse = 1300  # microseconds - changed from 1700 for different rotation
-        self.dispense_duration = 0.12  # seconds - increased from 0.05 to ensure treat drops
+        # Dispensing parameters - loaded from robot-specific config
+        robot_config = get_config()
+        self.dispense_pulse = 1300  # NOT USED? microseconds - legacy value
+        self.dispense_duration = robot_config.dispenser.dispense_duration  # Robot-specific duration
 
         # Thread safety
         self._dispense_lock = threading.Lock()

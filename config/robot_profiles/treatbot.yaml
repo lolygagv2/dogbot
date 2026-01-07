@@ -1,0 +1,41 @@
+# TreatBot Primary Unit - Good Motors
+# Hardware: Matched 1.6Ω + 1.7Ω DC motors, well-calibrated servo
+
+robot_id: "treatbot"
+description: "Primary demo unit with matched motors"
+
+# Camera settings (detector.py)
+camera:
+  rotation: 90  # degrees clockwise (0, 90, 180, 270)
+
+# Dispenser settings (dispenser.py)
+dispenser:
+  dispense_duration: 0.12
+
+# Servo settings (servo_controller.py)
+servo:
+  slow_pulse: 1590        # rotate_winch 'slow' direction pulse value
+
+# Motor/Controller settings (xbox_hybrid_controller.py)
+controller:
+  max_speed: 72           # Capped speed percentage
+  turn_speed_factor: 0.8  # Multiplier for turn smoothness
+  max_rpm: 110            # Target RPM for PID control
+  use_pid_control: true   # Enable closed-loop encoder feedback
+  min_pwm_threshold: 0    # Minimum PWM to overcome motor deadzone (0 = no threshold)
+
+  # Per-motor calibration for hardware imbalance
+  motor_calibration:
+    left_multiplier: 1.0
+    right_multiplier: 1.0
+
+  # Xbox controller calibration
+  xbox:
+    joystick_deadzone: 0.1    # Ignore stick values below this
+    joystick_scale: 1.0       # Multiply stick output (if controller doesn't reach 1.0)
+
+  # PID tuning parameters
+  pid:
+    kp: 1.0                   # Proportional gain
+    ki: 0.0                   # Integral gain
+    kd: 0.0                   # Derivative gain
