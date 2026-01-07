@@ -1,5 +1,72 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-07 ~05:00-06:00
+**Goal:** Fix Xbox controller freeze/lock issues, camera photo system
+**Status:** ✅ Complete
+
+### Work Completed:
+
+#### 1. Motor Safety Fixes - ✅ FIXED
+- **Problem:** Controller freeze caused motors to keep running (dangerous!)
+- **Root Cause:** `set_motor_pwm_direct()` didn't update safety tracking variables
+- **Fix:** Added `motors_should_be_stopped` and `last_nonzero_command_time` tracking in open-loop mode
+- Motors now auto-stop after 1 second if controller freezes
+
+#### 2. Event Bus Rate Limiting - ✅ FIXED
+- **Problem:** Rapid button presses (LED toggle spam) could freeze controller
+- **Fix:** Made `notify_manual_input()` non-blocking with 100ms rate limit
+- Prevents thread spam on rapid button presses
+
+#### 3. Camera Photo System - ✅ IMPLEMENTED
+- **Problem:** RB button didn't take photos (camera busy, mode issues)
+- **Fix:**
+  - Detector now releases camera when entering MANUAL mode
+  - Detector re-acquires camera when leaving MANUAL mode
+  - Added `/camera/photo` endpoint for 4K photos (4056x3040)
+  - Added `/camera/snapshot` endpoint for quick captures from AI stream (640x640)
+  - Xbox RB button tries 4K first, falls back to snapshot
+
+#### 4. Per-Robot Camera Config - ✅ IMPLEMENTED
+- **Problem:** Different robots have cameras mounted at different orientations
+- **Fix:** Added `camera.rotation` config to robot profiles
+  - `treatbot.yaml`: 90° clockwise
+  - `treatbot2.yaml`: 0° (no rotation)
+- Created `config/config_loader.py` with `CameraConfig` class
+- Detector reads rotation from config
+
+### Files Modified:
+- `core/hardware/proper_pid_motor_controller.py` - Motor safety in open-loop mode
+- `xbox_hybrid_controller.py` - Non-blocking events, photo fallback logic
+- `api/server.py` - Camera photo/snapshot endpoints, Xbox detection
+- `services/perception/detector.py` - Camera release/reacquire, config rotation
+- `config/config_loader.py` (new) - CameraConfig class
+- `config/robot_profiles/treatbot.yaml` - Added camera.rotation: 90
+- `config/robot_profiles/treatbot2.yaml` - Added camera.rotation: 0
+
+### Files Archived:
+- `Archive/servo_control_module.py`
+- `Archive/treat_dispenser_robot.py`
+
+### Commits:
+- `b6112bd6` - feat: Motor safety, camera system, and per-robot config
+- `060c86f1` - Merge with remote (synced mode_fsm.py fix)
+
+### Photos Save To:
+- `/home/morgan/dogbot/captures/photo_*.jpg` (4K)
+- `/home/morgan/dogbot/captures/snapshot_*.jpg` (640x640)
+
+### Next Session:
+1. Test motor safety on original treatbot after git pull
+2. Verify camera rotation is correct on treatbot (90° should be right)
+3. Fine-tune PID parameters if encoder issues resolved
+
+### Important Notes/Warnings:
+- **treatbot sync required:** Run `git pull origin main && sudo systemctl restart treatbot`
+- **Camera rotation:** treatbot=90°, treatbot2=0° - verify after testing
+- **Motor safety:** 1-second stale command detection now active in open-loop mode
+
+---
+
 ## Session: 2026-01-06 ~17:00-18:45
 **Goal:** Fix motor calibration - binary on/off → gradual speed control
 **Status:** ✅ RESOLVED
