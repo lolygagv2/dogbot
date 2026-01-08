@@ -124,8 +124,9 @@ class CoachingEngine:
         trick_config = self.interpreter.trick_rules
         coaching_config = getattr(self.interpreter, 'coaching_config', {})
 
+        # Time dog must be visible before starting session (no stillness required)
         self.attention_duration = self.config.get('attention_duration',
-            coaching_config.get('attention_duration_sec', 2.5))
+            coaching_config.get('attention_duration_sec', 3.5))
         self.watch_duration = self.config.get('watch_duration', 10.0)  # Per-trick override below
         self.cooldown_duration = self.config.get('cooldown_duration',
             coaching_config.get('cooldown_duration_sec', 300.0))
@@ -151,8 +152,6 @@ class CoachingEngine:
         self.dog_history: Dict[str, DogHistory] = {}
         self.dogs_in_view: Dict[str, float] = {}  # dog_id -> first_seen_time
         self.dog_names_in_view: Dict[str, str] = {}  # dog_id -> dog_name (from ArUco)
-        self.last_dog_position: Dict[str, tuple] = {}  # dog_id -> (x, y)
-        self.dog_still_start: Dict[str, float] = {}  # dog_id -> stillness_start
 
         # Session statistics
         self.sessions_today = 0
@@ -184,8 +183,6 @@ class CoachingEngine:
             self.current_session = None
             self.dogs_in_view.clear()
             self.dog_names_in_view.clear()
-            self.last_dog_position.clear()
-            self.dog_still_start.clear()
             self.bark_count = 0
             self.bark_timestamps.clear()
             self.listening_for_barks = False
@@ -261,12 +258,6 @@ class CoachingEngine:
                 display_name = self.dog_names_in_view.get(dog_id, dog_id)
                 logger.info(f"🐕 Dog entered view for coaching: {display_name}")
 
-            # Track position for stillness detection
-            bbox = event.data.get('bbox', [])
-            if len(bbox) >= 4:
-                center = ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
-                self._update_dog_position(dog_id, center)
-
         elif event.subtype == 'behavior_detected':
             # Track detected behaviors for coaching response
             if self.fsm_state == CoachState.WATCHING and self.current_session:
@@ -284,33 +275,23 @@ class CoachingEngine:
             # Only count barks if we're actively listening (during 'speak' trick)
             if self.listening_for_barks and self.current_session:
                 if self.current_session.trick_requested == 'speak':
+                    # Require minimum confidence to count as real bark
+                    # Filters out random sounds that might trigger the energy-based detector
+                    confidence = event.data.get('confidence', 0.0) if event.data else 0.0
+                    min_speak_confidence = 0.50  # Require 50% confidence for speak trick
+
+                    if confidence < min_speak_confidence:
+                        logger.debug(f"🔇 Bark ignored for speak (conf={confidence:.2f} < {min_speak_confidence})")
+                        return
+
                     self.bark_count += 1
                     self.bark_timestamps.append(time.time())
-                    logger.info(f"🐕 Bark detected during speak trick! Count: {self.bark_count}")
+                    logger.info(f"🐕 Bark detected during speak trick! Count: {self.bark_count} (conf={confidence:.2f})")
 
                     # Check for too many barks (immediate fail)
                     if self.bark_count > self.SPEAK_MAX_BARKS:
                         logger.info(f"Too many barks ({self.bark_count}) - speak trick failed")
                         self.current_session.behavior_detected = 'too_many_barks'
-
-    def _update_dog_position(self, dog_id: str, position: tuple):
-        """Update dog position and track stillness"""
-        if dog_id in self.last_dog_position:
-            last_pos = self.last_dog_position[dog_id]
-            dx = abs(position[0] - last_pos[0])
-            dy = abs(position[1] - last_pos[1])
-            movement = (dx**2 + dy**2)**0.5
-
-            # Check if dog is still (less than 50 pixels movement)
-            if movement < 50:
-                if dog_id not in self.dog_still_start:
-                    self.dog_still_start[dog_id] = time.time()
-            else:
-                # Dog moved - reset stillness
-                if dog_id in self.dog_still_start:
-                    del self.dog_still_start[dog_id]
-
-        self.last_dog_position[dog_id] = position
 
     def _get_dog_name(self, dog_id: str) -> str:
         """Get friendly name for dog"""
@@ -402,10 +383,6 @@ class CoachingEngine:
             del self.dogs_in_view[dog_id]
             if dog_id in self.dog_names_in_view:
                 del self.dog_names_in_view[dog_id]
-            if dog_id in self.dog_still_start:
-                del self.dog_still_start[dog_id]
-            if dog_id in self.last_dog_position:
-                del self.last_dog_position[dog_id]
 
     def _process_state(self):
         """Process current FSM state"""
@@ -436,18 +413,16 @@ class CoachingEngine:
     def _state_waiting_for_dog(self):
         """Wait for a dog to be visible and eligible"""
         # Find an eligible dog in view
-        for dog_id in self.dogs_in_view.keys():
+        for dog_id, first_seen_time in self.dogs_in_view.items():
             if self._can_coach_dog(dog_id):
-                # Found eligible dog - check for stillness
-                if dog_id in self.dog_still_start:
-                    still_duration = time.time() - self.dog_still_start[dog_id]
-                    logger.info(f"🎯 Dog {dog_id} still for {still_duration:.1f}s (need {self.attention_duration}s)")
-                    if still_duration >= self.attention_duration:
-                        # Dog has been still long enough - start session
-                        self._start_session(dog_id)
-                        return
-                else:
-                    logger.debug(f"Dog {dog_id} eligible but not still yet")
+                # Found eligible dog - check how long it's been visible
+                time_in_view = time.time() - first_seen_time
+                logger.info(f"🎯 Dog {dog_id} in view for {time_in_view:.1f}s (need {self.attention_duration}s)")
+
+                if time_in_view >= self.attention_duration:
+                    # Dog has been visible long enough - start session
+                    self._start_session(dog_id)
+                    return
 
     def _start_session(self, dog_id: str):
         """Start a coaching session with a dog"""
@@ -479,9 +454,9 @@ class CoachingEngine:
 
         dog_id = self.current_session.dog_id
 
-        # Check dog is still visible and still
-        if dog_id not in self.dogs_in_view or dog_id not in self.dog_still_start:
-            logger.info("Dog left or moved during attention check")
+        # Check dog is still visible
+        if dog_id not in self.dogs_in_view:
+            logger.info("Dog left during attention check")
             self.fsm_state = CoachState.WAITING_FOR_DOG
             self.current_session = None
             return

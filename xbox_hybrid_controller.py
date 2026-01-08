@@ -322,6 +322,12 @@ class XboxHybridControllerFixed:
         self.last_mode_cycle_time = 0
         self.mode_cycle_cooldown = 1.0  # 1 second cooldown to prevent rapid cycling
 
+        # Trick cycling (Xbox Guide button) - for coach mode testing
+        self._trick_cycle_index = 0
+        self._available_tricks = ['sit', 'down', 'crosses', 'spin', 'speak']
+        self._last_trick_cycle_time = 0
+        self._trick_cycle_cooldown = 1.0  # 1 second cooldown
+
         # LED state tracking
         self.led_enabled = False
         self.current_led_mode = 0
@@ -1273,6 +1279,10 @@ class XboxHybridControllerFixed:
             if pressed:
                 self.handle_record_button()
 
+        elif number == 8:  # Xbox Guide button - Cycle tricks (coach mode only)
+            if pressed:
+                self.cycle_trick()
+
     # ============== AUDIO RECORDING ==============
     def handle_record_button(self):
         """
@@ -1445,6 +1455,37 @@ class XboxHybridControllerFixed:
             logger.info(f"✅ Mode changed to: {new_mode}")
         else:
             logger.warning(f"⚠️ Mode change may have failed: {result}")
+
+    def cycle_trick(self):
+        """Cycle through tricks and set forced trick (coach mode only)"""
+        current_time = time.time()
+
+        # Cooldown to prevent rapid cycling
+        if current_time - self._last_trick_cycle_time < self._trick_cycle_cooldown:
+            logger.debug("Trick cycle ignored (cooldown)")
+            return
+
+        self._last_trick_cycle_time = current_time
+
+        # Only works in coach mode
+        actual_mode = self._get_current_mode()
+        if actual_mode != 'coach':
+            logger.info(f"🎯 Guide button: Not in coach mode ({actual_mode}), ignoring")
+            return
+
+        # Cycle to next trick
+        self._trick_cycle_index = (self._trick_cycle_index + 1) % len(self._available_tricks)
+        trick = self._available_tricks[self._trick_cycle_index]
+
+        # Set forced trick via API (uses path parameter)
+        result = self.api_request_blocking('POST', f'/coaching/force_trick/{trick}', timeout=2)
+        if result and not result.get('error'):
+            logger.info(f"🎯 Trick set to: {trick}")
+        else:
+            logger.warning(f"⚠️ Failed to set trick: {result}")
+
+        # Play trick audio as feedback so user knows what's queued
+        self.api_request('POST', '/audio/play/file', {'filepath': f'/talks/{trick}.mp3'})
 
     def toggle_led(self):
         """Toggle blue LED with cooldown to prevent double-triggers"""

@@ -2854,6 +2854,13 @@ async def get_recording_status():
         if time_remaining == 0:
             _recording_state["has_pending"] = False
             has_pending = False
+            # Reset LED to normal when confirmation window expires
+            try:
+                leds = get_led_controller()
+                leds.set_mode('manual_rc')
+                logger.debug("Recording expired - LED reset to manual_rc")
+            except:
+                pass
 
     return {
         "has_pending": has_pending,

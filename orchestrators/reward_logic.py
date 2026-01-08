@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from core.bus import get_bus, publish_reward_event
 from core.state import get_state
 from core.store import get_store
+from core.behavior_interpreter import get_behavior_interpreter
 from orchestrators.sequence_engine import get_sequence_engine
 
 
@@ -52,6 +53,7 @@ class RewardLogic:
         self.state = get_state()
         self.store = get_store()
         self.sequence_engine = get_sequence_engine()
+        self.interpreter = get_behavior_interpreter()
         self.logger = logging.getLogger('RewardLogic')
 
         # Default policies - require_quiet now mission-context aware
@@ -432,11 +434,12 @@ class RewardLogic:
 
         policy = self.policies[behavior]
 
-        # Check confidence threshold
-        if confidence < 0.7:
+        # Check confidence threshold from BehaviorInterpreter (trick_rules.yaml)
+        required_confidence = self.interpreter.confidence_thresholds.get(behavior, 0.7)
+        if confidence < required_confidence:
             return RewardDecision(
                 should_dispense=False,
-                reason=f"Confidence too low: {confidence:.2f} < 0.7",
+                reason=f"Confidence too low: {confidence:.2f} < {required_confidence}",
                 dog_id=dog_id,
                 behavior=behavior,
                 confidence=confidence
@@ -604,9 +607,10 @@ class RewardLogic:
 
         policy = self.policies[behavior]
 
-        # Check confidence threshold
-        if confidence < 0.7:  # Consumer-friendly threshold
-            self.logger.info(f"Confidence too low for {behavior}: {confidence}")
+        # Check confidence threshold from BehaviorInterpreter (trick_rules.yaml)
+        required_confidence = self.interpreter.confidence_thresholds.get(behavior, 0.7)
+        if confidence < required_confidence:
+            self.logger.info(f"Confidence too low for {behavior}: {confidence:.2f} < {required_confidence}")
             return False
 
         # Check cooldown

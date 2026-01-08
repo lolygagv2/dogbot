@@ -46,10 +46,11 @@ class SafetyThresholds:
     battery_normal: float = 12.5       # Normal operation
 
     # Temperature thresholds (Celsius)
+    # Pi 5 + Hailo-8 HAT runs warm (65-75°C is normal under AI load)
     temp_emergency: float = 85.0       # Immediate shutdown
     temp_critical: float = 82.0        # Stop motors/AI (raised for Hailo)
-    temp_warning: float = 70.0         # Reduce performance
-    temp_normal: float = 55.0          # Normal operation
+    temp_warning: float = 76.0         # Reduce performance (raised for Hailo)
+    temp_normal: float = 60.0          # Normal operation
 
     # CPU usage thresholds (%)
     cpu_critical: float = 95.0         # Stop non-essential processes
@@ -109,7 +110,9 @@ class SafetyMonitor:
 
         # Audio alert tracking
         self.error_audio_path = '/home/morgan/dogbot/VOICEMP3/wimz/Wimz_errorlogs.mp3'
+        self.hot_audio_path = '/home/morgan/dogbot/VOICEMP3/wimz/Wimz_hot.mp3'
         self.last_audio_alert = 0.0
+        self.last_temp_audio = 0.0  # Separate tracking for temp alerts
         self.audio_cooldown = 60.0  # seconds between audio alerts
 
     def start_monitoring(self, interval: float = 5.0) -> None:
@@ -238,12 +241,19 @@ class SafetyMonitor:
         elif temp >= self.thresholds.temp_critical:
             self._trigger_alert(SafetyLevel.CRITICAL, 'temp_critical',
                               f"Temperature critical: {temp:.1f}°C", {'temperature': temp})
+            self._play_hot_audio()  # Play hot audio for critical temp
         elif temp >= self.thresholds.temp_warning:
             self._trigger_alert(SafetyLevel.WARNING, 'temp_warning',
                               f"Temperature high: {temp:.1f}°C", {'temperature': temp})
+            self._play_hot_audio()  # Play hot audio for warning temp
 
     def _check_cpu_usage(self, cpu_pct: float) -> None:
         """Check CPU usage"""
+        # Startup grace period - CPU spikes to 100% when loading AI models/Hailo
+        # Don't alert during first 30 seconds
+        if time.time() - self.start_time < 30.0:
+            return
+
         if cpu_pct >= self.thresholds.cpu_critical:
             self._trigger_alert(SafetyLevel.CRITICAL, 'cpu_critical',
                               f"CPU usage critical: {cpu_pct:.1f}%", {'cpu_usage': cpu_pct})
@@ -302,8 +312,9 @@ class SafetyMonitor:
 
         self.logger.warning(f"SAFETY ALERT [{level.value.upper()}]: {message}")
 
-        # Play error audio for WARNING/CRITICAL alerts (with cooldown)
-        if level in [SafetyLevel.WARNING, SafetyLevel.CRITICAL]:
+        # Play error audio only for CRITICAL alerts (with cooldown)
+        # Warnings are logged but silent - don't annoy user with frequent alerts
+        if level == SafetyLevel.CRITICAL:
             if now - self.last_audio_alert >= self.audio_cooldown:
                 self._play_error_audio()
                 self.last_audio_alert = now
@@ -351,6 +362,21 @@ class SafetyMonitor:
                 self.logger.info("Played error audio alert")
         except Exception as e:
             self.logger.debug(f"Could not play error audio: {e}")
+
+    def _play_hot_audio(self) -> None:
+        """Play hot temperature audio alert (with cooldown)"""
+        now = time.time()
+        if now - self.last_temp_audio < self.audio_cooldown:
+            return  # Cooldown not elapsed
+
+        try:
+            audio = _get_audio_service()
+            if audio and audio.is_initialized:
+                audio.play_file(self.hot_audio_path)
+                self.last_temp_audio = now
+                self.logger.info("Played hot temperature audio alert")
+        except Exception as e:
+            self.logger.debug(f"Could not play hot audio: {e}")
 
     def _handle_critical_alert(self, alert_type: str, data: Dict[str, Any]) -> None:
         """Handle critical safety alerts"""

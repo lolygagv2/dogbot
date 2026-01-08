@@ -170,9 +170,10 @@ class BatteryMonitorService:
         v1, v2, v3 = self.voltage_history
         voltage_increase = v3 - v1
 
-        # Detect charging: voltage increased by 0.3V+ over last 3 readings (~15 seconds)
+        # Detect charging: voltage increased by 0.05V+ over last 3 readings (~15 seconds)
+        # Even small voltage increases indicate charger is connected
         now = time.time()
-        if voltage_increase >= 0.3 and not self.charging_detected:
+        if voltage_increase >= 0.05 and not self.charging_detected:
             self.charging_detected = True
 
             # Play charging audio if cooldown elapsed

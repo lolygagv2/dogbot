@@ -25,7 +25,7 @@ detection:
   preferred_backend: "hailo"
   fallback_backend: "opencv_yolo"
 
-  confidence_threshold: 0.7
+  confidence_threshold: 0.5  # Lowered from 0.7 - dogs in clear view should be detected
   nms_threshold: 0.4
 
   # Classes to detect (COCO format)
