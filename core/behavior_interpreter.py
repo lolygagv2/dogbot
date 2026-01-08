@@ -54,11 +54,7 @@ class BehaviorInterpreter:
         self._behavior_start_time: float = 0.0
         self._last_update_time: float = 0.0
 
-        # Load config
-        self.config_path = config_path or '/home/morgan/dogbot/configs/trick_rules.yaml'
-        self.trick_rules = self._load_trick_rules()
-
-        # Default confidence thresholds (can be overridden by config)
+        # Default confidence thresholds (MUST be defined before _load_trick_rules)
         self.confidence_thresholds = {
             'stand': 0.70,
             'sit': 0.65,
@@ -66,6 +62,10 @@ class BehaviorInterpreter:
             'cross': 0.60,
             'spin': 0.70,
         }
+
+        # Load config (may override confidence_thresholds above)
+        self.config_path = config_path or '/home/morgan/dogbot/configs/trick_rules.yaml'
+        self.trick_rules = self._load_trick_rules()
 
         # Subscribe to behavior events
         self._setup_event_subscription()
@@ -103,11 +103,12 @@ class BehaviorInterpreter:
         self.rewards_config = {}
 
         return {
-            'sit': {'required_behavior': 'sit', 'hold_duration_sec': 1.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.65},
-            'down': {'required_behavior': 'lie', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': ['cross'], 'confidence_threshold': 0.65},
-            'crosses': {'required_behavior': 'cross', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.60},
-            'spin': {'required_behavior': 'spin', 'hold_duration_sec': 0.3, 'detection_window_sec': 15, 'alternative_behaviors': [], 'confidence_threshold': 0.70},
-            'stand': {'required_behavior': 'stand', 'hold_duration_sec': 2.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70},
+            'sit': {'required_behavior': 'sit', 'hold_duration_sec': 1.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.65, 'audio_command': 'sit.mp3'},
+            'down': {'required_behavior': 'lie', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': ['cross'], 'confidence_threshold': 0.65, 'audio_command': 'lie_down.mp3'},
+            'crosses': {'required_behavior': 'cross', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.60, 'audio_command': 'crosses.mp3'},
+            'spin': {'required_behavior': 'spin', 'hold_duration_sec': 0.3, 'detection_window_sec': 15, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'spin.mp3'},
+            'stand': {'required_behavior': 'stand', 'hold_duration_sec': 2.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'stand.mp3'},
+            'speak': {'required_behavior': 'bark', 'hold_duration_sec': 0, 'detection_window_sec': 5, 'alternative_behaviors': [], 'confidence_threshold': 0.60, 'audio_command': 'speak.mp3', 'min_barks': 1, 'max_barks': 2},
         }
 
     def _setup_event_subscription(self):

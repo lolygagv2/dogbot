@@ -15,6 +15,18 @@ from enum import Enum
 from .bus import get_bus, publish_safety_event
 from .state import get_state, SystemMode
 
+# Audio service for error alerts (lazy import to avoid circular deps)
+_audio_service = None
+def _get_audio_service():
+    global _audio_service
+    if _audio_service is None:
+        try:
+            from services.media.usb_audio import get_usb_audio_service
+            _audio_service = get_usb_audio_service()
+        except Exception:
+            pass
+    return _audio_service
+
 
 class SafetyLevel(Enum):
     """Safety alert levels"""
@@ -94,6 +106,11 @@ class SafetyMonitor:
         # Alert suppression (prevent spam)
         self.last_alerts = {}
         self.alert_cooldown = 60.0  # seconds
+
+        # Audio alert tracking
+        self.error_audio_path = '/home/morgan/dogbot/VOICEMP3/wimz/Wimz_errorlogs.mp3'
+        self.last_audio_alert = 0.0
+        self.audio_cooldown = 60.0  # seconds between audio alerts
 
     def start_monitoring(self, interval: float = 5.0) -> None:
         """Start safety monitoring"""
@@ -285,6 +302,12 @@ class SafetyMonitor:
 
         self.logger.warning(f"SAFETY ALERT [{level.value.upper()}]: {message}")
 
+        # Play error audio for WARNING/CRITICAL alerts (with cooldown)
+        if level in [SafetyLevel.WARNING, SafetyLevel.CRITICAL]:
+            if now - self.last_audio_alert >= self.audio_cooldown:
+                self._play_error_audio()
+                self.last_audio_alert = now
+
         # Publish safety event
         self._publish_safety_event('alert', {
             'level': level.value,
@@ -318,6 +341,16 @@ class SafetyMonitor:
                 threading.Thread(target=callback, args=(reason, data), daemon=True).start()
             except Exception as e:
                 self.logger.error(f"Emergency callback failed: {e}")
+
+    def _play_error_audio(self) -> None:
+        """Play error audio alert"""
+        try:
+            audio = _get_audio_service()
+            if audio and audio.is_initialized:
+                audio.play_file(self.error_audio_path)
+                self.logger.info("Played error audio alert")
+        except Exception as e:
+            self.logger.debug(f"Could not play error audio: {e}")
 
     def _handle_critical_alert(self, alert_type: str, data: Dict[str, Any]) -> None:
         """Handle critical safety alerts"""

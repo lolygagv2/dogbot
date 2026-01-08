@@ -88,7 +88,7 @@ class TreatBotMain:
             'mission': '/home/morgan/dogbot/VOICEMP3/wimz/MissionMode.mp3',
         }
         self.startup_audio = '/home/morgan/dogbot/VOICEMP3/wimz/WimZOnline.mp3'
-        self.low_battery_audio = '/home/morgan/dogbot/VOICEMP3/wimz/BatteryLow.mp3'
+        self.low_battery_audio = '/home/morgan/dogbot/VOICEMP3/wimz/Wimz_lowpower.mp3'
         self.low_battery_announced = False  # Prevent repeat announcements
 
         # Orchestrators

@@ -21,6 +21,7 @@ except ImportError:
 
 from core.bus import get_bus, publish_system_event
 from core.state import get_state
+from services.media.usb_audio import get_usb_audio_service
 
 
 class BatteryMonitorService:
@@ -68,6 +69,13 @@ class BatteryMonitorService:
         # Warning state
         self.low_warning_sent = False
         self.critical_warning_sent = False
+
+        # Charging detection
+        self.voltage_history = []  # Last 3 readings for trend detection
+        self.charging_detected = False
+        self.charging_audio_path = '/home/morgan/dogbot/VOICEMP3/wimz/Wimz_charging.mp3'
+        self.last_charging_announce = 0.0
+        self.charging_announce_cooldown = 300.0  # 5 minutes cooldown
 
     def initialize(self) -> bool:
         """Initialize ADS1115 ADC for battery monitoring"""
@@ -147,6 +155,53 @@ class BatteryMonitorService:
             self.low_warning_sent = False
             self.critical_warning_sent = False
 
+    def _check_charging(self) -> None:
+        """Check if charging started (voltage increasing)"""
+        # Track voltage history
+        self.voltage_history.append(self.voltage)
+        if len(self.voltage_history) > 3:
+            self.voltage_history.pop(0)
+
+        # Need at least 3 readings to detect trend
+        if len(self.voltage_history) < 3:
+            return
+
+        # Check if voltage is consistently increasing (charging)
+        v1, v2, v3 = self.voltage_history
+        voltage_increase = v3 - v1
+
+        # Detect charging: voltage increased by 0.3V+ over last 3 readings (~15 seconds)
+        now = time.time()
+        if voltage_increase >= 0.3 and not self.charging_detected:
+            self.charging_detected = True
+
+            # Play charging audio if cooldown elapsed
+            if now - self.last_charging_announce >= self.charging_announce_cooldown:
+                self.logger.info(f"Charging detected: voltage rose {voltage_increase:.2f}V")
+                self._play_charging_audio()
+                self.last_charging_announce = now
+
+                publish_system_event('battery_charging', {
+                    'voltage': self.voltage,
+                    'percentage': self.percentage,
+                    'voltage_increase': voltage_increase
+                }, 'battery_monitor')
+
+        # Reset charging flag if voltage drops (charger disconnected)
+        elif voltage_increase < 0 and self.charging_detected:
+            self.charging_detected = False
+            self.logger.info("Charging stopped: voltage decreasing")
+
+    def _play_charging_audio(self) -> None:
+        """Play charging started audio"""
+        try:
+            audio = get_usb_audio_service()
+            if audio and audio.is_initialized:
+                audio.play_file(self.charging_audio_path)
+                self.logger.info("Played charging audio")
+        except Exception as e:
+            self.logger.debug(f"Could not play charging audio: {e}")
+
     def _monitor_loop(self) -> None:
         """Background monitoring loop"""
         self.logger.info("Battery monitoring started")
@@ -155,6 +210,7 @@ class BatteryMonitorService:
             try:
                 self._read_voltage()
                 self._check_warnings()
+                self._check_charging()
 
                 # Log periodically
                 if int(time.time()) % 60 == 0:  # Every minute
@@ -221,6 +277,7 @@ class BatteryMonitorService:
             'voltage': round(self.voltage, 2),
             'percentage': self.percentage,
             'status': status,
+            'charging': self.charging_detected,
             'adc_voltage': round(self.adc_voltage, 3),
             'initialized': self.initialized,
             'monitoring': self.running,

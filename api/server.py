@@ -2668,10 +2668,10 @@ async def start_audio_recording():
         except Exception as e:
             logger.warning(f"Could not set fire LED mode: {e}")
 
-        # Step 3: Play start beep and wait for it to finish
-        logger.info("🔔 Playing start beep...")
-        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/songs/door_scan.mp3")
-        time.sleep(1.0)  # Wait for beep to finish completely
+        # Step 3: Play recording start sound and wait for it to finish
+        logger.info("🎙️ Playing recording start sound...")
+        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/wimz/Wimz_recording.mp3")
+        time.sleep(1.5)  # Wait for sound to finish completely
 
         # Step 4: Record 2 seconds of audio
         wav_path = _recording_state["temp_wav"]
@@ -2798,9 +2798,9 @@ async def confirm_audio_recording():
         # Clear pending state
         _recording_state["has_pending"] = False
 
-        # Play "good dog" to confirm save
+        # Play save confirmation sound
         usb_audio_service = get_usb_audio_service()
-        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/talks/good_dog.mp3")
+        usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/wimz/Wimz_saved.mp3")
 
         # Set LED back to manual_rc
         try:

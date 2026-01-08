@@ -18,6 +18,7 @@ from core.state import get_state, SystemMode
 from core.store import get_store
 from orchestrators.sequence_engine import get_sequence_engine
 from orchestrators.reward_logic import get_reward_logic
+from services.media.usb_audio import get_usb_audio_service
 
 
 class MissionState(Enum):
@@ -457,6 +458,16 @@ class MissionEngine:
             "reason": reason,
             "rewards_given": session.rewards_given
         })
+
+        # Play mission complete audio on success
+        if success:
+            try:
+                audio = get_usb_audio_service()
+                if audio and audio.is_initialized:
+                    audio.play_file("/home/morgan/dogbot/VOICEMP3/wimz/Wimz_missioncomplete.mp3")
+                    self.logger.info("Played mission complete audio")
+            except Exception as e:
+                self.logger.debug(f"Could not play mission complete audio: {e}")
 
     def _check_daily_limits(self, dog_id: str = None) -> bool:
         """Check if daily reward limits are reached"""
