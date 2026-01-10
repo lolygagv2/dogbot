@@ -309,18 +309,12 @@ class CoachingEngine:
             # Only count barks if we're actively listening (during 'speak' trick)
             if self.listening_for_barks and self.current_session:
                 if self.current_session.trick_requested == 'speak':
-                    # Require minimum confidence to count as real bark
-                    # Filters out random sounds that might trigger the energy-based detector
-                    confidence = event.data.get('confidence', 0.0) if event.data else 0.0
-                    min_speak_confidence = 0.50  # Require 50% confidence for speak trick
-
-                    if confidence < min_speak_confidence:
-                        logger.debug(f"🔇 Bark ignored for speak (conf={confidence:.2f} < {min_speak_confidence})")
-                        return
-
+                    # Bark gate already validated this is a real bark (energy-based detection)
+                    # The confidence here is emotion classification, not bark detection
+                    # So we count any bark the gate detected
                     self.bark_count += 1
                     self.bark_timestamps.append(time.time())
-                    logger.info(f"🐕 Bark detected during speak trick! Count: {self.bark_count} (conf={confidence:.2f})")
+                    logger.info(f"🐕 Bark detected during speak trick! Count: {self.bark_count}")
 
                     # Check for too many barks (immediate fail)
                     if self.bark_count > self.SPEAK_MAX_BARKS:
@@ -937,9 +931,20 @@ class CoachingEngine:
         """Reset global session cooldown - allows immediate new session.
         Called by Guide button to manually trigger coaching sessions."""
         self._last_session_end = 0.0
-        self.dogs_in_view.clear()  # Also clear to force fresh detection
-        logger.info("🔄 Session cooldown reset - ready for new session")
-        return {'reset': True, 'message': 'Session cooldown reset, ready for new trick'}
+
+        # DON'T clear dogs_in_view - that throws away valid tracking data!
+        # Instead, fast-track any visible dogs to be immediately eligible
+        now = time.time()
+        for dog_id, info in self.dogs_in_view.items():
+            # Set first_seen to 4 seconds ago so detection_time_sec (3s) is already met
+            info['first_seen'] = now - 4.0
+            # Boost presence ratio to meet threshold
+            info['frames_seen'] = max(info['frames_seen'], 10)
+            info['frames_total'] = max(info['frames_total'], 10)
+
+        dogs_count = len(self.dogs_in_view)
+        logger.info(f"🔄 Session cooldown reset - {dogs_count} dogs fast-tracked for immediate session")
+        return {'reset': True, 'dogs_ready': dogs_count, 'message': 'Session cooldown reset'}
 
     def set_forced_trick(self, trick: str = None) -> Dict[str, Any]:
         """Force a specific trick for testing (None to clear)"""
