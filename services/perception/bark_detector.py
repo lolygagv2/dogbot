@@ -14,6 +14,7 @@ import logging
 import numpy as np
 from typing import Dict, Optional, Any
 from datetime import datetime, timedelta
+from scipy.signal import butter, sosfilt
 
 # Core components
 from core.bus import get_bus, AudioEvent, RewardEvent, VisionEvent, publish_audio_event, publish_reward_event
@@ -100,6 +101,32 @@ class BarkDetectorService:
         }
 
         logger.info(f"BarkDetectorService initialized (enabled={self.enabled})")
+
+    def _bandpass_filter(self, audio: np.ndarray, sample_rate: int = 44100,
+                         low_freq: float = 400, high_freq: float = 4000) -> np.ndarray:
+        """
+        Filter audio to dog bark frequency range (400-4000Hz).
+
+        This filters out:
+        - Low frequency sounds (< 400Hz): HVAC, traffic rumble, footsteps
+        - High frequency sounds (> 4000Hz): Electronic noise, some speech sibilants
+
+        Dogs bark primarily in 400-4000Hz range.
+
+        Args:
+            audio: Audio samples as numpy array
+            sample_rate: Sample rate of audio (default 44100Hz)
+            low_freq: Low cutoff frequency (default 400Hz)
+            high_freq: High cutoff frequency (default 4000Hz)
+
+        Returns:
+            Filtered audio samples
+        """
+        nyquist = sample_rate / 2
+        low = low_freq / nyquist
+        high = min(high_freq / nyquist, 0.99)  # Can't exceed Nyquist
+        sos = butter(4, [low, high], btype='band', output='sos')
+        return sosfilt(sos, audio)
 
     def initialize(self) -> bool:
         """
@@ -261,8 +288,12 @@ class BarkDetectorService:
                 if audio_chunk is not None:
                     detection_count += 1
 
-                    # Calculate audio energy (RMS)
-                    audio_energy = np.sqrt(np.mean(audio_chunk**2))
+                    # Filter to dog bark frequency range (400-4000Hz) before energy calculation
+                    # This filters out non-bark sounds like HVAC, footsteps, electronic noise
+                    filtered_audio = self._bandpass_filter(audio_chunk, sample_rate=44100)
+
+                    # Calculate audio energy (RMS) on filtered audio
+                    audio_energy = np.sqrt(np.mean(filtered_audio**2))
 
                     # Log energy periodically for debugging
                     if detection_count % 30 == 0:

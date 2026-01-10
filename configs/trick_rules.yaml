@@ -25,7 +25,7 @@ tricks:
     hold_duration_sec: 1.5
     detection_window_sec: 10
     alternative_behaviors: ["cross"]  # Accept crossed paws as "down"
-    confidence_threshold: 0.65
+    confidence_threshold: 0.75        # Raised from 0.65 - sitting was triggering false positives
     difficulty: 2
     audio_command: "lie_down.mp3"
 
@@ -47,7 +47,7 @@ tricks:
     hold_duration_sec: 1.5
     detection_window_sec: 10
     alternative_behaviors: []     # Must be specifically crossed paws
-    confidence_threshold: 0.60    # Lower - hard to detect on fluffy dogs
+    confidence_threshold: 0.75    # Raised from 0.60 - sitting was triggering false positives
     difficulty: 3
     audio_command: "crosses.mp3"
 
@@ -91,11 +91,11 @@ rewards:
 
 detection:
   # Per-behavior confidence thresholds
-  # Lower thresholds help with fluffy dogs where pose is harder to detect
+  # Higher thresholds for cross/lie to prevent sitting from triggering false positives
   confidence_overrides:
     sit: 0.65
-    lie: 0.65
-    cross: 0.60
+    lie: 0.75     # Raised from 0.65 - sitting was triggering false positives
+    cross: 0.75   # Raised from 0.60 - sitting was triggering false positives
     stand: 0.70
     spin: 0.70
 

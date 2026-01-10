@@ -175,6 +175,7 @@ class CoachingEngine:
         self.bark_count = 0
         self.bark_timestamps: List[float] = []
         self.listening_for_barks = False
+        self._listening_started_at: float = 0.0  # When bark listening started (for stale event filtering)
 
         # Global session cooldown - only one automatic session per 3 minutes
         # Guide button can reset this to allow manual triggering
@@ -309,6 +310,14 @@ class CoachingEngine:
             # Only count barks if we're actively listening (during 'speak' trick)
             if self.listening_for_barks and self.current_session:
                 if self.current_session.trick_requested == 'speak':
+                    # CRITICAL: Reject stale bark events from before listening started
+                    # This prevents race conditions where threaded callbacks from old events
+                    # (e.g., audio artifacts during command playback) execute after we start listening
+                    if event.timestamp < self._listening_started_at:
+                        logger.debug(f"Ignoring stale bark event from {event.timestamp:.3f} "
+                                    f"(listening started {self._listening_started_at:.3f})")
+                        return
+
                     # Bark gate already validated this is a real bark (energy-based detection)
                     # The confidence here is emotion classification, not bark detection
                     # So we count any bark the gate detected
@@ -461,19 +470,33 @@ class CoachingEngine:
             # Still in cooldown - don't start new sessions automatically
             return
 
-        # Find an eligible dog in view
+        # Collect all eligible dogs that meet presence requirements
+        eligible_dogs = []
         for dog_id, info in self.dogs_in_view.items():
             if self._can_coach_dog(dog_id):
                 time_elapsed = now - info['first_seen']
                 presence_ratio = info['frames_seen'] / max(info['frames_total'], 1)
 
-                logger.info(f"🎯 Dog {dog_id} in view for {time_elapsed:.1f}s ({presence_ratio*100:.0f}% presence)")
-
                 # 3 seconds elapsed AND minimum presence ratio
                 if time_elapsed >= self.detection_time_sec and presence_ratio >= self.presence_ratio_min:
-                    # Dog has been visible long enough with good presence - start session
-                    self._start_session(dog_id)
-                    return
+                    has_aruco_name = info.get('name') is not None
+                    eligible_dogs.append((dog_id, info, has_aruco_name, time_elapsed, presence_ratio))
+
+        if not eligible_dogs:
+            return
+
+        # Sort to prefer ArUco-identified dogs (those with name field set)
+        # ArUco dogs (has_aruco_name=True) sort before generic dogs (has_aruco_name=False)
+        eligible_dogs.sort(key=lambda x: (not x[2], -x[3]))  # ArUco first, then longest visible
+
+        # Select the best candidate
+        dog_id, info, has_aruco_name, time_elapsed, presence_ratio = eligible_dogs[0]
+        display_name = info.get('name') or dog_id
+        logger.info(f"🎯 Selected {display_name} for coaching "
+                   f"({time_elapsed:.1f}s, {presence_ratio*100:.0f}% presence, "
+                   f"ArUco: {has_aruco_name})")
+
+        self._start_session(dog_id)
 
     def _start_session(self, dog_id: str):
         """Start a coaching session with a dog"""
@@ -542,12 +565,21 @@ class CoachingEngine:
         audio_file = trick_rules.get('audio_command', f'{trick}.mp3')
         self._play_audio(audio_file, wait=True, timeout=5.0)
 
+        # CRITICAL: Reset behavior tracking AFTER audio finishes
+        # If we reset before audio, the dog's pose gets tracked during the 3s audio playback
+        # and by the time we enter WATCHING, hold time has already accumulated
+        self.interpreter.reset_tracking()
+
         # Start listening for barks if speak trick
         if trick == 'speak':
+            # Wait briefly to let any audio playback residue die down
+            # Otherwise the speaker audio gets picked up by bark detector
+            time.sleep(0.3)
             self.bark_count = 0
             self.bark_timestamps = []
+            self._listening_started_at = time.time()  # Record BEFORE enabling (for stale event filtering)
             self.listening_for_barks = True
-            logger.info("Listening for barks (speak trick)...")
+            logger.info(f"Listening for barks (speak trick) from {self._listening_started_at:.3f}...")
 
         self.current_session.command_time = time.time()
         self.fsm_state = CoachState.WATCHING
@@ -695,12 +727,18 @@ class CoachingEngine:
         audio_file = trick_rules.get('audio_command', f'{trick}.mp3')
         self._play_audio(audio_file, wait=True, timeout=5.0)
 
+        # Reset behavior tracking AFTER audio finishes
+        self.interpreter.reset_tracking()
+
         # Reset bark tracking for speak trick retry
         if trick == 'speak':
+            # Wait briefly to let any audio playback residue die down
+            time.sleep(0.3)
             self.bark_count = 0
             self.bark_timestamps = []
+            self._listening_started_at = time.time()  # Record BEFORE enabling (for stale event filtering)
             self.listening_for_barks = True
-            logger.info("Listening for barks (speak trick retry)...")
+            logger.info(f"Listening for barks (speak trick retry) from {self._listening_started_at:.3f}...")
 
         self.current_session.command_time = time.time()
         self.fsm_state = CoachState.RETRY_WATCHING
@@ -938,9 +976,12 @@ class CoachingEngine:
         for dog_id, info in self.dogs_in_view.items():
             # Set first_seen to 4 seconds ago so detection_time_sec (3s) is already met
             info['first_seen'] = now - 4.0
-            # Boost presence ratio to meet threshold
-            info['frames_seen'] = max(info['frames_seen'], 10)
-            info['frames_total'] = max(info['frames_total'], 10)
+            # Update last_seen to NOW so dog isn't immediately cleaned up as stale
+            info['last_seen'] = now
+            # RESET (not max!) presence counters to guarantee 100% ratio
+            # This survives a few loop iterations without detections
+            info['frames_seen'] = 10
+            info['frames_total'] = 10
 
         dogs_count = len(self.dogs_in_view)
         logger.info(f"🔄 Session cooldown reset - {dogs_count} dogs fast-tracked for immediate session")

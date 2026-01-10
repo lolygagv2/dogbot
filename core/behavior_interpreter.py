@@ -53,13 +53,15 @@ class BehaviorInterpreter:
         self._last_confidence: float = 0.0
         self._behavior_start_time: float = 0.0
         self._last_update_time: float = 0.0
+        self._reset_timestamp: float = 0.0  # Track when reset was called (for stale event filtering)
 
         # Default confidence thresholds (MUST be defined before _load_trick_rules)
+        # Note: lie/cross raised to 0.75 to prevent sitting from triggering false positives
         self.confidence_thresholds = {
             'stand': 0.70,
             'sit': 0.65,
-            'lie': 0.65,
-            'cross': 0.60,
+            'lie': 0.75,    # Raised from 0.65 - sitting was triggering false positives
+            'cross': 0.75,  # Raised from 0.60 - sitting was triggering false positives
             'spin': 0.70,
         }
 
@@ -127,12 +129,26 @@ class BehaviorInterpreter:
             confidence = event.data.get('confidence', 0.0)
 
             if behavior:
-                self._update_detection(behavior, confidence)
+                # Pass event timestamp to filter out stale threaded callbacks
+                self._update_detection(behavior, confidence, event.timestamp)
 
-    def _update_detection(self, behavior: str, confidence: float):
-        """Update current detection state"""
+    def _update_detection(self, behavior: str, confidence: float, event_timestamp: float = None):
+        """Update current detection state
+
+        Args:
+            behavior: Detected behavior name
+            confidence: Detection confidence
+            event_timestamp: When the event was published (for stale event filtering)
+        """
         with self._lock:
             now = time.time()
+
+            # CRITICAL: Reject stale events from before the last reset
+            # This prevents race conditions where threaded callbacks from old events
+            # execute after reset_tracking() was called
+            if event_timestamp is not None and event_timestamp < self._reset_timestamp:
+                return  # Ignore stale event - it was published before reset
+
             threshold = self.confidence_thresholds.get(behavior, 0.7)
 
             if confidence >= threshold:
@@ -146,6 +162,22 @@ class BehaviorInterpreter:
                     self._last_confidence = max(self._last_confidence, confidence)
 
                 self._last_update_time = now
+
+    def reset_tracking(self):
+        """
+        Reset behavior tracking state.
+
+        Call this when starting a new coaching session to prevent false
+        positives from accumulated hold time before the session started.
+        Also records timestamp to filter out stale threaded events.
+        """
+        with self._lock:
+            self._last_behavior = None
+            self._behavior_start_time = 0.0
+            self._last_confidence = 0.0
+            self._last_update_time = 0.0
+            self._reset_timestamp = time.time()  # Events before this are stale
+            logger.debug(f"BehaviorInterpreter tracking reset at {self._reset_timestamp:.3f}")
 
     def check_trick(self, trick_name: str, dog_id: str = None) -> TrickCheckResult:
         """
