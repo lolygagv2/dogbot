@@ -49,6 +49,11 @@ class CoachState(Enum):
     WATCHING = "watching"
     SUCCESS = "success"
     FAILURE = "failure"
+    # Retry states - give dog second chance on first failure
+    RETRY_GREETING = "retry_greeting"
+    RETRY_COMMAND = "retry_command"
+    RETRY_WATCHING = "retry_watching"
+    FINAL_FAILURE = "final_failure"
     COOLDOWN = "cooldown"
 
 
@@ -62,6 +67,7 @@ class DogSession:
     command_time: Optional[float] = None
     behavior_detected: Optional[str] = None
     success: bool = False
+    attempt: int = 1  # Track attempt number (1 or 2)
 
 
 @dataclass
@@ -128,8 +134,7 @@ class CoachingEngine:
         self.attention_duration = self.config.get('attention_duration',
             coaching_config.get('attention_duration_sec', 3.5))
         self.watch_duration = self.config.get('watch_duration', 10.0)  # Per-trick override below
-        self.cooldown_duration = self.config.get('cooldown_duration',
-            coaching_config.get('cooldown_duration_sec', 300.0))
+        # Note: Per-dog cooldown removed - only global session cooldown (3 min) applies now
 
         # Dog identification mapping
         self.dog_names = {
@@ -150,8 +155,14 @@ class CoachingEngine:
 
         # Dog tracking
         self.dog_history: Dict[str, DogHistory] = {}
-        self.dogs_in_view: Dict[str, float] = {}  # dog_id -> first_seen_time
-        self.dog_names_in_view: Dict[str, str] = {}  # dog_id -> dog_name (from ArUco)
+        # dog_id -> {first_seen, last_seen, frames_seen, frames_total, name}
+        # Tracks presence ratio for session eligibility (3s + 66% in-frame)
+        self.dogs_in_view: Dict[str, dict] = {}
+
+        # Detection timing config
+        self.detection_time_sec = 3.0      # Time dog must be visible
+        self.presence_ratio_min = 0.66     # Min percentage in-frame (66%)
+        self.stale_timeout_sec = 5.0       # Remove dog after this long unseen
 
         # Session statistics
         self.sessions_today = 0
@@ -164,6 +175,11 @@ class CoachingEngine:
         self.bark_count = 0
         self.bark_timestamps: List[float] = []
         self.listening_for_barks = False
+
+        # Global session cooldown - only one automatic session per 3 minutes
+        # Guide button can reset this to allow manual triggering
+        self._last_session_end: float = 0.0
+        self.global_session_cooldown_sec = 180.0  # 3 minutes between automatic sessions
 
         logger.info("Coaching Engine initialized")
 
@@ -182,7 +198,6 @@ class CoachingEngine:
             self.fsm_state = CoachState.WAITING_FOR_DOG
             self.current_session = None
             self.dogs_in_view.clear()
-            self.dog_names_in_view.clear()
             self.bark_count = 0
             self.bark_timestamps.clear()
             self.listening_for_barks = False
@@ -246,21 +261,40 @@ class CoachingEngine:
             if not dog_id:
                 return
 
-            # Track dog visibility
-            is_new = dog_id not in self.dogs_in_view
-            self.dogs_in_view[dog_id] = time.time()
-
-            # Store ArUco-identified name if available
-            if dog_name and dog_name not in ['unknown', None]:
-                self.dog_names_in_view[dog_id] = dog_name
-
-            if is_new:
-                display_name = self.dog_names_in_view.get(dog_id, dog_id)
+            now = time.time()
+            if dog_id not in self.dogs_in_view:
+                # New dog - initialize tracking
+                self.dogs_in_view[dog_id] = {
+                    'first_seen': now,
+                    'last_seen': now,
+                    'frames_seen': 1,
+                    'frames_total': 1,
+                    'name': dog_name if dog_name not in ['unknown', None] else None
+                }
+                display_name = dog_name if dog_name and dog_name not in ['unknown', None] else dog_id
                 logger.info(f"🐕 Dog entered view for coaching: {display_name}")
+            else:
+                # Existing dog - update tracking
+                entry = self.dogs_in_view[dog_id]
+                entry['last_seen'] = now
+                entry['frames_seen'] += 1
+
+                # Update name if ArUco identified (can happen anytime)
+                if dog_name and dog_name not in ['unknown', None] and entry['name'] is None:
+                    entry['name'] = dog_name
+                    logger.info(f"🏷️ Dog {dog_id} identified as {dog_name}")
+
+                    # Announce name if session is active for this dog (late ArUco identification)
+                    if (self.current_session and
+                        self.current_session.dog_id == dog_id and
+                        self.fsm_state in [CoachState.WATCHING, CoachState.RETRY_WATCHING]):
+                        self._play_audio(f'{dog_name}.mp3')
+                        self.current_session.dog_name = dog_name
 
         elif event.subtype == 'behavior_detected':
             # Track detected behaviors for coaching response
-            if self.fsm_state == CoachState.WATCHING and self.current_session:
+            watching_states = [CoachState.WATCHING, CoachState.RETRY_WATCHING]
+            if self.fsm_state in watching_states and self.current_session:
                 behavior = event.data.get('behavior')
                 dog_name = event.data.get('dog_name')
 
@@ -295,9 +329,11 @@ class CoachingEngine:
 
     def _get_dog_name(self, dog_id: str) -> str:
         """Get friendly name for dog"""
-        # First check ArUco-identified names from vision events
-        if dog_id in self.dog_names_in_view:
-            return self.dog_names_in_view[dog_id]
+        # First check ArUco-identified name from dogs_in_view tracking
+        if dog_id in self.dogs_in_view:
+            tracked_name = self.dogs_in_view[dog_id].get('name')
+            if tracked_name:
+                return tracked_name
 
         # Then check static mapping
         if dog_id in self.dog_names:
@@ -318,14 +354,9 @@ class CoachingEngine:
         return self.dog_history[dog_id]
 
     def _can_coach_dog(self, dog_id: str) -> bool:
-        """Check if dog is eligible for coaching (not in cooldown)"""
-        history = self._get_or_create_history(dog_id)
-
-        if history.last_session_time == 0:
-            return True
-
-        elapsed = time.time() - history.last_session_time
-        return elapsed >= self.cooldown_duration
+        """Check if dog is eligible for coaching.
+        Per-dog cooldown removed - only global session cooldown (3 min) applies now."""
+        return True
 
     def _select_trick(self, dog_id: str) -> str:
         """Select a trick avoiding recent ones for this dog"""
@@ -359,6 +390,11 @@ class CoachingEngine:
                 # Clean stale dog visibility
                 self._cleanup_stale_dogs()
 
+                # Increment frame counter for presence ratio calculation
+                # Each loop iteration = 1 frame opportunity
+                for dog_id in self.dogs_in_view:
+                    self.dogs_in_view[dog_id]['frames_total'] += 1
+
                 # Run state machine
                 self._process_state()
 
@@ -372,17 +408,15 @@ class CoachingEngine:
 
     def _cleanup_stale_dogs(self):
         """Remove dogs not seen recently"""
-        cutoff = time.time() - 2.0  # 2 second timeout
+        cutoff = time.time() - self.stale_timeout_sec
 
         stale = [
-            dog_id for dog_id, seen_time in self.dogs_in_view.items()
-            if seen_time < cutoff
+            dog_id for dog_id, info in self.dogs_in_view.items()
+            if info['last_seen'] < cutoff
         ]
 
         for dog_id in stale:
             del self.dogs_in_view[dog_id]
-            if dog_id in self.dog_names_in_view:
-                del self.dog_names_in_view[dog_id]
 
     def _process_state(self):
         """Process current FSM state"""
@@ -407,20 +441,43 @@ class CoachingEngine:
         elif self.fsm_state == CoachState.FAILURE:
             self._state_failure()
 
+        # Retry states - give dog second chance
+        elif self.fsm_state == CoachState.RETRY_GREETING:
+            self._state_retry_greeting()
+
+        elif self.fsm_state == CoachState.RETRY_COMMAND:
+            self._state_retry_command()
+
+        elif self.fsm_state == CoachState.RETRY_WATCHING:
+            self._state_retry_watching()
+
+        elif self.fsm_state == CoachState.FINAL_FAILURE:
+            self._state_final_failure()
+
         elif self.fsm_state == CoachState.COOLDOWN:
             self._state_cooldown()
 
     def _state_waiting_for_dog(self):
         """Wait for a dog to be visible and eligible"""
-        # Find an eligible dog in view
-        for dog_id, first_seen_time in self.dogs_in_view.items():
-            if self._can_coach_dog(dog_id):
-                # Found eligible dog - check how long it's been visible
-                time_in_view = time.time() - first_seen_time
-                logger.info(f"🎯 Dog {dog_id} in view for {time_in_view:.1f}s (need {self.attention_duration}s)")
+        now = time.time()
 
-                if time_in_view >= self.attention_duration:
-                    # Dog has been visible long enough - start session
+        # Check global cooldown - only one session per 3 minutes unless reset by Guide button
+        time_since_last = now - self._last_session_end
+        if self._last_session_end > 0 and time_since_last < self.global_session_cooldown_sec:
+            # Still in cooldown - don't start new sessions automatically
+            return
+
+        # Find an eligible dog in view
+        for dog_id, info in self.dogs_in_view.items():
+            if self._can_coach_dog(dog_id):
+                time_elapsed = now - info['first_seen']
+                presence_ratio = info['frames_seen'] / max(info['frames_total'], 1)
+
+                logger.info(f"🎯 Dog {dog_id} in view for {time_elapsed:.1f}s ({presence_ratio*100:.0f}% presence)")
+
+                # 3 seconds elapsed AND minimum presence ratio
+                if time_elapsed >= self.detection_time_sec and presence_ratio >= self.presence_ratio_min:
+                    # Dog has been visible long enough with good presence - start session
                     self._start_session(dog_id)
                     return
 
@@ -428,12 +485,8 @@ class CoachingEngine:
         """Start a coaching session with a dog"""
         dog_name = self._get_dog_name(dog_id)
 
-        # Don't start session if dog isn't properly identified via ArUco
-        # Wait for ArUco identification (up to 10 seconds grace period)
-        if dog_id.startswith('dog_') and dog_id not in self.dog_names_in_view:
-            # Dog not yet identified - keep waiting
-            logger.debug(f"Dog {dog_id} not yet identified via ArUco, waiting...")
-            return
+        # Note: Previously required ArUco identification for dog_0/dog_1 etc.
+        # Removed - coach any detected dog, ArUco just gives us the name
 
         trick = self._select_trick(dog_id)
 
@@ -476,9 +529,9 @@ class CoachingEngine:
         if self.led:
             self.led.set_pattern('attention', duration=2.0)
 
-        # Say dog's name
-        self._play_audio(f'{dog_name.lower()}.mp3')
-        time.sleep(1.5)
+        # Say dog's name - wait for it to complete before giving command
+        self._play_audio(f'{dog_name.lower()}.mp3', wait=True, timeout=5.0)
+        time.sleep(0.5)  # Brief pause between name and command
 
         self.fsm_state = CoachState.COMMAND
 
@@ -493,8 +546,7 @@ class CoachingEngine:
         # Say the trick command using audio file from config (Layer 2)
         trick_rules = self.interpreter.get_trick_rules(trick)
         audio_file = trick_rules.get('audio_command', f'{trick}.mp3')
-        self._play_audio(audio_file)
-        time.sleep(1.0)
+        self._play_audio(audio_file, wait=True, timeout=5.0)
 
         # Start listening for barks if speak trick
         if trick == 'speak':
@@ -600,15 +652,138 @@ class CoachingEngine:
         self.fsm_state = CoachState.COOLDOWN
 
     def _state_failure(self):
-        """Handle failed trick attempt"""
+        """Handle failed trick attempt - give second chance on first failure"""
         if not self.current_session:
             self.fsm_state = CoachState.WAITING_FOR_DOG
             return
 
-        # Say "no" on failure - no treat
+        if self.current_session.attempt == 1:
+            # First failure - give dog another chance
+            dog_name = self.current_session.dog_name or 'dog'
+            logger.info(f"First attempt failed - giving {dog_name} another chance")
+            self.current_session.attempt = 2
+            self.current_session.behavior_detected = None
+            self.fsm_state = CoachState.RETRY_GREETING
+        else:
+            # Second failure - final failure, no treat
+            self.fsm_state = CoachState.FINAL_FAILURE
+
+    def _state_retry_greeting(self):
+        """Re-greet dog for second attempt"""
+        if not self.current_session:
+            self.fsm_state = CoachState.WAITING_FOR_DOG
+            return
+
+        dog_name = self.current_session.dog_name or 'dog'
+        logger.info(f"Retry greeting: {dog_name}")
+
+        # LED attention pattern
+        if self.led:
+            self.led.set_pattern('attention', duration=2.0)
+
+        # Say dog's name again - wait for completion
+        self._play_audio(f'{dog_name.lower()}.mp3', wait=True, timeout=5.0)
+        time.sleep(0.5)  # Brief pause between name and command
+
+        self.fsm_state = CoachState.RETRY_COMMAND
+
+    def _state_retry_command(self):
+        """Give trick command again for second attempt"""
+        if not self.current_session:
+            self.fsm_state = CoachState.WAITING_FOR_DOG
+            return
+
+        trick = self.current_session.trick_requested
+        logger.info(f"Retry command: {trick}")
+
+        # Say the trick command again - wait for completion
+        trick_rules = self.interpreter.get_trick_rules(trick)
+        audio_file = trick_rules.get('audio_command', f'{trick}.mp3')
+        self._play_audio(audio_file, wait=True, timeout=5.0)
+
+        # Reset bark tracking for speak trick retry
+        if trick == 'speak':
+            self.bark_count = 0
+            self.bark_timestamps = []
+            self.listening_for_barks = True
+            logger.info("Listening for barks (speak trick retry)...")
+
+        self.current_session.command_time = time.time()
+        self.fsm_state = CoachState.RETRY_WATCHING
+
+    def _state_retry_watching(self):
+        """Watch for behavior on second attempt (same logic as WATCHING)"""
+        if not self.current_session:
+            self.fsm_state = CoachState.WAITING_FOR_DOG
+            return
+
+        watch_elapsed = time.time() - self.current_session.command_time
+        expected_trick = self.current_session.trick_requested
+        dog_name = self.current_session.dog_name or 'unknown'
+
+        # Get trick-specific timeout from config
+        trick_rules = self.interpreter.get_trick_rules(expected_trick)
+        detection_window = trick_rules.get('detection_window_sec', self.watch_duration)
+
+        # Special handling for speak trick (bark-based)
+        if expected_trick == 'speak':
+            speak_rules = trick_rules
+            min_barks = speak_rules.get('min_barks', self.SPEAK_MIN_BARKS)
+            max_barks = speak_rules.get('max_barks', self.SPEAK_MAX_BARKS)
+            speak_timeout = speak_rules.get('detection_window_sec', self.SPEAK_TIMEOUT)
+
+            # Check for too many barks (fail immediately)
+            if self.bark_count > max_barks:
+                self.listening_for_barks = False
+                self.fsm_state = CoachState.FINAL_FAILURE
+                logger.info(f"Retry speak failed - too many barks ({self.bark_count})")
+                return
+
+            # Check if we have enough barks (success!)
+            if self.bark_count >= min_barks:
+                self.listening_for_barks = False
+                self.current_session.success = True
+                self.current_session.behavior_detected = 'bark'
+                self.fsm_state = CoachState.SUCCESS
+                logger.info(f"Success on retry! Dog spoke with {self.bark_count} bark(s)")
+                return
+
+            # Check timeout
+            if watch_elapsed >= speak_timeout:
+                self.listening_for_barks = False
+                self.fsm_state = CoachState.FINAL_FAILURE
+                logger.info(f"Retry speak timeout - only {self.bark_count} bark(s)")
+                return
+
+            return  # Keep watching for barks
+
+        # Standard pose-based tricks - use BehaviorInterpreter
+        result = self.interpreter.check_trick(expected_trick, dog_id=dog_name)
+
+        if result.completed:
+            self.current_session.success = True
+            self.current_session.behavior_detected = result.behavior_detected
+            self.fsm_state = CoachState.SUCCESS
+            logger.info(f"Success on retry! {dog_name} performed {expected_trick}")
+            return
+
+        # Check timeout - go to final failure
+        if watch_elapsed >= detection_window:
+            self.fsm_state = CoachState.FINAL_FAILURE
+            logger.info(f"Retry timeout - {expected_trick} not performed")
+
+    def _state_final_failure(self):
+        """Handle final failure after retry - no treat"""
+        if not self.current_session:
+            self.fsm_state = CoachState.WAITING_FOR_DOG
+            return
+
+        # Play "no" on final failure
         self._play_audio('no.mp3')
-        time.sleep(1.0)
-        logger.info(f"Session failed - played 'no', no treat")
+        time.sleep(1.5)
+
+        dog_name = self.current_session.dog_name or 'dog'
+        logger.info(f"Final failure - no treat for {dog_name}")
 
         # Log failure
         self._log_session(success=False)
@@ -633,12 +808,27 @@ class CoachingEngine:
 
             self.current_session = None
 
+        # CRITICAL: Clear dogs_in_view to prevent immediate re-detection
+        # Without this, the same dog (possibly with different ID) would
+        # immediately start a new session since it already has 3+ seconds of presence
+        self.dogs_in_view.clear()
+        logger.info("Cleared dogs_in_view - dogs must be re-detected")
+
+        # Set post-session grace period timestamp
+        self._last_session_end = time.time()
+
         time.sleep(2.0)
         self.fsm_state = CoachState.WAITING_FOR_DOG
         logger.info("Returning to WAITING_FOR_DOG state")
 
-    def _play_audio(self, filename: str):
-        """Play audio file from talks directory"""
+    def _play_audio(self, filename: str, wait: bool = False, timeout: float = 5.0):
+        """Play audio file from talks directory
+
+        Args:
+            filename: Audio filename (e.g., 'bezik.mp3')
+            wait: If True, block until audio finishes (up to timeout)
+            timeout: Max seconds to wait for audio completion (default 5s)
+        """
         try:
             base = '/home/morgan/dogbot/VOICEMP3/talks'
             full_path = os.path.join(base, filename)
@@ -646,6 +836,8 @@ class CoachingEngine:
             if os.path.exists(full_path):
                 if self.audio:
                     self.audio.play_file(full_path)
+                    if wait:
+                        self.audio.wait_for_completion(timeout=timeout)
             else:
                 logger.warning(f"Audio file not found: {full_path}")
 
@@ -708,6 +900,12 @@ class CoachingEngine:
                 'trick': self.current_session.trick_requested
             }
 
+        # Calculate remaining global cooldown
+        global_cooldown_remaining = 0
+        if self._last_session_end > 0:
+            elapsed = time.time() - self._last_session_end
+            global_cooldown_remaining = max(0, self.global_session_cooldown_sec - elapsed)
+
         return {
             'running': self.running,
             'fsm_state': self.fsm_state.value,
@@ -716,11 +914,7 @@ class CoachingEngine:
             'sessions_today': self.sessions_today,
             'successes_today': self.successes_today,
             'success_rate': self.successes_today / self.sessions_today if self.sessions_today > 0 else 0,
-            'dog_cooldowns': {
-                dog_id: max(0, self.cooldown_duration - (time.time() - h.last_session_time))
-                for dog_id, h in self.dog_history.items()
-                if h.last_session_time > 0
-            }
+            'global_cooldown_remaining': global_cooldown_remaining
         }
 
     def reset_cooldowns(self, dog_id: str = None) -> Dict[str, Any]:
@@ -738,6 +932,14 @@ class CoachingEngine:
             reset_dogs = list(self.dog_history.keys())
             logger.info(f"Cooldowns reset for all dogs: {reset_dogs}")
             return {'reset': reset_dogs}
+
+    def reset_session_cooldown(self) -> Dict[str, Any]:
+        """Reset global session cooldown - allows immediate new session.
+        Called by Guide button to manually trigger coaching sessions."""
+        self._last_session_end = 0.0
+        self.dogs_in_view.clear()  # Also clear to force fresh detection
+        logger.info("🔄 Session cooldown reset - ready for new session")
+        return {'reset': True, 'message': 'Session cooldown reset, ready for new trick'}
 
     def set_forced_trick(self, trick: str = None) -> Dict[str, Any]:
         """Force a specific trick for testing (None to clear)"""

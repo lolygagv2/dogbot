@@ -169,6 +169,27 @@ class USBAudioService:
             return pygame.mixer.music.get_busy()
         return False
 
+    def wait_for_completion(self, timeout: float = 5.0) -> bool:
+        """
+        Wait for current audio to finish playing.
+
+        Args:
+            timeout: Maximum time to wait in seconds (default 5s)
+
+        Returns:
+            True if audio completed, False if timed out
+        """
+        if not self.initialized:
+            return True
+
+        start_time = time.time()
+        while pygame.mixer.music.get_busy():
+            if time.time() - start_time > timeout:
+                self.logger.warning(f"Audio wait timed out after {timeout}s")
+                return False
+            time.sleep(0.05)  # Check every 50ms
+        return True
+
     def set_volume(self, volume: int) -> bool:
         """Set volume (0-100)"""
         if self.initialized:

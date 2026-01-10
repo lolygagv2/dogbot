@@ -115,6 +115,11 @@ class SafetyMonitor:
         self.last_temp_audio = 0.0  # Separate tracking for temp alerts
         self.audio_cooldown = 60.0  # seconds between audio alerts
 
+        # Sustained critical tracking - only alert if critical persists (not brief spikes)
+        # Requires 3 consecutive critical readings before playing audio
+        self.critical_count = {'cpu': 0, 'memory': 0}
+        self.critical_threshold = 3  # Need 3 readings in a row
+
     def start_monitoring(self, interval: float = 5.0) -> None:
         """Start safety monitoring"""
         with self._lock:
@@ -250,25 +255,39 @@ class SafetyMonitor:
     def _check_cpu_usage(self, cpu_pct: float) -> None:
         """Check CPU usage"""
         # Startup grace period - CPU spikes to 100% when loading AI models/Hailo
-        # Don't alert during first 30 seconds
-        if time.time() - self.start_time < 30.0:
+        # Don't alert during first 45 seconds
+        if time.time() - self.start_time < 45.0:
             return
 
         if cpu_pct >= self.thresholds.cpu_critical:
-            self._trigger_alert(SafetyLevel.CRITICAL, 'cpu_critical',
-                              f"CPU usage critical: {cpu_pct:.1f}%", {'cpu_usage': cpu_pct})
-        elif cpu_pct >= self.thresholds.cpu_warning:
-            self._trigger_alert(SafetyLevel.WARNING, 'cpu_warning',
-                              f"CPU usage high: {cpu_pct:.1f}%", {'cpu_usage': cpu_pct})
+            # Track sustained critical - only alert if persists
+            self.critical_count['cpu'] += 1
+            if self.critical_count['cpu'] >= self.critical_threshold:
+                self._trigger_alert(SafetyLevel.CRITICAL, 'cpu_critical',
+                                  f"CPU usage critical: {cpu_pct:.1f}%", {'cpu_usage': cpu_pct})
+        else:
+            self.critical_count['cpu'] = 0  # Reset on non-critical
+            if cpu_pct >= self.thresholds.cpu_warning:
+                self._trigger_alert(SafetyLevel.WARNING, 'cpu_warning',
+                                  f"CPU usage high: {cpu_pct:.1f}%", {'cpu_usage': cpu_pct})
 
     def _check_memory_usage(self, mem_pct: float) -> None:
         """Check memory usage"""
+        # Startup grace period - memory can spike when loading models or starting tools
+        if time.time() - self.start_time < 45.0:
+            return
+
         if mem_pct >= self.thresholds.memory_critical:
-            self._trigger_alert(SafetyLevel.CRITICAL, 'memory_critical',
-                              f"Memory usage critical: {mem_pct:.1f}%", {'memory_usage': mem_pct})
-        elif mem_pct >= self.thresholds.memory_warning:
-            self._trigger_alert(SafetyLevel.WARNING, 'memory_warning',
-                              f"Memory usage high: {mem_pct:.1f}%", {'memory_usage': mem_pct})
+            # Track sustained critical - only alert if persists (not brief spikes like starting Claude)
+            self.critical_count['memory'] += 1
+            if self.critical_count['memory'] >= self.critical_threshold:
+                self._trigger_alert(SafetyLevel.CRITICAL, 'memory_critical',
+                                  f"Memory usage critical: {mem_pct:.1f}%", {'memory_usage': mem_pct})
+        else:
+            self.critical_count['memory'] = 0  # Reset on non-critical
+            if mem_pct >= self.thresholds.memory_warning:
+                self._trigger_alert(SafetyLevel.WARNING, 'memory_warning',
+                                  f"Memory usage high: {mem_pct:.1f}%", {'memory_usage': mem_pct})
 
     def _check_disk_usage(self, disk_pct: float) -> None:
         """Check disk usage"""
