@@ -1,0 +1,43 @@
+{
+  "name": "sit_sustained",
+  "description": "Dog holds sit position for extended duration (30 seconds)",
+  "enabled": true,
+  "schedule": "manual",
+  "max_rewards": 5,
+  "duration_minutes": 60,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 300.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 10,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "sustained_sit",
+      "timeout": 120.0,
+      "success_event": "VisionEvent.Pose.Sit",
+      "min_duration": 30.0,
+      "max_attempts": 5,
+      "sequence": "celebrate",
+      "cooldown": 60.0,
+      "conditions": {
+        "min_confidence": 0.6,
+        "continuous_detection": true
+      }
+    }
+  ],
+  "completion": {
+    "success": "Amazing sustained sit! Such discipline!",
+    "timeout": "Sustained sit session ended",
+    "max_rewards": "Sustained sit goals achieved!"
+  },
+  "config": {
+    "daily_limit": 5,
+    "allow_bark_rewards": false,
+    "require_quiet_always": false
+  }
+}

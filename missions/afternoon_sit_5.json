@@ -1,0 +1,48 @@
+{
+  "name": "afternoon_sit_5",
+  "description": "Dog performs 5 sits during afternoon (12pm-7pm)",
+  "enabled": true,
+  "schedule": {
+    "type": "daily",
+    "auto_start": true,
+    "start_time": "12:00",
+    "end_time": "19:00",
+    "days_of_week": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  },
+  "max_rewards": 5,
+  "duration_minutes": 420,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 600.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 20,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "detect_sit",
+      "timeout": 300.0,
+      "success_event": "VisionEvent.Pose.Sit",
+      "min_duration": 2.0,
+      "max_attempts": 10,
+      "sequence": "celebrate",
+      "cooldown": 300.0,
+      "conditions": {
+        "min_confidence": 0.6
+      }
+    }
+  ],
+  "completion": {
+    "success": "All 5 afternoon sits completed! Excellent!",
+    "timeout": "Afternoon sit session ended",
+    "max_rewards": "Sit training goal achieved!"
+  },
+  "config": {
+    "daily_limit": 5,
+    "allow_bark_rewards": false,
+    "require_quiet_always": false
+  }
+}

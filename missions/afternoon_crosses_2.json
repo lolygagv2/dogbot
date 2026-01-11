@@ -1,0 +1,48 @@
+{
+  "name": "afternoon_crosses_2",
+  "description": "Dog performs 2 crosses (crossed paws) by dinner time (12pm-7pm)",
+  "enabled": true,
+  "schedule": {
+    "type": "daily",
+    "auto_start": true,
+    "start_time": "12:00",
+    "end_time": "19:00",
+    "days_of_week": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  },
+  "max_rewards": 2,
+  "duration_minutes": 420,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 600.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 10,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "detect_crosses",
+      "timeout": 600.0,
+      "success_event": "VisionEvent.Pose.Crosses",
+      "min_duration": 2.0,
+      "max_attempts": 4,
+      "sequence": "celebrate",
+      "cooldown": 900.0,
+      "conditions": {
+        "min_confidence": 0.75
+      }
+    }
+  ],
+  "completion": {
+    "success": "Both crosses completed! Such a good dog!",
+    "timeout": "Crosses mission ended",
+    "max_rewards": "Crosses training goal achieved!"
+  },
+  "config": {
+    "daily_limit": 2,
+    "allow_bark_rewards": false,
+    "require_quiet_always": false
+  }
+}

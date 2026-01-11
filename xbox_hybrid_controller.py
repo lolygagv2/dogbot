@@ -325,6 +325,14 @@ class XboxHybridControllerFixed:
         # Trick cycling (Xbox Guide button) - for coach mode testing
         self._trick_cycle_index = 0
         self._available_tricks = ['sit', 'down', 'crosses', 'spin', 'speak']
+        # Audio files for each trick (from trick_rules.yaml)
+        self._trick_audio = {
+            'sit': 'sit.mp3',
+            'down': 'lie_down.mp3',
+            'crosses': 'crosses.mp3',
+            'spin': 'spin.mp3',
+            'speak': 'speak.mp3'
+        }
         self._last_trick_cycle_time = 0
         self._trick_cycle_cooldown = 1.0  # 1 second cooldown
 
@@ -1275,9 +1283,18 @@ class XboxHybridControllerFixed:
             if pressed:
                 self.cycle_mode()
 
-        elif number == 7:  # Start/Menu button (☰) - Record new talk
+        elif number == 7:  # Start/Menu button (☰) - Short: Audio record, Long: Video toggle
             if pressed:
-                self.handle_record_button()
+                self._start_button_press_time = time.time()
+            else:
+                # Button released - check duration
+                press_duration = time.time() - getattr(self, '_start_button_press_time', 0)
+                if press_duration > 2.0:
+                    # Long press (>2s) - Toggle video recording
+                    self.toggle_video_recording()
+                else:
+                    # Short press (<2s) - Audio recording
+                    self.handle_record_button()
 
         elif number == 8:  # Xbox Guide button - Cycle tricks (coach mode only)
             if pressed:
@@ -1331,6 +1348,36 @@ class XboxHybridControllerFixed:
                 logger.warning(f"Recording failed: {result}")
 
     # ============== END AUDIO RECORDING ==============
+
+    # ============== VIDEO RECORDING ==============
+    def toggle_video_recording(self):
+        """
+        Toggle video recording on/off via long-press of Start button.
+        Records MP4 at 640x640 with AI overlays (bounding boxes, poses, behaviors).
+        """
+        logger.info("📹 LONG PRESS: Toggling video recording")
+
+        try:
+            # Call toggle API endpoint
+            result = self.api_request_blocking('POST', '/video/record/toggle')
+
+            if result:
+                if result.get('recording', False):
+                    # Started recording
+                    logger.info(f"📹 VIDEO RECORDING STARTED: {result.get('filename')}")
+                    # Play audio feedback
+                    self.api_request_async('POST', '/audio/play/file', {'filepath': '/wimz/Wimz_recording.mp3'})
+                else:
+                    # Stopped recording
+                    logger.info(f"📹 VIDEO RECORDING STOPPED: {result.get('filename')} ({result.get('frames', 0)} frames, {result.get('duration', 0):.1f}s)")
+                    # Play save audio feedback
+                    self.api_request_async('POST', '/audio/play/file', {'filepath': '/wimz/Wimz_saved.mp3'})
+            else:
+                logger.warning("📹 Video toggle failed - no response")
+        except Exception as e:
+            logger.error(f"📹 Video toggle error: {e}")
+
+    # ============== END VIDEO RECORDING ==============
 
     def dispense_treat_safe(self):
         """Dispense treat - always works on button press"""
@@ -1477,15 +1524,19 @@ class XboxHybridControllerFixed:
         self._trick_cycle_index = (self._trick_cycle_index + 1) % len(self._available_tricks)
         trick = self._available_tricks[self._trick_cycle_index]
 
+        # Reset session cooldown - allows new session to start immediately
+        self.api_request('POST', '/coaching/reset_session_cooldown')
+
         # Set forced trick via API (uses path parameter)
         result = self.api_request_blocking('POST', f'/coaching/force_trick/{trick}', timeout=2)
         if result and not result.get('error'):
-            logger.info(f"🎯 Trick set to: {trick}")
+            logger.info(f"🎯 Trick set to: {trick} (cooldown reset)")
         else:
             logger.warning(f"⚠️ Failed to set trick: {result}")
 
         # Play trick audio as feedback so user knows what's queued
-        self.api_request('POST', '/audio/play/file', {'filepath': f'/talks/{trick}.mp3'})
+        audio_file = self._trick_audio.get(trick, f'{trick}.mp3')
+        self.api_request('POST', '/audio/play/file', {'filepath': f'/talks/{audio_file}'})
 
     def toggle_led(self):
         """Toggle blue LED with cooldown to prevent double-triggers"""

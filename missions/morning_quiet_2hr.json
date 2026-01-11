@@ -1,0 +1,40 @@
+{
+  "name": "morning_quiet_2hr",
+  "description": "Dog maintains quiet for 2 hours during morning period (7am-1pm)",
+  "enabled": true,
+  "schedule": {
+    "type": "daily",
+    "auto_start": true,
+    "start_time": "07:00",
+    "end_time": "13:00",
+    "days_of_week": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  },
+  "max_rewards": 3,
+  "duration_minutes": 180,
+  "stages": [
+    {
+      "name": "quiet_monitoring",
+      "timeout": 7200.0,
+      "success_event": "AudioEvent.QuietPeriod",
+      "min_duration": 7200.0,
+      "max_attempts": 1,
+      "sequence": "celebrate",
+      "cooldown": 60.0,
+      "conditions": {
+        "quiet_duration": 7200,
+        "allow_brief_sounds": true,
+        "max_bark_frequency": 0.02
+      }
+    }
+  ],
+  "completion": {
+    "success": "Excellent quiet morning! Good dog!",
+    "timeout": "Morning quiet monitoring ended",
+    "max_rewards": "Morning quiet goals achieved!"
+  },
+  "config": {
+    "daily_limit": 3,
+    "allow_bark_rewards": false,
+    "require_quiet_always": true
+  }
+}

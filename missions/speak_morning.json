@@ -1,0 +1,50 @@
+{
+  "name": "speak_morning",
+  "description": "Dog barks on cue twice during morning (8am-12pm)",
+  "enabled": true,
+  "schedule": {
+    "type": "daily",
+    "auto_start": false,
+    "start_time": "08:00",
+    "end_time": "12:00",
+    "days_of_week": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  },
+  "max_rewards": 2,
+  "duration_minutes": 240,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 300.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 5,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "speak_command",
+      "timeout": 60.0,
+      "success_event": "AudioEvent.BarkDetected",
+      "min_duration": 0.0,
+      "max_attempts": 3,
+      "sequence": "celebrate",
+      "cooldown": 1800.0,
+      "conditions": {
+        "min_confidence": 0.5,
+        "triggered_by_command": true
+      }
+    }
+  ],
+  "completion": {
+    "success": "Great speaking! Good voice control!",
+    "timeout": "Speak training session ended",
+    "max_rewards": "Speak training goal achieved!"
+  },
+  "config": {
+    "daily_limit": 2,
+    "allow_bark_rewards": true,
+    "require_quiet_always": false,
+    "play_speak_command": true
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "evening_calm_transition",
+  "description": "Help dog transition to quiet evening behavior (6pm-9pm)",
+  "enabled": true,
+  "schedule": {
+    "type": "daily",
+    "auto_start": true,
+    "start_time": "18:00",
+    "end_time": "21:00",
+    "days_of_week": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  },
+  "max_rewards": 2,
+  "duration_minutes": 180,
+  "stages": [
+    {
+      "name": "quiet_period",
+      "timeout": 1800.0,
+      "success_event": "AudioEvent.QuietPeriod",
+      "min_duration": 1800.0,
+      "max_attempts": 2,
+      "sequence": "celebrate",
+      "cooldown": 1200.0,
+      "conditions": {
+        "quiet_duration": 1800,
+        "allow_brief_sounds": true
+      }
+    }
+  ],
+  "completion": {
+    "success": "Excellent evening transition! Calm dog!",
+    "timeout": "Evening transition ended",
+    "max_rewards": "Evening calm goals achieved!"
+  },
+  "config": {
+    "daily_limit": 2,
+    "allow_bark_rewards": false,
+    "require_quiet_always": true
+  }
+}

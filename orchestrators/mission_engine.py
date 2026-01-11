@@ -473,7 +473,11 @@ class MissionEngine:
         """Check if daily reward limits are reached"""
         # Get today's rewards from store
         rewards_today = len(self.store.get_reward_history(dog_id, days=1))
-        daily_limit = 10  # configurable limit
+
+        # Get daily limit from active mission config, or use system default
+        daily_limit = 30  # System default
+        if self.active_session and self.active_session.mission:
+            daily_limit = self.active_session.mission.config.get('daily_limit', 30)
 
         return rewards_today >= daily_limit
 
@@ -524,13 +528,19 @@ class MissionEngine:
         session = self.active_session
 
         if session.state == MissionState.WAITING_FOR_DOG:
-            session.state = MissionState.WAITING_FOR_BEHAVIOR
             session.dog_id = event_data.get("dog_id")
-            # Advance to next stage when dog is detected
-            if session.current_stage < len(session.mission.stages) - 1:
-                session.current_stage += 1
-                session.stage_start_time = time.time()
-            self.logger.info(f"Dog detected, advanced to stage {session.current_stage + 1}, waiting for behavior")
+
+            # Check if dog detection is the success event for current stage
+            if session.current_stage < len(session.mission.stages):
+                stage = session.mission.stages[session.current_stage]
+                if stage.success_event == "VisionEvent.DogDetected":
+                    # Dog detection IS the success event - advance stage
+                    self._advance_stage()
+                    self.logger.info(f"Dog detected (success), advanced to stage {session.current_stage + 1}")
+                else:
+                    # Dog detection is not the goal - just switch to behavior waiting
+                    session.state = MissionState.WAITING_FOR_BEHAVIOR
+                    self.logger.info(f"Dog detected, waiting for behavior on stage {session.current_stage + 1}")
 
     def _handle_dog_lost(self, event_data: Dict[str, Any]):
         """Handle dog lost event"""
@@ -579,9 +589,9 @@ class MissionEngine:
                     dog_id=session.dog_id,
                     behavior=pose,
                     confidence=confidence,
-                    treat_dispensed=True,
-                    audio_played="good_dog.mp3",
-                    lights_activated="celebration"
+                    success=True,
+                    treats_dispensed=1,
+                    mission_name=session.mission.name
                 )
 
                 self.logger.info(f"Reward given for {pose}")
@@ -661,7 +671,7 @@ class MissionEngine:
 
         # Execute sequence if defined
         if stage.sequence:
-            self.sequence_engine.execute(stage.sequence, {
+            self.sequence_engine.execute_sequence(stage.sequence, {
                 "dog_id": dog_id,
                 "dog_name": dog_name,
                 "emotion": emotion

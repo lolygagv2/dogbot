@@ -1,0 +1,43 @@
+{
+  "name": "down_sustained",
+  "description": "Dog holds down/lie position for extended duration (30 seconds)",
+  "enabled": true,
+  "schedule": "manual",
+  "max_rewards": 5,
+  "duration_minutes": 60,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 300.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 10,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "sustained_down",
+      "timeout": 120.0,
+      "success_event": "VisionEvent.Pose.Down",
+      "min_duration": 30.0,
+      "max_attempts": 5,
+      "sequence": "celebrate",
+      "cooldown": 60.0,
+      "conditions": {
+        "min_confidence": 0.75,
+        "continuous_detection": true
+      }
+    }
+  ],
+  "completion": {
+    "success": "Amazing sustained down! Such patience!",
+    "timeout": "Sustained down session ended",
+    "max_rewards": "Sustained down goals achieved!"
+  },
+  "config": {
+    "daily_limit": 5,
+    "allow_bark_rewards": false,
+    "require_quiet_always": false
+  }
+}

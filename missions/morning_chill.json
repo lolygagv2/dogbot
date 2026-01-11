@@ -1,0 +1,49 @@
+{
+  "name": "morning_chill",
+  "description": "Dog maintains calm behavior during morning (8am-12pm)",
+  "enabled": true,
+  "schedule": {
+    "type": "daily",
+    "auto_start": true,
+    "start_time": "08:00",
+    "end_time": "12:00",
+    "days_of_week": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  },
+  "max_rewards": 4,
+  "duration_minutes": 240,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 300.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 10,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "reward_calm",
+      "timeout": 600.0,
+      "success_event": "VisionEvent.Pose.Sit",
+      "min_duration": 5.0,
+      "max_attempts": 4,
+      "sequence": "celebrate",
+      "cooldown": 1800.0,
+      "conditions": {
+        "min_confidence": 0.6,
+        "require_quiet": true
+      }
+    }
+  ],
+  "completion": {
+    "success": "Great calm morning behavior!",
+    "timeout": "Morning chill session ended",
+    "max_rewards": "Morning calm goals achieved!"
+  },
+  "config": {
+    "daily_limit": 4,
+    "allow_bark_rewards": false,
+    "require_quiet_always": true
+  }
+}

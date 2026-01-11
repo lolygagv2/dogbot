@@ -1,0 +1,41 @@
+{
+  "name": "night_quiet_90pct",
+  "description": "Dog maintains 90% quiet overnight (7pm-4am). Only confirmed barks count against.",
+  "enabled": true,
+  "schedule": {
+    "type": "daily",
+    "auto_start": true,
+    "start_time": "19:00",
+    "end_time": "04:00",
+    "days_of_week": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  },
+  "max_rewards": 2,
+  "duration_minutes": 540,
+  "stages": [
+    {
+      "name": "night_monitoring",
+      "timeout": 32400.0,
+      "success_event": "AudioEvent.QuietPeriod",
+      "min_duration": 3600.0,
+      "max_attempts": 2,
+      "sequence": null,
+      "cooldown": 3600.0,
+      "conditions": {
+        "quiet_percentage": 90,
+        "count_only_confirmed_barks": true,
+        "ignore_non_bark_sounds": true
+      }
+    }
+  ],
+  "completion": {
+    "success": "Excellent quiet night! Good sleeping dog!",
+    "timeout": "Night monitoring ended",
+    "max_rewards": "Night quiet goal achieved!"
+  },
+  "config": {
+    "daily_limit": 2,
+    "allow_bark_rewards": false,
+    "require_quiet_always": true,
+    "night_mode": true
+  }
+}

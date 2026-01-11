@@ -1,0 +1,56 @@
+{
+  "name": "quiet_progressive",
+  "description": "Progressive quiet training - increasing quiet duration requirements",
+  "enabled": true,
+  "schedule": "manual",
+  "max_rewards": 6,
+  "duration_minutes": 120,
+  "stages": [
+    {
+      "name": "quiet_5min",
+      "timeout": 600.0,
+      "success_event": "AudioEvent.QuietPeriod",
+      "min_duration": 300.0,
+      "max_attempts": 2,
+      "sequence": "celebrate",
+      "cooldown": 30.0,
+      "conditions": {
+        "quiet_duration": 300
+      }
+    },
+    {
+      "name": "quiet_10min",
+      "timeout": 900.0,
+      "success_event": "AudioEvent.QuietPeriod",
+      "min_duration": 600.0,
+      "max_attempts": 2,
+      "sequence": "celebrate",
+      "cooldown": 30.0,
+      "conditions": {
+        "quiet_duration": 600
+      }
+    },
+    {
+      "name": "quiet_15min",
+      "timeout": 1200.0,
+      "success_event": "AudioEvent.QuietPeriod",
+      "min_duration": 900.0,
+      "max_attempts": 2,
+      "sequence": "celebrate",
+      "cooldown": 30.0,
+      "conditions": {
+        "quiet_duration": 900
+      }
+    }
+  ],
+  "completion": {
+    "success": "Outstanding progressive quiet! Champion dog!",
+    "timeout": "Progressive quiet session ended",
+    "max_rewards": "Progressive quiet goals achieved!"
+  },
+  "config": {
+    "daily_limit": 6,
+    "allow_bark_rewards": false,
+    "require_quiet_always": true
+  }
+}

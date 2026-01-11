@@ -1,0 +1,49 @@
+{
+  "name": "evening_settle",
+  "description": "Dog settles down after dinner (5pm-9pm)",
+  "enabled": true,
+  "schedule": {
+    "type": "daily",
+    "auto_start": true,
+    "start_time": "17:00",
+    "end_time": "21:00",
+    "days_of_week": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  },
+  "max_rewards": 3,
+  "duration_minutes": 240,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 300.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 10,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "detect_settle",
+      "timeout": 600.0,
+      "success_event": "VisionEvent.Pose.Down",
+      "min_duration": 10.0,
+      "max_attempts": 5,
+      "sequence": "celebrate",
+      "cooldown": 1200.0,
+      "conditions": {
+        "min_confidence": 0.65,
+        "require_quiet": true
+      }
+    }
+  ],
+  "completion": {
+    "success": "Great evening settle! Good dog!",
+    "timeout": "Evening settle session ended",
+    "max_rewards": "Evening settle goals achieved!"
+  },
+  "config": {
+    "daily_limit": 3,
+    "allow_bark_rewards": false,
+    "require_quiet_always": true
+  }
+}

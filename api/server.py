@@ -891,6 +891,14 @@ async def clear_forced_trick():
     result = engine.set_forced_trick(None)
     return result
 
+@app.post("/coaching/reset_session_cooldown")
+async def reset_session_cooldown():
+    """Reset global session cooldown - allows immediate new session.
+    Called by Guide button to manually trigger coaching sessions."""
+    engine = get_coaching_engine()
+    result = engine.reset_session_cooldown()
+    return result
+
 # Behavior Interpreter endpoints (Layer 1)
 @app.get("/behavior/status")
 async def get_behavior_status():
@@ -1821,6 +1829,90 @@ async def camera_center():
     except Exception as e:
         logger.error(f"Camera center error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# Video Recording endpoints
+# ============================================================================
+
+@app.post("/video/record/start")
+async def start_video_recording(filename_prefix: str = "recording"):
+    """Start video recording with AI overlays"""
+    try:
+        from services.media.video_recorder import get_video_recorder
+        recorder = get_video_recorder()
+        result = recorder.start_recording(filename_prefix)
+
+        if result.get("success"):
+            return result
+        else:
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to start recording"))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Video recording start error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/video/record/stop")
+async def stop_video_recording():
+    """Stop video recording and save file"""
+    try:
+        from services.media.video_recorder import get_video_recorder
+        recorder = get_video_recorder()
+        result = recorder.stop_recording()
+
+        if result.get("success"):
+            return result
+        else:
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to stop recording"))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Video recording stop error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/video/record/status")
+async def get_video_status():
+    """Get current recording status"""
+    try:
+        from services.media.video_recorder import get_video_recorder
+        recorder = get_video_recorder()
+        return recorder.get_status()
+    except Exception as e:
+        logger.error(f"Video status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/video/recordings")
+async def list_video_recordings():
+    """List all saved video recordings"""
+    try:
+        from services.media.video_recorder import get_video_recorder
+        recorder = get_video_recorder()
+        recordings = recorder.list_recordings()
+        return {
+            "success": True,
+            "recordings": recordings,
+            "count": len(recordings)
+        }
+    except Exception as e:
+        logger.error(f"Video list error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/video/record/toggle")
+async def toggle_video_recording(filename_prefix: str = "recording"):
+    """Toggle video recording on/off"""
+    try:
+        from services.media.video_recorder import get_video_recorder
+        recorder = get_video_recorder()
+        result = recorder.toggle_recording(filename_prefix)
+        return result
+    except Exception as e:
+        logger.error(f"Video toggle error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # USB Audio Control endpoints
 @app.get("/audio/status")

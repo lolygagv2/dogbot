@@ -1,5 +1,225 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-11 ~Evening
+**Goal:** Complete 8-item plan: Mission engine fixes, missions, video recording, bark attribution
+**Status:** ✅ Complete
+
+### Work Completed:
+
+#### 1. Mission Engine - 4 Bug Fixes (orchestrators/mission_engine.py)
+- **Bug 1:** Fixed `log_reward()` wrong parameters (lines 578-585)
+  - Changed from wrong params (`treat_dispensed`, `audio_played`, `lights_activated`)
+  - To correct: `success=True`, `treats_dispensed=1`, `mission_name=session.mission.name`
+- **Bug 2:** Fixed hardcoded `daily_limit = 10` (line 476-480)
+  - Now reads from mission config: `session.mission.config.get('daily_limit', 30)`
+- **Bug 3:** Fixed stage advancement bounds - checks if success_event is "DogDetected"
+- **Bug 4:** Fixed wrong method call: `execute()` → `execute_sequence()`
+
+#### 2. Created 13 New Mission JSON Files (20 total)
+- `morning_quiet_2hr.json` - 2hr quiet period (7am-1pm)
+- `morning_chill.json` - Calm morning behavior (8am-12pm)
+- `afternoon_sit_5.json` - 5 sits (12pm-7pm)
+- `afternoon_down_3.json` - 3 lie downs (12pm-6pm)
+- `afternoon_crosses_2.json` - 2 crosses (12pm-7pm)
+- `evening_settle.json` - Settle after dinner (5pm-9pm)
+- `evening_calm_transition.json` - Wind down (6pm-9pm)
+- `night_quiet_90pct.json` - 90% quiet overnight (7pm-4am)
+- `speak_morning.json` - Bark on cue AM (8am-12pm)
+- `speak_afternoon.json` - Bark on cue PM (2pm-6pm)
+- `sit_sustained.json` - Extended 30s sit
+- `down_sustained.json` - Extended 30s down
+- `quiet_progressive.json` - Progressive quiet (5min → 10min → 15min)
+
+#### 3. Video Recording Service - NEW (services/media/video_recorder.py)
+- 640x640 MP4 recording at 15 FPS
+- AI overlays: bounding boxes (color-coded), pose keypoints, skeleton, behavior labels
+- Recording indicator (red dot) + timestamp overlay
+- Methods: `start_recording()`, `stop_recording()`, `toggle_recording()`, `list_recordings()`
+- Saves to: `/home/morgan/dogbot/recordings/`
+
+#### 4. Video API Endpoints (api/server.py lines 1837-1914)
+- `POST /video/record/start` - Start recording
+- `POST /video/record/stop` - Stop recording
+- `GET /video/record/status` - Get recording status
+- `GET /video/recordings` - List all recordings
+- `POST /video/record/toggle` - Toggle recording on/off
+
+#### 5. Xbox Video Recording Integration (xbox_hybrid_controller.py)
+- **Short press Start (< 2s):** Audio recording (existing)
+- **Long press Start (> 2s):** Toggle video recording
+- Added `toggle_video_recording()` method (lines 1352-1378)
+- Audio feedback: "Wimz_recording.mp3" / "Wimz_saved.mp3"
+
+#### 6. Bark-Dog Attribution Fix (services/perception/bark_detector.py)
+- **Problem:** All 2520 barks in database had dog_id=None
+- **Root Cause:** Only attributed when exactly 1 dog visible at bark moment
+- **Fix:** Added last known dog tracking (30-second window)
+  - Added `_last_known_dog_id`, `_last_known_dog_name`, `_last_known_dog_time`
+  - Updated `_on_vision_event()` to track last known dog
+  - Updated `_publish_bark_event()` to use last known dog when no dogs visible
+
+### Files Modified:
+- `orchestrators/mission_engine.py` - 4 bug fixes (+32 lines)
+- `api/server.py` - 5 video endpoints (+92 lines)
+- `services/perception/bark_detector.py` - Bark attribution (+28 lines)
+- `xbox_hybrid_controller.py` - Long-press video toggle (+59 lines)
+
+### Files Created:
+- `services/media/video_recorder.py` - Video recording service (423 lines)
+- `missions/*.json` - 13 new mission files
+- `/home/morgan/dogbot/recordings/` - Output directory
+
+### Documentation Updated:
+- `.claude/product_roadmap.md` - Accurate status for all phases
+- `.claude/development_todos.md` - Current task list
+- `.claude/WIM-Z_Project_Directory_Structure.md` - Added VOICEMP3 structure
+
+### Testing Results:
+- Weekly Summary: Runs but dog_id=None for historical barks (will improve going forward)
+- Silent Guardian: 229 sessions, 179 interventions logged
+- Database: 1555 barks, 111 rewards in treatbot.db
+
+### Next Session:
+1. Restart treatbot: `sudo systemctl restart treatbot`
+2. Test video recording via API and Xbox long-press
+3. Verify new barks get dog attribution
+4. Test mission loading with new JSON files
+
+### Important Notes:
+- Bark attribution only works going forward (historical data unchanged)
+- 30-second window handles dogs momentarily out of frame
+- Video overlay colors: Green=Elsa, Magenta=Bezik, Yellow=Unknown
+
+---
+
+## Session: 2026-01-10 ~Afternoon
+**Goal:** Fix coaching engine "green lighting" all tricks + improve bark detection
+**Status:** ✅ Complete
+
+### Work Completed:
+
+#### 1. Fixed Threading Race Condition - ✅ FIXED (Previous Part of Session)
+- **Problem:** Tricks completed instantly (<2 seconds) without dog actually performing them
+- **Root Cause:** Event bus threading model - each callback spawns new thread, causing stale events to execute AFTER state changes
+- **Fix:** Added timestamp validation:
+  - `BehaviorInterpreter._reset_timestamp` tracks when reset was called
+  - `_update_detection()` rejects events with timestamp < reset_timestamp
+  - `CoachingEngine._listening_started_at` tracks when bark listening starts
+  - `_on_audio_event()` rejects bark events before listening started
+
+#### 2. Added Bandpass Filter for Bark Detection - ✅ FIXED
+- **Problem:** Bark detector triggered on any loud sound (claps, voice, HVAC)
+- **Fix:** Added 400-4000Hz bandpass filter to `services/perception/bark_detector.py`
+- Filters audio BEFORE energy calculation
+- Dog barks are primarily 400-4000Hz, so they pass through
+- Other sounds (rumble <400Hz, electronic noise >4000Hz) filtered out
+
+#### 3. Raised cross/lie Detection Thresholds - ✅ FIXED
+- **Problem:** Sitting dogs triggered "cross" and "lie" false positives (thresholds too low)
+- **Fix:** Raised thresholds from 0.60/0.65 to 0.75 in:
+  - `configs/trick_rules.yaml` - trick-specific and detection.confidence_overrides
+  - `core/behavior_interpreter.py` - default fallback values
+
+### Files Modified:
+- `services/perception/bark_detector.py`:
+  - Added scipy import for butter/sosfilt
+  - Added `_bandpass_filter()` method (400-4000Hz)
+  - Applied filter before energy calculation
+- `configs/trick_rules.yaml`:
+  - down confidence_threshold: 0.65 → 0.75
+  - crosses confidence_threshold: 0.60 → 0.75
+  - detection.confidence_overrides: lie 0.65 → 0.75, cross 0.60 → 0.75
+- `core/behavior_interpreter.py`:
+  - Default lie threshold: 0.65 → 0.75
+  - Default cross threshold: 0.60 → 0.75
+
+### Verification Tests:
+1. **Bark test:** Clap/speak near mic → should NOT trigger speak success
+2. **Bark test:** Actual dog bark → should trigger speak success
+3. **Pose test:** Dog sitting → should NOT trigger "down" or "crosses"
+4. **Pose test:** Dog lying at 0.75+ confidence → should succeed
+
+### Next Session:
+1. Restart treatbot: `sudo systemctl restart treatbot`
+2. Test bark detection with non-bark sounds vs actual barks
+3. Test pose detection with sitting vs lying dogs
+4. Verify coaching sessions require actual trick performance
+
+### Important Notes:
+- Timestamp validation prevents race condition from threaded event callbacks
+- Bandpass filter uses scipy.signal.butter (4th order) + sosfilt
+- Higher thresholds for cross/lie require more confident detection
+
+---
+
+## Session: 2026-01-08 ~Afternoon
+**Goal:** Implement presence-based detection + retry logic for coaching engine
+**Status:** ✅ Complete
+
+### Work Completed:
+
+#### 1. Presence-Based Dog Detection - ✅ IMPLEMENTED
+- **Problem:** 10-second ArUco grace period blocked session starts, dog identity flip-flopped
+- **New Architecture:** Two parallel processes
+  - Process 1: Dog presence timer (3 seconds with 66% in-frame = session starts)
+  - Process 2: ArUco identification (runs in background, announces name when found)
+- **Changes:**
+  - `dogs_in_view` now tracks: `{first_seen, last_seen, frames_seen, frames_total, name}`
+  - Sessions start based on PRESENCE, not identity (3s + 66% presence ratio)
+  - ArUco identification optional - just gives us the dog's name
+  - Late ArUco announcement during WATCHING or RETRY_WATCHING states
+
+#### 2. Retry on First Failure - ✅ IMPLEMENTED
+- **Behavior:** Dogs get a second chance if they fail the first attempt
+- **Flow:** FAILURE → RETRY_GREETING → RETRY_COMMAND → RETRY_WATCHING → SUCCESS/FINAL_FAILURE
+- **New States Added:**
+  - `RETRY_GREETING` - Re-greet dog by name
+  - `RETRY_COMMAND` - Give trick command again
+  - `RETRY_WATCHING` - Watch for trick (same logic as WATCHING)
+  - `FINAL_FAILURE` - Plays "no_no_no.mp3", no treat
+- **Session tracking:** `DogSession.attempt` field (1 or 2)
+
+#### 3. Removed ArUco Grace Period Blocking - ✅ FIXED
+- **Problem:** `dog_tracker.py` waited 10 seconds before assigning default name
+- **Fix:** Reduced `aruco_grace_period` from 10.0 to 0.0 seconds
+- Coaching engine handles late ArUco identification separately
+
+### Files Modified:
+- `orchestrators/coaching_engine.py`:
+  - Added retry states to `CoachState` enum
+  - Updated `DogSession` with `attempt` field
+  - Changed `dogs_in_view` to dict with frames tracking
+  - Updated `_on_vision_event()` for late ArUco announcement
+  - Updated `_state_waiting_for_dog()` with presence ratio logic
+  - Updated `_state_failure()` for retry logic
+  - Added: `_state_retry_greeting()`, `_state_retry_command()`, `_state_retry_watching()`, `_state_final_failure()`
+  - Updated `_get_dog_name()` to use new structure
+- `core/dog_tracker.py`:
+  - Reduced `aruco_grace_period` from 10.0 to 0.0 seconds
+
+### New Detection Logic:
+| Config | Value | Description |
+|--------|-------|-------------|
+| detection_time_sec | 3.0 | Time dog must be visible |
+| presence_ratio_min | 0.66 | Min percentage in-frame (66%) |
+| stale_timeout_sec | 5.0 | Remove dog after this long unseen |
+
+### Next Session:
+1. Restart treatbot: `sudo systemctl restart treatbot`
+2. Test dog detection timing (should start session after 3s with 66% presence)
+3. Test retry on failure (dog should get second chance)
+4. Verify late ArUco announcement during WATCHING state
+5. Test with multiple dogs (up to 2)
+
+### Important Notes:
+- Session starts based on DOG PRESENCE, not ArUco identity
+- ArUco is optional - just gives the dog a name
+- Dogs get 2 attempts per session before final failure
+- "no_no_no.mp3" plays on final failure (after 2 failed attempts)
+- "no.mp3" no longer plays (removed on first failure, goes to retry)
+
+---
+
 ## Session: 2026-01-08 ~Morning
 **Goal:** Debug error audio spam + Fix dog detection + Add Xbox Guide button trick cycling
 **Status:** ✅ Complete

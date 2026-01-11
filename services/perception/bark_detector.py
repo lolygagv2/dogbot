@@ -92,6 +92,11 @@ class BarkDetectorService:
         self._visible_dogs_lock = threading.Lock()
         self._dog_visibility_timeout = 1.0  # 1 second visibility window
 
+        # Last known dog - used for bark attribution when no dog currently visible
+        self._last_known_dog_id = None
+        self._last_known_dog_name = None
+        self._last_known_dog_time = 0
+
         # Statistics
         self.stats = {
             'total_barks': 0,
@@ -258,11 +263,16 @@ class BarkDetectorService:
             dog_id = event.data.get('dog_id')  # Format: "aruco_315" or "aruco_832"
             dog_name = event.data.get('dog_name')  # "Elsa" or "Bezik"
             if dog_id:
+                now = time.time()
                 with self._visible_dogs_lock:
                     self._visible_dogs[dog_id] = {
-                        'time': time.time(),
+                        'time': now,
                         'name': dog_name
                     }
+                # Update last known dog for bark attribution when no dog visible
+                self._last_known_dog_id = dog_id
+                self._last_known_dog_name = dog_name
+                self._last_known_dog_time = now
 
     def _get_visible_dogs(self):
         """Get dogs visible within the timeout window"""
@@ -379,11 +389,25 @@ class BarkDetectorService:
             # Get currently visible dogs for bark attribution
             visible_dogs = self._get_visible_dogs()
 
-            # Attribution logic: only attribute if exactly 1 dog visible
+            # Attribution logic:
+            # - If exactly 1 dog visible, use that dog
+            # - If no dogs visible but we have a recent last known dog, use that
+            # - If multiple dogs visible (ambiguous), set to None
             if len(visible_dogs) == 1:
                 dog_id, dog_info = next(iter(visible_dogs.items()))
                 dog_name = dog_info.get('name', 'unknown')
+            elif len(visible_dogs) == 0:
+                # Fall back to last known dog (within 30 seconds)
+                # Dog may have moved out of frame temporarily
+                if self._last_known_dog_id and (time.time() - self._last_known_dog_time) < 30:
+                    dog_id = self._last_known_dog_id
+                    dog_name = self._last_known_dog_name
+                    logger.debug(f"Bark attributed to last known dog: {dog_name} ({dog_id})")
+                else:
+                    dog_id = None
+                    dog_name = None
             else:
+                # Multiple dogs visible - can't determine which barked
                 dog_id = None
                 dog_name = None
 
