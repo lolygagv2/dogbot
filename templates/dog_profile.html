@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ dog_name }} - WIM-Z Dog Profile</title>
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --border: #334155;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .profile-header {
+            text-align: center;
+            padding: 40px 20px;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            border-radius: 20px;
+            margin-bottom: 24px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .profile-header::before {
+            content: "";
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 60%);
+            animation: shimmer 3s infinite;
+        }
+
+        @keyframes shimmer {
+            0%, 100% { transform: rotate(0deg); }
+            50% { transform: rotate(180deg); }
+        }
+
+        .dog-avatar {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 4px solid rgba(255,255,255,0.3);
+            margin-bottom: 16px;
+            object-fit: cover;
+            background: var(--card-bg);
+        }
+
+        .dog-avatar-placeholder {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 4px solid rgba(255,255,255,0.3);
+            margin: 0 auto 16px;
+            background: var(--card-bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 3rem;
+        }
+
+        .profile-header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 8px;
+            position: relative;
+        }
+
+        .profile-header .tagline {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .stats-row {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 24px;
+            position: relative;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-item .num {
+            font-size: 2rem;
+            font-weight: bold;
+        }
+
+        .stat-item .label {
+            font-size: 0.85rem;
+            opacity: 0.8;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .card h2 {
+            font-size: 1.3rem;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .progress-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .progress-item {
+            background: var(--bg);
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .progress-item .title {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .progress-bar {
+            height: 8px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary) 0%, var(--success) 100%);
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+
+        .progress-item .value {
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        .trend-chart {
+            margin-top: 16px;
+        }
+
+        .trend-row {
+            display: flex;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .trend-row:last-child {
+            border-bottom: none;
+        }
+
+        .trend-week {
+            width: 80px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .trend-bars {
+            flex: 1;
+            display: flex;
+            gap: 8px;
+        }
+
+        .trend-bar {
+            height: 24px;
+            border-radius: 4px;
+            min-width: 4px;
+        }
+
+        .trend-bar.barks {
+            background: var(--danger);
+        }
+
+        .trend-bar.treats {
+            background: var(--success);
+        }
+
+        .trend-bar.sessions {
+            background: var(--primary);
+        }
+
+        .trend-legend {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            margin-bottom: 16px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .achievement-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+        }
+
+        .achievement {
+            background: var(--bg);
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .achievement.earned {
+            border: 2px solid var(--success);
+        }
+
+        .achievement.locked {
+            opacity: 0.5;
+        }
+
+        .achievement .icon {
+            font-size: 2rem;
+            margin-bottom: 8px;
+        }
+
+        .achievement .name {
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+
+        .personality {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(79, 70, 229, 0.1) 100%);
+            border-left: 4px solid var(--primary);
+            padding: 20px;
+            border-radius: 0 12px 12px 0;
+            font-style: italic;
+            line-height: 1.8;
+        }
+
+        .photo-gallery {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+
+        .photo-item {
+            aspect-ratio: 1;
+            border-radius: 8px;
+            overflow: hidden;
+            background: var(--bg);
+        }
+
+        .photo-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .photo-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 2rem;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 30px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .share-btn {
+            display: inline-block;
+            background: var(--primary);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: bold;
+            margin-top: 16px;
+        }
+
+        @media (max-width: 600px) {
+            .profile-header h1 { font-size: 1.8rem; }
+            .stats-row { gap: 16px; }
+            .stat-item .num { font-size: 1.5rem; }
+            .photo-gallery { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="profile-header">
+            {% if photo_url %}
+            <img src="{{ photo_url }}" alt="{{ dog_name }}" class="dog-avatar">
+            {% else %}
+            <div class="dog-avatar-placeholder">🐕</div>
+            {% endif %}
+
+            <h1>{{ dog_name }}</h1>
+            <div class="tagline">{{ tagline | default('Good boy/girl in training!') }}</div>
+
+            <div class="stats-row">
+                <div class="stat-item">
+                    <div class="num">{{ total_treats | default(0) }}</div>
+                    <div class="label">Treats Earned</div>
+                </div>
+                <div class="stat-item">
+                    <div class="num">{{ total_sessions | default(0) }}</div>
+                    <div class="label">Training Sessions</div>
+                </div>
+                <div class="stat-item">
+                    <div class="num">{{ success_rate | default(0) }}%</div>
+                    <div class="label">Success Rate</div>
+                </div>
+            </div>
+        </div>
+
+        {% if personality_text %}
+        <div class="card">
+            <h2>🧠 Personality</h2>
+            <div class="personality">
+                {{ personality_text }}
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="card">
+            <h2>📊 This Week's Progress</h2>
+            <div class="progress-grid">
+                <div class="progress-item">
+                    <div class="title">Quiet Time</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {{ quiet_score | default(75) }}%"></div>
+                    </div>
+                    <div class="value">{{ quiet_score | default(75) }}%</div>
+                </div>
+                <div class="progress-item">
+                    <div class="title">Trick Success</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {{ trick_success | default(60) }}%"></div>
+                    </div>
+                    <div class="value">{{ trick_success | default(60) }}%</div>
+                </div>
+                <div class="progress-item">
+                    <div class="title">Attention Score</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {{ attention_score | default(80) }}%"></div>
+                    </div>
+                    <div class="value">{{ attention_score | default(80) }}%</div>
+                </div>
+                <div class="progress-item">
+                    <div class="title">Behavior Rating</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {{ behavior_rating | default(70) }}%"></div>
+                    </div>
+                    <div class="value">{{ behavior_rating | default(70) }}%</div>
+                </div>
+            </div>
+        </div>
+
+        {% if weekly_data %}
+        <div class="card">
+            <h2>📈 8-Week Trend</h2>
+            <div class="trend-legend">
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: var(--danger)"></div>
+                    <span>Barks</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: var(--success)"></div>
+                    <span>Treats</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: var(--primary)"></div>
+                    <span>Sessions</span>
+                </div>
+            </div>
+            <div class="trend-chart">
+                {% set max_val = [weekly_data | map(attribute='barks') | max, weekly_data | map(attribute='treats') | max, weekly_data | map(attribute='coaching_sessions') | max] | max %}
+                {% set max_val = max_val if max_val > 0 else 1 %}
+                {% for week in weekly_data %}
+                <div class="trend-row">
+                    <div class="trend-week">W{{ week.week_number }}</div>
+                    <div class="trend-bars">
+                        <div class="trend-bar barks" style="width: {{ (week.barks / max_val * 100) | int }}%"></div>
+                        <div class="trend-bar treats" style="width: {{ (week.treats / max_val * 100) | int }}%"></div>
+                        <div class="trend-bar sessions" style="width: {{ (week.coaching_sessions / max_val * 100) | int }}%"></div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="card">
+            <h2>🏆 Achievements</h2>
+            <div class="achievement-grid">
+                <div class="achievement {{ 'earned' if total_treats >= 10 else 'locked' }}">
+                    <div class="icon">🍖</div>
+                    <div class="name">10 Treats</div>
+                </div>
+                <div class="achievement {{ 'earned' if total_treats >= 50 else 'locked' }}">
+                    <div class="icon">🎁</div>
+                    <div class="name">50 Treats</div>
+                </div>
+                <div class="achievement {{ 'earned' if total_sessions >= 10 else 'locked' }}">
+                    <div class="icon">📚</div>
+                    <div class="name">10 Sessions</div>
+                </div>
+                <div class="achievement {{ 'earned' if success_rate >= 80 else 'locked' }}">
+                    <div class="icon">⭐</div>
+                    <div class="name">Star Student</div>
+                </div>
+                <div class="achievement {{ 'earned' if tricks_mastered >= 3 else 'locked' }}">
+                    <div class="icon">🎯</div>
+                    <div class="name">Trick Master</div>
+                </div>
+                <div class="achievement {{ 'earned' if quiet_streak >= 7 else 'locked' }}">
+                    <div class="icon">🤫</div>
+                    <div class="name">Quiet Week</div>
+                </div>
+            </div>
+        </div>
+
+        {% if photos %}
+        <div class="card">
+            <h2>📸 Recent Photos</h2>
+            <div class="photo-gallery">
+                {% for photo in photos[:6] %}
+                <div class="photo-item">
+                    <img src="{{ photo.url }}" alt="{{ photo.caption | default('Photo') }}">
+                </div>
+                {% endfor %}
+                {% for i in range(6 - photos|length) %}
+                <div class="photo-item">
+                    <div class="photo-placeholder">🐾</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% else %}
+        <div class="card">
+            <h2>📸 Recent Photos</h2>
+            <div class="photo-gallery">
+                {% for i in range(6) %}
+                <div class="photo-item">
+                    <div class="photo-placeholder">🐾</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>Profile for <strong>{{ dog_name }}</strong></p>
+            <p>Generated {{ generated_at[:19] if generated_at else 'now' }} by WIM-Z</p>
+            <p>Watchful Intelligent Mobile Zen</p>
+        </div>
+    </div>
+</body>
+</html>

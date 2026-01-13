@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WIM-Z Weekly Report - Week {{ week_number }}</title>
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --border: #334155;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 30px;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            border-radius: 16px;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .header .subtitle {
+            color: rgba(255,255,255,0.8);
+            font-size: 1.1rem;
+        }
+
+        .header .date-range {
+            margin-top: 10px;
+            font-size: 0.9rem;
+            opacity: 0.7;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .card h2 {
+            font-size: 1.3rem;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card h2 .icon {
+            font-size: 1.5rem;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 16px;
+        }
+
+        .stat-box {
+            background: var(--bg);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .stat-box .value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--primary);
+        }
+
+        .stat-box .label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .highlights {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(79, 70, 229, 0.1) 100%);
+            border-left: 4px solid var(--primary);
+        }
+
+        .highlights ul {
+            list-style: none;
+        }
+
+        .highlights li {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .highlights li:last-child {
+            border-bottom: none;
+        }
+
+        .highlights li::before {
+            content: "✨ ";
+        }
+
+        .bar-chart {
+            margin-top: 16px;
+        }
+
+        .bar-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .bar-label {
+            width: 100px;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .bar-container {
+            flex: 1;
+            height: 24px;
+            background: var(--bg);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary) 0%, var(--primary-dark) 100%);
+            border-radius: 12px;
+            transition: width 0.3s ease;
+        }
+
+        .bar-value {
+            width: 50px;
+            text-align: right;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+
+        .dog-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 16px;
+        }
+
+        .dog-card {
+            background: var(--bg);
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .dog-card h3 {
+            font-size: 1.2rem;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .dog-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .dog-stat {
+            font-size: 0.9rem;
+        }
+
+        .dog-stat .num {
+            font-weight: bold;
+            color: var(--primary);
+        }
+
+        .success-rate {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+
+        .success-rate.high { background: var(--success); color: white; }
+        .success-rate.medium { background: var(--warning); color: black; }
+        .success-rate.low { background: var(--danger); color: white; }
+
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .daily-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 8px;
+            margin-top: 16px;
+        }
+
+        .day-box {
+            background: var(--bg);
+            border-radius: 8px;
+            padding: 12px 8px;
+            text-align: center;
+        }
+
+        .day-box .day-name {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .day-box .day-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        @media (max-width: 600px) {
+            .header h1 { font-size: 1.5rem; }
+            .stat-grid { grid-template-columns: repeat(2, 1fr); }
+            .daily-grid { grid-template-columns: repeat(4, 1fr); }
+            .bar-label { width: 70px; font-size: 0.8rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>WIM-Z Weekly Report</h1>
+            <div class="subtitle">Week {{ week_number }}, {{ year }}</div>
+            <div class="date-range">{{ week_start[:10] }} to {{ week_end[:10] }}</div>
+        </div>
+
+        {% if highlights %}
+        <div class="card highlights">
+            <h2><span class="icon">💡</span> Highlights</h2>
+            <ul>
+                {% for highlight in highlights %}
+                <li>{{ highlight }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <div class="card">
+            <h2><span class="icon">📊</span> Overview</h2>
+            <div class="stat-grid">
+                <div class="stat-box">
+                    <div class="value">{{ bark_stats.total_barks }}</div>
+                    <div class="label">Total Barks</div>
+                </div>
+                <div class="stat-box">
+                    <div class="value">{{ reward_stats.total_treats }}</div>
+                    <div class="label">Treats Given</div>
+                </div>
+                <div class="stat-box">
+                    <div class="value">{{ coaching.total_sessions }}</div>
+                    <div class="label">Coaching Sessions</div>
+                </div>
+                <div class="stat-box">
+                    <div class="value">{{ coaching.success_rate }}%</div>
+                    <div class="label">Success Rate</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2><span class="icon">🔕</span> Silent Guardian</h2>
+            <div class="stat-grid">
+                <div class="stat-box">
+                    <div class="value">{{ silent_guardian.total_sessions }}</div>
+                    <div class="label">Sessions</div>
+                </div>
+                <div class="stat-box">
+                    <div class="value">{{ silent_guardian.total_interventions }}</div>
+                    <div class="label">Interventions</div>
+                </div>
+                <div class="stat-box">
+                    <div class="value">{{ silent_guardian.successful_quiets }}</div>
+                    <div class="label">Successful Quiets</div>
+                </div>
+                <div class="stat-box">
+                    <div class="value">{{ silent_guardian.effectiveness_rate }}%</div>
+                    <div class="label">Effectiveness</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2><span class="icon">🐕</span> Barks by Day</h2>
+            <div class="daily-grid">
+                {% for day, count in bark_stats.by_day.items() %}
+                <div class="day-box">
+                    <div class="day-name">{{ day[:3] }}</div>
+                    <div class="day-value">{{ count }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        {% if bark_stats.by_emotion %}
+        <div class="card">
+            <h2><span class="icon">😊</span> Bark Emotions</h2>
+            <div class="bar-chart">
+                {% set max_emotion = bark_stats.by_emotion.values() | max if bark_stats.by_emotion else 1 %}
+                {% for emotion, count in bark_stats.by_emotion.items() %}
+                <div class="bar-row">
+                    <div class="bar-label">{{ emotion | capitalize }}</div>
+                    <div class="bar-container">
+                        <div class="bar-fill" style="width: {{ (count / max_emotion * 100) | int }}%"></div>
+                    </div>
+                    <div class="bar-value">{{ count }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if coaching.by_trick %}
+        <div class="card">
+            <h2><span class="icon">🎯</span> Trick Performance</h2>
+            <div class="bar-chart">
+                {% for trick, data in coaching.by_trick.items() %}
+                <div class="bar-row">
+                    <div class="bar-label">{{ trick | capitalize }}</div>
+                    <div class="bar-container">
+                        <div class="bar-fill" style="width: {{ data.success_rate | int }}%"></div>
+                    </div>
+                    <div class="bar-value">{{ data.success_rate }}%</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if dog_summary %}
+        <div class="card">
+            <h2><span class="icon">🐾</span> Dog Summary</h2>
+            <div class="dog-grid">
+                {% for dog_name, data in dog_summary.items() %}
+                <div class="dog-card">
+                    <h3>
+                        {% if dog_name == 'Elsa' %}🟢{% elif dog_name == 'Bezik' %}🟣{% else %}🟡{% endif %}
+                        {{ dog_name }}
+                    </h3>
+                    <div class="dog-stats">
+                        <div class="dog-stat"><span class="num">{{ data.barks }}</span> barks</div>
+                        <div class="dog-stat"><span class="num">{{ data.treats }}</span> treats</div>
+                        <div class="dog-stat"><span class="num">{{ data.coaching_sessions }}</span> sessions</div>
+                        <div class="dog-stat"><span class="num">{{ data.tricks_completed }}</span> tricks</div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>Generated {{ generated_at[:19] }} by WIM-Z</p>
+            <p>Watchful Intelligent Mobile Zen</p>
+        </div>
+    </div>
+</body>
+</html>

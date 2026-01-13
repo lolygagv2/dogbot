@@ -523,6 +523,10 @@ app.add_middleware(
 # Mount static files for web dashboard
 app.mount("/static", StaticFiles(directory="api/static"), name="static")
 
+# Mount photos directory for viewing captures
+app.mount("/photos", StaticFiles(directory="/home/morgan/dogbot/captures"), name="photos")
+app.mount("/enhanced", StaticFiles(directory="/home/morgan/dogbot/captures/enhanced"), name="enhanced")
+
 # Global camera instance for video streaming
 _camera = None
 _camera_lock = threading.Lock()
@@ -3119,6 +3123,319 @@ async def force_start_mission(mission_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============== END MISSION SCHEDULER ENDPOINTS ==============
+
+# ============== REPORTS & SOCIAL MEDIA ENDPOINTS ==============
+
+from jinja2 import Environment, FileSystemLoader
+
+# Setup Jinja2 templates
+_jinja_env = None
+def get_jinja_env():
+    global _jinja_env
+    if _jinja_env is None:
+        _jinja_env = Environment(
+            loader=FileSystemLoader('/home/morgan/dogbot/templates'),
+            autoescape=True
+        )
+    return _jinja_env
+
+@app.get("/tools/caption", response_class=HTMLResponse)
+async def caption_tool_page():
+    """Caption generator web tool"""
+    try:
+        env = get_jinja_env()
+        template = env.get_template('caption_tool.html')
+        return HTMLResponse(content=template.render())
+    except Exception as e:
+        logger.error(f"Caption tool page error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/photos")
+async def list_photos():
+    """List available photos in captures directory"""
+    import glob
+    photos = []
+    for pattern in ['*.jpg', '*.jpeg', '*.png']:
+        photos.extend(glob.glob(f'/home/morgan/dogbot/captures/{pattern}'))
+    # Return just filenames
+    return {"photos": [os.path.basename(p) for p in sorted(photos, reverse=True)]}
+
+@app.get("/reports/html/weekly", response_class=HTMLResponse)
+async def get_weekly_report_html():
+    """Get weekly report as pretty HTML"""
+    try:
+        summary = get_weekly_summary()
+        report = summary.generate_weekly_report()
+
+        env = get_jinja_env()
+        template = env.get_template('weekly_report.html')
+        html = template.render(**report)
+
+        return HTMLResponse(content=html)
+    except Exception as e:
+        logger.error(f"Weekly report HTML error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/html/dog/{dog_id}", response_class=HTMLResponse)
+async def get_dog_profile_html(dog_id: str):
+    """Get dog profile as pretty HTML"""
+    try:
+        summary = get_weekly_summary()
+
+        # Get dog progress data
+        progress = summary.get_dog_progress(dog_id, weeks=8)
+        comparison = summary.compare_dogs()
+
+        # Get dog info from comparison
+        dog_data = comparison.get('dogs', {}).get(dog_id, {})
+
+        # Build template context
+        context = {
+            'dog_name': dog_id,
+            'dog_id': dog_data.get('dog_id', dog_id),
+            'total_treats': dog_data.get('total_treats', 0),
+            'total_sessions': dog_data.get('coaching_sessions', 0),
+            'success_rate': dog_data.get('coaching_success_rate', 0),
+            'weekly_data': progress.get('weekly_data', []),
+            'generated_at': progress.get('generated_at', ''),
+            'tricks_mastered': 0,
+            'quiet_streak': 0
+        }
+
+        env = get_jinja_env()
+        template = env.get_template('dog_profile.html')
+        html = template.render(**context)
+
+        return HTMLResponse(content=html)
+    except Exception as e:
+        logger.error(f"Dog profile HTML error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/trends")
+async def get_behavior_trends(weeks: int = 8):
+    """Get behavior trends over multiple weeks"""
+    try:
+        summary = get_weekly_summary()
+        trends = summary.get_behavior_trends(weeks=weeks)
+        return trends
+    except Exception as e:
+        logger.error(f"Trends error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Photo Enhancement endpoints
+@app.post("/photo/enhance")
+async def enhance_photo(
+    image_path: str,
+    dog_name: Optional[str] = None,
+    caption: Optional[str] = None,
+    filter_name: Optional[str] = None,
+    auto_enhance: bool = True,
+    resize_instagram: bool = True
+):
+    """Enhance a photo with auto-adjustments and overlays"""
+    try:
+        from services.media.photo_enhancer import get_photo_enhancer
+        enhancer = get_photo_enhancer()
+
+        result = enhancer.enhance(
+            image_path=image_path,
+            dog_name=dog_name,
+            caption=caption,
+            auto_enhance=auto_enhance,
+            resize_instagram=resize_instagram,
+            filter_name=filter_name
+        )
+
+        return result
+    except Exception as e:
+        logger.error(f"Photo enhance error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/photo/collage")
+async def create_collage(
+    image_paths: List[str],
+    dog_name: Optional[str] = None,
+    title: Optional[str] = None
+):
+    """Create a photo collage from multiple images"""
+    try:
+        from services.media.photo_enhancer import get_photo_enhancer
+        enhancer = get_photo_enhancer()
+
+        result = enhancer.create_collage(
+            image_paths=image_paths,
+            dog_name=dog_name,
+            title=title
+        )
+
+        return result
+    except Exception as e:
+        logger.error(f"Collage error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# LLM Service endpoints
+@app.get("/ai/llm/status")
+async def get_llm_status():
+    """Get LLM service status"""
+    try:
+        from services.ai.llm_service import get_llm_service
+        service = get_llm_service()
+        return {
+            "available": service.is_available(),
+            "provider": "OpenAI" if service.is_available() else None
+        }
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+@app.post("/ai/caption")
+async def generate_caption(
+    image_path: str,
+    dog_name: Optional[str] = None,
+    context: Optional[str] = None,
+    style: str = "friendly"
+):
+    """Generate AI caption for a photo"""
+    try:
+        from services.ai.llm_service import get_llm_service
+        service = get_llm_service()
+
+        result = service.generate_photo_caption(
+            image_path=image_path,
+            dog_name=dog_name,
+            context=context,
+            style=style
+        )
+
+        return result
+    except Exception as e:
+        logger.error(f"Caption error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/ai/narrative")
+async def generate_narrative(dog_name: Optional[str] = None):
+    """Generate AI narrative for weekly report"""
+    try:
+        from services.ai.llm_service import get_llm_service
+        service = get_llm_service()
+        summary = get_weekly_summary()
+
+        report = summary.generate_weekly_report()
+        result = service.generate_weekly_narrative(report, dog_name)
+
+        return result
+    except Exception as e:
+        logger.error(f"Narrative error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/ai/personality/{dog_id}")
+async def generate_personality(dog_id: str):
+    """Generate AI personality description for a dog"""
+    try:
+        from services.ai.llm_service import get_llm_service
+        service = get_llm_service()
+        summary = get_weekly_summary()
+
+        comparison = summary.compare_dogs()
+        dog_stats = comparison.get('dogs', {}).get(dog_id, {})
+
+        result = service.generate_dog_personality(dog_id, dog_stats)
+        return result
+    except Exception as e:
+        logger.error(f"Personality error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Instagram endpoints
+@app.get("/social/instagram/status")
+async def get_instagram_status():
+    """Get Instagram posting status"""
+    try:
+        from services.social.instagram_poster import get_instagram_poster
+        poster = get_instagram_poster()
+
+        if not poster.is_available():
+            return {"available": False, "logged_in": False, "error": "instagrapi not installed"}
+
+        if poster.is_logged_in():
+            return poster.get_account_info()
+        else:
+            return {"available": True, "logged_in": False}
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+class InstagramLoginRequest(BaseModel):
+    username: str
+    password: str
+
+@app.post("/social/instagram/login")
+async def instagram_login(request: InstagramLoginRequest):
+    """Login to Instagram"""
+    try:
+        from services.social.instagram_poster import get_instagram_poster
+        poster = get_instagram_poster()
+
+        result = poster.login(request.username, request.password)
+        return result
+    except Exception as e:
+        logger.error(f"Instagram login error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/social/instagram/logout")
+async def instagram_logout():
+    """Logout from Instagram"""
+    try:
+        from services.social.instagram_poster import get_instagram_poster
+        poster = get_instagram_poster()
+        return poster.logout()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class InstagramPostRequest(BaseModel):
+    image_path: str
+    caption: str
+    add_hashtags: bool = True
+
+@app.post("/social/instagram/post")
+async def instagram_post_photo(request: InstagramPostRequest):
+    """Post photo to Instagram"""
+    try:
+        from services.social.instagram_poster import get_instagram_poster
+        poster = get_instagram_poster()
+
+        result = poster.post_photo(
+            image_path=request.image_path,
+            caption=request.caption,
+            add_hashtags=request.add_hashtags
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Instagram post error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class InstagramVideoRequest(BaseModel):
+    video_path: str
+    caption: str
+    thumbnail_path: Optional[str] = None
+    add_hashtags: bool = True
+
+@app.post("/social/instagram/post_video")
+async def instagram_post_video(request: InstagramVideoRequest):
+    """Post video/reel to Instagram"""
+    try:
+        from services.social.instagram_poster import get_instagram_poster
+        poster = get_instagram_poster()
+
+        result = poster.post_video(
+            video_path=request.video_path,
+            caption=request.caption,
+            thumbnail_path=request.thumbnail_path,
+            add_hashtags=request.add_hashtags
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Instagram video error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============== END REPORTS & SOCIAL MEDIA ENDPOINTS ==============
 
 def create_app():
     """Create FastAPI app (for external use)"""

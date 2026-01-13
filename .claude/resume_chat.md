@@ -1,5 +1,139 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-13 ~Late Night
+**Goal:** Build 9 launch features for WIM-Z demo/media readiness
+**Status:** ✅ Complete (except Instagram testing with real account)
+
+### Work Completed:
+
+#### 1. Silent Guardian Rewrite - ✅ COMPLETE
+- **File:** `modes/silent_guardian.py`
+- **Change:** Replaced complex escalation system with simple fixed-timing flow
+- **New Flow:**
+  - 2 barks detected → "QUIET"
+  - 5s → "QUIET" again
+  - 5s → "treat.mp3"
+  - 5s → "QUIET" again
+  - 5s → (if no barking) → "good.mp3" + DISPENSE TREAT
+- Bark during sequence = restart from beginning
+- Removed: escalation levels, dog calling, visibility checks
+
+#### 2. HTML Reports - ✅ COMPLETE
+- **`templates/weekly_report.html`** - Pretty weekly report with dark theme
+  - Bark stats, treats, coaching sessions, Silent Guardian effectiveness
+  - Bar charts for emotions and trick performance
+  - Mobile-responsive CSS
+- **`templates/dog_profile.html`** - Per-dog media page
+  - Dog photo, achievements, stats
+  - Progress bars (quiet time, trick success, attention, behavior)
+  - 8-week trend chart, photo gallery
+- **Endpoints:** `GET /reports/html/weekly`, `GET /reports/html/dog/{dog_id}`
+
+#### 3. Photo Enhancer - ✅ COMPLETE
+- **File:** `services/media/photo_enhancer.py`
+- **Features:**
+  - Auto-enhance (contrast, brightness, saturation, sharpness)
+  - Filters: warm, cool, vintage, dramatic, bright
+  - Instagram sizing (1080x1080 square crop)
+  - Text overlays (dog name, caption)
+  - WIM-Z watermark
+- **Endpoint:** `POST /photo/enhance`
+- **Output:** `/home/morgan/dogbot/captures/enhanced/`
+
+#### 4. LLM Integration (OpenAI) - ✅ COMPLETE
+- **File:** `services/ai/llm_service.py`
+- **Features:**
+  - GPT-4o Vision for photo captions (~$0.002/caption)
+  - GPT-4o-mini for weekly narratives and dog personality
+  - Caption styles: friendly, funny, inspirational, hashtag
+  - Fallback captions when LLM unavailable
+- **Endpoints:** `POST /ai/caption`, `POST /ai/summarize`, `POST /ai/personality`
+- **Config:** `OPENAI_API_KEY` in `.env` file
+
+#### 5. Instagram Poster - ✅ BUILT (Not Tested)
+- **File:** `services/social/instagram_poster.py`
+- **Features:**
+  - Username/password authentication via instagrapi
+  - Session caching to avoid re-login
+  - Photo, video/reel, and story posting
+  - Default hashtags for dog content
+- **Endpoints:** `POST /social/instagram/login`, `POST /social/instagram/post`
+- **Note:** Requires real IG credentials to test
+
+#### 6. Caption Tool Web UI - ✅ COMPLETE
+- **File:** `templates/caption_tool.html`
+- **Features:**
+  - Photo grid selection from captures folder
+  - Style dropdown (friendly, funny, inspirational, hashtag)
+  - Dog name and context inputs
+  - Copy caption button
+- **Endpoint:** `GET /tools/caption`
+
+#### 7. Static File Serving - ✅ COMPLETE
+- Added routes in `api/server.py`:
+  - `/photos/{filename}` → `/home/morgan/dogbot/captures/`
+  - `/enhanced/{filename}` → `/home/morgan/dogbot/captures/enhanced/`
+  - `/tools/photos` → List available photos
+
+### API Endpoints Added (api/server.py):
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/reports/html/weekly` | GET | Pretty weekly report HTML |
+| `/reports/html/dog/{dog_id}` | GET | Dog profile HTML |
+| `/photo/enhance` | POST | Enhance photo with filters/overlays |
+| `/ai/caption` | POST | Generate LLM caption for photo |
+| `/ai/summarize` | POST | Generate weekly narrative |
+| `/ai/personality` | POST | Generate dog personality |
+| `/social/instagram/login` | POST | Login to Instagram |
+| `/social/instagram/post` | POST | Post to Instagram |
+| `/social/instagram/status` | GET | Check IG login status |
+| `/tools/caption` | GET | Caption generator web UI |
+| `/tools/photos` | GET | List available photos |
+
+### Files Created:
+- `templates/weekly_report.html` (340 lines)
+- `templates/dog_profile.html` (420 lines)
+- `templates/caption_tool.html` (330 lines)
+- `services/media/photo_enhancer.py` (280 lines)
+- `services/ai/llm_service.py` (358 lines)
+- `services/social/instagram_poster.py` (372 lines)
+- `.env` (contains OPENAI_API_KEY)
+- `/home/morgan/dogbot/captures/enhanced/` directory
+
+### Files Modified:
+- `api/server.py` - Added ~300 lines for new endpoints
+- `modes/silent_guardian.py` - Complete rewrite with simple flow
+
+### Errors Fixed During Session:
+1. **Route conflict:** `/reports/weekly/html` caught by `/reports/weekly/{date}` → Changed to `/reports/html/weekly`
+2. **Missing directory:** `captures/enhanced/` didn't exist → Created it
+3. **OpenAI quota:** User added billing to account
+4. **Curl URL format:** `&` in URL needed quotes → Wrap in single quotes
+
+### Testing Results:
+- ✅ Weekly report HTML renders at `http://localhost:8000/reports/html/weekly`
+- ✅ Dog profile HTML renders at `http://localhost:8000/reports/html/dog/elsa`
+- ✅ LLM captions generate (tested friendly, funny, inspirational styles)
+- ✅ Photo enhancement works with filters and overlays
+- ✅ Caption tool web UI loads at `http://localhost:8000/tools/caption`
+- ⏳ Instagram posting not tested (needs real credentials)
+- ⏳ Silent Guardian not tested with live barking dogs
+
+### Next Session:
+1. Test Silent Guardian with actual barking dogs
+2. Test Instagram posting with real account credentials
+3. Discuss HTML report styling improvements (user mentioned later)
+4. Consider auto-captioning hooks (after coaching, before IG post)
+5. Test video recording with AI overlays for demo footage
+
+### Important Notes:
+- LLM costs ~$0.002 per photo caption
+- Photo enhancer saves to `captures/enhanced/` with timestamp
+- Static files accessible via browser at `/photos/` and `/enhanced/`
+- Instagram requires real username/password in config
+
+---
+
 ## Session: 2026-01-11 ~Evening
 **Goal:** Complete 8-item plan: Mission engine fixes, missions, video recording, bark attribution
 **Status:** ✅ Complete

@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WIM-Z Caption Generator</title>
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --success: #22c55e;
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --border: #334155;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: var(--primary);
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 16px;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: var(--primary-dark);
+        }
+
+        button:disabled {
+            background: var(--border);
+            cursor: not-allowed;
+        }
+
+        .result {
+            margin-top: 20px;
+            padding: 20px;
+            background: var(--bg);
+            border-radius: 8px;
+            display: none;
+        }
+
+        .result.show {
+            display: block;
+        }
+
+        .result .caption {
+            font-size: 1.2rem;
+            line-height: 1.8;
+            color: var(--success);
+        }
+
+        .result .meta {
+            margin-top: 12px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .preview-img {
+            max-width: 100%;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .photo-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .photo-item {
+            aspect-ratio: 1;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: border-color 0.2s;
+        }
+
+        .photo-item:hover {
+            border-color: var(--primary);
+        }
+
+        .photo-item.selected {
+            border-color: var(--success);
+        }
+
+        .photo-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-muted);
+        }
+
+        .error {
+            color: #ef4444;
+            padding: 12px;
+            background: rgba(239, 68, 68, 0.1);
+            border-radius: 8px;
+            margin-top: 12px;
+        }
+
+        .copy-btn {
+            margin-top: 12px;
+            width: auto;
+            padding: 8px 16px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WIM-Z Caption Generator</h1>
+
+        <div class="card">
+            <h2>Select a Photo</h2>
+            <div id="photoList" class="photo-list">
+                <div class="loading">Loading photos...</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div id="previewContainer" style="display: none;">
+                <img id="preview" class="preview-img" src="" alt="Preview">
+            </div>
+
+            <form id="captionForm">
+                <div class="form-group">
+                    <label for="imagePath">Image Path</label>
+                    <input type="text" id="imagePath" name="image_path" placeholder="/home/morgan/dogbot/captures/photo.jpg" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="dogName">Dog Name (optional)</label>
+                    <input type="text" id="dogName" name="dog_name" placeholder="Elsa">
+                </div>
+
+                <div class="form-group">
+                    <label for="context">Context (optional)</label>
+                    <input type="text" id="context" name="context" placeholder="learning to sit, nighttime walk, etc.">
+                </div>
+
+                <div class="form-group">
+                    <label for="style">Caption Style</label>
+                    <select id="style" name="style">
+                        <option value="friendly">Friendly</option>
+                        <option value="funny">Funny</option>
+                        <option value="inspirational">Inspirational</option>
+                        <option value="hashtag">With Hashtags</option>
+                    </select>
+                </div>
+
+                <button type="submit" id="generateBtn">Generate Caption</button>
+            </form>
+
+            <div id="result" class="result">
+                <div class="caption" id="captionText"></div>
+                <div class="meta" id="captionMeta"></div>
+                <button class="copy-btn" onclick="copyCaption()">Copy Caption</button>
+            </div>
+
+            <div id="error" class="error" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        // Load available photos from API
+        async function loadPhotos() {
+            const photoList = document.getElementById('photoList');
+            try {
+                const response = await fetch('/tools/photos');
+                const data = await response.json();
+                const photos = data.photos || [];
+
+                if (photos.length === 0) {
+                    photoList.innerHTML = '<div class="loading">No photos found</div>';
+                    return;
+                }
+
+                photoList.innerHTML = photos.map(photo => `
+                    <div class="photo-item" onclick="selectPhoto('${photo}')">
+                        <img src="/photos/${photo}" alt="${photo}" onerror="this.parentElement.style.display='none'">
+                    </div>
+                `).join('');
+
+            } catch (e) {
+                photoList.innerHTML = '<div class="loading">Could not load photos: ' + e.message + '</div>';
+            }
+        }
+
+        function selectPhoto(filename) {
+            const path = `/home/morgan/dogbot/captures/${filename}`;
+            document.getElementById('imagePath').value = path;
+
+            // Show preview
+            document.getElementById('preview').src = `/photos/${filename}`;
+            document.getElementById('previewContainer').style.display = 'block';
+
+            // Highlight selected
+            document.querySelectorAll('.photo-item').forEach(el => el.classList.remove('selected'));
+            event.currentTarget.classList.add('selected');
+        }
+
+        // Form submission
+        document.getElementById('captionForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const btn = document.getElementById('generateBtn');
+            const result = document.getElementById('result');
+            const error = document.getElementById('error');
+
+            btn.disabled = true;
+            btn.textContent = 'Generating...';
+            result.classList.remove('show');
+            error.style.display = 'none';
+
+            const formData = new FormData(e.target);
+            const params = new URLSearchParams();
+
+            for (let [key, value] of formData.entries()) {
+                if (value) params.append(key, value);
+            }
+
+            try {
+                const response = await fetch(`/ai/caption?${params.toString()}`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    document.getElementById('captionText').textContent = data.caption;
+                    document.getElementById('captionMeta').textContent =
+                        `Style: ${data.style} | Tokens: ${data.tokens_used} | Cost: $${data.estimated_cost.toFixed(4)}`;
+                    result.classList.add('show');
+                } else {
+                    error.textContent = data.error || 'Failed to generate caption';
+                    error.style.display = 'block';
+                }
+            } catch (e) {
+                error.textContent = 'Error: ' + e.message;
+                error.style.display = 'block';
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Generate Caption';
+        });
+
+        function copyCaption() {
+            const caption = document.getElementById('captionText').textContent;
+            navigator.clipboard.writeText(caption).then(() => {
+                const btn = event.target;
+                btn.textContent = 'Copied!';
+                setTimeout(() => btn.textContent = 'Copy Caption', 2000);
+            });
+        }
+
+        // Load photos on page load
+        loadPhotos();
+    </script>
+</body>
+</html>
