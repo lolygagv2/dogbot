@@ -6,7 +6,7 @@ description: "Primary demo unit with matched motors"
 
 # Camera settings (detector.py)
 camera:
-  rotation: 90  # degrees clockwise (0, 90, 180, 270)
+  rotation: 0  # degrees clockwise (0, 90, 180, 270)
 
 # Dispenser settings (dispenser.py)
 dispenser:
@@ -18,7 +18,7 @@ servo:
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:
-  max_speed: 72           # Capped speed percentage
+  max_speed: 80           # Capped speed percentage
   turn_speed_factor: 0.8  # Multiplier for turn smoothness
   max_rpm: 110            # Target RPM for PID control
   use_pid_control: true   # Enable closed-loop encoder feedback

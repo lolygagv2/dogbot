@@ -30,7 +30,9 @@ class DogTracker:
         self.last_known_positions = {}  # {dog_id: {'time': timestamp, 'bbox': [x1,y1,x2,y2], 'confidence': float}}
 
         # Grace period: wait for ArUco identification before falling back to default
-        self.aruco_grace_period = config.get('aruco_grace_period', 10.0)  # seconds
+        # Reduced to 0 - coaching engine now handles late ArUco identification separately
+        # ArUco runs in parallel; sessions start based on presence, not identity
+        self.aruco_grace_period = config.get('aruco_grace_period', 0.0)  # seconds (was 10.0)
         self.unidentified_dogs = {}  # {detection_idx: first_seen_time}
 
         # Tracking state

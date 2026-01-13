@@ -24,7 +24,8 @@ dog_identification:
 bark_detection:
   threshold: 3                    # Barks to trigger intervention
   window_seconds: 60              # Time window for counting barks
-  confidence_minimum: 0.70        # Threshold for bark classification confidence
+  confidence_minimum: 0.15        # Minimal filter - trust bark_gate detection
+  loudness_threshold_db: -30      # Minimum loudness - less negative = louder required
 
 # Intervention sequences by escalation level
 intervention_sequences:
