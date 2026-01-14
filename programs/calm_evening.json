@@ -1,0 +1,10 @@
+{
+  "name": "calm_evening",
+  "display_name": "Calm Evening",
+  "description": "Wind down routine for peaceful evenings - settle and quiet training",
+  "missions": ["evening_calm_transition", "evening_settle", "night_quiet_90pct"],
+  "created_by": "preset",
+  "repeat": false,
+  "daily_treat_limit": 8,
+  "rest_between_missions_sec": 60
+}

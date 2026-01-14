@@ -1,0 +1,10 @@
+{
+  "name": "quiet_dog",
+  "display_name": "Quiet Dog",
+  "description": "Reduce excessive barking with progressive quiet training",
+  "missions": ["bark_prevention", "quiet_progressive", "morning_quiet_2hr"],
+  "created_by": "preset",
+  "repeat": false,
+  "daily_treat_limit": 12,
+  "rest_between_missions_sec": 120
+}

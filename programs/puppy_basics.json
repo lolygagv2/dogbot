@@ -1,0 +1,10 @@
+{
+  "name": "puppy_basics",
+  "display_name": "Puppy Basics",
+  "description": "Foundation training for new puppies - teaches sit, down, and quiet behavior",
+  "missions": ["sit_training", "down_sustained", "quiet_progressive"],
+  "created_by": "preset",
+  "repeat": false,
+  "daily_treat_limit": 15,
+  "rest_between_missions_sec": 60
+}

@@ -36,6 +36,7 @@ from core.behavior_interpreter import get_behavior_interpreter
 from services.media.usb_audio import get_usb_audio_service, set_agc
 from services.reward.dispenser import get_dispenser_service
 from services.media.led import get_led_service
+from services.media.video_recorder import get_video_recorder
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,8 @@ class CoachingEngine:
         self.audio = get_usb_audio_service()
         self.dispenser = get_dispenser_service()
         self.led = get_led_service()
+        self.video_recorder = get_video_recorder()
+        self._session_video_path: Optional[str] = None
 
         # Load tricks from interpreter config (Layer 2)
         self.TRICKS = self.interpreter.get_all_tricks()
@@ -242,6 +245,15 @@ class CoachingEngine:
 
         if self.engine_thread and self.engine_thread.is_alive():
             self.engine_thread.join(timeout=2.0)
+
+        # Stop video recording if active (engine stopped mid-session)
+        if self._session_video_path:
+            try:
+                self.video_recorder.stop_recording()
+                logger.info(f"Coaching video saved (engine stopped): {self._session_video_path}")
+            except Exception as e:
+                logger.warning(f"Error stopping video on engine stop: {e}")
+            self._session_video_path = None
 
         # Re-enable AGC when leaving coaching mode
         set_agc(True)
@@ -541,6 +553,17 @@ class CoachingEngine:
             return
 
         dog_name = self.current_session.dog_name
+        trick = self.current_session.trick_requested or "trick"
+
+        # Start video recording for this coaching session
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"coach_{dog_name.lower()}_{trick}_{timestamp}.mp4"
+            self._session_video_path = self.video_recorder.start_recording(filename)
+            logger.info(f"Started coaching video: {self._session_video_path}")
+        except Exception as e:
+            logger.warning(f"Could not start video recording: {e}")
+            self._session_video_path = None
 
         # LED attention pattern
         if self.led:
@@ -824,6 +847,15 @@ class CoachingEngine:
 
     def _state_cooldown(self):
         """Brief pause before returning to waiting"""
+        # Stop video recording if active
+        if self._session_video_path:
+            try:
+                self.video_recorder.stop_recording()
+                logger.info(f"Coaching video saved: {self._session_video_path}")
+            except Exception as e:
+                logger.warning(f"Error stopping video: {e}")
+            self._session_video_path = None
+
         if self.current_session:
             # Update dog history
             dog_id = self.current_session.dog_id

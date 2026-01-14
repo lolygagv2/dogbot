@@ -37,6 +37,7 @@ from orchestrators.coaching_engine import get_coaching_engine
 from core.behavior_interpreter import get_behavior_interpreter
 from core.weekly_summary import get_weekly_summary
 from core.mission_scheduler import get_mission_scheduler
+from orchestrators.program_engine import get_program_engine
 from core.hardware.audio_controller import AudioController
 from core.hardware.led_controller import LEDController, LEDMode
 from config.settings import AudioFiles
@@ -3123,6 +3124,177 @@ async def force_start_mission(mission_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============== END MISSION SCHEDULER ENDPOINTS ==============
+
+# ============== TRAINING PROGRAMS ENDPOINTS ==============
+
+class ProgramCreateRequest(BaseModel):
+    """Request to create a custom program"""
+    name: str
+    display_name: str
+    description: str
+    missions: List[str]
+    daily_treat_limit: int = 20
+    rest_between_missions_sec: int = 60
+
+class ProgramStartRequest(BaseModel):
+    """Request to start a program"""
+    program_name: str
+    dog_id: Optional[str] = None
+
+@app.get("/programs/available")
+async def get_available_programs():
+    """Get list of all available training programs"""
+    try:
+        engine = get_program_engine()
+        programs = engine.get_available_programs()
+        return {
+            "success": True,
+            "programs": programs,
+            "count": len(programs)
+        }
+    except Exception as e:
+        logger.error(f"Get programs error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/programs/{name}")
+async def get_program_details(name: str):
+    """Get detailed info about a specific program"""
+    try:
+        engine = get_program_engine()
+        program = engine.get_program(name)
+        if program is None:
+            raise HTTPException(status_code=404, detail=f"Program '{name}' not found")
+        return {"success": True, "program": program}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get program error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/programs/create")
+async def create_program(request: ProgramCreateRequest):
+    """Create a new custom training program"""
+    try:
+        engine = get_program_engine()
+        result = engine.create_program(
+            name=request.name,
+            display_name=request.display_name,
+            description=request.description,
+            missions=request.missions,
+            daily_treat_limit=request.daily_treat_limit,
+            rest_between_missions_sec=request.rest_between_missions_sec
+        )
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Create program error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/programs/{name}")
+async def delete_program(name: str):
+    """Delete a custom program (presets cannot be deleted)"""
+    try:
+        engine = get_program_engine()
+        result = engine.delete_program(name)
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete program error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/programs/start")
+async def start_program(request: ProgramStartRequest):
+    """Start a training program"""
+    try:
+        engine = get_program_engine()
+        success = engine.start_program(request.program_name, dog_id=request.dog_id)
+        if success:
+            return {
+                "success": True,
+                "message": f"Program '{request.program_name}' started",
+                "status": engine.get_status()
+            }
+        else:
+            raise HTTPException(status_code=400, detail=f"Failed to start program '{request.program_name}'")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Start program error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/programs/stop")
+async def stop_program():
+    """Stop the current training program"""
+    try:
+        engine = get_program_engine()
+        success = engine.stop_program()
+        return {
+            "success": success,
+            "message": "Program stopped" if success else "No program running"
+        }
+    except Exception as e:
+        logger.error(f"Stop program error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/programs/pause")
+async def pause_program():
+    """Pause the current training program"""
+    try:
+        engine = get_program_engine()
+        success = engine.pause_program()
+        return {
+            "success": success,
+            "message": "Program paused" if success else "Cannot pause"
+        }
+    except Exception as e:
+        logger.error(f"Pause program error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/programs/resume")
+async def resume_program():
+    """Resume a paused training program"""
+    try:
+        engine = get_program_engine()
+        success = engine.resume_program()
+        return {
+            "success": success,
+            "message": "Program resumed" if success else "Cannot resume"
+        }
+    except Exception as e:
+        logger.error(f"Resume program error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/programs/status")
+async def get_program_status():
+    """Get current program execution status"""
+    try:
+        engine = get_program_engine()
+        return engine.get_status()
+    except Exception as e:
+        logger.error(f"Program status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/programs/reload")
+async def reload_programs():
+    """Reload all programs from disk"""
+    try:
+        engine = get_program_engine()
+        engine.reload_programs()
+        return {
+            "success": True,
+            "message": f"Reloaded {len(engine.programs)} programs"
+        }
+    except Exception as e:
+        logger.error(f"Reload programs error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============== END TRAINING PROGRAMS ENDPOINTS ==============
 
 # ============== REPORTS & SOCIAL MEDIA ENDPOINTS ==============
 

@@ -1,0 +1,10 @@
+{
+  "name": "daily_routine",
+  "display_name": "Daily Routine",
+  "description": "Full day training schedule - morning calm, afternoon tricks, evening settle",
+  "missions": ["morning_chill", "afternoon_sit_5", "afternoon_down_3", "evening_settle"],
+  "created_by": "preset",
+  "repeat": false,
+  "daily_treat_limit": 15,
+  "rest_between_missions_sec": 60
+}
