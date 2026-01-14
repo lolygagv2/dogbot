@@ -679,6 +679,25 @@ class AI3StageControllerFixed:
                     if max_idx < len(self.behaviors):
                         behavior_name = self.behaviors[max_idx]
 
+                        # Post-processing: verify "cross" by checking paw positions
+                        # Cross requires front paws to be close/overlapping horizontally
+                        if behavior_name == "cross" and dog_idx < len(current_poses):
+                            pose = current_poses[dog_idx]
+                            if not self._verify_cross_pose(pose.keypoints):
+                                # Paws not crossed - likely "lie" instead
+                                lie_idx = self.behaviors.index("lie") if "lie" in self.behaviors else -1
+                                if lie_idx >= 0:
+                                    lie_prob = float(dog_probs[lie_idx])
+                                    # Use "lie" if it has reasonable probability
+                                    if lie_prob > 0.3:
+                                        behavior_name = "lie"
+                                        max_prob = max(lie_prob, 0.75)  # Boost confidence
+                                        logger.info(f"🔄 CROSS->LIE: paws not crossed, using lie (conf={max_prob:.2f})")
+                                    else:
+                                        # Neither cross nor lie - skip this detection
+                                        logger.debug(f"Skipping false cross detection (paws apart, lie_prob={lie_prob:.2f})")
+                                        continue
+
                         # Check cooldown
                         if self._check_cooldown(behavior_name, dog_idx):
                             behaviors.append(BehaviorResult(behavior_name, max_prob, current_time))
@@ -690,6 +709,64 @@ class AI3StageControllerFixed:
         except Exception as e:
             logger.error(f"TorchScript behavior analysis failed: {e}")
             return behaviors
+
+    def _verify_cross_pose(self, keypoints: np.ndarray) -> bool:
+        """
+        Verify that front paws are actually crossed for "cross" behavior.
+
+        Keypoint layout (24 keypoints):
+        - 9: front left paw
+        - 10: front right paw
+
+        For crossed paws, the horizontal distance between paws should be small
+        and ideally one paw should be positioned over/under the other.
+
+        Args:
+            keypoints: Shape (24, 3) - x, y, confidence per keypoint
+
+        Returns:
+            True if paws appear crossed, False otherwise
+        """
+        try:
+            if keypoints.shape[0] < 11:
+                return False
+
+            # Get front paw keypoints (indices 9 and 10)
+            left_paw = keypoints[9]   # x, y, conf
+            right_paw = keypoints[10]
+
+            # Check confidence - need both paws visible
+            if left_paw[2] < 0.3 or right_paw[2] < 0.3:
+                return True  # Can't verify - assume model is correct
+
+            # Get normalized positions (already normalized to bbox in TorchScript input)
+            # But here we have original pixel coords, need to use bbox-relative check
+            # Paws should be close together horizontally for "cross"
+            horizontal_dist = abs(left_paw[0] - right_paw[0])
+
+            # Get approximate body width from shoulder keypoints (5 and 6)
+            if keypoints.shape[0] >= 7:
+                left_shoulder = keypoints[5]
+                right_shoulder = keypoints[6]
+                if left_shoulder[2] > 0.3 and right_shoulder[2] > 0.3:
+                    body_width = abs(left_shoulder[0] - right_shoulder[0])
+                    if body_width > 0:
+                        # Paws should be within 30% of body width for "cross"
+                        paw_ratio = horizontal_dist / body_width
+                        is_crossed = paw_ratio < 0.35
+
+                        if not is_crossed:
+                            logger.debug(f"Cross verify: paw_ratio={paw_ratio:.2f} (>0.35 = NOT crossed)")
+
+                        return is_crossed
+
+            # Fallback: just check absolute horizontal distance
+            # For 640px frame, crossed paws should be < 50px apart
+            return horizontal_dist < 50
+
+        except Exception as e:
+            logger.error(f"Cross verification error: {e}")
+            return True  # On error, trust the model
 
     def _check_cooldown(self, behavior: str, dog_idx: int) -> bool:
         """Check if behavior is off cooldown"""

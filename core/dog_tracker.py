@@ -25,9 +25,12 @@ class DogTracker:
         # Rule 6: Maximum dogs on screen
         self.max_dogs = config.get('max_dogs_on_screen', 2)
 
-        # Rule 2: Persistence tracking (30 seconds)
-        self.persistence_time = config.get('persistence_seconds', 30)
+        # Rule 2: Persistence tracking (reduced from 30s to 15s for faster switching)
+        self.persistence_time = config.get('persistence_seconds', 15)
         self.last_known_positions = {}  # {dog_id: {'time': timestamp, 'bbox': [x1,y1,x2,y2], 'confidence': float}}
+
+        # Faster clearing when dog leaves frame
+        self.frames_without_detection = {}  # {dog_id: frame_count}
 
         # Grace period: wait for ArUco identification before falling back to default
         # Reduced to 0 - coaching engine now handles late ArUco identification separately
@@ -221,6 +224,32 @@ class DogTracker:
         for dog_id in expired:
             del self.last_known_positions[dog_id]
             self.active_dogs.discard(dog_id)
+            if dog_id in self.frames_without_detection:
+                del self.frames_without_detection[dog_id]
+
+    def clear_dog_tracking(self, dog_name: str = None):
+        """
+        Manually clear tracking for a specific dog or all dogs.
+        Call this when you want to force re-identification.
+
+        Args:
+            dog_name: Name to clear, or None to clear all
+        """
+        if dog_name:
+            # Find marker ID for this dog name
+            marker_id = self.dog_names.get(dog_name)
+            if marker_id:
+                if marker_id in self.last_known_positions:
+                    del self.last_known_positions[marker_id]
+                self.active_dogs.discard(marker_id)
+                if marker_id in self.frames_without_detection:
+                    del self.frames_without_detection[marker_id]
+        else:
+            # Clear all tracking
+            self.last_known_positions.clear()
+            self.active_dogs.clear()
+            self.frames_without_detection.clear()
+            self.unidentified_dogs.clear()
 
     def _get_bbox(self, detection) -> List[float]:
         """Extract bbox from detection object"""

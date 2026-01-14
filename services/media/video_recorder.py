@@ -79,6 +79,11 @@ class VideoRecorder:
         self._last_poses = []
         self._last_behaviors = []
         self._last_dog_assignments = {}
+        self._last_aruco_markers = []  # ArUco marker positions
+
+        # Behavior persistence - keep behavior text visible for longer
+        self._behavior_display_duration = 3.0  # seconds to keep behavior visible
+        self._behavior_display_buffer = {}  # {dog_id: {'behavior': str, 'confidence': float, 'timestamp': float}}
 
         # Subscribe to vision events
         self.bus.subscribe('vision', self._on_vision_event)
@@ -88,17 +93,73 @@ class VideoRecorder:
     def _on_vision_event(self, event):
         """Handle vision events to capture detection data"""
         try:
+            now = time.time()
+
             if event.subtype == 'dog_detected':
                 data = event.data
                 with self._lock:
-                    self._last_detections = data.get('detections', [])
-                    self._last_poses = data.get('poses', [])
-                    self._last_behaviors = data.get('behaviors', [])
-                    self._last_dog_assignments = data.get('dog_assignments', {})
+                    # Handle individual detection events (accumulate into list)
+                    bbox = data.get('bbox', [])
+                    if bbox and len(bbox) >= 4:
+                        detection = {
+                            'bbox': bbox,
+                            'confidence': data.get('confidence', 0),
+                            'dog_id': data.get('dog_id'),
+                            'dog_name': data.get('dog_name'),
+                            'timestamp': now
+                        }
+                        # Replace or add to detections (use dog_id as key to avoid duplicates)
+                        dog_id = data.get('dog_id', 'unknown')
+                        # Keep only recent detections (within 0.5s)
+                        self._last_detections = [d for d in self._last_detections
+                                                  if now - d.get('timestamp', 0) < 0.5 and d.get('dog_id') != dog_id]
+                        self._last_detections.append(detection)
+
+                    # Also handle batch format if available
+                    if 'detections' in data:
+                        self._last_detections = data.get('detections', [])
+                    if 'poses' in data:
+                        self._last_poses = data.get('poses', [])
+                    if 'dog_assignments' in data:
+                        self._last_dog_assignments = data.get('dog_assignments', {})
+
             elif event.subtype == 'behavior_detected':
                 data = event.data
                 with self._lock:
-                    self._last_behaviors = [data] if data else []
+                    # Persist behavior display for longer visibility
+                    dog_id = data.get('dog_id', 'dog_0')
+                    behavior = data.get('behavior', '')
+                    confidence = data.get('confidence', 0)
+
+                    if behavior and confidence > 0.5:
+                        self._behavior_display_buffer[dog_id] = {
+                            'behavior': behavior,
+                            'confidence': confidence,
+                            'timestamp': now
+                        }
+
+            elif event.subtype == 'pose_detected':
+                data = event.data
+                with self._lock:
+                    keypoints = data.get('keypoints', [])
+                    if keypoints:
+                        pose = {
+                            'keypoints': keypoints,
+                            'dog_id': data.get('dog_id'),
+                            'timestamp': now
+                        }
+                        # Keep only recent poses
+                        dog_id = data.get('dog_id', 'unknown')
+                        self._last_poses = [p for p in self._last_poses
+                                            if now - p.get('timestamp', 0) < 0.5 and p.get('dog_id') != dog_id]
+                        self._last_poses.append(pose)
+
+            elif event.subtype == 'aruco_detected':
+                # Handle ArUco marker events if published
+                data = event.data
+                with self._lock:
+                    self._last_aruco_markers = data.get('markers', [])
+
         except Exception as e:
             self.logger.error(f"Vision event error: {e}")
 
@@ -243,8 +304,9 @@ class VideoRecorder:
                     poses = self._last_poses.copy()
                     behaviors = self._last_behaviors.copy()
                     dog_assignments = self._last_dog_assignments.copy()
+                    aruco_markers = self._last_aruco_markers.copy()
 
-                frame = self._draw_overlays(frame, detections, poses, behaviors, dog_assignments)
+                frame = self._draw_overlays(frame, detections, poses, behaviors, dog_assignments, aruco_markers)
 
                 # Write frame
                 if self.video_writer and self.video_writer.isOpened():
@@ -259,7 +321,7 @@ class VideoRecorder:
         self.logger.info("Recording loop ended")
 
     def _draw_overlays(self, frame: np.ndarray, detections: List, poses: List,
-                       behaviors: List, dog_assignments: Dict) -> np.ndarray:
+                       behaviors: List, dog_assignments: Dict, aruco_markers: List = None) -> np.ndarray:
         """
         Draw bounding boxes, keypoints, and labels on frame
 
@@ -267,22 +329,30 @@ class VideoRecorder:
             frame: Input frame (BGR)
             detections: List of detection dicts with bbox info
             poses: List of pose dicts with keypoints
-            behaviors: List of behavior dicts
+            behaviors: List of behavior dicts (ignored - we use persistent buffer)
             dog_assignments: Dict mapping detection indices to dog names
+            aruco_markers: List of ArUco marker tuples (id, cx, cy)
 
         Returns:
             Annotated frame
         """
+        if aruco_markers is None:
+            aruco_markers = []
         try:
-            # Draw bounding boxes
+            now = time.time()
+
+            # Draw bounding boxes for each detection
             for i, det in enumerate(detections):
                 # Get bbox coordinates
                 bbox = det.get('bbox', det.get('box', []))
                 if len(bbox) >= 4:
                     x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
 
-                    # Get dog name if assigned
-                    dog_name = dog_assignments.get(i, dog_assignments.get(str(i), None))
+                    # Get dog name - check detection dict first, then assignments
+                    dog_name = det.get('dog_name')
+                    if not dog_name:
+                        dog_name = dog_assignments.get(i, dog_assignments.get(str(i), None))
+                    dog_id = det.get('dog_id', f'dog_{i}')
 
                     # Choose color based on dog
                     if dog_name == 'elsa':
@@ -292,18 +362,53 @@ class VideoRecorder:
                     else:
                         color = (0, 255, 255)  # Yellow for unknown
 
-                    # Draw box
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    # Draw thick bounding box
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
 
-                    # Draw label
+                    # Draw dog name label at top of box
                     confidence = det.get('confidence', det.get('conf', 0))
-                    label = f"{dog_name or 'Dog'} {confidence:.2f}"
+                    label = f"{dog_name.upper() if dog_name else 'DOG'}"
 
-                    # Label background
-                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                    # Label background at top of bounding box
+                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
                     cv2.rectangle(frame, (x1, y1 - label_h - 10), (x1 + label_w + 10, y1), color, -1)
                     cv2.putText(frame, label, (x1 + 5, y1 - 5),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+
+                    # Check for persistent behavior to display under the bounding box
+                    if dog_id in self._behavior_display_buffer:
+                        behavior_data = self._behavior_display_buffer[dog_id]
+                        age = now - behavior_data['timestamp']
+
+                        if age < self._behavior_display_duration:
+                            behavior_name = behavior_data['behavior'].upper()
+                            behavior_conf = behavior_data['confidence']
+
+                            # Calculate fade (full opacity for first 2s, then fade)
+                            if age < 2.0:
+                                alpha = 1.0
+                            else:
+                                alpha = 1.0 - (age - 2.0) / (self._behavior_display_duration - 2.0)
+
+                            # Draw behavior label below bounding box with large text
+                            behavior_label = f"{behavior_name} {behavior_conf:.0%}"
+                            (bw, bh), _ = cv2.getTextSize(behavior_label, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)
+
+                            # Position below bounding box, centered
+                            bx = x1 + (x2 - x1 - bw) // 2
+                            by = y2 + bh + 10
+
+                            # Clamp to frame bounds
+                            bx = max(5, min(bx, frame.shape[1] - bw - 5))
+                            by = min(by, frame.shape[0] - 5)
+
+                            # Draw background rectangle
+                            bg_color = (int(color[0] * alpha), int(color[1] * alpha), int(color[2] * alpha))
+                            cv2.rectangle(frame, (bx - 5, by - bh - 5), (bx + bw + 5, by + 5), bg_color, -1)
+
+                            # Draw behavior text
+                            cv2.putText(frame, behavior_label, (bx, by),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
 
             # Draw pose keypoints
             for pose in poses:
@@ -311,7 +416,7 @@ class VideoRecorder:
                 if not keypoints:
                     continue
 
-                # Draw keypoints
+                # Draw keypoints as circles
                 for kp in keypoints:
                     if isinstance(kp, dict):
                         x, y = int(kp.get('x', 0)), int(kp.get('y', 0))
@@ -323,10 +428,10 @@ class VideoRecorder:
                         continue
 
                     if conf > 0.3 and 0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]:
-                        cv2.circle(frame, (x, y), 4, (255, 0, 0), -1)  # Blue keypoints
+                        cv2.circle(frame, (x, y), 5, (0, 128, 255), -1)  # Orange keypoints
 
                 # Draw skeleton connections
-                if len(keypoints) >= 17:  # Full pose
+                if len(keypoints) >= 17:
                     for start_idx, end_idx in SKELETON_CONNECTIONS:
                         if start_idx < len(keypoints) and end_idx < len(keypoints):
                             kp1 = keypoints[start_idx]
@@ -334,40 +439,49 @@ class VideoRecorder:
 
                             if isinstance(kp1, dict):
                                 x1, y1 = int(kp1.get('x', 0)), int(kp1.get('y', 0))
+                                c1 = kp1.get('confidence', kp1.get('conf', 1.0))
                             else:
                                 x1, y1 = int(kp1[0]), int(kp1[1])
+                                c1 = kp1[2] if len(kp1) > 2 else 1.0
 
                             if isinstance(kp2, dict):
                                 x2, y2 = int(kp2.get('x', 0)), int(kp2.get('y', 0))
+                                c2 = kp2.get('confidence', kp2.get('conf', 1.0))
                             else:
                                 x2, y2 = int(kp2[0]), int(kp2[1])
+                                c2 = kp2[2] if len(kp2) > 2 else 1.0
 
-                            if (0 <= x1 < frame.shape[1] and 0 <= y1 < frame.shape[0] and
-                                0 <= x2 < frame.shape[1] and 0 <= y2 < frame.shape[0]):
-                                cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Yellow skeleton
+                            # Only draw if both points are confident
+                            if c1 > 0.3 and c2 > 0.3:
+                                if (0 <= x1 < frame.shape[1] and 0 <= y1 < frame.shape[0] and
+                                    0 <= x2 < frame.shape[1] and 0 <= y2 < frame.shape[0]):
+                                    cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Yellow skeleton
 
-            # Draw behavior labels at top
-            y_offset = 30
-            for behavior in behaviors:
-                if isinstance(behavior, dict):
-                    behavior_name = behavior.get('behavior', behavior.get('name', 'unknown'))
-                    confidence = behavior.get('confidence', behavior.get('conf', 0))
-                    label = f"Behavior: {behavior_name} ({confidence:.2f})"
+            # Draw ArUco markers if detected
+            for marker in aruco_markers:
+                if isinstance(marker, dict):
+                    marker_id = marker.get('id')
+                    cx, cy = int(marker.get('cx', 0)), int(marker.get('cy', 0))
+                elif isinstance(marker, (list, tuple)) and len(marker) >= 3:
+                    marker_id, cx, cy = int(marker[0]), int(marker[1]), int(marker[2])
                 else:
-                    label = f"Behavior: {behavior}"
+                    continue
 
-                cv2.putText(frame, label, (10, y_offset),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                y_offset += 25
+                # Draw marker position
+                cv2.drawMarker(frame, (cx, cy), (255, 255, 0), cv2.MARKER_DIAMOND, 20, 2)
 
-            # Draw recording indicator
-            if self.recording:
-                cv2.circle(frame, (20, frame.shape[0] - 20), 10, (0, 0, 255), -1)  # Red dot
-                duration = time.time() - self.recording_start_time
-                cv2.putText(frame, f"REC {duration:.1f}s", (40, frame.shape[0] - 15),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                # Label with dog name
+                dog_name = {315: 'ELSA', 832: 'BEZIK'}.get(marker_id, f'ID:{marker_id}')
+                cv2.putText(frame, f"[{dog_name}]", (cx + 15, cy),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
-            # Draw timestamp
+            # Clean up expired behaviors from buffer
+            expired = [k for k, v in self._behavior_display_buffer.items()
+                      if now - v['timestamp'] > self._behavior_display_duration]
+            for k in expired:
+                del self._behavior_display_buffer[k]
+
+            # Draw timestamp only (no recording indicator)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cv2.putText(frame, timestamp, (frame.shape[1] - 180, frame.shape[0] - 15),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)

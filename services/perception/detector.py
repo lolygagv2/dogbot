@@ -292,6 +292,13 @@ class DetectorService:
                 # Detect ArUco markers for dog identification
                 aruco_markers = self._detect_aruco_markers(frame)
 
+                # Publish ArUco marker event for video recorder
+                if aruco_markers:
+                    publish_vision_event('aruco_detected', {
+                        'markers': aruco_markers,  # List of (id, cx, cy) tuples
+                        'timestamp': time.time()
+                    }, 'detector_service')
+
                 # Process frame with dog identification
                 result = self.ai.process_frame_with_dogs(frame, aruco_markers)
                 dogs = result.get('detections', [])
