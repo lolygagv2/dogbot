@@ -318,15 +318,8 @@ class AI3StageControllerFixed:
                         # Record in database
                         self.dog_database.record_behavior(marker_id, behavior.behavior, behavior.confidence)
 
-                        # If it's a successful "sit", dispense reward and record it
-                        if behavior.behavior == "sit" and behavior.confidence > 0.7:
-                            self.event_publisher.publish_reward_dispensed(
-                                dog_name=dog_name,
-                                dog_id=marker_id,
-                                behavior="sit",
-                                treat_count=1
-                            )
-                            self.dog_database.record_reward(marker_id, "sit", 1)
+                        # NOTE: Treat dispensing is handled by CoachingEngine, NOT here
+                        # Removed auto-dispense logic that was bypassing coaching validation
 
         return result
 
