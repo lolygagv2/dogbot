@@ -22,6 +22,7 @@ from core.event_publisher import DogEventPublisher
 from core.dog_database import DogDatabase
 from core.bus import EventBus
 from services.ai.pose_validator import get_pose_validator, PoseValidatorConfig
+from services.ai.geometric_classifier import get_geometric_classifier, GeometricConfig
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -141,6 +142,22 @@ class AI3StageControllerFixed:
         self._validation_enabled = True  # Can be disabled for debugging
         self._temporal_voting_enabled = True  # Can be disabled for debugging
         logger.info("PoseValidator initialized for behavior filtering")
+
+        # Initialize geometric classifier as fallback for poor keypoint quality
+        geo_config = GeometricConfig(
+            sit_min_aspect=0.85,
+            sit_max_aspect=2.2,
+            stand_min_aspect=0.35,
+            stand_max_aspect=0.85,
+            lie_max_aspect=0.55,
+            cross_paw_max_distance=0.18,
+            min_keypoint_conf=0.25,
+            high_conf_keypoints=8,
+        )
+        self.geometric_classifier = get_geometric_classifier(geo_config)
+        self._use_geometric_fallback = True  # Enable geometric fallback
+        self._geometric_confidence_threshold = 0.6  # Use geometric if LSTM below this
+        logger.info("GeometricClassifier initialized as behavior fallback")
 
     def _load_config(self):
         """Load configuration from JSON"""
@@ -747,12 +764,40 @@ class AI3StageControllerFixed:
                             logger.info(f"Behavior probs: [{prob_str}] -> {max_behavior} | "
                                        f"keypoints: {visible_kpts}/24 visible, {visible_legs}/12 legs")
 
-                if max_prob > self.prob_th:
+                # Determine behavior - try geometric fallback first if conditions met
+                behavior_name = None
+                classification_method = "lstm"
+
+                if self._use_geometric_fallback and dog_idx < len(current_poses):
+                    pose = current_poses[dog_idx]
+                    kpt_confs = pose.keypoints[:, 2]
+                    visible_kpts = np.sum(kpt_confs > 0.25)
+
+                    # Use geometric if: few keypoints OR LSTM confidence is low
+                    if visible_kpts < 8 or max_prob < self._geometric_confidence_threshold:
+                        det = pose.detection
+                        bbox = (det.x1, det.y1, det.x2, det.y2)
+                        dog_id_geo = f"dog_{dog_idx}"
+
+                        geo_behavior, geo_conf, geo_method = self.geometric_classifier.classify(
+                            pose.keypoints, bbox, dog_id_geo
+                        )
+
+                        # Only use geometric if it gives reasonable confidence
+                        if geo_conf > 0.5:
+                            behavior_name = geo_behavior
+                            max_prob = geo_conf
+                            classification_method = f"geometric_{geo_method}"
+                            logger.info(f"📐 GEOMETRIC: {geo_behavior} (conf={geo_conf:.2f}, method={geo_method}, "
+                                       f"kpts={visible_kpts}/24, lstm_conf={probs[dog_idx].max():.2f})")
+
+                # Fall back to LSTM if geometric didn't produce result
+                if behavior_name is None and max_prob > self.prob_th:
                     if max_idx < len(self.behaviors):
                         behavior_name = self.behaviors[max_idx]
+                        classification_method = "lstm"
 
                         # Post-processing: verify "cross" by checking paw positions
-                        # Cross requires front paws to be close/overlapping horizontally
                         if behavior_name == "cross" and dog_idx < len(current_poses):
                             pose = current_poses[dog_idx]
                             if not self._verify_cross_pose(pose.keypoints):
@@ -760,36 +805,35 @@ class AI3StageControllerFixed:
                                 lie_idx = self.behaviors.index("lie") if "lie" in self.behaviors else -1
                                 if lie_idx >= 0:
                                     lie_prob = float(dog_probs[lie_idx])
-                                    # Use "lie" if it has reasonable probability
                                     if lie_prob > 0.3:
                                         behavior_name = "lie"
-                                        max_prob = max(lie_prob, 0.75)  # Boost confidence
+                                        max_prob = max(lie_prob, 0.75)
                                         logger.info(f"🔄 CROSS->LIE: paws not crossed, using lie (conf={max_prob:.2f})")
                                     else:
-                                        # Neither cross nor lie - skip this detection
-                                        logger.debug(f"Skipping false cross detection (paws apart, lie_prob={lie_prob:.2f})")
-                                        continue
+                                        behavior_name = None  # Skip this detection
 
-                        # Apply temporal voting for stable predictions
-                        if self._temporal_voting_enabled:
-                            dog_id = f"dog_{dog_idx}"
-                            stable_behavior, stable_conf, is_stable = self.pose_validator.temporal_vote(
-                                dog_id, behavior_name, max_prob
-                            )
+                # Process the behavior if we have one
+                if behavior_name is not None:
+                    # Apply temporal voting for stable predictions
+                    if self._temporal_voting_enabled:
+                        dog_id = f"dog_{dog_idx}"
+                        stable_behavior, stable_conf, is_stable = self.pose_validator.temporal_vote(
+                            dog_id, behavior_name, max_prob
+                        )
 
-                            if not is_stable:
-                                logger.debug(f"Dog {dog_idx} behavior {behavior_name} unstable, waiting...")
-                                continue
+                        if not is_stable:
+                            logger.debug(f"Dog {dog_idx} behavior {behavior_name} unstable, waiting...")
+                            continue
 
-                            # Use temporally smoothed values
-                            behavior_name = stable_behavior
-                            max_prob = stable_conf
+                        # Use temporally smoothed values
+                        behavior_name = stable_behavior
+                        max_prob = stable_conf
 
-                        # Check cooldown
-                        if self._check_cooldown(behavior_name, dog_idx):
-                            behaviors.append(BehaviorResult(behavior_name, max_prob, current_time))
-                            self._update_cooldown(behavior_name, dog_idx)
-                            logger.info(f"🎯 BEHAVIOR: {behavior_name} (conf={max_prob:.2f}, validated=True)")
+                    # Check cooldown
+                    if self._check_cooldown(behavior_name, dog_idx):
+                        behaviors.append(BehaviorResult(behavior_name, max_prob, current_time))
+                        self._update_cooldown(behavior_name, dog_idx)
+                        logger.info(f"🎯 BEHAVIOR: {behavior_name} (conf={max_prob:.2f}, method={classification_method})")
 
             return behaviors
 

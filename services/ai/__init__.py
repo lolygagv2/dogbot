@@ -6,6 +6,11 @@ from services.ai.pose_validator import (
     get_pose_validator,
     reset_pose_validator,
 )
+from services.ai.geometric_classifier import (
+    GeometricClassifier,
+    GeometricConfig,
+    get_geometric_classifier,
+)
 
 __all__ = [
     'PoseValidator',
@@ -13,4 +18,7 @@ __all__ = [
     'ValidationResult',
     'get_pose_validator',
     'reset_pose_validator',
+    'GeometricClassifier',
+    'GeometricConfig',
+    'get_geometric_classifier',
 ]
