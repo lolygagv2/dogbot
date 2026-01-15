@@ -369,9 +369,9 @@ def decode_pose_multi_hailo(raw):
                     ky_raw = kpts_raw[k * 3 + 1]
                     kv_raw = kpts_raw[k * 3 + 2]
 
-                    # Decode keypoint coordinates
-                    kpts[k, 0] = (kx_raw + j) * stride  # x coordinate
-                    kpts[k, 1] = (ky_raw + i) * stride  # y coordinate
+                    # Decode keypoint coordinates - FIXED: multiply raw by 2 (official Hailo YOLOv8 pose)
+                    kpts[k, 0] = (kx_raw * 2 + j) * stride  # x coordinate
+                    kpts[k, 1] = (ky_raw * 2 + i) * stride  # y coordinate
                     kpts[k, 2] = 1.0 / (1.0 + np.exp(-kv_raw))  # visibility (sigmoid)
 
                 all_predictions.append({

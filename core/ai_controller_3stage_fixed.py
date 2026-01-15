@@ -129,14 +129,19 @@ class AI3StageControllerFixed:
         self.dog_database = DogDatabase()
 
         # Initialize pose validator for filtering bad detections
+        # BALANCED FOR BOTH CLOSE (10") AND FAR (10') DISTANCES:
+        # - Close: may only see face + front paws, fluffy fur, front-facing
+        # - Far: full body visible, can use more keypoints
+        # - Geometry checks disabled - don't assume side-view
         validator_config = PoseValidatorConfig(
-            min_keypoint_confidence=0.35,
-            min_visible_keypoints=6,
-            blur_threshold=80.0,
-            min_bbox_area=4000,
-            temporal_window=5,
-            temporal_threshold=0.6,
-            cross_confidence_penalty=0.15,  # Penalize cross predictions
+            min_keypoint_confidence=0.30,  # Moderate - works for both close and far
+            min_visible_keypoints=4,       # Moderate - close has fewer, far has more
+            blur_threshold=70.0,           # Moderate for motion
+            min_bbox_area=2500,            # Allow smaller for far dogs
+            temporal_window=4,             # Moderate temporal voting
+            temporal_threshold=0.5,        # Looser - individual frames can be noisy
+            cross_confidence_penalty=0.20, # Penalize cross (hard to detect reliably)
+            enable_geometry_check=False,   # Disable - doesn't work for front-facing
         )
         self.pose_validator = get_pose_validator(validator_config)
         self._validation_enabled = True  # Can be disabled for debugging
@@ -144,12 +149,16 @@ class AI3StageControllerFixed:
         logger.info("PoseValidator initialized for behavior filtering")
 
         # Initialize geometric classifier as fallback for poor keypoint quality
+        # Thresholds tuned based on real testing - aspect ratio = height/width
+        # Lying dog: flat/wide (aspect < 0.75)
+        # Standing dog: moderate (aspect 0.70-1.10)
+        # Sitting dog: tall (aspect > 1.05)
         geo_config = GeometricConfig(
-            sit_min_aspect=0.85,
-            sit_max_aspect=2.2,
-            stand_min_aspect=0.35,
-            stand_max_aspect=0.85,
-            lie_max_aspect=0.55,
+            sit_min_aspect=1.05,       # Sitting dogs are tall (height > width)
+            sit_max_aspect=3.0,        # Very tall when sitting upright
+            stand_min_aspect=0.70,     # Standing is wider
+            stand_max_aspect=1.10,     # Can be slightly tall
+            lie_max_aspect=0.75,       # RAISED from 0.55 - lying dogs up to 0.75
             cross_paw_max_distance=0.18,
             min_keypoint_conf=0.25,
             high_conf_keypoints=8,
@@ -157,7 +166,8 @@ class AI3StageControllerFixed:
         self.geometric_classifier = get_geometric_classifier(geo_config)
         self._use_geometric_fallback = True  # Enable geometric fallback
         self._geometric_confidence_threshold = 0.6  # Use geometric if LSTM below this
-        logger.info("GeometricClassifier initialized as behavior fallback")
+        self._force_geometric = True  # ALWAYS use geometric - LSTM is broken
+        logger.info("GeometricClassifier initialized - FORCED MODE (LSTM disabled)")
 
     def _load_config(self):
         """Load configuration from JSON"""
@@ -529,36 +539,31 @@ class AI3StageControllerFixed:
                         kpts = np.zeros((24, 3), dtype=np.float32)
 
                         for k in range(24):
-                            # Keypoint decoding: raw values are offsets from anchor cell
-                            # Must add cell position (j, i) before scaling to get pixel coords
-                            kpts[k, 0] = (kpts_raw[k * 3] + j) * stride * scale_factors[0]
-                            kpts[k, 1] = (kpts_raw[k * 3 + 1] + i) * stride * scale_factors[1]
+                            # Keypoint decoding - FIXED based on official Hailo YOLOv8 pose postprocessing
+                            # Formula: kpts = stride * (raw * 2 - 0.5) + center
+                            # Simplified: kpts = (raw * 2 + cell_pos) * stride (approximately)
+                            raw_x = kpts_raw[k * 3]
+                            raw_y = kpts_raw[k * 3 + 1]
+                            kpts[k, 0] = (raw_x * 2 + j) * stride * scale_factors[0]
+                            kpts[k, 1] = (raw_y * 2 + i) * stride * scale_factors[1]
                             kpts[k, 2] = 1.0 / (1.0 + np.exp(-kpts_raw[k * 3 + 2]))
 
-                        # VALIDATION: Reject detections with too few confident keypoints
-                        # This catches false positives on walls/furniture
-                        confident_kpts = np.sum(kpts[:, 2] > 0.3)
-                        if confident_kpts < 6:  # Need at least 6 keypoints visible
-                            logger.debug(f"Rejecting detection: only {confident_kpts}/24 keypoints confident")
-                            detections.pop()  # Remove the detection we just added
-                            continue
-
-                        # Check for leg keypoints specifically (5-16 are legs)
-                        leg_keypoints = kpts[5:17, 2]  # Front and back legs
-                        confident_legs = np.sum(leg_keypoints > 0.2)
-                        if confident_legs < 2:  # Need at least 2 leg keypoints
-                            logger.debug(f"Rejecting detection: only {confident_legs}/12 leg keypoints visible")
-                            detections.pop()
-                            continue
-
                         # Check bounding box aspect ratio (dogs aren't door-shaped)
+                        # This is the ONLY hard rejection - aspect ratio is reliable
                         bbox_width = x2_scaled - x1_scaled
                         bbox_height = y2_scaled - y1_scaled
                         aspect_ratio = bbox_height / max(bbox_width, 1)
-                        if aspect_ratio > 2.5 or aspect_ratio < 0.3:
+                        if aspect_ratio > 2.5 or aspect_ratio < 0.25:
                             logger.debug(f"Rejecting detection: bad aspect ratio {aspect_ratio:.2f}")
                             detections.pop()
                             continue
+
+                        # Log keypoint quality but DON'T reject - we use aspect ratio for classification
+                        confident_kpts = np.sum(kpts[:, 2] > 0.3)
+                        leg_keypoints = kpts[5:17, 2]
+                        confident_legs = np.sum(leg_keypoints > 0.2)
+                        if confident_kpts < 6:
+                            logger.debug(f"Low keypoint confidence ({confident_kpts}/24) - will use aspect-only classification")
 
                         poses.append(PoseKeypoints(kpts, detection))
 
@@ -773,11 +778,30 @@ class AI3StageControllerFixed:
                     kpt_confs = pose.keypoints[:, 2]
                     visible_kpts = np.sum(kpt_confs > 0.25)
 
-                    # Use geometric if: few keypoints OR LSTM confidence is low
-                    if visible_kpts < 8 or max_prob < self._geometric_confidence_threshold:
+                    # Check keypoint spread - if all clustered, they're garbage
+                    kpt_positions = pose.keypoints[:, :2]
+                    confident_mask = kpt_confs > 0.25
+                    if np.sum(confident_mask) > 3:
+                        confident_kpts = kpt_positions[confident_mask]
+                        kpt_spread = np.std(confident_kpts, axis=0).mean()
+                        det = pose.detection
+                        bbox_size = max(det.x2 - det.x1, det.y2 - det.y1, 1)
+                        relative_spread = kpt_spread / bbox_size
+                    else:
+                        relative_spread = 0.0
+
+                    # Use geometric if: FORCED or few keypoints OR LSTM low OR keypoints clustered
+                    if (self._force_geometric or visible_kpts < 8 or
+                        max_prob < self._geometric_confidence_threshold or
+                        relative_spread < 0.15):  # Keypoints too clustered
                         det = pose.detection
                         bbox = (det.x1, det.y1, det.x2, det.y2)
                         dog_id_geo = f"dog_{dog_idx}"
+
+                        # Calculate and log aspect ratio for debugging
+                        bbox_width = det.x2 - det.x1
+                        bbox_height = det.y2 - det.y1
+                        aspect_ratio = bbox_height / max(bbox_width, 1)
 
                         geo_behavior, geo_conf, geo_method = self.geometric_classifier.classify(
                             pose.keypoints, bbox, dog_id_geo
@@ -789,7 +813,8 @@ class AI3StageControllerFixed:
                             max_prob = geo_conf
                             classification_method = f"geometric_{geo_method}"
                             logger.info(f"📐 GEOMETRIC: {geo_behavior} (conf={geo_conf:.2f}, method={geo_method}, "
-                                       f"kpts={visible_kpts}/24, lstm_conf={probs[dog_idx].max():.2f})")
+                                       f"bbox={bbox_width}x{bbox_height}, aspect={aspect_ratio:.2f}, "
+                                       f"kpts={visible_kpts}/24)")
 
                 # Fall back to LSTM if geometric didn't produce result
                 if behavior_name is None and max_prob > self.prob_th:

@@ -32,12 +32,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GeometricConfig:
     """Configuration for geometric classification thresholds"""
-    # Aspect ratio thresholds (height / width)
-    sit_min_aspect: float = 0.9       # Sitting dogs are tall
-    sit_max_aspect: float = 2.0       # But not too tall
-    stand_min_aspect: float = 0.4     # Standing dogs are wide
-    stand_max_aspect: float = 0.9     # But not too wide
-    lie_max_aspect: float = 0.5       # Lying dogs are flat/wide
+    # Aspect ratio thresholds (height / width) - tuned from real testing
+    # Lying: flat/wide (aspect < 0.75)
+    # Standing: moderate (aspect 0.70-1.10)
+    # Sitting: tall (aspect > 1.05)
+    sit_min_aspect: float = 1.05      # Sitting dogs are tall (height > width)
+    sit_max_aspect: float = 3.0       # Very tall when sitting upright
+    stand_min_aspect: float = 0.70    # Standing is wider
+    stand_max_aspect: float = 1.10    # Up to slightly tall
+    lie_max_aspect: float = 0.75      # Lying dogs up to 0.75 aspect
 
     # Keypoint position thresholds (normalized 0-1 within bbox)
     sit_head_max_y: float = 0.35      # Head should be in top 35% when sitting
@@ -223,17 +226,27 @@ class GeometricClassifier:
         return best_behavior, confidence
 
     def _classify_by_aspect(self, aspect_ratio: float) -> Tuple[str, float]:
-        """Simple classification by aspect ratio only"""
+        """
+        Simple classification by aspect ratio only (height/width).
+
+        Typical ranges:
+        - Lying: flat/wide, aspect < 0.75
+        - Standing: moderate, aspect 0.75 - 1.05
+        - Sitting: tall, aspect > 1.05
+        """
         cfg = self.config
 
+        # Log aspect ratio for tuning
+        logger.debug(f"Aspect ratio: {aspect_ratio:.2f} (lie<{cfg.lie_max_aspect}, stand<{cfg.stand_max_aspect}, sit>{cfg.stand_max_aspect})")
+
         if aspect_ratio < cfg.lie_max_aspect:
-            return "lie", 0.7
+            return "lie", 0.75
         elif aspect_ratio < cfg.stand_max_aspect:
-            return "stand", 0.6
+            return "stand", 0.65
         elif aspect_ratio < cfg.sit_max_aspect:
-            return "sit", 0.7
+            return "sit", 0.75
         else:
-            return "sit", 0.5  # Very tall = probably sitting
+            return "sit", 0.6  # Very tall = probably sitting
 
     def _get_average_y(self, norm_kpts: np.ndarray, indices: List[int],
                        confident_mask: np.ndarray) -> Optional[float]:

@@ -380,8 +380,9 @@ def decode_hailo_pose_outputs(raw_outputs):
                 kpts = np.zeros((24, 3), dtype=np.float32)
 
                 for k in range(24):
-                    kpts[k, 0] = (kpts_raw[k * 3] + j) * stride
-                    kpts[k, 1] = (kpts_raw[k * 3 + 1] + i) * stride
+                    # FIXED: raw values must be multiplied by 2 (per official Hailo YOLOv8 pose decoding)
+                    kpts[k, 0] = (kpts_raw[k * 3] * 2 + j) * stride
+                    kpts[k, 1] = (kpts_raw[k * 3 + 1] * 2 + i) * stride
                     kpts[k, 2] = 1.0 / (1.0 + np.exp(-kpts_raw[k * 3 + 2]))
 
                 all_predictions.append({

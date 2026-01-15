@@ -49,14 +49,14 @@ class ValidationResult:
 @dataclass
 class PoseValidatorConfig:
     """Configuration for pose validation thresholds"""
-    # Keypoint confidence thresholds
-    min_keypoint_confidence: float = 0.35      # Minimum confidence for a keypoint to be valid
-    min_visible_keypoints: int = 6             # Need at least this many valid keypoints
-    min_leg_keypoints: int = 2                 # Need at least this many leg keypoints
+    # Keypoint confidence thresholds - balanced for both close (10") and far (10') distances
+    min_keypoint_confidence: float = 0.30      # Moderate - works for both close and far
+    min_visible_keypoints: int = 4             # Moderate - close may have fewer, far should have more
+    min_leg_keypoints: int = 1                 # At least 1 - close-up may only show front legs
 
     # Blur/quality thresholds
-    blur_threshold: float = 80.0               # Laplacian variance threshold (lower = blurry)
-    min_edge_density: float = 0.025            # Minimum edge pixel ratio in detection
+    blur_threshold: float = 60.0               # Laplacian variance threshold (lower = blurry) - lowered for motion
+    min_edge_density: float = 0.015            # Minimum edge pixel ratio - lowered for fluffy fur with soft edges
 
     # Bounding box validation
     min_bbox_area: int = 4000                  # Minimum detection size in pixels
@@ -67,8 +67,10 @@ class PoseValidatorConfig:
 
     # Skeleton geometry
     max_limb_ratio: float = 0.65               # Max limb length as fraction of bbox diagonal
-    min_limb_ratio: float = 0.015              # Min limb length as fraction of bbox diagonal
-    max_keypoints_outside_bbox: int = 2        # Max keypoints allowed outside bbox
+    min_limb_ratio: float = 0.01               # Min limb length - lowered for short Pomeranian legs
+    max_keypoints_outside_bbox: int = 3        # Max keypoints allowed outside bbox - raised for close-up
+    enable_geometry_check: bool = False        # Disable geometry checks for front-facing close-up dogs
+    bbox_margin: float = 0.35                  # Allow keypoints closer to bbox edge (for fluffy dogs)
 
     # Temporal voting
     temporal_window: int = 5                   # Frames for temporal smoothing
@@ -217,7 +219,14 @@ class PoseValidator:
         - Limbs are impossibly long/short
         - Keypoints are outside the bounding box
         - Skeleton is totally scrambled
+
+        NOTE: For close-up front-facing dogs, geometry checks may not apply.
+        Use enable_geometry_check=False in config to skip these checks.
         """
+        # Skip geometry checks if disabled (for front-facing close-up scenarios)
+        if not self.config.enable_geometry_check:
+            return True, {'skipped': True, 'issues': []}
+
         x1, y1, x2, y2 = bbox
         bbox_width = max(x2 - x1, 1)
         bbox_height = max(y2 - y1, 1)
@@ -227,7 +236,7 @@ class PoseValidator:
         confidences = keypoints[:, 2] if keypoints.shape[1] >= 3 else np.ones(len(keypoints))
 
         # Check if keypoints are within/near bounding box
-        margin = 0.25  # Allow 25% outside bbox
+        margin = self.config.bbox_margin  # Use config value instead of hardcoded 0.25
         expanded_x1 = x1 - bbox_width * margin
         expanded_y1 = y1 - bbox_height * margin
         expanded_x2 = x2 + bbox_width * margin

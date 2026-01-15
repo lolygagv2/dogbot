@@ -18,18 +18,18 @@ logger = logging.getLogger(__name__)
 @dataclass
 class BarkGateConfig:
     """Configuration for bark gate thresholds"""
-    # Energy thresholds (calibrated for USB mic with ~0.20 ambient baseline)
-    # Raised thresholds to reduce false positives from ambient noise/claps/voices
-    base_threshold: float = 0.45      # Minimum energy to consider (raised from 0.25)
-    thresh_close: float = 0.65        # Close/loud bark (raised from 0.50)
-    thresh_mid: float = 0.50          # Medium distance bark (raised from 0.35)
-    thresh_far: float = 0.45          # Far/quiet bark (raised from 0.25)
+    # Energy thresholds - tuned for USB mic with ~0.02 ambient baseline
+    # Barks should produce energy 0.10+ (5x ambient)
+    base_threshold: float = 0.12      # Just above ambient noise floor
+    thresh_close: float = 0.35        # Close/loud bark
+    thresh_mid: float = 0.20          # Medium distance bark
+    thresh_far: float = 0.12          # Far/quiet bark
 
     # Timing (in milliseconds)
-    min_bark_duration_ms: int = 80    # Reject clicks shorter than this (raised from 30)
+    min_bark_duration_ms: int = 80    # Barks are typically 80-500ms
     max_bark_duration_ms: int = 2000  # Cap duration (barks rarely exceed 2s)
     grace_period_ms: int = 100        # Wait for bark "tail" before ending
-    bark_cooldown_ms: int = 1000      # Cooldown between barks (no double-count)
+    bark_cooldown_ms: int = 1000      # Cooldown between barks
 
 
 class BarkGate:
