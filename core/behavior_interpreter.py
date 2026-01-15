@@ -42,7 +42,7 @@ class BehaviorInterpreter:
     All config comes from trick_rules.yaml (Layer 2).
     """
 
-    BEHAVIORS = ['stand', 'sit', 'lie', 'cross', 'spin']
+    BEHAVIORS = ['stand', 'sit', 'lie', 'spin']  # cross removed - unreliable
 
     def __init__(self, config_path: str = None):
         """Initialize behavior interpreter"""
@@ -56,13 +56,12 @@ class BehaviorInterpreter:
         self._reset_timestamp: float = 0.0  # Track when reset was called (for stale event filtering)
 
         # Default confidence thresholds (MUST be defined before _load_trick_rules)
-        # Note: lie/cross raised to 0.75 to prevent sitting from triggering false positives
         self.confidence_thresholds = {
-            'stand': 0.70,
+            'stand': 0.60,
             'sit': 0.65,
-            'lie': 0.75,    # Raised from 0.65 - sitting was triggering false positives
-            'cross': 0.75,  # Raised from 0.60 - sitting was triggering false positives
+            'lie': 0.70,    # Improved with better aspect ratio detection
             'spin': 0.70,
+            # 'cross' removed - unreliable detection
         }
 
         # Load config (may override confidence_thresholds above)
@@ -106,11 +105,11 @@ class BehaviorInterpreter:
 
         return {
             'sit': {'required_behavior': 'sit', 'hold_duration_sec': 1.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.65, 'audio_command': 'sit.mp3'},
-            'down': {'required_behavior': 'lie', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': ['cross'], 'confidence_threshold': 0.65, 'audio_command': 'lie_down.mp3'},
-            'crosses': {'required_behavior': 'cross', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.60, 'audio_command': 'crosses.mp3'},
+            'down': {'required_behavior': 'lie', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'lie_down.mp3'},
             'spin': {'required_behavior': 'spin', 'hold_duration_sec': 0.3, 'detection_window_sec': 15, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'spin.mp3'},
-            'stand': {'required_behavior': 'stand', 'hold_duration_sec': 2.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'stand.mp3'},
+            'stand': {'required_behavior': 'stand', 'hold_duration_sec': 2.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.60, 'audio_command': 'stand.mp3'},
             'speak': {'required_behavior': 'bark', 'hold_duration_sec': 0, 'detection_window_sec': 5, 'alternative_behaviors': [], 'confidence_threshold': 0.60, 'audio_command': 'speak.mp3', 'min_barks': 1, 'max_barks': 2},
+            # 'crosses' removed - unreliable detection
         }
 
     def _setup_event_subscription(self):
@@ -152,6 +151,15 @@ class BehaviorInterpreter:
             threshold = self.confidence_thresholds.get(behavior, 0.7)
 
             if confidence >= threshold:
+                # SPIN LATCH: Once spin is detected, don't let sit/stand/lie overwrite it
+                # for a short window (spin is instant, dog often lands in sit afterward)
+                if self._last_behavior == 'spin':
+                    spin_age = now - self._behavior_start_time
+                    if spin_age < 2.0 and behavior in ['sit', 'stand', 'lie']:
+                        # Keep the spin, ignore the follow-up pose
+                        logger.debug(f"Spin latch: ignoring {behavior} after spin ({spin_age:.1f}s ago)")
+                        return
+
                 if behavior != self._last_behavior:
                     # New behavior - reset timer
                     self._last_behavior = behavior

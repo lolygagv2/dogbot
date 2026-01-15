@@ -1,9 +1,9 @@
 {
   "imgsz": [640, 640],
   "T": 16,
-  "behaviors": ["stand","sit","lie","cross","spin"],
+  "behaviors": ["stand","sit","lie","spin"],
   "prob_th": 0.7,
-  "cooldown_s": {"stand":2,"sit":5,"lie":5,"cross":4,"spin":8},
+  "cooldown_s": {"stand":2,"sit":5,"lie":5,"spin":8},
   "aruco_dict": "DICT_4X4_1000",
   "dogs": [{"id":"elsa","marker_id":315},{"id":"bezik","marker_id":832}],
   "assume_other_if_two_boxes_one_marker": true,

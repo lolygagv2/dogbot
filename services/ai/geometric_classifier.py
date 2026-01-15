@@ -33,14 +33,16 @@ logger = logging.getLogger(__name__)
 class GeometricConfig:
     """Configuration for geometric classification thresholds"""
     # Aspect ratio thresholds (height / width) - tuned from real testing
-    # Lying: flat/wide (aspect < 0.75)
-    # Standing: moderate (aspect 0.70-1.10)
-    # Sitting: tall (aspect > 1.05)
-    sit_min_aspect: float = 1.05      # Sitting dogs are tall (height > width)
+    # NOTE: Front-facing dogs (crowding robot for treats) look different than side-view!
+    # - Front-facing lying dog (sphinx pose): aspect ~0.8-1.1 (nearly square)
+    # - Side-view lying dog: aspect < 0.6 (flat/wide)
+    # - Sitting dog: aspect > 1.15 (tall)
+    # - Standing dog: fills the gap
+    sit_min_aspect: float = 1.15      # Sitting dogs are tall (raised from 1.05)
     sit_max_aspect: float = 3.0       # Very tall when sitting upright
-    stand_min_aspect: float = 0.70    # Standing is wider
-    stand_max_aspect: float = 1.10    # Up to slightly tall
-    lie_max_aspect: float = 0.75      # Lying dogs up to 0.75 aspect
+    stand_min_aspect: float = 0.95    # Standing - narrowed range
+    stand_max_aspect: float = 1.15    # Up to sit threshold
+    lie_max_aspect: float = 0.95      # RAISED from 0.75 - front-facing sphinx pose is ~0.9
 
     # Keypoint position thresholds (normalized 0-1 within bbox)
     sit_head_max_y: float = 0.35      # Head should be in top 35% when sitting
@@ -90,7 +92,9 @@ class GeometricClassifier:
         self.config = config or GeometricConfig()
 
         # Spin detection history per dog
-        self._orientation_history: Dict[str, deque] = {}
+        self._center_history: Dict[str, deque] = {}  # Track bbox center movement
+        self._orientation_history: Dict[str, deque] = {}  # Legacy - keep for now
+        self._handedness_history: Dict[str, deque] = {}  # Track left/right keypoint flips
         self._lock = threading.Lock()
 
         logger.info("GeometricClassifier initialized")
@@ -125,7 +129,7 @@ class GeometricClassifier:
         norm_kpts = self._normalize_keypoints(keypoints, bbox)
 
         # Check for spin first (requires temporal data)
-        spin_detected, spin_conf = self._check_spin(norm_kpts, dog_id, confident_mask)
+        spin_detected, spin_conf = self._check_spin(norm_kpts, dog_id, confident_mask, bbox)
         if spin_detected:
             return "spin", spin_conf, "geometric_temporal"
 
@@ -174,7 +178,7 @@ class GeometricClassifier:
             "sit": 0.0,
             "stand": 0.0,
             "lie": 0.0,
-            "cross": 0.0
+            # "cross" REMOVED - unreliable detection, dogs don't cross paws reliably
         }
 
         # --- SIT detection ---
@@ -208,13 +212,7 @@ class GeometricClassifier:
         if body_y is not None and body_y > 0.4:
             scores["lie"] += 0.2
 
-        # --- CROSS detection ---
-        # Must be lying + paws close together
-        if scores["lie"] > 0.4 and left_paw is not None and right_paw is not None:
-            paw_distance = abs(left_paw[0] - right_paw[0])
-            if paw_distance < cfg.cross_paw_max_distance:
-                scores["cross"] = scores["lie"] + 0.3
-                scores["lie"] *= 0.5  # Reduce lie score
+        # CROSS detection REMOVED - unreliable, dogs don't cross paws on command reliably
 
         # Find best match
         best_behavior = max(scores.keys(), key=lambda k: scores[k])
@@ -229,24 +227,27 @@ class GeometricClassifier:
         """
         Simple classification by aspect ratio only (height/width).
 
-        Typical ranges:
-        - Lying: flat/wide, aspect < 0.75
-        - Standing: moderate, aspect 0.75 - 1.05
-        - Sitting: tall, aspect > 1.05
+        Typical ranges for FRONT-FACING dogs (crowding robot for treats):
+        - Lying (sphinx pose): aspect < 0.95 (wider than tall, but not as flat as side-view)
+        - Standing: aspect 0.95 - 1.15 (roughly square)
+        - Sitting: aspect > 1.15 (taller than wide)
         """
         cfg = self.config
 
         # Log aspect ratio for tuning
-        logger.debug(f"Aspect ratio: {aspect_ratio:.2f} (lie<{cfg.lie_max_aspect}, stand<{cfg.stand_max_aspect}, sit>{cfg.stand_max_aspect})")
+        logger.info(f"📐 Aspect ratio: {aspect_ratio:.2f} (lie<{cfg.lie_max_aspect:.2f}, stand<{cfg.stand_max_aspect:.2f}, sit>{cfg.sit_min_aspect:.2f})")
 
         if aspect_ratio < cfg.lie_max_aspect:
-            return "lie", 0.75
-        elif aspect_ratio < cfg.stand_max_aspect:
-            return "stand", 0.65
-        elif aspect_ratio < cfg.sit_max_aspect:
-            return "sit", 0.75
+            # Lower aspect = more confident it's lying
+            conf = 0.80 if aspect_ratio < 0.75 else 0.70
+            return "lie", conf
+        elif aspect_ratio >= cfg.sit_min_aspect:
+            # Higher aspect = more confident it's sitting
+            conf = 0.80 if aspect_ratio > 1.3 else 0.70
+            return "sit", conf
         else:
-            return "sit", 0.6  # Very tall = probably sitting
+            # Middle range = standing (lower confidence)
+            return "stand", 0.60
 
     def _get_average_y(self, norm_kpts: np.ndarray, indices: List[int],
                        confident_mask: np.ndarray) -> Optional[float]:
@@ -261,44 +262,120 @@ class GeometricClassifier:
         return None
 
     def _check_spin(self, norm_kpts: np.ndarray, dog_id: str,
-                    confident_mask: np.ndarray) -> Tuple[bool, float]:
+                    confident_mask: np.ndarray, bbox: Tuple[float, float, float, float] = None) -> Tuple[bool, float]:
         """
-        Detect spin by tracking body orientation over time.
+        Detect FAST spins (0.25 sec = 2-3 frames at 10fps).
 
-        A spin is detected when the dog rotates significantly.
+        Key insight: During fast spin, keypoints are garbage (motion blur).
+        But BBOX changes rapidly:
+        - Aspect ratio swings (side->front->side = narrow->wide->narrow)
+        - Center position moves
+
+        We track FRAME-TO-FRAME DELTAS, not long-term statistics.
+        High deltas in aspect + center over 3-5 frames = spin.
         """
-        # Calculate body orientation from shoulders and hips
-        orientation = self._calculate_orientation(norm_kpts, confident_mask)
-
-        if orientation is None:
+        if bbox is None:
             return False, 0.0
 
         with self._lock:
-            if dog_id not in self._orientation_history:
-                self._orientation_history[dog_id] = deque(maxlen=self.config.spin_history_frames)
+            if dog_id not in self._handedness_history:
+                self._handedness_history[dog_id] = deque(maxlen=15)
 
-            history = self._orientation_history[dog_id]
-            history.append(orientation)
+            history = self._handedness_history[dog_id]
 
-            if len(history) < 5:
+            # Extract bbox metrics
+            x1, y1, x2, y2 = bbox
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+            w = max(x2 - x1, 1)
+            h = max(y2 - y1, 1)
+            aspect = h / w
+
+            # Store current frame
+            import time
+            history.append({
+                'time': time.time(),
+                'cx': cx,
+                'cy': cy,
+                'aspect': aspect,
+                'w': w,
+                'h': h
+            })
+
+            # Need at least 4 frames (catches 0.3-0.4 sec spins at 10fps)
+            if len(history) < 4:
                 return False, 0.0
 
-            # Calculate total rotation over history
-            total_rotation = 0.0
-            for i in range(1, len(history)):
-                diff = history[i] - history[i-1]
-                # Handle wraparound at 180/-180
-                if diff > 180:
-                    diff -= 360
-                elif diff < -180:
-                    diff += 360
-                total_rotation += abs(diff)
+            # Calculate RAPID CHANGES over recent frames
+            recent = list(history)[-8:]  # Last 8 frames max
 
-            # Spin detected if total rotation exceeds threshold
-            if total_rotation > self.config.spin_rotation_threshold:
-                confidence = min(0.9, 0.5 + total_rotation / 180.0)
-                # Clear history after detection to prevent repeated triggers
+            # 1. Frame-to-frame aspect ratio changes (sum of absolute deltas)
+            aspect_deltas = []
+            for i in range(1, len(recent)):
+                delta = abs(recent[i]['aspect'] - recent[i-1]['aspect'])
+                aspect_deltas.append(delta)
+            total_aspect_change = sum(aspect_deltas)
+            max_aspect_delta = max(aspect_deltas) if aspect_deltas else 0
+
+            # 2. Frame-to-frame center movement
+            center_deltas = []
+            for i in range(1, len(recent)):
+                dx = abs(recent[i]['cx'] - recent[i-1]['cx'])
+                dy = abs(recent[i]['cy'] - recent[i-1]['cy'])
+                center_deltas.append(dx + dy)
+            total_center_movement = sum(center_deltas)
+            max_center_delta = max(center_deltas) if center_deltas else 0
+
+            # 3. Aspect ratio range (min to max)
+            aspects = [f['aspect'] for f in recent]
+            aspect_range = max(aspects) - min(aspects)
+
+            # 4. Width variation (dog appears wider when sideways during spin)
+            widths = [f['w'] for f in recent]
+            width_range = max(widths) - min(widths)
+
+            # Calculate spin score based on rapid changes
+            # LOWERED THRESHOLDS - fast spins at 10fps need sensitivity
+            spin_score = 0.0
+
+            # Large aspect ratio swings (side-to-front rotation)
+            if total_aspect_change > 0.25:
+                spin_score += 0.25
+            if total_aspect_change > 0.45:
+                spin_score += 0.2
+            if max_aspect_delta > 0.12:  # Single big change
+                spin_score += 0.15
+
+            # Center movement (LOWERED from 50/100)
+            if total_center_movement > 25:
+                spin_score += 0.2
+            if total_center_movement > 50:
+                spin_score += 0.15
+
+            # Aspect range (spinning shows different profiles)
+            if aspect_range > 0.18:
+                spin_score += 0.2
+            if aspect_range > 0.35:
+                spin_score += 0.15
+
+            # Width variation (spinning dog width changes)
+            if width_range > 25:
+                spin_score += 0.15
+
+            # Log for debugging
+            if spin_score > 0.25:
+                logger.debug(f"Spin check: aspect_change={total_aspect_change:.2f}, "
+                            f"center_move={total_center_movement:.0f}, "
+                            f"aspect_range={aspect_range:.2f}, score={spin_score:.2f}")
+
+            # Detect spin with lower threshold (fast spins need sensitivity)
+            if spin_score >= 0.40:
+                confidence = min(0.80, 0.55 + spin_score * 0.3)
+                # Clear history after detection
                 history.clear()
+                logger.info(f"🔄 SPIN detected! aspect_change={total_aspect_change:.2f}, "
+                           f"center_move={total_center_movement:.0f}, aspect_range={aspect_range:.2f}, "
+                           f"width_range={width_range:.0f}, score={spin_score:.2f}")
                 return True, confidence
 
         return False, 0.0
@@ -327,13 +404,19 @@ class GeometricClassifier:
         return None
 
     def reset_history(self, dog_id: str = None):
-        """Clear orientation history for spin detection"""
+        """Clear all spin detection history"""
         with self._lock:
             if dog_id:
                 if dog_id in self._orientation_history:
                     self._orientation_history[dog_id].clear()
+                if dog_id in self._handedness_history:
+                    self._handedness_history[dog_id].clear()
+                if dog_id in self._center_history:
+                    self._center_history[dog_id].clear()
             else:
                 self._orientation_history.clear()
+                self._handedness_history.clear()
+                self._center_history.clear()
 
 
 # Singleton instance

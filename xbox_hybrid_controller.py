@@ -324,12 +324,11 @@ class XboxHybridControllerFixed:
 
         # Trick cycling (Xbox Guide button) - for coach mode testing
         self._trick_cycle_index = 0
-        self._available_tricks = ['sit', 'down', 'crosses', 'spin', 'speak']
+        self._available_tricks = ['sit', 'down', 'spin', 'speak']  # crosses removed - unreliable
         # Audio files for each trick (from trick_rules.yaml)
         self._trick_audio = {
             'sit': 'sit.mp3',
             'down': 'lie_down.mp3',
-            'crosses': 'crosses.mp3',
             'spin': 'spin.mp3',
             'speak': 'speak.mp3'
         }

@@ -1,8 +1,8 @@
 {
   "name": "trick_master",
   "display_name": "Trick Master",
-  "description": "Advanced training - sit, down, crossed paws, and speak on command",
-  "missions": ["sit_sustained", "down_sustained", "afternoon_crosses_2", "sit_and_speak"],
+  "description": "Advanced training - sit, down, spin, and speak on command",
+  "missions": ["sit_sustained", "down_sustained", "sit_and_speak"],
   "created_by": "preset",
   "repeat": false,
   "daily_treat_limit": 20,

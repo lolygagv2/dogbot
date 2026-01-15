@@ -97,7 +97,8 @@ class CoachingEngine:
 
     # Default tricks for rotation (loaded from config at runtime)
     # These are fallbacks if config not loaded
-    DEFAULT_TRICKS = ['sit', 'down', 'crosses', 'spin', 'speak']
+    # NOTE: 'crosses' removed - unreliable detection
+    DEFAULT_TRICKS = ['sit', 'down', 'spin', 'speak']
 
     # Speak trick settings (loaded from config)
     SPEAK_TIMEOUT = 5.0      # Seconds to wait for barks
@@ -374,7 +375,7 @@ class CoachingEngine:
         return True
 
     def _select_trick(self, dog_id: str) -> str:
-        """Select a trick avoiding recent ones for this dog"""
+        """Select next trick in sequential rotation"""
         # Check for forced trick (testing mode)
         if self._forced_trick:
             logger.info(f"Using forced trick: {self._forced_trick}")
@@ -382,14 +383,22 @@ class CoachingEngine:
 
         history = self._get_or_create_history(dog_id)
 
-        # Get available tricks (not in last 3)
-        available = [t for t in self.TRICKS if t not in history.last_tricks]
+        # Sequential rotation: get last trick and pick the next one
+        if history.last_tricks:
+            last_trick = history.last_tricks[-1]
+            try:
+                last_idx = self.TRICKS.index(last_trick)
+                next_idx = (last_idx + 1) % len(self.TRICKS)
+            except ValueError:
+                # Last trick not in current list, start from beginning
+                next_idx = 0
+        else:
+            # No history, start from first trick
+            next_idx = 0
 
-        if not available:
-            # All tricks used recently, pick any
-            available = self.TRICKS.copy()
-
-        return random.choice(available)
+        trick = self.TRICKS[next_idx]
+        logger.info(f"Sequential rotation: {trick} (index {next_idx}/{len(self.TRICKS)-1})")
+        return trick
 
     def _run_loop(self):
         """Main engine loop"""
@@ -552,13 +561,14 @@ class CoachingEngine:
             self.fsm_state = CoachState.WAITING_FOR_DOG
             return
 
-        dog_name = self.current_session.dog_name
+        dog_name = self.current_session.dog_name or 'dog'
         trick = self.current_session.trick_requested or "trick"
 
         # Start video recording for this coaching session
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"coach_{dog_name.lower()}_{trick}_{timestamp}.mp4"
+            safe_name = dog_name.lower().replace(' ', '_')
+            filename = f"coach_{safe_name}_{trick}_{timestamp}.mp4"
             self._session_video_path = self.video_recorder.start_recording(filename)
             logger.info(f"Started coaching video: {self._session_video_path}")
         except Exception as e:
@@ -569,8 +579,15 @@ class CoachingEngine:
         if self.led:
             self.led.set_pattern('attention', duration=2.0)
 
-        # Say dog's name - wait for it to complete before giving command
-        self._play_audio(f'{dog_name.lower()}.mp3', wait=True, timeout=5.0)
+        # Say dog's name - try specific name first, fallback to generic
+        name_audio = f'{dog_name.lower()}.mp3'
+        base_path = '/home/morgan/dogbot/VOICEMP3/talks'
+        if not os.path.exists(os.path.join(base_path, name_audio)):
+            # Fallback to generic greeting for unknown dogs
+            name_audio = 'dogs_come.mp3'
+            logger.info(f"No audio for '{dog_name}', using generic greeting")
+
+        self._play_audio(name_audio, wait=True, timeout=5.0)
         time.sleep(0.5)  # Brief pause between name and command
 
         self.fsm_state = CoachState.COMMAND
@@ -730,8 +747,13 @@ class CoachingEngine:
         if self.led:
             self.led.set_pattern('attention', duration=2.0)
 
-        # Say dog's name again - wait for completion
-        self._play_audio(f'{dog_name.lower()}.mp3', wait=True, timeout=5.0)
+        # Say dog's name again - try specific name first, fallback to generic
+        name_audio = f'{dog_name.lower()}.mp3'
+        base_path = '/home/morgan/dogbot/VOICEMP3/talks'
+        if not os.path.exists(os.path.join(base_path, name_audio)):
+            name_audio = 'dogs_come.mp3'
+
+        self._play_audio(name_audio, wait=True, timeout=5.0)
         time.sleep(0.5)  # Brief pause between name and command
 
         self.fsm_state = CoachState.RETRY_COMMAND
@@ -998,26 +1020,57 @@ class CoachingEngine:
             return {'reset': reset_dogs}
 
     def reset_session_cooldown(self) -> Dict[str, Any]:
-        """Reset global session cooldown - allows immediate new session.
-        Called by Guide button to manually trigger coaching sessions."""
+        """FULL RESET - Cancel current session and start fresh.
+        Called by Guide button to manually trigger new coaching sessions.
+
+        This is a HARD RESET that:
+        - Cancels any in-progress session
+        - Clears FSM state back to WAITING_FOR_DOG
+        - Resets all tracking (barks, behaviors)
+        - Clears cooldowns
+        - Fast-tracks visible dogs for immediate eligibility
+        """
+        # Stop any video recording in progress
+        if self._session_video_path:
+            try:
+                self.video_recorder.stop_recording()
+                logger.info(f"Video stopped due to reset: {self._session_video_path}")
+            except Exception as e:
+                logger.warning(f"Error stopping video on reset: {e}")
+            self._session_video_path = None
+
+        # Cancel current session completely
+        self.current_session = None
+
+        # Reset FSM to waiting state
+        self.fsm_state = CoachState.WAITING_FOR_DOG
+
+        # Reset bark tracking
+        self.bark_count = 0
+        self.bark_timestamps = []
+        self.listening_for_barks = False
+
+        # Reset behavior interpreter tracking
+        if self.interpreter:
+            self.interpreter.reset_tracking()
+
+        # Clear cooldown
         self._last_session_end = 0.0
 
-        # DON'T clear dogs_in_view - that throws away valid tracking data!
-        # Instead, fast-track any visible dogs to be immediately eligible
+        # Fast-track any visible dogs to be immediately eligible
         now = time.time()
         for dog_id, info in self.dogs_in_view.items():
             # Set first_seen to 4 seconds ago so detection_time_sec (3s) is already met
             info['first_seen'] = now - 4.0
             # Update last_seen to NOW so dog isn't immediately cleaned up as stale
             info['last_seen'] = now
-            # RESET (not max!) presence counters to guarantee 100% ratio
-            # This survives a few loop iterations without detections
+            # RESET presence counters to guarantee 100% ratio
             info['frames_seen'] = 10
             info['frames_total'] = 10
 
         dogs_count = len(self.dogs_in_view)
-        logger.info(f"🔄 Session cooldown reset - {dogs_count} dogs fast-tracked for immediate session")
-        return {'reset': True, 'dogs_ready': dogs_count, 'message': 'Session cooldown reset'}
+        logger.info(f"🔄 FULL RESET - Session cancelled, {dogs_count} dogs ready for new session")
+        return {'reset': True, 'dogs_ready': dogs_count, 'message': 'Full reset - ready for new session'}
 
     def set_forced_trick(self, trick: str = None) -> Dict[str, Any]:
         """Force a specific trick for testing (None to clear)"""

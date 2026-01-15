@@ -24,8 +24,8 @@ tricks:
     required_behavior: "lie"
     hold_duration_sec: 1.5
     detection_window_sec: 10
-    alternative_behaviors: ["cross"]  # Accept crossed paws as "down"
-    confidence_threshold: 0.75        # Raised from 0.65 - sitting was triggering false positives
+    alternative_behaviors: []         # Cross removed - unreliable detection
+    confidence_threshold: 0.70        # Lowered - improved aspect ratio detection
     difficulty: 2
     audio_command: "lie_down.mp3"
 
@@ -40,16 +40,7 @@ tricks:
     audio_command: "stand.mp3"
 
   # ===== ADVANCED TRICKS =====
-
-  crosses:
-    description: "Dog lies with paws crossed"
-    required_behavior: "cross"
-    hold_duration_sec: 1.5
-    detection_window_sec: 10
-    alternative_behaviors: []     # Must be specifically crossed paws
-    confidence_threshold: 0.75    # Raised from 0.60 - sitting was triggering false positives
-    difficulty: 3
-    audio_command: "crosses.mp3"
+  # NOTE: "crosses" trick REMOVED - unreliable detection, dogs don't cross paws on command
 
   spin:
     description: "Dog spins in a circle"
@@ -91,12 +82,11 @@ rewards:
 
 detection:
   # Per-behavior confidence thresholds
-  # Higher thresholds for cross/lie to prevent sitting from triggering false positives
+  # Tuned for front-facing dogs with improved aspect ratio detection
   confidence_overrides:
     sit: 0.65
-    lie: 0.75     # Raised from 0.65 - sitting was triggering false positives
-    cross: 0.75   # Raised from 0.60 - sitting was triggering false positives
-    stand: 0.70
+    lie: 0.70     # Lowered - improved aspect ratio detection
+    stand: 0.60   # Lower confidence for middle-range aspect ratios
     spin: 0.70
 
   # Temporal smoothing

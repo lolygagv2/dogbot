@@ -103,7 +103,7 @@ class AI3StageControllerFixed:
         # Stage 3: Temporal behavior analysis
         self.T = 16  # Temporal window size (frames)
         self.pose_history = deque(maxlen=self.T)  # Stores list of keypoints per frame
-        self.behaviors = ["stand", "sit", "lie", "cross", "spin"]  # Behavior classes
+        self.behaviors = ["stand", "sit", "lie", "spin"]  # Behavior classes (cross REMOVED - unreliable)
 
         # Frame dimensions for behavior normalization (updated each frame)
         self.current_frame_w = 640
@@ -149,17 +149,17 @@ class AI3StageControllerFixed:
         logger.info("PoseValidator initialized for behavior filtering")
 
         # Initialize geometric classifier as fallback for poor keypoint quality
-        # Thresholds tuned based on real testing - aspect ratio = height/width
-        # Lying dog: flat/wide (aspect < 0.75)
-        # Standing dog: moderate (aspect 0.70-1.10)
-        # Sitting dog: tall (aspect > 1.05)
+        # Thresholds tuned for FRONT-FACING dogs (crowding robot for treats)
+        # - Front-facing lying dog (sphinx pose): aspect ~0.8-0.95 (nearly square)
+        # - Sitting dog: aspect > 1.15 (taller than wide)
+        # - Standing dog: aspect 0.95-1.15 (roughly square)
         geo_config = GeometricConfig(
-            sit_min_aspect=1.05,       # Sitting dogs are tall (height > width)
+            sit_min_aspect=1.15,       # Sitting dogs are tall (raised from 1.05)
             sit_max_aspect=3.0,        # Very tall when sitting upright
-            stand_min_aspect=0.70,     # Standing is wider
-            stand_max_aspect=1.10,     # Can be slightly tall
-            lie_max_aspect=0.75,       # RAISED from 0.55 - lying dogs up to 0.75
-            cross_paw_max_distance=0.18,
+            stand_min_aspect=0.95,     # Narrowed range
+            stand_max_aspect=1.15,     # Up to sit threshold
+            lie_max_aspect=0.95,       # RAISED from 0.75 - front-facing sphinx ~0.9
+            cross_paw_max_distance=0.18,  # Kept but cross detection disabled
             min_keypoint_conf=0.25,
             high_conf_keypoints=8,
         )
@@ -817,30 +817,21 @@ class AI3StageControllerFixed:
                                        f"kpts={visible_kpts}/24)")
 
                 # Fall back to LSTM if geometric didn't produce result
+                # NOTE: LSTM is mostly disabled (_force_geometric=True) due to poor keypoint quality
                 if behavior_name is None and max_prob > self.prob_th:
                     if max_idx < len(self.behaviors):
                         behavior_name = self.behaviors[max_idx]
                         classification_method = "lstm"
-
-                        # Post-processing: verify "cross" by checking paw positions
-                        if behavior_name == "cross" and dog_idx < len(current_poses):
-                            pose = current_poses[dog_idx]
-                            if not self._verify_cross_pose(pose.keypoints):
-                                # Paws not crossed - likely "lie" instead
-                                lie_idx = self.behaviors.index("lie") if "lie" in self.behaviors else -1
-                                if lie_idx >= 0:
-                                    lie_prob = float(dog_probs[lie_idx])
-                                    if lie_prob > 0.3:
-                                        behavior_name = "lie"
-                                        max_prob = max(lie_prob, 0.75)
-                                        logger.info(f"🔄 CROSS->LIE: paws not crossed, using lie (conf={max_prob:.2f})")
-                                    else:
-                                        behavior_name = None  # Skip this detection
+                        # Cross behavior removed from system - no post-processing needed
 
                 # Process the behavior if we have one
                 if behavior_name is not None:
-                    # Apply temporal voting for stable predictions
-                    if self._temporal_voting_enabled:
+                    # SPIN bypasses temporal voting - it's a quick motion, not a held pose
+                    # Temporal voting would average it out to "stand" since spin only lasts 1-2 frames
+                    if behavior_name == "spin":
+                        logger.info(f"🔄 SPIN bypasses temporal voting (instant detection)")
+                    elif self._temporal_voting_enabled:
+                        # Apply temporal voting for stable predictions (sit, stand, lie)
                         dog_id = f"dog_{dog_idx}"
                         stable_behavior, stable_conf, is_stable = self.pose_validator.temporal_vote(
                             dog_id, behavior_name, max_prob
