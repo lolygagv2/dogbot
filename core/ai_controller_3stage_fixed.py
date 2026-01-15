@@ -21,6 +21,7 @@ from core.dog_tracker import DogTracker
 from core.event_publisher import DogEventPublisher
 from core.dog_database import DogDatabase
 from core.bus import EventBus
+from services.ai.pose_validator import get_pose_validator, PoseValidatorConfig
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -125,6 +126,21 @@ class AI3StageControllerFixed:
         self.event_bus = EventBus()
         self.event_publisher = DogEventPublisher(self.event_bus)
         self.dog_database = DogDatabase()
+
+        # Initialize pose validator for filtering bad detections
+        validator_config = PoseValidatorConfig(
+            min_keypoint_confidence=0.35,
+            min_visible_keypoints=6,
+            blur_threshold=80.0,
+            min_bbox_area=4000,
+            temporal_window=5,
+            temporal_threshold=0.6,
+            cross_confidence_penalty=0.15,  # Penalize cross predictions
+        )
+        self.pose_validator = get_pose_validator(validator_config)
+        self._validation_enabled = True  # Can be disabled for debugging
+        self._temporal_voting_enabled = True  # Can be disabled for debugging
+        logger.info("PoseValidator initialized for behavior filtering")
 
     def _load_config(self):
         """Load configuration from JSON"""
@@ -333,8 +349,8 @@ class AI3StageControllerFixed:
             if not detections:
                 return detections, [], []
 
-            # Stage 3: Analyze behaviors from pose history
-            behaviors = self._stage3_analyze_behavior(poses)
+            # Stage 3: Analyze behaviors from pose history (pass frame for validation)
+            behaviors = self._stage3_analyze_behavior(poses, frame_4k)
 
             return detections, poses, behaviors
 
@@ -559,8 +575,8 @@ class AI3StageControllerFixed:
 
         return inter_area / union_area if union_area > 0 else 0
 
-    def _stage3_analyze_behavior(self, poses: List[PoseKeypoints]) -> List[BehaviorResult]:
-        """Stage 3: Temporal behavior analysis using TorchScript model"""
+    def _stage3_analyze_behavior(self, poses: List[PoseKeypoints], frame: np.ndarray = None) -> List[BehaviorResult]:
+        """Stage 3: Temporal behavior analysis using TorchScript model with pose validation"""
         behaviors = []
 
         if not poses:
@@ -578,7 +594,7 @@ class AI3StageControllerFixed:
 
             # Use TorchScript model if available
             if self.behavior_model is not None:
-                behaviors = self._analyze_with_torchscript(poses)
+                behaviors = self._analyze_with_torchscript(poses, frame)
             else:
                 # Fallback to simple heuristics
                 current_time = time.time()
@@ -594,8 +610,8 @@ class AI3StageControllerFixed:
             logger.error(f"Stage 3 behavior error: {e}")
             return behaviors
 
-    def _analyze_with_torchscript(self, current_poses: List[PoseKeypoints]) -> List[BehaviorResult]:
-        """Analyze behavior using TorchScript temporal model"""
+    def _analyze_with_torchscript(self, current_poses: List[PoseKeypoints], frame: np.ndarray = None) -> List[BehaviorResult]:
+        """Analyze behavior using TorchScript temporal model with pose validation"""
         behaviors = []
         current_time = time.time()
 
@@ -607,6 +623,25 @@ class AI3StageControllerFixed:
             max_dogs = max(len(frame_poses) for frame_poses in sequence if frame_poses)
             if max_dogs == 0:
                 return behaviors
+
+            # Track which dogs have valid poses in current frame (for validation)
+            valid_dog_mask = [True] * max_dogs
+
+            # Validate current poses if validation is enabled
+            if self._validation_enabled and frame is not None and len(current_poses) > 0:
+                for dog_idx, pose in enumerate(current_poses):
+                    if dog_idx >= max_dogs:
+                        break
+                    det = pose.detection
+                    bbox = (det.x1, det.y1, det.x2, det.y2)
+
+                    validation = self.pose_validator.validate_pose(
+                        frame, pose.keypoints, bbox, check_blur=True
+                    )
+
+                    if not validation.is_valid:
+                        valid_dog_mask[dog_idx] = False
+                        logger.debug(f"Dog {dog_idx} pose rejected: {validation.reason}")
 
             tensor_data = []
 
@@ -656,24 +691,34 @@ class AI3StageControllerFixed:
             # Apply softmax to get probabilities
             probs = torch.softmax(output, dim=-1).numpy()
 
+            # Clamp probabilities to prevent unrealistic 1.0 outputs
+            # Real-world ML should never be 100% confident
+            probs = np.clip(probs, 0.0, 0.98)
+
             # Handle different output shapes
             if probs.ndim == 1:
                 probs = probs.reshape(1, -1)
 
             # Get behaviors for each dog
             for dog_idx in range(min(max_dogs, len(probs))):
+                # Skip dogs with invalid poses (from validation)
+                if dog_idx < len(valid_dog_mask) and not valid_dog_mask[dog_idx]:
+                    logger.debug(f"Skipping dog {dog_idx} due to invalid pose")
+                    continue
+
                 dog_probs = probs[dog_idx]
                 max_idx = np.argmax(dog_probs)
                 max_prob = float(dog_probs[max_idx])
 
-                # Debug: log all probabilities periodically
+                # Debug: log all probabilities periodically (more frequent for debugging)
                 if dog_idx == 0:
                     if not hasattr(self, '_behavior_log_counter'):
                         self._behavior_log_counter = 0
                     self._behavior_log_counter += 1
-                    if self._behavior_log_counter % 15 == 0:  # Every 15 frames
+                    if self._behavior_log_counter % 10 == 0:  # Every 10 frames (~1 sec)
                         prob_str = ", ".join([f"{b}:{p:.2f}" for b, p in zip(self.behaviors, dog_probs)])
-                        logger.info(f"Behavior probs: [{prob_str}]")
+                        max_behavior = self.behaviors[np.argmax(dog_probs)]
+                        logger.info(f"Behavior probs: [{prob_str}] -> {max_behavior}")
 
                 if max_prob > self.prob_th:
                     if max_idx < len(self.behaviors):
@@ -698,11 +743,26 @@ class AI3StageControllerFixed:
                                         logger.debug(f"Skipping false cross detection (paws apart, lie_prob={lie_prob:.2f})")
                                         continue
 
+                        # Apply temporal voting for stable predictions
+                        if self._temporal_voting_enabled:
+                            dog_id = f"dog_{dog_idx}"
+                            stable_behavior, stable_conf, is_stable = self.pose_validator.temporal_vote(
+                                dog_id, behavior_name, max_prob
+                            )
+
+                            if not is_stable:
+                                logger.debug(f"Dog {dog_idx} behavior {behavior_name} unstable, waiting...")
+                                continue
+
+                            # Use temporally smoothed values
+                            behavior_name = stable_behavior
+                            max_prob = stable_conf
+
                         # Check cooldown
                         if self._check_cooldown(behavior_name, dog_idx):
                             behaviors.append(BehaviorResult(behavior_name, max_prob, current_time))
                             self._update_cooldown(behavior_name, dog_idx)
-                            logger.info(f"🎯 BEHAVIOR: {behavior_name} (conf={max_prob:.2f})")
+                            logger.info(f"🎯 BEHAVIOR: {behavior_name} (conf={max_prob:.2f}, validated=True)")
 
             return behaviors
 
@@ -751,22 +811,23 @@ class AI3StageControllerFixed:
                 if left_shoulder[2] > 0.3 and right_shoulder[2] > 0.3:
                     body_width = abs(left_shoulder[0] - right_shoulder[0])
                     if body_width > 0:
-                        # Paws should be within 30% of body width for "cross"
+                        # Paws should be within 20% of body width for "cross"
+                        # Tightened from 0.35 - was causing massive false positives
                         paw_ratio = horizontal_dist / body_width
-                        is_crossed = paw_ratio < 0.35
+                        is_crossed = paw_ratio < 0.20
 
                         if not is_crossed:
-                            logger.debug(f"Cross verify: paw_ratio={paw_ratio:.2f} (>0.35 = NOT crossed)")
+                            logger.debug(f"Cross verify: paw_ratio={paw_ratio:.2f} (>0.20 = NOT crossed)")
 
                         return is_crossed
 
             # Fallback: just check absolute horizontal distance
-            # For 640px frame, crossed paws should be < 50px apart
-            return horizontal_dist < 50
+            # For 640px frame, crossed paws should be < 30px apart (tightened from 50)
+            return horizontal_dist < 30
 
         except Exception as e:
             logger.error(f"Cross verification error: {e}")
-            return True  # On error, trust the model
+            return False  # On error, reject cross - was causing false positives
 
     def _check_cooldown(self, behavior: str, dog_idx: int) -> bool:
         """Check if behavior is off cooldown"""
@@ -857,7 +918,7 @@ class AI3StageControllerFixed:
 
     def get_status(self) -> Dict[str, Any]:
         """Get current status"""
-        return {
+        status = {
             "initialized": self.initialized,
             "hailo_available": HAILO_AVAILABLE,
             "model": self.config.get("hef_path", "N/A") if self.config else "N/A",
@@ -865,5 +926,30 @@ class AI3StageControllerFixed:
             "input_size": self.input_size,
             "behavior_history_length": len(self.behavior_history),
             "vdevice_ready": self.vdevice is not None,
-            "active_model_loaded": self.active_hef is not None
+            "active_model_loaded": self.active_hef is not None,
+            "validation_enabled": self._validation_enabled,
+            "temporal_voting_enabled": self._temporal_voting_enabled,
         }
+
+        # Add validator stats
+        if hasattr(self, 'pose_validator'):
+            status["validator_stats"] = self.pose_validator.get_stats()
+
+        return status
+
+    def set_validation_enabled(self, enabled: bool):
+        """Enable or disable pose validation (for debugging)"""
+        self._validation_enabled = enabled
+        logger.info(f"Pose validation {'enabled' if enabled else 'disabled'}")
+
+    def set_temporal_voting_enabled(self, enabled: bool):
+        """Enable or disable temporal voting (for debugging)"""
+        self._temporal_voting_enabled = enabled
+        logger.info(f"Temporal voting {'enabled' if enabled else 'disabled'}")
+
+    def reset_validator_stats(self):
+        """Reset pose validator statistics"""
+        if hasattr(self, 'pose_validator'):
+            self.pose_validator.reset_stats()
+            self.pose_validator.reset_temporal()
+            logger.info("Pose validator stats and temporal history reset")

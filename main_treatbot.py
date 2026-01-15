@@ -119,15 +119,40 @@ class TreatBotMain:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
     def _setup_logging(self) -> logging.Logger:
-        """Setup logging system"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler('/var/log/treatbot.log', mode='a') if os.access('/var/log', os.W_OK) else logging.StreamHandler()
-            ]
+        """Setup logging system with file rotation"""
+        from logging.handlers import RotatingFileHandler
+
+        # Ensure logs directory exists
+        log_dir = '/home/morgan/dogbot/logs'
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, 'treatbot.log')
+
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
+
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+
+        # File handler with rotation (10MB max, keep 5 backups)
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5,
+            encoding='utf-8'
+        )
+        file_handler.setLevel(logging.DEBUG)  # Capture more detail to file
+        file_handler.setFormatter(formatter)
+
+        # Configure root logger
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
+        root_logger.addHandler(console_handler)
+        root_logger.addHandler(file_handler)
+
         return logging.getLogger('TreatBotMain')
 
     def initialize(self) -> bool:
