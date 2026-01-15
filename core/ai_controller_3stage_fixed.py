@@ -465,7 +465,7 @@ class AI3StageControllerFixed:
                         conf_raw = np.clip(conf_raw, -500, 500)
                         conf = 1.0 / (1.0 + np.exp(-conf_raw))  # Sigmoid
 
-                        if conf < 0.3:  # Confidence threshold
+                        if conf < 0.5:  # Confidence threshold (raised from 0.3 - too many false positives)
                             continue
 
                         # Decode bounding box from DFL format (64 channels = 4 sides * 16 bins)
@@ -517,6 +517,31 @@ class AI3StageControllerFixed:
                             kpts[k, 0] = (kpts_raw[k * 3] + j) * stride * scale_factors[0]
                             kpts[k, 1] = (kpts_raw[k * 3 + 1] + i) * stride * scale_factors[1]
                             kpts[k, 2] = 1.0 / (1.0 + np.exp(-kpts_raw[k * 3 + 2]))
+
+                        # VALIDATION: Reject detections with too few confident keypoints
+                        # This catches false positives on walls/furniture
+                        confident_kpts = np.sum(kpts[:, 2] > 0.3)
+                        if confident_kpts < 6:  # Need at least 6 keypoints visible
+                            logger.debug(f"Rejecting detection: only {confident_kpts}/24 keypoints confident")
+                            detections.pop()  # Remove the detection we just added
+                            continue
+
+                        # Check for leg keypoints specifically (5-16 are legs)
+                        leg_keypoints = kpts[5:17, 2]  # Front and back legs
+                        confident_legs = np.sum(leg_keypoints > 0.2)
+                        if confident_legs < 2:  # Need at least 2 leg keypoints
+                            logger.debug(f"Rejecting detection: only {confident_legs}/12 leg keypoints visible")
+                            detections.pop()
+                            continue
+
+                        # Check bounding box aspect ratio (dogs aren't door-shaped)
+                        bbox_width = x2_scaled - x1_scaled
+                        bbox_height = y2_scaled - y1_scaled
+                        aspect_ratio = bbox_height / max(bbox_width, 1)
+                        if aspect_ratio > 2.5 or aspect_ratio < 0.3:
+                            logger.debug(f"Rejecting detection: bad aspect ratio {aspect_ratio:.2f}")
+                            detections.pop()
+                            continue
 
                         poses.append(PoseKeypoints(kpts, detection))
 
@@ -703,7 +728,7 @@ class AI3StageControllerFixed:
                 max_idx = np.argmax(dog_probs)
                 max_prob = float(dog_probs[max_idx])
 
-                # Debug: log all probabilities periodically (more frequent for debugging)
+                # Debug: log all probabilities and keypoint stats periodically
                 if dog_idx == 0:
                     if not hasattr(self, '_behavior_log_counter'):
                         self._behavior_log_counter = 0
@@ -711,7 +736,16 @@ class AI3StageControllerFixed:
                     if self._behavior_log_counter % 10 == 0:  # Every 10 frames (~1 sec)
                         prob_str = ", ".join([f"{b}:{p:.2f}" for b, p in zip(self.behaviors, dog_probs)])
                         max_behavior = self.behaviors[np.argmax(dog_probs)]
-                        logger.info(f"Behavior probs: [{prob_str}] -> {max_behavior}")
+
+                        # Log keypoint confidence stats for current pose
+                        if dog_idx < len(current_poses):
+                            kpts = current_poses[dog_idx].keypoints
+                            kpt_confs = kpts[:, 2]
+                            visible_kpts = np.sum(kpt_confs > 0.3)
+                            leg_confs = kpts[5:17, 2]  # Leg keypoints
+                            visible_legs = np.sum(leg_confs > 0.2)
+                            logger.info(f"Behavior probs: [{prob_str}] -> {max_behavior} | "
+                                       f"keypoints: {visible_kpts}/24 visible, {visible_legs}/12 legs")
 
                 if max_prob > self.prob_th:
                     if max_idx < len(self.behaviors):
