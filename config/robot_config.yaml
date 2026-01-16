@@ -135,3 +135,28 @@ bark_detection:
   # Processing
   check_interval: 0.5  # Seconds between bark checks
   cooldown_period: 5.0  # Seconds to wait between treats
+
+# WebRTC Streaming Configuration
+webrtc:
+  enabled: true
+
+  # ICE servers for NAT traversal
+  stun_servers:
+    - "stun:stun.l.google.com:19302"
+    - "stun:stun1.l.google.com:19302"
+
+  # TURN servers (add credentials for cloud relay)
+  turn_servers: []
+    # - urls: "turn:your-turn-server.com:3478"
+    #   username: "wimz"
+    #   credential: "your-secret"
+
+  # Video settings
+  video:
+    fps: 15              # Target FPS (15 recommended for Pi 5)
+    bitrate: 1500000     # 1.5 Mbps max bitrate
+    codec: "VP8"         # VP8 or H264
+    enable_ai_overlay: true  # Draw detection boxes on stream
+
+  # Connection limits
+  max_connections: 2     # Max concurrent WebRTC clients

@@ -1919,6 +1919,168 @@ async def toggle_video_recording(filename_prefix: str = "recording"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============== WEBRTC STREAMING ENDPOINTS ==============
+
+class WebRTCOfferRequest(BaseModel):
+    """WebRTC SDP offer request"""
+    session_id: str
+    sdp: str
+
+class WebRTCIceRequest(BaseModel):
+    """WebRTC ICE candidate request"""
+    session_id: str
+    candidate: str
+    sdpMid: Optional[str] = None
+    sdpMLineIndex: Optional[int] = None
+
+
+@app.get("/webrtc/status")
+async def webrtc_status():
+    """Get WebRTC service status"""
+    try:
+        from services.streaming.webrtc import get_webrtc_service
+        webrtc = get_webrtc_service()
+        return webrtc.get_status()
+    except Exception as e:
+        logger.error(f"WebRTC status error: {e}")
+        return {
+            "enabled": False,
+            "error": str(e)
+        }
+
+
+@app.post("/webrtc/offer")
+async def webrtc_offer(request: WebRTCOfferRequest):
+    """
+    Handle WebRTC SDP offer and return answer
+
+    Client sends offer, server returns answer for peer connection
+    """
+    try:
+        from services.streaming.webrtc import get_webrtc_service
+        webrtc = get_webrtc_service()
+
+        answer_sdp = await webrtc.handle_offer(
+            session_id=request.session_id,
+            sdp=request.sdp
+        )
+
+        return {
+            "success": True,
+            "session_id": request.session_id,
+            "sdp": answer_sdp,
+            "type": "answer"
+        }
+    except Exception as e:
+        logger.error(f"WebRTC offer error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/webrtc/ice")
+async def webrtc_ice(request: WebRTCIceRequest):
+    """Add ICE candidate to WebRTC peer connection"""
+    try:
+        from services.streaming.webrtc import get_webrtc_service
+        webrtc = get_webrtc_service()
+
+        await webrtc.add_ice_candidate(
+            session_id=request.session_id,
+            candidate_dict={
+                "candidate": request.candidate,
+                "sdpMid": request.sdpMid,
+                "sdpMLineIndex": request.sdpMLineIndex
+            }
+        )
+
+        return {"success": True, "session_id": request.session_id}
+    except Exception as e:
+        logger.error(f"WebRTC ICE error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/webrtc/close/{session_id}")
+async def webrtc_close(session_id: str):
+    """Close WebRTC connection for a session"""
+    try:
+        from services.streaming.webrtc import get_webrtc_service
+        webrtc = get_webrtc_service()
+
+        await webrtc.close_connection(session_id)
+
+        return {"success": True, "session_id": session_id, "message": "Connection closed"}
+    except Exception as e:
+        logger.error(f"WebRTC close error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws/webrtc/{session_id}")
+async def websocket_webrtc(websocket: WebSocket, session_id: str):
+    """
+    WebSocket endpoint for WebRTC signaling
+
+    Handles real-time SDP and ICE candidate exchange
+    """
+    await websocket.accept()
+    logger.info(f"WebRTC WebSocket connected: {session_id}")
+
+    try:
+        from services.streaming.webrtc import get_webrtc_service
+        webrtc = get_webrtc_service()
+
+        # ICE candidate callback to send candidates to client
+        async def send_ice_candidate(candidate):
+            await websocket.send_json({
+                "type": "ice",
+                "session_id": session_id,
+                "candidate": {
+                    "candidate": candidate.candidate,
+                    "sdpMid": candidate.sdpMid,
+                    "sdpMLineIndex": candidate.sdpMLineIndex
+                }
+            })
+
+        # Create peer connection with ICE callback
+        await webrtc.create_peer_connection(session_id, on_ice_candidate=send_ice_candidate)
+
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type")
+
+            if msg_type == "offer":
+                # Client sent offer, create answer
+                sdp = data.get("sdp")
+                answer_sdp = await webrtc.handle_offer(session_id, sdp)
+
+                await websocket.send_json({
+                    "type": "answer",
+                    "session_id": session_id,
+                    "sdp": answer_sdp
+                })
+
+            elif msg_type == "ice":
+                # Client sent ICE candidate
+                candidate_data = data.get("candidate", {})
+                await webrtc.add_ice_candidate(session_id, candidate_data)
+
+            elif msg_type == "close":
+                # Client requested close
+                await webrtc.close_connection(session_id)
+                break
+
+            elif msg_type == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        logger.info(f"WebRTC WebSocket disconnected: {session_id}")
+    except Exception as e:
+        logger.error(f"WebRTC WebSocket error: {e}")
+    finally:
+        try:
+            await webrtc.close_connection(session_id)
+        except:
+            pass
+
+
 # USB Audio Control endpoints
 @app.get("/audio/status")
 async def get_audio_status():

@@ -1,5 +1,79 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-16 ~04:30
+**Goal:** Add WebRTC streaming for mobile app (Phase 2 of Flutter app project)
+**Status:** Complete - WebRTC service implemented, needs restart to activate
+
+---
+
+### Work Completed
+
+#### 1. WebRTC Streaming Service Created
+New files added to `services/streaming/`:
+- `__init__.py` - Package exports
+- `video_track.py` - WIMZVideoTrack class (aiortc VideoStreamTrack)
+- `webrtc.py` - WebRTCService singleton
+
+**Features:**
+- Reads frames from DetectorService via `get_last_frame()`
+- Optional AI overlay (bounding boxes, poses, behaviors)
+- Configurable FPS (default 15) and bitrate (1.5 Mbps)
+- Support for 2 concurrent WebRTC clients
+- MediaRelay for efficient multi-client streaming
+
+#### 2. API Endpoints Added to `api/server.py`
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/webrtc/status` | GET | Service status and connection info |
+| `/webrtc/offer` | POST | Handle SDP offer, return answer |
+| `/webrtc/ice` | POST | Add ICE candidate |
+| `/webrtc/close/{session_id}` | POST | Close connection |
+| `/ws/webrtc/{session_id}` | WebSocket | Real-time signaling |
+
+#### 3. Config Added to `robot_config.yaml`
+```yaml
+webrtc:
+  enabled: true
+  stun_servers: ["stun:stun.l.google.com:19302"]
+  turn_servers: []  # Add for cloud relay
+  video:
+    fps: 15
+    bitrate: 1500000
+    enable_ai_overlay: true
+  max_connections: 2
+```
+
+#### 4. Dependencies Installed
+- `aiortc==1.14.0` (Python WebRTC)
+- System packages: libavdevice-dev, libavfilter-dev, libopus-dev, libvpx-dev
+
+---
+
+### To Activate
+```bash
+sudo systemctl restart treatbot
+curl http://localhost:8000/webrtc/status
+```
+
+---
+
+### Next Steps (On Desktop)
+1. Build Flutter mobile app with WebRTC client
+2. Build cloud relay server for internet access
+3. Add TURN server credentials for NAT traversal
+
+---
+
+### Key Files
+| File | Purpose |
+|------|---------|
+| `services/streaming/webrtc.py` | WebRTC service singleton |
+| `services/streaming/video_track.py` | Custom video track |
+| `api/server.py` (lines ~1920-2070) | WebRTC endpoints |
+| `config/robot_config.yaml` | WebRTC config section |
+
+---
+
 ## Session: 2026-01-15 ~15:30
 **Goal:** Fix behavior detection (lie down, spin, crosses removal)
 **Status:** Major progress - spin detection significantly improved, needs more tuning
