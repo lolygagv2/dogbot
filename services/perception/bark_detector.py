@@ -108,22 +108,25 @@ class BarkDetectorService:
         logger.info(f"BarkDetectorService initialized (enabled={self.enabled})")
 
     def _bandpass_filter(self, audio: np.ndarray, sample_rate: int = 44100,
-                         low_freq: float = 500, high_freq: float = 3500) -> np.ndarray:
+                         low_freq: float = 400, high_freq: float = 2500) -> np.ndarray:
         """
-        Filter audio to dog bark frequency range (500-3500Hz).
+        Filter audio to dog bark frequency range (400-2500Hz).
 
         This filters out:
-        - Low frequency sounds (< 500Hz): HVAC, traffic rumble, footsteps, male voice fundamentals
-        - High frequency sounds (> 3500Hz): Electronic noise, speech sibilants
+        - Low frequency sounds (< 400Hz): HVAC, traffic rumble, footsteps, male voice fundamentals
+        - High frequency sounds (> 2500Hz): Electronic noise, speech sibilants, claps
 
-        Dogs bark primarily in 500-3000Hz range. Human speech fundamentals (85-255Hz)
-        are below our cutoff, though harmonics may still pass through.
+        Dog barks have fundamental frequencies typically 400-1200Hz with harmonics.
+        This narrower filter (vs 500-3500Hz) better isolates barks from other sounds.
+
+        Human speech fundamentals (85-255Hz) are below our cutoff, and most speech
+        energy is spread across 300-3000Hz, so this filter reduces speech sensitivity.
 
         Args:
             audio: Audio samples as numpy array
             sample_rate: Sample rate of audio (default 44100Hz)
             low_freq: Low cutoff frequency (default 400Hz)
-            high_freq: High cutoff frequency (default 4000Hz)
+            high_freq: High cutoff frequency (default 2500Hz)
 
         Returns:
             Filtered audio samples
@@ -147,17 +150,17 @@ class BarkDetectorService:
 
         try:
             # Initialize 3-stage bark detector with emotion classification enabled
-            # Thresholds tuned: ambient noise ~0.02, barks should be 0.10+
-            # Keep high enough to avoid voice/claps but low enough to catch real barks
+            # Thresholds tuned: ambient noise ~0.02, barks should be 0.08+
+            # With tighter bandpass (400-2500Hz), we can use lower thresholds
             gate_config = BarkGateConfig(
-                base_threshold=0.12,      # Lowered - ambient is ~0.02, bark should exceed this
-                thresh_close=0.35,        # Loud bark
-                thresh_mid=0.20,          # Medium bark
-                thresh_far=0.12,          # Quiet bark (just above ambient)
-                min_bark_duration_ms=80,  # Barks are typically 80-500ms
-                max_bark_duration_ms=2000,# Cap duration
-                grace_period_ms=100,      # Wait for bark tail
-                bark_cooldown_ms=1000     # Prevent double-counting
+                base_threshold=0.08,      # Lowered for better bark detection (bandpass filters non-barks)
+                thresh_close=0.30,        # Loud bark
+                thresh_mid=0.15,          # Medium bark
+                thresh_far=0.08,          # Quiet bark
+                min_bark_duration_ms=100, # Barks are typically 100-500ms (raised from 80)
+                max_bark_duration_ms=1500,# Cap duration (barks rarely exceed 1.5s)
+                grace_period_ms=150,      # Wait for bark tail (increased for complete detection)
+                bark_cooldown_ms=800      # Slightly faster response between barks
             )
 
             self.bark_detector = BarkDetector(

@@ -169,7 +169,7 @@ class SilentGuardianMode:
             'audio_paths': {
                 'talks': '/home/morgan/dogbot/VOICEMP3/talks',
                 'songs': '/home/morgan/dogbot/VOICEMP3/songs',
-                'calming_music': 'songs/DOG DESENSITISATION MUSIC! to help train your dog, improve behaviour. Sound effects included.mp3'
+                'calming_music': 'songs/mozart_piano.mp3'
             }
         }
 
@@ -550,7 +550,7 @@ class SilentGuardianMode:
     def _process_level_1(self, now: float):
         """
         Level 1: Gentle reminder
-        Step 0: Play dog name (if known) + quiet
+        Step 0: Play "quiet" command (simple and clear)
         Step 1: Wait for quiet period (progressive) → reward
         """
         level_config = self.config.get('intervention_sequences', {}).get('level_1', {})
@@ -559,16 +559,11 @@ class SilentGuardianMode:
 
         if self.intervention_step == 0:
             if self.last_step_time == 0.0:
-                logger.info("Level 1 - Step 0: Playing name + quiet")
+                logger.info("Level 1 - Step 0: Playing quiet command")
                 if self.led:
                     self.led.set_pattern('attention', duration=2.0)
 
-                # Play dog name if known
-                if self.intervention_dog_name:
-                    name_file = f"{self.intervention_dog_name.lower()}.mp3"
-                    self._play_audio(name_file)
-                    time.sleep(0.5)
-
+                # Just play "quiet" - simple and clear
                 self._play_audio('quiet.mp3')
                 self.last_step_time = now
                 self.quiet_start_time = now
@@ -587,12 +582,11 @@ class SilentGuardianMode:
     def _process_level_2(self, now: float):
         """
         Level 2: Firm request
-        Step 0: quiet
-        Step 1: quiet (after 0.5s)
-        Step 2: no (after 0.5s)
-        Step 3: come (after 1s)
-        Step 4: quiet (after 2s)
-        Step 5: Wait for quiet period (progressive) → reward
+        Simplified sequence: quiet → no → quiet (clear, non-overlapping)
+        Step 0: Play "quiet" (waits for completion)
+        Step 1: Play "no" (waits for completion)
+        Step 2: Play "quiet" again (waits for completion)
+        Step 3: Wait for quiet period (progressive) → reward
         """
         level_config = self.config.get('intervention_sequences', {}).get('level_2', {})
         base_quiet = level_config.get('quiet_required_seconds', 30)
@@ -602,41 +596,29 @@ class SilentGuardianMode:
             if self.last_step_time == 0.0:
                 logger.info("Level 2 - Step 0: quiet")
                 if self.led:
-                    self.led.set_pattern('attention', duration=2.0)
-                self._play_audio('quiet.mp3')
-                self.last_step_time = now
+                    self.led.set_pattern('attention', duration=5.0)
+                self._play_audio('quiet.mp3')  # Waits for completion
+                self.last_step_time = time.time()  # Update after audio finishes
                 self.intervention_step = 1
 
         elif self.intervention_step == 1:
+            # Small pause between commands (0.5s after audio finished)
             if now - self.last_step_time >= 0.5:
-                logger.info("Level 2 - Step 1: quiet")
-                self._play_audio('quiet.mp3')
-                self.last_step_time = now
+                logger.info("Level 2 - Step 1: no")
+                self._play_audio('no.mp3')  # Waits for completion
+                self.last_step_time = time.time()
                 self.intervention_step = 2
 
         elif self.intervention_step == 2:
+            # Small pause, then final quiet
             if now - self.last_step_time >= 0.5:
-                logger.info("Level 2 - Step 2: no")
-                self._play_audio('no.mp3')
-                self.last_step_time = now
+                logger.info("Level 2 - Step 2: quiet (final)")
+                self._play_audio('quiet.mp3')  # Waits for completion
+                self.last_step_time = time.time()
+                self.quiet_start_time = time.time()
                 self.intervention_step = 3
 
         elif self.intervention_step == 3:
-            if now - self.last_step_time >= 1.0:
-                logger.info("Level 2 - Step 3: come")
-                self._play_audio('dogs_come.mp3')
-                self.last_step_time = now
-                self.intervention_step = 4
-
-        elif self.intervention_step == 4:
-            if now - self.last_step_time >= 2.0:
-                logger.info("Level 2 - Step 4: quiet")
-                self._play_audio('quiet.mp3')
-                self.last_step_time = now
-                self.quiet_start_time = now
-                self.intervention_step = 5
-
-        elif self.intervention_step == 5:
             # Check if quiet period achieved
             if self.quiet_start_time > 0:
                 quiet_duration = now - self.quiet_start_time
@@ -662,11 +644,10 @@ class SilentGuardianMode:
                 logger.info("Level 3 - Step 0: quiet + starting calming music")
                 if self.led:
                     self.led.set_pattern('calm', duration=60.0)
-                self._play_audio('quiet.mp3')
-                time.sleep(1.0)
+                self._play_audio('quiet.mp3')  # Waits for completion
                 self._start_calming_music()
-                self.last_step_time = now
-                self.quiet_start_time = now
+                self.last_step_time = time.time()
+                self.quiet_start_time = time.time()
                 self.quiet_periods_achieved = 0
                 self.intervention_step = 1
 
@@ -695,8 +676,7 @@ class SilentGuardianMode:
 
         try:
             audio_config = self.config.get('audio_paths', {})
-            music_file = audio_config.get('calming_music',
-                'songs/DOG DESENSITISATION MUSIC! to help train your dog, improve behaviour. Sound effects included.mp3')
+            music_file = audio_config.get('calming_music', 'songs/mozart_piano.mp3')
 
             base = audio_config.get('base', '/home/morgan/dogbot/VOICEMP3')
             full_path = os.path.join(base, music_file)
@@ -769,9 +749,9 @@ class SilentGuardianMode:
         if self.led:
             self.led.celebration_sequence(3.0)
 
-        # Play good.mp3
-        logger.info("Playing good.mp3")
-        self._play_audio('good.mp3')
+        # Play good_dog.mp3
+        logger.info("Playing good_dog.mp3")
+        self._play_audio('good_dog.mp3')
         time.sleep(1.0)
 
         # Dispense treat
@@ -837,8 +817,13 @@ class SilentGuardianMode:
             self.fsm_state = SGState.LISTENING
             logger.info("Gave-up cooldown complete, returning to LISTENING state")
 
-    def _play_audio(self, filename: str):
-        """Play audio file from talks directory"""
+    def _play_audio(self, filename: str, wait: bool = True):
+        """Play audio file from talks directory
+
+        Args:
+            filename: Audio filename (relative to talks dir or absolute)
+            wait: If True, wait for audio to finish before returning
+        """
         try:
             audio_config = self.config.get('audio_paths', {})
             base = audio_config.get('talks', '/home/morgan/dogbot/VOICEMP3/talks')
@@ -852,6 +837,9 @@ class SilentGuardianMode:
                 if self.audio:
                     self.audio.play_file(full_path)
                     logger.debug(f"Playing: {full_path}")
+                    if wait:
+                        # Wait for audio to finish (max 5s timeout)
+                        self.audio.wait_for_completion(timeout=5.0)
             else:
                 logger.warning(f"Audio file not found: {full_path}")
 

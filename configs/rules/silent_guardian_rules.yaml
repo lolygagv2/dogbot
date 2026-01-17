@@ -22,10 +22,10 @@ dog_identification:
 
 # Bark detection thresholds
 bark_detection:
-  threshold: 3                    # Barks to trigger intervention
-  window_seconds: 60              # Time window for counting barks
-  confidence_minimum: 0.15        # Minimal filter - trust bark_gate detection
-  loudness_threshold_db: -30      # Minimum loudness - less negative = louder required
+  threshold: 2                    # Barks to trigger intervention (lowered from 3 for faster response)
+  window_seconds: 45              # Time window for counting barks (shortened for responsiveness)
+  confidence_minimum: 0.10        # Very low - trust bark_gate detection (BarkGate already validates)
+  loudness_threshold_db: -35      # Minimum loudness (more negative = quieter barks accepted)
 
 # Intervention sequences by escalation level
 intervention_sequences:
@@ -69,7 +69,7 @@ intervention_sequences:
         file: "quiet.mp3"
         wait_after: 1.0
     play_calming_music: true
-    calming_music_file: "songs/DOG DESENSITISATION MUSIC! to help train your dog, improve behaviour. Sound effects included.mp3"
+    calming_music_file: "songs/mozart_piano.mp3"
     quiet_periods_required: 2
     quiet_period_duration: 20     # Each quiet period must be 20 seconds
     reduce_treats: true           # Fewer treats at this escalation level
@@ -143,7 +143,7 @@ audio_paths:
   good_dog: "talks/good_dog.mp3"
   elsa: "talks/elsa.mp3"
   bezik: "talks/bezik.mp3"
-  calming_music: "songs/DOG DESENSITISATION MUSIC! to help train your dog, improve behaviour. Sound effects included.mp3"
+  calming_music: "songs/mozart_piano.mp3"
 
 # Camera settings for Silent Guardian mode
 camera:
