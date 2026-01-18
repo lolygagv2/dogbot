@@ -316,11 +316,19 @@ class XboxHybridControllerFixed:
         self.last_dpad_time = 0
         self.dpad_cooldown = 0.3  # 300ms cooldown between D-pad presses
 
-        # Mode cycling (SELECT/Back button)
-        self.cycle_modes = ['manual', 'coach', 'silent_guardian']
+        # Mode cycling (SELECT/Back button) - includes IDLE for passive listening
+        self.cycle_modes = ['manual', 'idle', 'coach', 'silent_guardian']
         self.current_mode_index = 0  # Start with manual
         self.last_mode_cycle_time = 0
         self.mode_cycle_cooldown = 1.0  # 1 second cooldown to prevent rapid cycling
+
+        # Audio announcements for mode changes (in /VOICEMP3/wimz/)
+        self.mode_audio = {
+            'manual': '/wimz/ManualMode.mp3',
+            'idle': '/wimz/IdleMode.mp3',
+            'coach': '/wimz/CoachMode.mp3',
+            'silent_guardian': '/wimz/SilentGuardianMode.mp3'
+        }
 
         # Trick cycling (Xbox Guide button) - for coach mode testing
         self._trick_cycle_index = 0
@@ -1473,7 +1481,7 @@ class XboxHybridControllerFixed:
         })
 
     def cycle_mode(self):
-        """Cycle between MANUAL, COACH, and SILENT_GUARDIAN modes"""
+        """Cycle between MANUAL, IDLE, COACH, and SILENT_GUARDIAN modes"""
         current_time = time.time()
 
         # Cooldown to prevent rapid cycling
@@ -1499,6 +1507,10 @@ class XboxHybridControllerFixed:
         result = self.api_request_blocking('POST', '/mode/set', {"mode": new_mode}, timeout=2)
         if result and result.get('success'):
             logger.info(f"✅ Mode changed to: {new_mode}")
+            # Play mode announcement audio
+            audio_file = self.mode_audio.get(new_mode)
+            if audio_file:
+                self.api_request('POST', '/audio/play/file', {"filepath": audio_file})
         else:
             logger.warning(f"⚠️ Mode change may have failed: {result}")
 
@@ -1654,7 +1666,7 @@ class XboxHybridControllerFixed:
         logger.info("A = Emergency Stop, B = Play 'sit' command")
         logger.info("X = Blue LED, LT = NeoPixel modes")
         logger.info("Y = Sound, LB = Treat (2s cooldown), RB = Photo")
-        logger.info("SELECT = Cycle modes (MANUAL→COACH→SILENT_GUARDIAN)")
+        logger.info("SELECT = Cycle modes (MANUAL→IDLE→COACH→SILENT_GUARDIAN)")
         logger.info("START = Record audio")
         logger.info("=== ASYNC API QUEUE ===")
         logger.info("✅ Non-blocking button presses")

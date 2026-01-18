@@ -505,6 +505,36 @@ class LEDCustomColorRequest(BaseModel):
     green: int  # 0-255
     blue: int   # 0-255
 
+# ============== API CONTRACT MODELS ==============
+# These models match the API_CONTRACT.md specification
+
+class MotorSpeedRequest(BaseModel):
+    """Motor speed per API contract: -1.0 to 1.0 for each wheel"""
+    left: float   # -1.0 (full reverse) to 1.0 (full forward)
+    right: float  # -1.0 (full reverse) to 1.0 (full forward)
+
+class ServoAngleRequest(BaseModel):
+    """Servo angle per API contract"""
+    angle: float  # Pan: -90 to +90, Tilt: -45 to +45
+
+class LEDPatternRequest(BaseModel):
+    """LED pattern per API contract"""
+    pattern: str  # breathing, rainbow, celebration, searching, alert, idle
+
+class LEDRGBRequest(BaseModel):
+    """LED RGB color per API contract"""
+    r: int  # 0-255
+    g: int  # 0-255
+    b: int  # 0-255
+
+class AudioFileRequest(BaseModel):
+    """Audio play per API contract"""
+    file: str
+
+class AudioLevelRequest(BaseModel):
+    """Audio volume per API contract"""
+    level: int  # 0-100
+
 # FastAPI app
 app = FastAPI(
     title="WIM-Z Robot API",
@@ -3770,6 +3800,277 @@ async def instagram_post_video(request: InstagramVideoRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============== END REPORTS & SOCIAL MEDIA ENDPOINTS ==============
+
+# ============== API CONTRACT ENDPOINTS ==============
+# These endpoints match the API_CONTRACT.md specification exactly
+# They provide standardized interfaces for the mobile app
+
+# --- Motor Control (Contract) ---
+@app.post("/motor/speed")
+async def motor_speed_contract(request: MotorSpeedRequest):
+    """Set motor speeds per API contract: -1.0 to 1.0"""
+    try:
+        motor = get_motor_service()
+        if not motor:
+            raise HTTPException(status_code=503, detail="Motor service not available")
+
+        # Convert -1.0 to 1.0 range to -100 to 100 percentage
+        left_pct = int(request.left * 100)
+        right_pct = int(request.right * 100)
+
+        # Clamp values
+        left_pct = max(-100, min(100, left_pct))
+        right_pct = max(-100, min(100, right_pct))
+
+        motor.set_speed(left_pct, right_pct)
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Motor speed error: {e}")
+        return {"success": False, "error": {"code": "MOTOR_ERROR", "message": str(e)}}
+
+@app.post("/motor/emergency")
+async def motor_emergency_contract():
+    """Emergency stop all motors (contract alias)"""
+    try:
+        motor = get_motor_service()
+        if motor:
+            motor.emergency_stop()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "EMERGENCY_ERROR", "message": str(e)}}
+
+# --- Camera & Servos (Contract) ---
+@app.get("/camera/stream")
+async def camera_stream_contract():
+    """MJPEG video stream (contract alias for /video/feed)"""
+    return await video_feed()
+
+@app.post("/servo/pan")
+async def servo_pan_contract(request: ServoAngleRequest):
+    """Set pan servo angle: -90 to +90 degrees"""
+    try:
+        pantilt = get_pantilt_service()
+        if not pantilt:
+            raise HTTPException(status_code=503, detail="Pan/tilt service not available")
+
+        # Convert contract range (-90 to +90) to internal range (0 to 180, centered at 90)
+        internal_angle = int(90 + request.angle)
+        internal_angle = max(0, min(180, internal_angle))
+
+        pantilt.move_camera(pan=internal_angle)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "SERVO_ERROR", "message": str(e)}}
+
+@app.post("/servo/tilt")
+async def servo_tilt_contract(request: ServoAngleRequest):
+    """Set tilt servo angle: -45 to +45 degrees"""
+    try:
+        pantilt = get_pantilt_service()
+        if not pantilt:
+            raise HTTPException(status_code=503, detail="Pan/tilt service not available")
+
+        # Convert contract range (-45 to +45) to internal range (45 to 135, centered at 90)
+        internal_angle = int(90 + request.angle)
+        internal_angle = max(45, min(135, internal_angle))
+
+        pantilt.move_camera(tilt=internal_angle)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "SERVO_ERROR", "message": str(e)}}
+
+@app.post("/servo/center")
+async def servo_center_contract():
+    """Center camera (contract alias)"""
+    try:
+        pantilt = get_pantilt_service()
+        if pantilt:
+            pantilt.move_camera(pan=90, tilt=90)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "SERVO_ERROR", "message": str(e)}}
+
+# --- Treat Dispenser (Contract) ---
+@app.post("/treat/carousel/rotate")
+async def treat_carousel_rotate_contract():
+    """Rotate treat carousel without dispensing"""
+    try:
+        dispenser = get_dispenser_service()
+        if dispenser:
+            dispenser.rotate_carousel()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "DISPENSER_ERROR", "message": str(e)}}
+
+# --- LED Control (Contract) ---
+@app.post("/led/pattern")
+async def led_pattern_contract(request: LEDPatternRequest):
+    """Set LED pattern per API contract"""
+    try:
+        from services.media.led import get_led_service
+        led = get_led_service()
+        if led:
+            # Map contract patterns to internal modes
+            pattern_map = {
+                "breathing": "idle",
+                "rainbow": "gradient_flow",
+                "celebration": "treat_launching",
+                "searching": "searching",
+                "alert": "error",
+                "idle": "idle"
+            }
+            mode = pattern_map.get(request.pattern, request.pattern)
+            led.set_pattern(mode)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "LED_ERROR", "message": str(e)}}
+
+@app.post("/led/color")
+async def led_color_contract(request: LEDRGBRequest):
+    """Set LED RGB color per API contract"""
+    try:
+        from services.media.led import get_led_service
+        led = get_led_service()
+        if led:
+            led.set_custom_color(request.r, request.g, request.b)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "LED_ERROR", "message": str(e)}}
+
+@app.post("/led/off")
+async def led_off_contract():
+    """Turn off LEDs (contract alias)"""
+    try:
+        from services.media.led import get_led_service
+        led = get_led_service()
+        if led:
+            led.set_pattern("off")
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "LED_ERROR", "message": str(e)}}
+
+# --- Audio (Contract) ---
+@app.post("/audio/play")
+async def audio_play_contract_v2(request: AudioFileRequest):
+    """Play audio file per API contract"""
+    try:
+        audio = get_usb_audio_service()
+        if audio:
+            audio.play_file(request.file)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "AUDIO_ERROR", "message": str(e)}}
+
+@app.post("/audio/volume")
+async def audio_volume_contract_v2(request: AudioLevelRequest):
+    """Set audio volume per API contract"""
+    try:
+        audio = get_usb_audio_service()
+        if audio:
+            audio.set_volume(request.level)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "AUDIO_ERROR", "message": str(e)}}
+
+# --- Mode Control (Contract) ---
+@app.get("/mode/get")
+async def mode_get_contract():
+    """Get current mode per API contract"""
+    state = get_state()
+    return {"mode": state.get_mode().value}
+
+# --- Missions (Contract) ---
+@app.get("/missions")
+async def missions_list_contract():
+    """List all missions per API contract"""
+    try:
+        mission_engine = get_mission_engine()
+        missions = mission_engine.get_available_missions()
+        return missions
+    except Exception as e:
+        return []
+
+@app.get("/missions/active")
+async def missions_active_contract():
+    """Get active mission per API contract"""
+    try:
+        mission_engine = get_mission_engine()
+        status = mission_engine.get_mission_status()
+        if status.get("active"):
+            return status
+        return None
+    except Exception as e:
+        return None
+
+@app.get("/missions/{mission_id}")
+async def missions_get_contract(mission_id: str):
+    """Get mission details per API contract"""
+    try:
+        mission_engine = get_mission_engine()
+        missions = mission_engine.get_available_missions()
+        for mission in missions:
+            if mission.get("id") == mission_id or mission.get("name") == mission_id:
+                return mission
+        raise HTTPException(status_code=404, detail="Mission not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/missions/{mission_id}/start")
+async def missions_start_contract(mission_id: str):
+    """Start mission per API contract"""
+    try:
+        mission_engine = get_mission_engine()
+        success = mission_engine.start_mission(mission_id)
+        return {"success": success}
+    except Exception as e:
+        return {"success": False, "error": {"code": "MISSION_ERROR", "message": str(e)}}
+
+@app.post("/missions/{mission_id}/stop")
+async def missions_stop_contract(mission_id: str):
+    """Stop mission per API contract"""
+    try:
+        mission_engine = get_mission_engine()
+        success = mission_engine.stop_mission("api_request")
+        return {"success": success}
+    except Exception as e:
+        return {"success": False, "error": {"code": "MISSION_ERROR", "message": str(e)}}
+
+# --- Telemetry (Contract-compliant format) ---
+@app.get("/telemetry/contract")
+async def telemetry_contract():
+    """Get telemetry in API contract format"""
+    state = get_state()
+    store = get_store()
+    dispenser = get_dispenser_service()
+
+    # Get battery info
+    battery_pct = state.hardware.battery_voltage / 16.8 * 100 if state.hardware.battery_voltage else 0
+    battery_pct = min(100, max(0, battery_pct))
+
+    # Get treat count
+    treats_remaining = 15  # Default
+    if dispenser:
+        status = dispenser.get_status()
+        treats_remaining = status.get("treats_remaining", 15)
+
+    return {
+        "battery": round(battery_pct, 1),
+        "temperature": state.hardware.cpu_temp or 0,
+        "mode": state.get_mode().value,
+        "dog_detected": state.detection.dog_detected,
+        "current_behavior": state.detection.behavior_data.get("behavior") if state.detection.behavior_data else None,
+        "confidence": state.detection.behavior_data.get("confidence") if state.detection.behavior_data else None,
+        "is_charging": state.hardware.is_charging,
+        "treats_remaining": treats_remaining,
+        "last_treat_time": None,  # TODO: Track this
+        "active_mission_id": None,  # TODO: Get from mission engine
+        "wifi_strength": -45,  # TODO: Get actual wifi strength
+        "uptime_seconds": int(state.get_mode_duration())
+    }
+
+# ============== END API CONTRACT ENDPOINTS ==============
 
 def create_app():
     """Create FastAPI app (for external use)"""

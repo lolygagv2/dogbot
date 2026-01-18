@@ -56,6 +56,9 @@ class ModeFSM:
         self.override_mode = None
         self.override_until = 0.0
 
+        # Track mode before entering MANUAL (to return to it when controller disconnects)
+        self.pre_manual_mode = SystemMode.IDLE
+
         # Transition timeouts (seconds)
         self.timeouts = {
             'silent_guardian_timeout': 0,      # SILENT_GUARDIAN: No auto-timeout (persistent)
@@ -217,10 +220,11 @@ class ModeFSM:
 
         time_since_manual = now - self.last_manual_input_time
 
-        # Manual timeout -> return to SILENT_GUARDIAN (primary mode)
+        # Manual timeout -> return to previous mode (before entering MANUAL)
         if time_since_manual > self.timeouts['manual_timeout']:
-            # Default to SILENT_GUARDIAN as the primary autonomous mode
-            target_mode = SystemMode.SILENT_GUARDIAN
+            # Return to the mode we were in before entering MANUAL
+            target_mode = self.pre_manual_mode
+            self.logger.info(f"Manual timeout, returning to previous mode: {target_mode.value}")
             self._transition_to(target_mode, ModeTransition.MANUAL_TIMEOUT)
 
     def _transition_to(self, new_mode: SystemMode, trigger: ModeTransition) -> None:
@@ -284,6 +288,9 @@ class ModeFSM:
 
             # Switch to manual mode if not already
             if current_mode != SystemMode.MANUAL:
+                # Save current mode so we can return to it when controller disconnects
+                self.pre_manual_mode = current_mode
+                self.logger.info(f"Saving pre-manual mode: {current_mode.value}")
                 self._transition_to(SystemMode.MANUAL, ModeTransition.MANUAL_INPUT)
 
         elif event.subtype == 'controller_connected':
@@ -291,11 +298,13 @@ class ModeFSM:
             self.logger.info("Xbox controller connected")
 
         elif event.subtype == 'controller_disconnected':
-            # Controller disconnected - if in manual mode, switch to SILENT_GUARDIAN (primary mode)
+            # Controller disconnected - if in manual mode, return to previous mode
             current_mode = self.state.get_mode()
             if current_mode == SystemMode.MANUAL:
-                self.logger.info("Controller disconnected while in manual mode, switching to Silent Guardian")
-                self._transition_to(SystemMode.SILENT_GUARDIAN, ModeTransition.USER_OVERRIDE)
+                # Return to the mode we were in before entering MANUAL
+                target_mode = self.pre_manual_mode
+                self.logger.info(f"Controller disconnected, returning to previous mode: {target_mode.value}")
+                self._transition_to(target_mode, ModeTransition.USER_OVERRIDE)
 
     def set_mode_override(self, mode: SystemMode, duration: float = None) -> bool:
         """Override automatic mode transitions"""

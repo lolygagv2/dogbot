@@ -150,17 +150,17 @@ class BarkDetectorService:
 
         try:
             # Initialize 3-stage bark detector with emotion classification enabled
-            # Thresholds tuned: ambient noise ~0.02, barks should be 0.08+
-            # With tighter bandpass (400-2500Hz), we can use lower thresholds
+            # TUNED 2026-01-18: Raised thresholds to reduce false positives on non-bark sounds
+            # Ambient noise ~0.02, actual barks typically 0.12+ after bandpass filtering
             gate_config = BarkGateConfig(
-                base_threshold=0.08,      # Lowered for better bark detection (bandpass filters non-barks)
-                thresh_close=0.30,        # Loud bark
-                thresh_mid=0.15,          # Medium bark
-                thresh_far=0.08,          # Quiet bark
-                min_bark_duration_ms=100, # Barks are typically 100-500ms (raised from 80)
+                base_threshold=0.12,      # Raised to reduce false positives (was 0.08)
+                thresh_close=0.35,        # Loud bark (raised from 0.30)
+                thresh_mid=0.20,          # Medium bark (raised from 0.15)
+                thresh_far=0.12,          # Quiet bark (raised from 0.08)
+                min_bark_duration_ms=150, # Barks are typically 100-500ms (raised from 100 to filter clicks)
                 max_bark_duration_ms=1500,# Cap duration (barks rarely exceed 1.5s)
-                grace_period_ms=150,      # Wait for bark tail (increased for complete detection)
-                bark_cooldown_ms=800      # Slightly faster response between barks
+                grace_period_ms=150,      # Wait for bark tail
+                bark_cooldown_ms=1000     # Slower cooldown to prevent rapid false triggers (was 800)
             )
 
             self.bark_detector = BarkDetector(

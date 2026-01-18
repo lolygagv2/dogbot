@@ -147,10 +147,10 @@ class SilentGuardianMode:
         """Default configuration"""
         return {
             'bark_detection': {
-                'threshold': 2,
+                'threshold': 3,
                 'window_seconds': 60,
-                'loudness_threshold_db': -25,
-                'confidence_minimum': 0.35
+                'loudness_threshold_db': -20,
+                'confidence_minimum': 0.45
             },
             'escalation': {
                 'window_minutes': 60,

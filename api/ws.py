@@ -177,6 +177,24 @@ class TreatBotWebSocketServer:
         """Handle incoming message from client"""
         try:
             data = json.loads(message)
+
+            # Handle ping/pong (API Contract)
+            if data.get("type") == "ping":
+                await self.manager.send_to_one(websocket, {"type": "pong"})
+                return
+
+            # Handle auth (API Contract - for cloud mode, local mode ignores)
+            if data.get("type") == "auth":
+                await self.manager.send_to_one(websocket, {"type": "auth_result", "success": True})
+                return
+
+            # Handle contract-style commands (API Contract format)
+            if "command" in data and "params" not in data:
+                # This is an API contract format command
+                response = await self._execute_contract_command(websocket, data)
+                return
+
+            # Handle legacy format with command + params
             command = data.get("command")
             params = data.get("params", {})
 
@@ -204,6 +222,78 @@ class TreatBotWebSocketServer:
                 "message": str(e),
                 "timestamp": time.time()
             })
+
+    async def _execute_contract_command(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Execute API contract format commands"""
+        command = data.get("command")
+        self._get_services()
+
+        try:
+            if command == "motor":
+                # {"command": "motor", "left": 0.5, "right": 0.5}
+                left = data.get("left", 0.0)
+                right = data.get("right", 0.0)
+                if self.motor:
+                    left_pct = int(left * 100)
+                    right_pct = int(right * 100)
+                    self.motor.set_speed(left_pct, right_pct)
+
+            elif command == "servo":
+                # {"command": "servo", "pan": 15.0, "tilt": -10.0}
+                pan = data.get("pan")
+                tilt = data.get("tilt")
+                if self.pantilt:
+                    pan_internal = int(90 + pan) if pan is not None else None
+                    tilt_internal = int(90 + tilt) if tilt is not None else None
+                    self.pantilt.move_camera(pan=pan_internal, tilt=tilt_internal)
+
+            elif command == "treat":
+                # {"command": "treat"}
+                if self.dispenser:
+                    self.dispenser.dispense_treat()
+
+            elif command == "led":
+                # {"command": "led", "pattern": "celebration"}
+                pattern = data.get("pattern", "idle")
+                if self.led:
+                    pattern_map = {
+                        "breathing": "idle",
+                        "rainbow": "gradient_flow",
+                        "celebration": "treat_launching",
+                        "searching": "searching",
+                        "alert": "error",
+                        "idle": "idle"
+                    }
+                    mode = pattern_map.get(pattern, pattern)
+                    self.led.set_pattern(mode)
+
+            elif command == "audio":
+                # {"command": "audio", "file": "good_dog.mp3"}
+                audio_file = data.get("file")
+                if audio_file and self.sfx:
+                    self.sfx.play_sound(audio_file)
+
+            elif command == "mode":
+                # {"command": "mode", "mode": "training"}
+                mode = data.get("mode")
+                if mode:
+                    from orchestrators.mode_fsm import get_mode_fsm
+                    from core.state import SystemMode
+                    mode_fsm = get_mode_fsm()
+                    # Map contract modes to internal modes
+                    mode_map = {
+                        "idle": SystemMode.IDLE,
+                        "guardian": SystemMode.SILENT_GUARDIAN,
+                        "training": SystemMode.COACH,
+                        "manual": SystemMode.MANUAL,
+                        "docking": SystemMode.IDLE  # No docking mode yet
+                    }
+                    internal_mode = mode_map.get(mode)
+                    if internal_mode:
+                        mode_fsm.force_mode(internal_mode, "websocket_command")
+
+        except Exception as e:
+            self.logger.error(f"Contract command error: {e}")
 
     async def _execute_command(self, command: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a command from the client"""
@@ -346,19 +436,66 @@ class TreatBotWebSocketServer:
     async def _telemetry_loop(self):
         """Periodic telemetry broadcast"""
         try:
+            status_counter = 0
             while True:
                 telemetry = await self._collect_telemetry()
+
+                # Legacy format (every second)
                 await self.manager.send_to_all({
                     "type": "telemetry",
                     "data": telemetry,
                     "timestamp": time.time()
                 })
+
+                # Contract format status event (every 5 seconds)
+                status_counter += 1
+                if status_counter >= 5:
+                    status_counter = 0
+                    await self._broadcast_contract_status()
+
                 await asyncio.sleep(1.0)  # Send every second
 
         except asyncio.CancelledError:
             self.logger.info("Telemetry loop cancelled")
         except Exception as e:
             self.logger.error(f"Telemetry loop error: {e}")
+
+    async def _broadcast_contract_status(self):
+        """Broadcast status in API contract format"""
+        from datetime import datetime
+        try:
+            state = self.state.get_full_state()
+
+            # Get battery percentage
+            battery_voltage = state.get("hardware", {}).get("battery_voltage", 0)
+            battery_pct = (battery_voltage / 16.8 * 100) if battery_voltage else 0
+            battery_pct = min(100, max(0, battery_pct))
+
+            # Map internal mode to contract mode
+            mode_map = {
+                "idle": "idle",
+                "silent_guardian": "guardian",
+                "coach": "training",
+                "manual": "manual",
+                "photography": "manual",
+                "emergency": "manual"
+            }
+            internal_mode = state.get("mode", "idle")
+            contract_mode = mode_map.get(internal_mode, "idle")
+
+            await self.manager.send_to_all({
+                "event": "status",
+                "data": {
+                    "battery": round(battery_pct, 1),
+                    "temperature": state.get("hardware", {}).get("cpu_temp", 0),
+                    "mode": contract_mode,
+                    "is_charging": state.get("hardware", {}).get("is_charging", False),
+                    "treats_remaining": 15  # TODO: Get from dispenser
+                },
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            })
+        except Exception as e:
+            self.logger.error(f"Contract status broadcast error: {e}")
 
     async def _collect_telemetry(self) -> Dict[str, Any]:
         """Collect current system telemetry"""
@@ -382,9 +519,19 @@ class TreatBotWebSocketServer:
 
         return telemetry
 
-    # Event handlers
+    # Event handlers - broadcast in both legacy and contract formats
+    async def _broadcast_contract_event(self, event_type: str, data: Dict[str, Any]):
+        """Broadcast event in API contract format"""
+        from datetime import datetime
+        await self.manager.send_to_all({
+            "event": event_type,
+            "data": data,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        })
+
     async def _on_vision_event(self, event):
         """Handle vision events"""
+        # Legacy format
         await self.manager.send_to_all({
             "type": "event",
             "category": "vision",
@@ -394,6 +541,15 @@ class TreatBotWebSocketServer:
             },
             "timestamp": time.time()
         })
+
+        # Contract format for dog detection
+        if event.subtype == "dog_detected":
+            await self._broadcast_contract_event("detection", {
+                "detected": True,
+                "behavior": event.data.get("behavior", "unknown"),
+                "confidence": event.data.get("confidence", 0.0),
+                "bbox": event.data.get("bbox", [0, 0, 0, 0])
+            })
 
     async def _on_audio_event(self, event):
         """Handle audio events"""
@@ -421,6 +577,7 @@ class TreatBotWebSocketServer:
 
     async def _on_reward_event(self, event):
         """Handle reward events"""
+        # Legacy format
         await self.manager.send_to_all({
             "type": "event",
             "category": "reward",
@@ -431,8 +588,16 @@ class TreatBotWebSocketServer:
             "timestamp": time.time()
         })
 
+        # Contract format for treat dispensed
+        if event.subtype == "treat_dispensed":
+            await self._broadcast_contract_event("treat", {
+                "dispensed": True,
+                "remaining": event.data.get("remaining", 0)
+            })
+
     async def _on_system_event(self, event):
         """Handle system events"""
+        # Legacy format
         await self.manager.send_to_all({
             "type": "event",
             "category": "system",
@@ -443,8 +608,24 @@ class TreatBotWebSocketServer:
             "timestamp": time.time()
         })
 
+        # Contract format for errors
+        if event.subtype in ["low_battery", "overheat", "motor_fault", "camera_fault", "network_error"]:
+            error_codes = {
+                "low_battery": "LOW_BATTERY",
+                "overheat": "OVERHEAT",
+                "motor_fault": "MOTOR_FAULT",
+                "camera_fault": "CAMERA_FAULT",
+                "network_error": "NETWORK_ERROR"
+            }
+            await self._broadcast_contract_event("error", {
+                "code": error_codes.get(event.subtype, "UNKNOWN"),
+                "message": event.data.get("message", str(event.subtype)),
+                "severity": event.data.get("severity", "warning")
+            })
+
     async def _on_mission_event(self, event):
         """Handle mission events"""
+        # Legacy format
         await self.manager.send_to_all({
             "type": "event",
             "category": "mission",
@@ -454,6 +635,17 @@ class TreatBotWebSocketServer:
             },
             "timestamp": time.time()
         })
+
+        # Contract format for mission updates
+        if event.subtype in ["mission_started", "mission_progress", "mission_completed"]:
+            await self._broadcast_contract_event("mission", {
+                "id": event.data.get("mission_id", "unknown"),
+                "status": event.data.get("status", "running"),
+                "progress": event.data.get("progress", 0.0),
+                "rewards_given": event.data.get("rewards_given", 0),
+                "success_count": event.data.get("success_count", 0),
+                "fail_count": event.data.get("fail_count", 0)
+            })
 
 
 # Global WebSocket server instance

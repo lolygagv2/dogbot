@@ -21,11 +21,12 @@ dog_identification:
     audio_come: "dogs_come.mp3"
 
 # Bark detection thresholds
+# TUNED 2026-01-18: Raised thresholds to reduce false positives on non-bark sounds
 bark_detection:
-  threshold: 2                    # Barks to trigger intervention (lowered from 3 for faster response)
-  window_seconds: 45              # Time window for counting barks (shortened for responsiveness)
-  confidence_minimum: 0.10        # Very low - trust bark_gate detection (BarkGate already validates)
-  loudness_threshold_db: -35      # Minimum loudness (more negative = quieter barks accepted)
+  threshold: 3                    # Barks to trigger intervention (raised to reduce false triggers)
+  window_seconds: 60              # Time window for counting barks (longer window more forgiving)
+  confidence_minimum: 0.45        # Raised - only confident bark detections (was 0.10)
+  loudness_threshold_db: -20      # Raised - only louder sounds accepted (was -35)
 
 # Intervention sequences by escalation level
 intervention_sequences:

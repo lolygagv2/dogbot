@@ -1,5 +1,80 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-18
+**Goal:** Mode system fixes + API contract compliance
+**Status:** Complete
+
+---
+
+### Work Completed This Session
+
+#### 1. Mode System Fixes
+- **Fixed mode persistence on Xbox disconnect**: When controller disconnects, now returns to previous mode instead of always SILENT_GUARDIAN
+- **Added IDLE mode to Xbox cycling**: Cycle order is now MANUAL → IDLE → COACH → SILENT_GUARDIAN
+- **Added audio announcements**: Each mode change plays corresponding MP3 from `/VOICEMP3/wimz/`
+
+#### 2. Bark Detection Sensitivity Reduced (Too Many False Positives)
+| Parameter | Before | After | Effect |
+|-----------|--------|-------|--------|
+| `confidence_minimum` | 0.10 | **0.45** | Only confident detections |
+| `loudness_threshold_db` | -35 | **-20** | Ignores quieter sounds |
+| `threshold` (bark count) | 2 | **3** | Requires 3 barks to trigger |
+| `base_threshold` (energy) | 0.08 | **0.12** | Higher energy required |
+| `min_bark_duration_ms` | 100 | **150** | Filters out short clicks |
+| `bark_cooldown_ms` | 800 | **1000** | Slower between detections |
+
+#### 3. API Contract Compliance (API_CONTRACT.md)
+Added all missing REST endpoints to match contract:
+- `/motor/speed`, `/motor/emergency`
+- `/camera/stream`, `/servo/pan`, `/servo/tilt`, `/servo/center`
+- `/treat/carousel/rotate`
+- `/led/pattern`, `/led/color`, `/led/off`
+- `/mode/get`
+- `/missions`, `/missions/{id}`, `/missions/{id}/start`, `/missions/{id}/stop`, `/missions/active`
+- `/telemetry/contract`
+
+Updated WebSocket server (`api/ws.py`):
+- Added ping/pong handling (`{"type": "ping"}` → `{"type": "pong"}`)
+- Added auth handling (local mode accepts all)
+- Added contract command format support (flat JSON)
+- Added contract event format broadcasting
+- Added periodic status broadcasts (every 5s)
+
+---
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `orchestrators/mode_fsm.py` | Added `pre_manual_mode` tracking, return to previous mode on disconnect |
+| `xbox_hybrid_controller.py` | Added IDLE to cycle, added mode audio announcements |
+| `configs/rules/silent_guardian_rules.yaml` | Raised bark detection thresholds |
+| `services/perception/bark_detector.py` | Raised BarkGateConfig thresholds |
+| `core/audio/bark_gate.py` | Raised default thresholds |
+| `modes/silent_guardian.py` | Updated default config thresholds |
+| `api/server.py` | Added ~200 lines of contract-compliant endpoints |
+| `api/ws.py` | Added contract command/event handling, ping/pong |
+| `API_CONTRACT.md` | Updated implementation checklist |
+
+---
+
+### Next Session Tasks
+
+1. Test Silent Guardian with real dogs to verify bark threshold tuning
+2. Test IDLE mode cycling on Xbox controller
+3. Test API contract endpoints from mobile app
+4. Monitor for any remaining false bark triggers
+
+---
+
+### Important Notes
+
+- Bark detection thresholds may need further tuning based on real-world testing
+- IDLE mode = standby mode where device listens but doesn't intervene
+- WebSocket broadcasts in BOTH legacy AND contract formats for backwards compatibility
+
+---
+
 ## Session: 2026-01-16 ~19:00
 **Goal:** Configure Silent Guardian mode - fix audio issues and bark detection tuning
 **Status:** ✅ Complete
