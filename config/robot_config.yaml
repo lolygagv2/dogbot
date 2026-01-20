@@ -160,3 +160,13 @@ webrtc:
 
   # Connection limits
   max_connections: 2     # Max concurrent WebRTC clients
+
+# Cloud Relay Configuration
+cloud:
+  enabled: true  # Enable cloud relay connection (requires DEVICE_ID and DEVICE_SECRET env vars)
+  relay_url: "wss://api.wimzai.com/ws/device"
+  # Credentials from environment variables:
+  # DEVICE_ID: Device identifier from cloud dashboard
+  # DEVICE_SECRET: Device secret for HMAC authentication
+  reconnect_delay: 5      # Seconds between reconnection attempts
+  heartbeat_interval: 30  # Seconds between heartbeat pings
