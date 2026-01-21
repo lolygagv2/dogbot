@@ -5,12 +5,14 @@ Provides low-latency video streaming over WebRTC using aiortc
 """
 
 import asyncio
+import json
 import logging
 import threading
 import time
 from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass, field
 
+import requests
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
 from aiortc import RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaRelay
@@ -65,6 +67,62 @@ class WebRTCService:
         self._detector = None  # Lazy loaded
 
         self.logger.info(f"WebRTCService initialized (max {self.config.max_connections} connections)")
+
+    async def _handle_data_channel_message(self, message: str, session_id: str):
+        """
+        Handle incoming data channel messages for motor control
+
+        Message format: {"type": "motor", "left": -1.0 to 1.0, "right": -1.0 to 1.0}
+        """
+        try:
+            data = json.loads(message)
+            msg_type = data.get('type')
+
+            if msg_type == 'motor':
+                left = data.get('left', 0)
+                right = data.get('right', 0)
+                # Convert -1 to 1 range to motor speed (-100 to 100)
+                left_speed = int(float(left) * 100)
+                right_speed = int(float(right) * 100)
+
+                # Forward to local API (non-blocking, fire-and-forget for low latency)
+                try:
+                    if left_speed == 0 and right_speed == 0:
+                        requests.post('http://localhost:8000/motor/stop', timeout=0.5)
+                    else:
+                        requests.post('http://localhost:8000/motor/control', json={
+                            'left_speed': left_speed,
+                            'right_speed': right_speed
+                        }, timeout=0.5)
+                except requests.exceptions.RequestException:
+                    # Log sparingly to avoid flooding
+                    pass
+
+            elif msg_type == 'ping':
+                # Heartbeat/latency check - could respond via data channel if needed
+                self.logger.debug(f"Data channel ping from {session_id}")
+
+            else:
+                self.logger.debug(f"Unknown data channel message type: {msg_type}")
+
+        except json.JSONDecodeError:
+            self.logger.warning(f"Invalid JSON in data channel: {message[:100]}")
+        except Exception as e:
+            self.logger.error(f"Data channel message error: {e}")
+
+    def _setup_data_channel_handlers(self, channel, session_id: str):
+        """Set up event handlers for a data channel"""
+        @channel.on("open")
+        def on_open():
+            self.logger.info(f"Data channel opened for {session_id}")
+
+        @channel.on("close")
+        def on_close():
+            self.logger.info(f"Data channel closed for {session_id}")
+
+        @channel.on("message")
+        async def on_message(message):
+            await self._handle_data_channel_message(message, session_id)
 
     def _get_detector(self):
         """Lazy load detector service to avoid circular imports"""
@@ -124,6 +182,21 @@ class WebRTCService:
         # Add video track via media relay (allows multiple subscribers)
         relay_track = self.media_relay.subscribe(self.video_track)
         pc.addTrack(relay_track)
+
+        # Create data channel for motor control (low-latency, unreliable)
+        data_channel = pc.createDataChannel(
+            "control",
+            ordered=False,
+            maxRetransmits=0
+        )
+        self._setup_data_channel_handlers(data_channel, session_id)
+        self.logger.info(f"Created data channel for {session_id}")
+
+        # Handle incoming data channels from app
+        @pc.on("datachannel")
+        def on_datachannel(channel):
+            self.logger.info(f"Received data channel '{channel.label}' from {session_id}")
+            self._setup_data_channel_handlers(channel, session_id)
 
         # Connection state change handler
         @pc.on("connectionstatechange")
@@ -200,6 +273,148 @@ class WebRTCService:
         )
         await pc.addIceCandidate(candidate)
         self.logger.debug(f"Added ICE candidate for {session_id}")
+
+    async def create_offer(
+        self,
+        session_id: str,
+        ice_servers: dict,
+        on_ice_candidate: Optional[Callable] = None
+    ) -> dict:
+        """
+        Create WebRTC offer for cloud relay signaling
+
+        This is the robot-initiated flow:
+        1. Relay sends webrtc_request with ICE servers
+        2. Robot creates offer and sends back
+        3. App responds with answer
+
+        Args:
+            session_id: Unique session identifier
+            ice_servers: ICE server config from relay (includes TURN credentials)
+            on_ice_candidate: Callback for ICE candidates
+
+        Returns:
+            SDP offer dict with type and sdp fields
+        """
+        with self._lock:
+            if len(self.connections) >= self.config.max_connections:
+                raise Exception(f"Max connections ({self.config.max_connections}) reached")
+
+            if session_id in self.connections:
+                raise Exception(f"Session {session_id} already exists")
+
+        # Create configuration from provided ICE servers
+        rtc_ice_servers = []
+        for server in ice_servers.get('iceServers', []):
+            urls = server.get('urls', [])
+            if isinstance(urls, str):
+                urls = [urls]
+            rtc_ice_servers.append(RTCIceServer(
+                urls=urls,
+                username=server.get('username'),
+                credential=server.get('credential')
+            ))
+
+        # Fall back to default STUN if no servers provided
+        if not rtc_ice_servers:
+            for stun_url in self.config.stun_servers:
+                rtc_ice_servers.append(RTCIceServer(urls=stun_url))
+
+        config = RTCConfiguration(iceServers=rtc_ice_servers)
+        pc = RTCPeerConnection(configuration=config)
+
+        # Store ICE callback
+        if on_ice_candidate:
+            self.ice_callbacks[session_id] = on_ice_candidate
+
+        # Create or reuse video track
+        if self.video_track is None:
+            detector = self._get_detector()
+            self.video_track = WIMZVideoTrack(
+                detector=detector,
+                fps=self.config.target_fps,
+                enable_overlay=self.config.enable_ai_overlay
+            )
+            self.logger.info("Created new WIMZVideoTrack for offer")
+
+        # Add video track via media relay
+        relay_track = self.media_relay.subscribe(self.video_track)
+        pc.addTrack(relay_track)
+
+        # Create data channel for motor control (low-latency, unreliable)
+        data_channel = pc.createDataChannel(
+            "control",
+            ordered=False,
+            maxRetransmits=0
+        )
+        self._setup_data_channel_handlers(data_channel, session_id)
+        self.logger.info(f"Created data channel for offer {session_id}")
+
+        # Handle incoming data channels from app
+        @pc.on("datachannel")
+        def on_datachannel(channel):
+            self.logger.info(f"Received data channel '{channel.label}' from {session_id}")
+            self._setup_data_channel_handlers(channel, session_id)
+
+        # Connection state change handler
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            state = pc.connectionState
+            self.logger.info(f"Connection {session_id}: {state}")
+
+            publish_system_event('webrtc_connection_state', {
+                'session_id': session_id,
+                'state': state
+            }, 'webrtc_service')
+
+            if state in ["failed", "closed", "disconnected"]:
+                await self._cleanup_connection(session_id)
+
+        # ICE candidate handler
+        @pc.on("icecandidate")
+        async def on_icecandidate(candidate):
+            if candidate and session_id in self.ice_callbacks:
+                await self.ice_callbacks[session_id](candidate)
+
+        # ICE connection state handler
+        @pc.on("iceconnectionstatechange")
+        async def on_ice_state_change():
+            self.logger.debug(f"ICE state {session_id}: {pc.iceConnectionState}")
+
+        with self._lock:
+            self.connections[session_id] = pc
+
+        # Create offer
+        offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+
+        self.logger.info(f"Created offer for session {session_id}")
+
+        return {
+            "type": "offer",
+            "sdp": pc.localDescription.sdp
+        }
+
+    async def handle_answer(self, session_id: str, sdp: dict):
+        """
+        Handle SDP answer from app via relay
+
+        Args:
+            session_id: Session identifier
+            sdp: SDP answer dict with 'type' and 'sdp' fields
+        """
+        with self._lock:
+            pc = self.connections.get(session_id)
+
+        if pc is None:
+            raise Exception(f"Session {session_id} not found")
+
+        answer = RTCSessionDescription(
+            sdp=sdp.get("sdp"),
+            type=sdp.get("type", "answer")
+        )
+        await pc.setRemoteDescription(answer)
+        self.logger.info(f"Set remote description (answer) for session {session_id}")
 
     async def _cleanup_connection(self, session_id: str):
         """Clean up a peer connection"""

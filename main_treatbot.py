@@ -33,6 +33,8 @@ from services.media.usb_audio import get_usb_audio_service
 from services.power.battery_monitor import get_battery_monitor
 from services.control.bluetooth_esc import BluetoothESCController
 from services.control.xbox_controller import get_xbox_service
+from services.cloud.relay_client import get_relay_client, configure_relay_from_yaml
+from services.streaming.webrtc import get_webrtc_service, configure_webrtc_from_yaml
 from api.server import run_server
 
 # Orchestrators
@@ -78,6 +80,8 @@ class TreatBotMain:
         self.bluetooth_controller = None
         self.xbox_controller = None
         self.api_server = None
+        self.relay_client = None
+        self.webrtc_service = None
 
         # Mode audio mappings - voice announcements for mode changes
         self.mode_audio_files = {
@@ -347,6 +351,16 @@ class TreatBotMain:
             self.logger.error(f"API server failed: {e}")
             services_status['api_server'] = False
 
+        # WebRTC and Cloud Relay services
+        try:
+            self._initialize_cloud_services()
+            services_status['cloud_relay'] = self.relay_client is not None and self.relay_client.config.enabled
+            services_status['webrtc'] = self.webrtc_service is not None
+        except Exception as e:
+            self.logger.error(f"Cloud/WebRTC services failed: {e}")
+            services_status['cloud_relay'] = False
+            services_status['webrtc'] = False
+
         # Check critical services
         # Note: detector is non-critical - Silent Guardian mode uses bark detection only
         # Coach mode will log warning if detector unavailable
@@ -374,6 +388,34 @@ class TreatBotMain:
         api_thread = threading.Thread(target=run_api, daemon=True, name="APIServer")
         api_thread.start()
         return api_thread
+
+    def _initialize_cloud_services(self):
+        """Initialize WebRTC and cloud relay services"""
+        import yaml
+
+        # Load config
+        config_path = '/home/morgan/dogbot/config/robot_config.yaml'
+        try:
+            with open(config_path, 'r') as f:
+                config_dict = yaml.safe_load(f)
+        except Exception as e:
+            self.logger.warning(f"Could not load config: {e}")
+            config_dict = {}
+
+        # Initialize WebRTC service
+        webrtc_config = configure_webrtc_from_yaml(config_dict)
+        self.webrtc_service = get_webrtc_service(webrtc_config)
+        self.logger.info("✅ WebRTC service initialized")
+
+        # Initialize cloud relay
+        relay_config = configure_relay_from_yaml(config_dict)
+        if relay_config.enabled:
+            self.relay_client = get_relay_client(relay_config)
+            # Wire up WebRTC service to relay client
+            self.relay_client.set_webrtc_service(self.webrtc_service)
+            self.logger.info(f"✅ Cloud relay configured (url={relay_config.relay_url})")
+        else:
+            self.logger.info("☁️ Cloud relay disabled in config")
 
     def _initialize_orchestrators(self) -> bool:
         """Initialize orchestration layer"""
@@ -445,6 +487,19 @@ class TreatBotMain:
                 self.logger.info("🎮 Bluetooth controller active - Press START to enter MANUAL mode")
                 self.state.set_mode(SystemMode.MANUAL, "Bluetooth controller ready")
 
+            # Start cloud relay client if enabled
+            if self.relay_client and self.relay_client.config.enabled:
+                self.relay_client.start()
+                self.logger.info("☁️ Cloud relay client started")
+                # Subscribe to events for relay forwarding
+                self.bus.subscribe('vision', self._forward_event_to_relay)
+                self.bus.subscribe('audio', self._forward_event_to_relay)
+                self.bus.subscribe('safety', self._forward_event_to_relay)
+                self.bus.subscribe('system', self._forward_event_to_relay)
+                self.bus.subscribe('cloud', self._handle_cloud_command)
+                self.logger.info("☁️ Event forwarding to relay enabled")
+                self.logger.info("☁️ Cloud command handler enabled")
+
             self.logger.info("✅ All subsystems started")
             return True
 
@@ -460,6 +515,10 @@ class TreatBotMain:
             # Skip LED feedback in Silent Guardian - LEDs reserved for meaningful events
             # (interventions, rewards handled by silent_guardian.py itself)
             if current_mode == SystemMode.SILENT_GUARDIAN:
+                return
+
+            # Skip in IDLE mode - system should be non-reactive
+            if current_mode == SystemMode.IDLE:
                 return
 
             # Skip LED feedback when Xbox controller is active
@@ -499,6 +558,10 @@ class TreatBotMain:
             if current_mode == SystemMode.SILENT_GUARDIAN:
                 return
 
+            # Skip in IDLE mode - system should be non-reactive
+            if current_mode == SystemMode.IDLE:
+                return
+
             # Skip LED feedback when Xbox controller is active
             if current_mode == SystemMode.MANUAL:
                 return
@@ -520,6 +583,198 @@ class TreatBotMain:
 
         except Exception as e:
             self.logger.error(f"Bark feedback error: {e}")
+
+    def _forward_event_to_relay(self, event) -> None:
+        """Forward relevant events to cloud relay for app communication"""
+        if not self.relay_client or not self.relay_client.connected:
+            return
+
+        try:
+            from core.bus import EventType
+            event_type = None
+            event_data = {}
+
+            # Map event types to relay event types
+            if event.type == EventType.VISION:
+                if event.subtype == 'dog_detected':
+                    event_type = 'detection'
+                    event_data = {
+                        'detected': True,
+                        'dog_id': event.data.get('dog_id'),
+                        'confidence': event.data.get('confidence', 0),
+                    }
+                elif event.subtype == 'dog_lost':
+                    event_type = 'detection'
+                    event_data = {'detected': False}
+                elif event.subtype == 'pose':
+                    event_type = 'detection'
+                    event_data = {
+                        'detected': True,
+                        'behavior': event.data.get('behavior'),
+                        'confidence': event.data.get('confidence', 0),
+                    }
+                elif event.subtype == 'aruco_detected':
+                    event_type = 'detection'
+                    event_data = {
+                        'detected': True,
+                        'aruco_id': event.data.get('marker_id'),
+                        'dog_name': event.data.get('dog_name'),
+                    }
+
+            elif event.type == EventType.AUDIO:
+                if event.subtype == 'bark_detected':
+                    event_type = 'bark'
+                    event_data = {
+                        'emotion': event.data.get('emotion'),
+                        'confidence': event.data.get('confidence', 0),
+                    }
+
+            elif event.type == EventType.SAFETY:
+                if event.subtype == 'battery_update':
+                    event_type = 'battery'
+                    event_data = {
+                        'level': event.data.get('level', 0),
+                        'charging': event.data.get('charging', False),
+                        'voltage': event.data.get('voltage'),
+                    }
+                elif event.subtype == 'alert':
+                    event_type = 'alert'
+                    event_data = {
+                        'alert_type': event.data.get('type'),
+                        'message': event.data.get('message'),
+                    }
+
+            elif event.type == EventType.SYSTEM:
+                if event.subtype == 'mode_changed':
+                    event_type = 'mode'
+                    event_data = {
+                        'mode': event.data.get('mode'),
+                        'previous': event.data.get('previous'),
+                    }
+
+            # Send to relay if we have a mapped event
+            if event_type:
+                self.relay_client.send_event(event_type, event_data)
+                self.logger.info(f"☁️ Forwarded {event_type} to relay: {event_data}")
+
+        except Exception as e:
+            self.logger.error(f"Relay forward error: {e}")
+
+    def _handle_cloud_command(self, event) -> None:
+        """Handle commands from cloud relay (app) by forwarding to local API
+
+        Command formats (per API_CONTRACT_v1.1.md):
+        - {"command": "treat"} → POST /treat/dispense
+        - {"command": "led", "params": {"pattern": "rainbow"}} → POST /led/pattern
+        - {"command": "servo", "params": {"pan": x}} → POST /servo/pan
+        - {"command": "servo", "params": {"tilt": y}} → POST /servo/tilt
+        - {"command": "audio", "params": {"file": "..."}} → POST /audio/play
+        - {"command": "mode", "params": {"mode": "..."}} → POST /mode/set
+
+        Motor commands are ignored here - they go via WebRTC data channel for low latency.
+        """
+        if event.subtype != 'command':
+            return
+
+        try:
+            import requests
+
+            # Log full event data for debugging
+            self.logger.info(f"☁️ Event data: {event.data}")
+
+            command = event.data.get('command')
+            params = event.data.get('params', {})
+            api_base = 'http://localhost:8000'
+
+            self.logger.info(f"☁️ Processing command={command} params={params}")
+
+            if command == 'treat':
+                # Treat dispensing: POST /treat/dispense
+                resp = requests.post(f'{api_base}/treat/dispense', timeout=5)
+                self.logger.info(f"☁️ Treat dispensed -> {resp.status_code}")
+
+            elif command == 'led':
+                # LED control per API contract
+                if params.get('off'):
+                    resp = requests.post(f'{api_base}/led/off', timeout=2)
+                    self.logger.info(f"☁️ LED off -> {resp.status_code}")
+                elif 'pattern' in params:
+                    resp = requests.post(f'{api_base}/led/pattern', json={
+                        'pattern': params['pattern']
+                    }, timeout=2)
+                    self.logger.info(f"☁️ LED pattern={params['pattern']} -> {resp.status_code}")
+                elif 'color' in params:
+                    color = params['color']
+                    if isinstance(color, list) and len(color) == 3:
+                        resp = requests.post(f'{api_base}/led/color', json={
+                            'r': color[0], 'g': color[1], 'b': color[2]
+                        }, timeout=2)
+                        self.logger.info(f"☁️ LED color={color} -> {resp.status_code}")
+                elif 'r' in params and 'g' in params and 'b' in params:
+                    resp = requests.post(f'{api_base}/led/color', json={
+                        'r': params['r'], 'g': params['g'], 'b': params['b']
+                    }, timeout=2)
+                    self.logger.info(f"☁️ LED RGB -> {resp.status_code}")
+
+            elif command == 'servo':
+                # Servo control: {"pan": x} or {"tilt": y} or {"center": true}
+                if params.get('center'):
+                    resp = requests.post(f'{api_base}/servo/center', timeout=2)
+                    self.logger.info(f"☁️ Servo centered -> {resp.status_code}")
+                else:
+                    if 'pan' in params:
+                        resp = requests.post(f'{api_base}/servo/pan', json={
+                            'angle': float(params['pan'])
+                        }, timeout=2)
+                        self.logger.info(f"☁️ Servo pan={params['pan']} -> {resp.status_code}")
+                    if 'tilt' in params:
+                        resp = requests.post(f'{api_base}/servo/tilt', json={
+                            'angle': float(params['tilt'])
+                        }, timeout=2)
+                        self.logger.info(f"☁️ Servo tilt={params['tilt']} -> {resp.status_code}")
+
+            elif command == 'audio':
+                # Audio: {"file": "good_dog.mp3"} or {"stop": true}
+                if params.get('stop'):
+                    resp = requests.post(f'{api_base}/audio/stop', timeout=2)
+                    self.logger.info(f"☁️ Audio stopped -> {resp.status_code}")
+                elif 'file' in params:
+                    filepath = params['file']
+                    # Handle relative paths - prepend VOICEMP3 directory
+                    if not filepath.startswith('/'):
+                        filepath = f"/home/morgan/dogbot/VOICEMP3/{filepath}"
+                    resp = requests.post(f'{api_base}/audio/play', json={
+                        'file': filepath
+                    }, timeout=2)
+                    self.logger.info(f"☁️ Audio play={filepath} -> {resp.status_code}")
+
+            elif command == 'mode':
+                # Mode: {"mode": "coach"} or {"mode": "idle"}
+                mode_name = params.get('mode', '').lower()
+                resp = requests.post(f'{api_base}/mode/set', json={
+                    'mode': mode_name
+                }, timeout=2)
+                self.logger.info(f"☁️ Mode set={mode_name} -> {resp.status_code}")
+
+            elif command == 'motor':
+                # Motor commands should go via WebRTC data channel for low latency
+                # Ignore here but log for debugging
+                self.logger.debug(f"☁️ Motor command ignored (use WebRTC data channel)")
+
+            elif command == 'stop':
+                # Emergency stop - stop motors
+                resp = requests.post(f'{api_base}/motor/stop', timeout=2)
+                self.logger.info(f"☁️ Emergency stop -> {resp.status_code}")
+
+            else:
+                self.logger.warning(f"☁️ Unknown cloud command: {command}")
+
+        except requests.exceptions.Timeout:
+            self.logger.error(f"☁️ Cloud command timeout: {command}")
+        except requests.exceptions.ConnectionError:
+            self.logger.error(f"☁️ Cloud command failed - API not reachable")
+        except Exception as e:
+            self.logger.error(f"☁️ Cloud command error: {e}", exc_info=True)
 
     def _on_mode_change(self, data: Dict[str, Any]) -> None:
         """Handle mode changes to start/stop mode handlers"""
@@ -834,6 +1089,18 @@ class TreatBotMain:
                 self.silent_guardian_mode.stop()
             if self.coaching_engine:
                 self.coaching_engine.stop()
+
+            # Stop cloud relay and WebRTC
+            if self.relay_client:
+                self.relay_client.stop()
+            if self.webrtc_service:
+                import asyncio
+                try:
+                    loop = asyncio.new_event_loop()
+                    loop.run_until_complete(self.webrtc_service.cleanup())
+                    loop.close()
+                except Exception as e:
+                    self.logger.warning(f"WebRTC cleanup error: {e}")
 
             # Stop USB audio
             try:

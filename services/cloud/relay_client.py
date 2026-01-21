@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from core.bus import get_bus, Event
+from core.bus import get_bus, CloudEvent
 
 
 @dataclass
@@ -315,15 +315,22 @@ class RelayClient:
             await self._webrtc_service.close_connection(session_id)
 
     async def _handle_command(self, data: dict):
-        """Handle command from app"""
-        command = data.get('command')
-        params = data.get('params', {})
+        """Handle command from app
 
-        self.logger.info(f"Command received: {command}")
+        Message format: {"type": "command", "command": "treat", "data": {...}}
+        The params are in the 'data' field, not 'params'.
+        """
+        command = data.get('command')
+        params = data.get('data', {})  # Params are in 'data' field
+
+        self.logger.info(f"☁️ Command: {command}, params: {params}")
+
+        if command is None:
+            self.logger.warning(f"☁️ Missing command in message: {data}")
+            return
 
         # Publish command to event bus for other services to handle
-        self.bus.publish(Event(
-            category='cloud',
+        self.bus.publish(CloudEvent(
             subtype='command',
             data={'command': command, 'params': params},
             source='relay_client'
