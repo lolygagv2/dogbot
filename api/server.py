@@ -1560,6 +1560,47 @@ async def motor_stop(request: Optional[EmergencyStopRequest] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Camera Control endpoints
+@app.get("/camera/status")
+async def get_camera_status():
+    """Get camera detection status and diagnostics"""
+    try:
+        if AI_AVAILABLE:
+            detector = get_detector_service()
+            camera_status = detector.get_camera_status()
+            return {
+                "success": True,
+                **camera_status,
+                "hint": "CSI cameras require a system reboot after plugging in ribbon cable" if not camera_status.get('cameras_detected') else None
+            }
+        else:
+            return {
+                "success": False,
+                "initialized": False,
+                "error_reason": "AI/detector service not available",
+                "cameras_detected": 0
+            }
+    except Exception as e:
+        logger.error(f"Camera status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/camera/reinitialize")
+async def reinitialize_camera():
+    """Attempt to reinitialize the camera (useful after system reboot)"""
+    try:
+        if not AI_AVAILABLE:
+            raise HTTPException(status_code=503, detail="AI/detector service not available")
+
+        detector = get_detector_service()
+        result = detector.request_camera_reinitialize()
+        return {
+            "success": result.get('initialized', False),
+            **result,
+            "message": "Camera reinitialized successfully" if result.get('initialized') else "Camera reinitialization failed"
+        }
+    except Exception as e:
+        logger.error(f"Camera reinitialize error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/camera/photo")
 async def capture_photo_imx500():
     """Capture 4K photo using IMX500 PCIe camera"""
@@ -2808,25 +2849,40 @@ async def get_system_status():
 
 @app.post("/audio/play")
 async def play_audio(request: dict):
-    """Play audio track via USB audio"""
+    """Play audio file or track via USB audio
+
+    Accepts:
+    - {"file": "good_dog.mp3"} - plays from VOICEMP3/talks/
+    - {"track": 1} - plays by track number (legacy)
+    """
     try:
         usb_audio_service = get_usb_audio_service()
 
+        # Support file parameter (preferred)
+        file = request.get("file")
+        if file:
+            # Build full path - files are in VOICEMP3/talks/
+            if not file.startswith('/'):
+                filepath = f"/home/morgan/dogbot/VOICEMP3/talks/{file}"
+            else:
+                filepath = file
+            result = usb_audio_service.play_file(filepath)
+            return {
+                "success": result.get("success", False),
+                "file": file,
+                "message": result.get("message", "")
+            }
+
+        # Legacy track support
         track = request.get("track")
-        name = request.get("name", f"Track {track}")
+        if track is not None:
+            success = usb_audio_service.play_file("0001.mp3", "talks")
+            return {
+                "success": success,
+                "track": track
+            }
 
-        if track is None:
-            raise HTTPException(status_code=400, detail="Track number required")
-
-        # Play using USB audio - map track to appropriate file
-        # For now, play a default test file
-        success = usb_audio_service.play_file("0001.mp3", "talks")
-
-        return {
-            "success": success,
-            "track": track,
-            "name": name
-        }
+        raise HTTPException(status_code=400, detail="Either 'file' or 'track' required")
     except Exception as e:
         logger.error(f"Audio play error: {e}")
         return {"success": False, "error": str(e)}
@@ -3881,12 +3937,62 @@ async def servo_tilt_contract(request: ServoAngleRequest):
 
 @app.post("/servo/center")
 async def servo_center_contract():
-    """Center camera (contract alias)"""
+    """Center camera to calibrated default viewing position"""
     try:
         pantilt = get_pantilt_service()
         if pantilt:
-            pantilt.move_camera(pan=90, tilt=90)
+            # Use center_camera() which calls the calibrated center position
+            pantilt.center_camera()
         return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": {"code": "SERVO_ERROR", "message": str(e)}}
+
+@app.post("/servo/center/calibrate")
+async def servo_center_calibrate(request: dict):
+    """Set the calibrated center position for camera servos
+
+    Body: {"pan": 100, "tilt": 55}
+    - pan: Pan center position in servo units (10-200), default 100
+    - tilt: Tilt center position in servo units (20-160), default 55
+    """
+    try:
+        pantilt = get_pantilt_service()
+        if not pantilt:
+            raise HTTPException(status_code=503, detail="Pan/tilt service not available")
+
+        pan = request.get("pan")
+        tilt = request.get("tilt")
+        pantilt.set_center_position(pan=pan, tilt=tilt)
+
+        return {
+            "success": True,
+            "center": {
+                "pan": pantilt.center_pan,
+                "tilt": pantilt.center_tilt
+            }
+        }
+    except Exception as e:
+        return {"success": False, "error": {"code": "SERVO_ERROR", "message": str(e)}}
+
+@app.get("/servo/center/position")
+async def servo_center_get_position():
+    """Get the current calibrated center position"""
+    try:
+        pantilt = get_pantilt_service()
+        if not pantilt:
+            raise HTTPException(status_code=503, detail="Pan/tilt service not available")
+
+        return {
+            "success": True,
+            "center": {
+                "pan": pantilt.center_pan,
+                "tilt": pantilt.center_tilt
+            },
+            "current": {
+                "pan": pantilt.current_pan,
+                "tilt": pantilt.current_tilt
+            }
+        }
     except Exception as e:
         return {"success": False, "error": {"code": "SERVO_ERROR", "message": str(e)}}
 

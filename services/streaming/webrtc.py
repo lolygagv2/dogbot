@@ -12,7 +12,6 @@ import time
 from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass, field
 
-import requests
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
 from aiortc import RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaRelay
@@ -20,6 +19,13 @@ from aiortc.contrib.media import MediaRelay
 from core.bus import get_bus, publish_system_event
 from core.state import get_state
 from services.streaming.video_track import WIMZVideoTrack
+
+# Motor control imports - direct hardware access like Xbox controller
+try:
+    from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+    MOTOR_BUS_AVAILABLE = True
+except ImportError:
+    MOTOR_BUS_AVAILABLE = False
 
 
 @dataclass
@@ -31,7 +37,9 @@ class WebRTCConfig:
     target_fps: int = 15
     video_codec: str = "VP8"
     enable_ai_overlay: bool = True
-    max_connections: int = 2
+    # CRITICAL: Set to 1 to prevent SEGFAULT crashes from multiple simultaneous sessions
+    # Multiple sessions cause race conditions in MediaRelay/VP8 encoding
+    max_connections: int = 1
 
 
 class WebRTCService:
@@ -72,35 +80,68 @@ class WebRTCService:
         """
         Handle incoming data channel messages for motor control
 
-        Message format: {"type": "motor", "left": -1.0 to 1.0, "right": -1.0 to 1.0}
+        Message formats supported:
+        - {"type": "motor", "left": -1.0 to 1.0, "right": -1.0 to 1.0}
+        - {"command": "motor", "left": -1.0 to 1.0, "right": -1.0 to 1.0}
+
+        Motor commands go DIRECTLY to hardware (like Xbox controller) for minimal latency.
+        No HTTP API calls - direct motor bus access.
         """
         try:
             data = json.loads(message)
-            msg_type = data.get('type')
+            # Support both "type" and "command" keys for flexibility
+            msg_type = data.get('type') or data.get('command')
 
             if msg_type == 'motor':
-                left = data.get('left', 0)
-                right = data.get('right', 0)
-                # Convert -1 to 1 range to motor speed (-100 to 100)
-                left_speed = int(float(left) * 100)
-                right_speed = int(float(right) * 100)
-
-                # Forward to local API (non-blocking, fire-and-forget for low latency)
                 try:
-                    if left_speed == 0 and right_speed == 0:
-                        requests.post('http://localhost:8000/motor/stop', timeout=0.5)
+                    left = float(data.get('left', 0))
+                    right = float(data.get('right', 0))
+
+                    # Clamp to -1.0 to 1.0 range
+                    left = max(-1.0, min(1.0, left))
+                    right = max(-1.0, min(1.0, right))
+
+                    # Convert to percentage (-100 to 100) for motor bus
+                    left_pct = int(left * 100)
+                    right_pct = int(right * 100)
+
+                    # DIRECT hardware control via motor bus (same as Xbox controller)
+                    if MOTOR_BUS_AVAILABLE:
+                        try:
+                            motor_bus = get_motor_bus()
+                            if motor_bus and motor_bus.running:
+                                cmd = create_motor_command(left_pct, right_pct, CommandSource.WEBRTC)
+                                motor_bus.send_command(cmd)
+                                # Only log periodically to avoid spam
+                                if abs(left_pct) > 10 or abs(right_pct) > 10:
+                                    self.logger.debug(f"Motor: L={left_pct}% R={right_pct}%")
+                            else:
+                                self.logger.warning("Motor bus not running - motor commands ignored")
+                        except Exception as e:
+                            self.logger.error(f"Motor bus error: {e}")
                     else:
-                        requests.post('http://localhost:8000/motor/control', json={
-                            'left_speed': left_speed,
-                            'right_speed': right_speed
-                        }, timeout=0.5)
-                except requests.exceptions.RequestException:
-                    # Log sparingly to avoid flooding
-                    pass
+                        self.logger.warning("Motor bus not available - motor commands ignored")
+
+                except ValueError as e:
+                    self.logger.warning(f"Invalid motor values: {e}")
+                except Exception as e:
+                    self.logger.error(f"Motor command error: {e}")
 
             elif msg_type == 'ping':
-                # Heartbeat/latency check - could respond via data channel if needed
+                # Heartbeat/latency check
                 self.logger.debug(f"Data channel ping from {session_id}")
+
+            elif msg_type == 'stop':
+                # Emergency stop
+                try:
+                    if MOTOR_BUS_AVAILABLE:
+                        motor_bus = get_motor_bus()
+                        if motor_bus and motor_bus.running:
+                            cmd = create_motor_command(0, 0, CommandSource.WEBRTC)
+                            motor_bus.send_command(cmd)
+                            self.logger.info("Emergency stop from data channel")
+                except Exception as e:
+                    self.logger.error(f"Emergency stop error: {e}")
 
             else:
                 self.logger.debug(f"Unknown data channel message type: {msg_type}")
@@ -122,6 +163,8 @@ class WebRTCService:
 
         @channel.on("message")
         async def on_message(message):
+            self.logger.info(f"📥 Data channel message from {session_id}: {message[:200]}")
+            print(f"[WebRTC] 📥 Data channel message: {message[:200]}", flush=True)
             await self._handle_data_channel_message(message, session_id)
 
     def _get_detector(self):
@@ -155,6 +198,17 @@ class WebRTCService:
         on_ice_candidate: Optional[Callable] = None
     ) -> RTCPeerConnection:
         """Create a new peer connection for a client session"""
+        # CRITICAL: Close existing sessions before creating new one to prevent SEGFAULT
+        existing_sessions = list(self.connections.keys())
+        if existing_sessions:
+            self.logger.info(f"Closing {len(existing_sessions)} existing session(s) before creating new one")
+            for old_session_id in existing_sessions:
+                try:
+                    await self._cleanup_connection(old_session_id)
+                except Exception as e:
+                    self.logger.warning(f"Error closing session {old_session_id}: {e}")
+            await asyncio.sleep(0.2)
+
         with self._lock:
             if len(self.connections) >= self.config.max_connections:
                 raise Exception(f"Max connections ({self.config.max_connections}) reached")
@@ -215,13 +269,25 @@ class WebRTCService:
         # ICE candidate handler
         @pc.on("icecandidate")
         async def on_icecandidate(candidate):
-            if candidate and session_id in self.ice_callbacks:
-                await self.ice_callbacks[session_id](candidate)
+            try:
+                if candidate and session_id in self.ice_callbacks:
+                    await self.ice_callbacks[session_id](candidate)
+            except Exception as e:
+                self.logger.warning(f"ICE candidate callback error for {session_id}: {e}")
 
         # ICE connection state handler
         @pc.on("iceconnectionstatechange")
         async def on_ice_state_change():
-            self.logger.debug(f"ICE state {session_id}: {pc.iceConnectionState}")
+            try:
+                state = pc.iceConnectionState
+                self.logger.info(f"ICE state {session_id}: {state}")
+                # Proactively clean up on ICE failure to prevent crashes
+                if state in ["failed", "disconnected", "closed"]:
+                    self.logger.warning(f"ICE {state} for {session_id}, scheduling cleanup...")
+                    # Use asyncio.create_task to avoid blocking
+                    asyncio.create_task(self._safe_cleanup_connection(session_id))
+            except Exception as e:
+                self.logger.error(f"ICE state change handler error: {e}")
 
         with self._lock:
             self.connections[session_id] = pc
@@ -259,20 +325,58 @@ class WebRTCService:
         return pc.localDescription.sdp
 
     async def add_ice_candidate(self, session_id: str, candidate_dict: Dict[str, Any]):
-        """Add ICE candidate to peer connection"""
-        with self._lock:
-            pc = self.connections.get(session_id)
+        """Add ICE candidate to peer connection (with robust error handling)"""
+        try:
+            with self._lock:
+                pc = self.connections.get(session_id)
 
-        if pc is None:
-            raise Exception(f"Session {session_id} not found")
+            if pc is None:
+                self.logger.warning(f"Session {session_id} not found for ICE candidate")
+                return  # Don't raise - just log and continue
 
-        candidate = RTCIceCandidate(
-            sdpMid=candidate_dict.get("sdpMid"),
-            sdpMLineIndex=candidate_dict.get("sdpMLineIndex"),
-            candidate=candidate_dict.get("candidate")
-        )
-        await pc.addIceCandidate(candidate)
-        self.logger.debug(f"Added ICE candidate for {session_id}")
+            # Check connection state before adding candidates
+            if pc.connectionState in ["closed", "failed"]:
+                self.logger.debug(f"Skipping ICE candidate for {session_id} - connection {pc.connectionState}")
+                return
+
+            # Parse the candidate string to create RTCIceCandidate
+            # Format: "candidate:foundation component protocol priority ip port typ type ..."
+            candidate_str = candidate_dict.get("candidate", "")
+            sdp_mid = candidate_dict.get("sdpMid")
+            sdp_mline_index = candidate_dict.get("sdpMLineIndex")
+
+            if not candidate_str:
+                # End-of-candidates signal
+                try:
+                    await pc.addIceCandidate(None)
+                    self.logger.debug(f"End of ICE candidates for {session_id}")
+                except Exception as e:
+                    self.logger.warning(f"Error signaling end of ICE candidates for {session_id}: {e}")
+                return
+
+            # Parse candidate string using aioice
+            from aioice import Candidate
+            from aiortc.rtcicetransport import candidate_from_aioice
+
+            # Remove "candidate:" prefix if present
+            if candidate_str.startswith("candidate:"):
+                candidate_str = candidate_str[10:]
+
+            aioice_candidate = Candidate.from_sdp(candidate_str)
+            rtc_candidate = candidate_from_aioice(aioice_candidate)
+            rtc_candidate.sdpMid = sdp_mid
+            rtc_candidate.sdpMLineIndex = sdp_mline_index
+
+            await pc.addIceCandidate(rtc_candidate)
+            self.logger.debug(f"Added ICE candidate for {session_id}")
+
+        except Exception as e:
+            # Catch all exceptions to prevent crashes - ICE failures are recoverable
+            error_name = type(e).__name__
+            if 'TransactionFailed' in error_name:
+                self.logger.warning(f"ICE/TURN transaction failed for {session_id} (non-fatal): {e}")
+            else:
+                self.logger.error(f"Failed to add ICE candidate for {session_id}: {error_name}: {e}")
 
     async def create_offer(
         self,
@@ -296,6 +400,20 @@ class WebRTCService:
         Returns:
             SDP offer dict with type and sdp fields
         """
+        # CRITICAL: Close existing sessions before creating new one to prevent SEGFAULT
+        # Multiple simultaneous sessions cause race conditions in MediaRelay/VP8 encoding
+        existing_sessions = list(self.connections.keys())
+        if existing_sessions:
+            self.logger.info(f"Closing {len(existing_sessions)} existing session(s) before creating new one")
+            for old_session_id in existing_sessions:
+                try:
+                    await self._cleanup_connection(old_session_id)
+                    self.logger.info(f"Closed existing session: {old_session_id}")
+                except Exception as e:
+                    self.logger.warning(f"Error closing session {old_session_id}: {e}")
+            # Small delay to allow cleanup to complete
+            await asyncio.sleep(0.2)
+
         with self._lock:
             if len(self.connections) >= self.config.max_connections:
                 raise Exception(f"Max connections ({self.config.max_connections}) reached")
@@ -304,8 +422,10 @@ class WebRTCService:
                 raise Exception(f"Session {session_id} already exists")
 
         # Create configuration from provided ICE servers
+        # ice_servers can be a list directly or a dict with 'iceServers' key
         rtc_ice_servers = []
-        for server in ice_servers.get('iceServers', []):
+        servers_list = ice_servers if isinstance(ice_servers, list) else ice_servers.get('iceServers', [])
+        for server in servers_list:
             urls = server.get('urls', [])
             if isinstance(urls, str):
                 urls = [urls]
@@ -373,13 +493,23 @@ class WebRTCService:
         # ICE candidate handler
         @pc.on("icecandidate")
         async def on_icecandidate(candidate):
-            if candidate and session_id in self.ice_callbacks:
-                await self.ice_callbacks[session_id](candidate)
+            try:
+                if candidate and session_id in self.ice_callbacks:
+                    await self.ice_callbacks[session_id](candidate)
+            except Exception as e:
+                self.logger.warning(f"ICE candidate callback error for {session_id}: {e}")
 
         # ICE connection state handler
         @pc.on("iceconnectionstatechange")
         async def on_ice_state_change():
-            self.logger.debug(f"ICE state {session_id}: {pc.iceConnectionState}")
+            try:
+                state = pc.iceConnectionState
+                self.logger.info(f"ICE state {session_id}: {state}")
+                if state in ["failed", "disconnected", "closed"]:
+                    self.logger.warning(f"ICE {state} for {session_id}, scheduling cleanup...")
+                    asyncio.create_task(self._safe_cleanup_connection(session_id))
+            except Exception as e:
+                self.logger.error(f"ICE state change handler error: {e}")
 
         with self._lock:
             self.connections[session_id] = pc
@@ -416,6 +546,15 @@ class WebRTCService:
         await pc.setRemoteDescription(answer)
         self.logger.info(f"Set remote description (answer) for session {session_id}")
 
+    async def _safe_cleanup_connection(self, session_id: str):
+        """Safe cleanup wrapper that catches all exceptions to prevent crashes"""
+        try:
+            # Small delay to allow any in-flight operations to complete
+            await asyncio.sleep(0.1)
+            await self._cleanup_connection(session_id)
+        except Exception as e:
+            self.logger.error(f"Safe cleanup error for {session_id}: {e}")
+
     async def _cleanup_connection(self, session_id: str):
         """Clean up a peer connection"""
         with self._lock:
@@ -424,7 +563,9 @@ class WebRTCService:
 
         if pc:
             try:
-                await pc.close()
+                # Check connection state before closing to avoid double-close
+                if pc.connectionState not in ["closed"]:
+                    await pc.close()
             except Exception as e:
                 self.logger.warning(f"Error closing connection {session_id}: {e}")
             self.logger.info(f"Cleaned up connection: {session_id}")
@@ -432,7 +573,10 @@ class WebRTCService:
         # Stop video track if no connections remain
         with self._lock:
             if not self.connections and self.video_track:
-                self.video_track.stop()
+                try:
+                    self.video_track.stop()
+                except Exception as e:
+                    self.logger.warning(f"Error stopping video track: {e}")
                 self.video_track = None
                 self.logger.info("Stopped video track (no active connections)")
 

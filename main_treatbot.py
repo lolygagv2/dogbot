@@ -113,6 +113,10 @@ class TreatBotMain:
         self.main_thread = None
         self._stop_event = threading.Event()
 
+        # Relay event throttling (5-second minimum between events of same type)
+        self._relay_event_times: Dict[str, float] = {}
+        self._relay_throttle_interval = 5.0  # seconds
+
         # Performance tracking
         self.start_time = time.time()
         self.loop_count = 0
@@ -246,15 +250,21 @@ class TreatBotMain:
             self.logger.error(f"Pan/tilt service failed: {e}")
             services_status['pantilt'] = False
 
-        # Motor service - DISABLED (Xbox controller has direct motor control)
+        # Motor bus - Direct hardware control for WebRTC and Xbox controller
+        # Uses singleton pattern so won't conflict if Xbox controller also starts it
         try:
-            # self.motor = get_motor_service()
-            # services_status['motor'] = self.motor.initialize()
-            services_status['motor'] = False  # Disabled to prevent GPIO conflicts
-            self.logger.info("🚗 Motor service disabled (Xbox has direct control)")
+            from core.motor_command_bus import get_motor_bus
+            self.motor_bus = get_motor_bus()
+            if self.motor_bus.start():
+                services_status['motor'] = True
+                self.logger.info("✅ Motor bus initialized (direct hardware control for WebRTC)")
+            else:
+                services_status['motor'] = False
+                self.logger.warning("⚠️ Motor bus failed to start")
         except Exception as e:
-            self.logger.error(f"Motor service failed: {e}")
+            self.logger.error(f"Motor bus failed: {e}")
             services_status['motor'] = False
+            self.motor_bus = None
 
         # Dispenser service
         try:
@@ -585,7 +595,11 @@ class TreatBotMain:
             self.logger.error(f"Bark feedback error: {e}")
 
     def _forward_event_to_relay(self, event) -> None:
-        """Forward relevant events to cloud relay for app communication"""
+        """Forward relevant events to cloud relay for app communication
+
+        Applies 5-second throttling to detection and bark events to prevent spam.
+        Mode, battery, and alert events are always forwarded immediately.
+        """
         if not self.relay_client or not self.relay_client.connected:
             return
 
@@ -593,6 +607,7 @@ class TreatBotMain:
             from core.bus import EventType
             event_type = None
             event_data = {}
+            should_throttle = False  # Whether to apply 5-second throttle
 
             # Map event types to relay event types
             if event.type == EventType.VISION:
@@ -603,9 +618,11 @@ class TreatBotMain:
                         'dog_id': event.data.get('dog_id'),
                         'confidence': event.data.get('confidence', 0),
                     }
+                    should_throttle = True
                 elif event.subtype == 'dog_lost':
                     event_type = 'detection'
                     event_data = {'detected': False}
+                    should_throttle = True
                 elif event.subtype == 'pose':
                     event_type = 'detection'
                     event_data = {
@@ -613,6 +630,7 @@ class TreatBotMain:
                         'behavior': event.data.get('behavior'),
                         'confidence': event.data.get('confidence', 0),
                     }
+                    should_throttle = True
                 elif event.subtype == 'aruco_detected':
                     event_type = 'detection'
                     event_data = {
@@ -620,6 +638,7 @@ class TreatBotMain:
                         'aruco_id': event.data.get('marker_id'),
                         'dog_name': event.data.get('dog_name'),
                     }
+                    should_throttle = True
 
             elif event.type == EventType.AUDIO:
                 if event.subtype == 'bark_detected':
@@ -628,21 +647,16 @@ class TreatBotMain:
                         'emotion': event.data.get('emotion'),
                         'confidence': event.data.get('confidence', 0),
                     }
+                    should_throttle = True
 
             elif event.type == EventType.SAFETY:
-                if event.subtype == 'battery_update':
-                    event_type = 'battery'
-                    event_data = {
-                        'level': event.data.get('level', 0),
-                        'charging': event.data.get('charging', False),
-                        'voltage': event.data.get('voltage'),
-                    }
-                elif event.subtype == 'alert':
+                if event.subtype == 'alert':
                     event_type = 'alert'
                     event_data = {
                         'alert_type': event.data.get('type'),
                         'message': event.data.get('message'),
                     }
+                    # Alerts are not throttled - always send immediately
 
             elif event.type == EventType.SYSTEM:
                 if event.subtype == 'mode_changed':
@@ -651,11 +665,44 @@ class TreatBotMain:
                         'mode': event.data.get('mode'),
                         'previous': event.data.get('previous'),
                     }
+                    # Mode changes are not throttled
+                elif event.subtype in ('battery_low', 'battery_critical', 'battery_charging', 'battery_status'):
+                    # Battery events are published as SYSTEM events
+                    # Include temperature and treats info for full telemetry
+                    temperature = self.state.hardware.temperature if self.state else 0.0
+
+                    # Get total treats dispensed today from dispenser
+                    treats_today = 0
+                    if self.dispenser:
+                        try:
+                            status = self.dispenser.get_status()
+                            treats_today = status.get('total_dispensed', 0)
+                        except Exception:
+                            pass
+
+                    event_type = 'battery'
+                    event_data = {
+                        'level': event.data.get('percentage', 0),
+                        'charging': event.data.get('charging', False) or event.subtype == 'battery_charging',
+                        'voltage': event.data.get('voltage'),
+                        'temperature': temperature,
+                        'treats_today': treats_today,
+                    }
+                    # Battery status is not throttled (already rate-limited at source)
 
             # Send to relay if we have a mapped event
             if event_type:
+                # Apply throttling for detection and bark events
+                if should_throttle:
+                    current_time = time.time()
+                    last_time = self._relay_event_times.get(event_type, 0)
+                    if current_time - last_time < self._relay_throttle_interval:
+                        # Throttled - skip this event
+                        return
+                    self._relay_event_times[event_type] = current_time
+
                 self.relay_client.send_event(event_type, event_data)
-                self.logger.info(f"☁️ Forwarded {event_type} to relay: {event_data}")
+                self.logger.debug(f"☁️ Forwarded {event_type} to relay: {event_data}")
 
         except Exception as e:
             self.logger.error(f"Relay forward error: {e}")
@@ -667,7 +714,7 @@ class TreatBotMain:
         - {"command": "treat"} → POST /treat/dispense
         - {"command": "led", "params": {"pattern": "rainbow"}} → POST /led/pattern
         - {"command": "servo", "params": {"pan": x}} → POST /servo/pan
-        - {"command": "servo", "params": {"tilt": y}} → POST /servo/tilt
+        - {"command": "servo_center"} → POST /servo/center
         - {"command": "audio", "params": {"file": "..."}} → POST /audio/play
         - {"command": "mode", "params": {"mode": "..."}} → POST /mode/set
 
@@ -677,7 +724,7 @@ class TreatBotMain:
             return
 
         try:
-            import requests
+            import httpx
 
             # Log full event data for debugging
             self.logger.info(f"☁️ Event data: {event.data}")
@@ -688,90 +735,103 @@ class TreatBotMain:
 
             self.logger.info(f"☁️ Processing command={command} params={params}")
 
-            if command == 'treat':
-                # Treat dispensing: POST /treat/dispense
-                resp = requests.post(f'{api_base}/treat/dispense', timeout=5)
-                self.logger.info(f"☁️ Treat dispensed -> {resp.status_code}")
+            with httpx.Client(timeout=5.0) as client:
+                if command == 'treat':
+                    # Treat dispensing: POST /treat/dispense
+                    resp = client.post(f'{api_base}/treat/dispense', json={
+                        'reason': 'cloud_command'
+                    })
+                    self.logger.info(f"☁️ Treat dispensed -> {resp.status_code}")
 
-            elif command == 'led':
-                # LED control per API contract
-                if params.get('off'):
-                    resp = requests.post(f'{api_base}/led/off', timeout=2)
-                    self.logger.info(f"☁️ LED off -> {resp.status_code}")
-                elif 'pattern' in params:
-                    resp = requests.post(f'{api_base}/led/pattern', json={
-                        'pattern': params['pattern']
-                    }, timeout=2)
-                    self.logger.info(f"☁️ LED pattern={params['pattern']} -> {resp.status_code}")
-                elif 'color' in params:
-                    color = params['color']
-                    if isinstance(color, list) and len(color) == 3:
-                        resp = requests.post(f'{api_base}/led/color', json={
-                            'r': color[0], 'g': color[1], 'b': color[2]
-                        }, timeout=2)
-                        self.logger.info(f"☁️ LED color={color} -> {resp.status_code}")
-                elif 'r' in params and 'g' in params and 'b' in params:
-                    resp = requests.post(f'{api_base}/led/color', json={
-                        'r': params['r'], 'g': params['g'], 'b': params['b']
-                    }, timeout=2)
-                    self.logger.info(f"☁️ LED RGB -> {resp.status_code}")
+                elif command == 'led':
+                    # LED control per API contract
+                    if params.get('off'):
+                        resp = client.post(f'{api_base}/led/off')
+                        self.logger.info(f"☁️ LED off -> {resp.status_code}")
+                    elif 'pattern' in params:
+                        resp = client.post(f'{api_base}/led/pattern', json={
+                            'pattern': params['pattern']
+                        })
+                        self.logger.info(f"☁️ LED pattern={params['pattern']} -> {resp.status_code}")
+                    elif 'color' in params:
+                        color = params['color']
+                        if isinstance(color, list) and len(color) == 3:
+                            resp = client.post(f'{api_base}/led/color', json={
+                                'r': color[0], 'g': color[1], 'b': color[2]
+                            })
+                            self.logger.info(f"☁️ LED color={color} -> {resp.status_code}")
+                    elif 'r' in params and 'g' in params and 'b' in params:
+                        resp = client.post(f'{api_base}/led/color', json={
+                            'r': params['r'], 'g': params['g'], 'b': params['b']
+                        })
+                        self.logger.info(f"☁️ LED RGB -> {resp.status_code}")
 
-            elif command == 'servo':
-                # Servo control: {"pan": x} or {"tilt": y} or {"center": true}
-                if params.get('center'):
-                    resp = requests.post(f'{api_base}/servo/center', timeout=2)
+                elif command == 'servo':
+                    # Servo control: {"pan": x} or {"tilt": y} or {"center": true}
+                    if params.get('center'):
+                        resp = client.post(f'{api_base}/servo/center')
+                        self.logger.info(f"☁️ Servo centered -> {resp.status_code}")
+                    else:
+                        pan_val = params.get('pan', 0)
+                        tilt_val = params.get('tilt', 0)
+                        # Ignore commands where both pan AND tilt are near zero (±0.5)
+                        # This prevents camera from snapping back when joystick is released
+                        # Only servo_center command should recenter (matches Xbox controller behavior)
+                        if abs(pan_val) <= 0.5 and abs(tilt_val) <= 0.5:
+                            self.logger.info("☁️ Servo ignoring near-zero (joystick released - camera holds position)")
+                        else:
+                            if 'pan' in params and abs(pan_val) > 0.5:
+                                resp = client.post(f'{api_base}/servo/pan', json={
+                                    'angle': float(pan_val)
+                                })
+                                self.logger.info(f"☁️ Servo pan={pan_val} -> {resp.status_code}")
+                            if 'tilt' in params and abs(tilt_val) > 0.5:
+                                resp = client.post(f'{api_base}/servo/tilt', json={
+                                    'angle': float(tilt_val)
+                                })
+                                self.logger.info(f"☁️ Servo tilt={tilt_val} -> {resp.status_code}")
+
+                elif command == 'servo_center':
+                    # Dedicated servo center command
+                    resp = client.post(f'{api_base}/servo/center')
                     self.logger.info(f"☁️ Servo centered -> {resp.status_code}")
+
+                elif command == 'audio':
+                    # Audio: {"file": "good_dog.mp3"} or {"stop": true}
+                    if params.get('stop'):
+                        resp = client.post(f'{api_base}/audio/stop')
+                        self.logger.info(f"☁️ Audio stopped -> {resp.status_code}")
+                    elif 'file' in params:
+                        filename = params['file']
+                        # Send just the filename to /audio/play endpoint
+                        resp = client.post(f'{api_base}/audio/play', json={
+                            'file': filename
+                        })
+                        self.logger.info(f"☁️ Audio play={filename} -> {resp.status_code}")
+
+                elif command == 'mode':
+                    # Mode: {"mode": "coach"} or {"mode": "idle"}
+                    mode_name = params.get('mode', '').lower()
+                    resp = client.post(f'{api_base}/mode/set', json={
+                        'mode': mode_name
+                    })
+                    self.logger.info(f"☁️ Mode set={mode_name} -> {resp.status_code}")
+
+                elif command == 'motor':
+                    # Motor commands should go via WebRTC data channel for low latency
+                    self.logger.debug(f"☁️ Motor command ignored (use WebRTC data channel)")
+
+                elif command == 'stop':
+                    # Emergency stop - stop motors
+                    resp = client.post(f'{api_base}/motor/stop')
+                    self.logger.info(f"☁️ Emergency stop -> {resp.status_code}")
+
                 else:
-                    if 'pan' in params:
-                        resp = requests.post(f'{api_base}/servo/pan', json={
-                            'angle': float(params['pan'])
-                        }, timeout=2)
-                        self.logger.info(f"☁️ Servo pan={params['pan']} -> {resp.status_code}")
-                    if 'tilt' in params:
-                        resp = requests.post(f'{api_base}/servo/tilt', json={
-                            'angle': float(params['tilt'])
-                        }, timeout=2)
-                        self.logger.info(f"☁️ Servo tilt={params['tilt']} -> {resp.status_code}")
+                    self.logger.warning(f"☁️ Unknown cloud command: {command}")
 
-            elif command == 'audio':
-                # Audio: {"file": "good_dog.mp3"} or {"stop": true}
-                if params.get('stop'):
-                    resp = requests.post(f'{api_base}/audio/stop', timeout=2)
-                    self.logger.info(f"☁️ Audio stopped -> {resp.status_code}")
-                elif 'file' in params:
-                    filepath = params['file']
-                    # Handle relative paths - prepend VOICEMP3 directory
-                    if not filepath.startswith('/'):
-                        filepath = f"/home/morgan/dogbot/VOICEMP3/{filepath}"
-                    resp = requests.post(f'{api_base}/audio/play', json={
-                        'file': filepath
-                    }, timeout=2)
-                    self.logger.info(f"☁️ Audio play={filepath} -> {resp.status_code}")
-
-            elif command == 'mode':
-                # Mode: {"mode": "coach"} or {"mode": "idle"}
-                mode_name = params.get('mode', '').lower()
-                resp = requests.post(f'{api_base}/mode/set', json={
-                    'mode': mode_name
-                }, timeout=2)
-                self.logger.info(f"☁️ Mode set={mode_name} -> {resp.status_code}")
-
-            elif command == 'motor':
-                # Motor commands should go via WebRTC data channel for low latency
-                # Ignore here but log for debugging
-                self.logger.debug(f"☁️ Motor command ignored (use WebRTC data channel)")
-
-            elif command == 'stop':
-                # Emergency stop - stop motors
-                resp = requests.post(f'{api_base}/motor/stop', timeout=2)
-                self.logger.info(f"☁️ Emergency stop -> {resp.status_code}")
-
-            else:
-                self.logger.warning(f"☁️ Unknown cloud command: {command}")
-
-        except requests.exceptions.Timeout:
+        except httpx.TimeoutException:
             self.logger.error(f"☁️ Cloud command timeout: {command}")
-        except requests.exceptions.ConnectionError:
+        except httpx.ConnectError:
             self.logger.error(f"☁️ Cloud command failed - API not reachable")
         except Exception as e:
             self.logger.error(f"☁️ Cloud command error: {e}", exc_info=True)
@@ -1084,6 +1144,11 @@ class TreatBotMain:
             if self.xbox_controller:
                 self.xbox_controller.stop()
 
+            # Stop motor bus (direct hardware control)
+            if hasattr(self, 'motor_bus') and self.motor_bus:
+                self.logger.info("Stopping motor bus...")
+                self.motor_bus.stop()
+
             # Stop mode handlers
             if self.silent_guardian_mode:
                 self.silent_guardian_mode.stop()
@@ -1209,10 +1274,48 @@ class TreatBotMain:
         return False
 
 
+def _setup_asyncio_exception_handler():
+    """Setup global asyncio exception handler to prevent crashes from unhandled task exceptions"""
+    import asyncio
+
+    def handle_asyncio_exception(loop, context):
+        """Handle unhandled asyncio exceptions without crashing"""
+        exception = context.get('exception')
+        message = context.get('message', 'Unknown async error')
+
+        # Get a logger
+        logger = logging.getLogger('AsyncioExceptionHandler')
+
+        # Log the error with full context
+        if exception:
+            logger.error(f"Unhandled async exception: {message}, exception={type(exception).__name__}: {exception}")
+            # Log specific known exceptions with helpful context
+            if 'TransactionFailed' in str(type(exception).__name__):
+                logger.warning("ICE/TURN transaction failed - WebRTC negotiation issue (non-fatal)")
+            elif 'ConnectionRefused' in str(type(exception).__name__):
+                logger.warning("Connection refused - network issue (non-fatal)")
+        else:
+            logger.error(f"Unhandled async error: {message}")
+
+        # Don't crash - just log and continue
+
+    # Apply to all event loops
+    try:
+        loop = asyncio.get_event_loop()
+        loop.set_exception_handler(handle_asyncio_exception)
+        logging.getLogger('AsyncioExceptionHandler').info("Global asyncio exception handler installed")
+    except RuntimeError:
+        # No event loop yet - will be set up when asyncio tasks start
+        pass
+
+
 def main():
     """Main entry point"""
     print("🤖 TreatBot - AI Dog Training Robot")
     print("=" * 50)
+
+    # Setup global asyncio exception handler FIRST
+    _setup_asyncio_exception_handler()
 
     # Create main orchestrator
     treatbot = TreatBotMain()

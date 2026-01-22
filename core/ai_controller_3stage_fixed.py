@@ -113,6 +113,13 @@ class AI3StageControllerFixed:
         self.prob_th = 0.7  # Behavior probability threshold
         self.behavior_confidence_threshold = 0.7  # Alias for behavior publishing
 
+        # CRITICAL: Hailo inference rate limiting to prevent driver crashes
+        # The Hailo driver crashes with "vdma_buffer_map ioctl failed" if called too frequently
+        self._min_inference_interval = 0.100  # 100ms minimum between inference calls
+        self._last_inference_time = 0.0
+        self._cached_result = ([], [], [])  # (detections, poses, behaviors)
+        self._inference_skip_count = 0  # Track how often we use cache
+
         # Camera settings
         self.camera_rotation = 0  # Fixed at 0 as per your notes
         self.input_size = (640, 640)
@@ -358,28 +365,55 @@ class AI3StageControllerFixed:
         """
         Process full pipeline on 4K frame using single-model inference
         Returns: (detections, poses, behaviors)
+
+        CRITICAL: Rate-limited to prevent Hailo driver crashes.
+        The Hailo DMA buffer allocation fails if inference is called too frequently.
         """
         if not self.initialized:
             return [], [], []
 
         try:
+            current_time = time.time()
+
+            # CRITICAL: Rate limiting to prevent Hailo driver crash
+            # "hailo_vdma_buffer_map ioctl failed" occurs from rapid inference calls
+            time_since_last = current_time - self._last_inference_time
+            if time_since_last < self._min_inference_interval:
+                self._inference_skip_count += 1
+                # Log periodically to show rate limiting is working
+                if self._inference_skip_count % 100 == 0:
+                    logger.debug(f"Hailo rate limit: skipped {self._inference_skip_count} inference calls, using cache")
+                return self._cached_result
+
+            # Run inference (rate limit passed)
+            self._last_inference_time = current_time
+
             # Single inference gets both detections and poses
             detections, poses = self._run_combined_inference(frame_4k)
 
             if not detections:
-                return detections, [], []
+                self._cached_result = (detections, [], [])
+                return self._cached_result
 
             # Stage 3: Analyze behaviors from pose history (pass frame for validation)
             behaviors = self._stage3_analyze_behavior(poses, frame_4k)
 
-            return detections, poses, behaviors
+            # Cache the result
+            self._cached_result = (detections, poses, behaviors)
+            return self._cached_result
 
         except Exception as e:
             logger.error(f"Error processing frame: {e}")
-            return [], [], []
+            return self._cached_result  # Return cached result on error instead of empty
 
     def _run_combined_inference(self, frame_4k: np.ndarray) -> Tuple[List[Detection], List[PoseKeypoints]]:
-        """Run single inference to get both detections and poses from pose model"""
+        """Run single inference to get both detections and poses from pose model
+
+        CRITICAL: Wrapped with robust error handling to prevent Hailo driver crashes
+        from taking down the entire service. Common errors:
+        - "hailo_vdma_buffer_map ioctl failed" - DMA resource exhaustion
+        - HailoRTStatusException - Various driver errors
+        """
         detections = []
         poses = []
 
@@ -401,28 +435,43 @@ class AI3StageControllerFixed:
             if not self.active_network_group:
                 raise RuntimeError("No active network group")
 
-            with self.active_network_group.activate(self.active_network_group_params):
-                with hpf.InferVStreams(self.active_network_group,
-                                      self.active_input_vstreams_params,
-                                      self.active_output_vstreams_params) as infer_pipeline:
+            try:
+                with self.active_network_group.activate(self.active_network_group_params):
+                    with hpf.InferVStreams(self.active_network_group,
+                                          self.active_input_vstreams_params,
+                                          self.active_output_vstreams_params) as infer_pipeline:
 
-                    # Prepare input - ensure UINT8 and correct shape
-                    input_tensor = np.expand_dims(frame_input, axis=0).astype(np.uint8)
-                    input_name = list(self.active_input_vstreams_params.keys())[0]
-                    input_data = {input_name: input_tensor}
+                        # Prepare input - ensure UINT8 and correct shape
+                        input_tensor = np.expand_dims(frame_input, axis=0).astype(np.uint8)
+                        input_name = list(self.active_input_vstreams_params.keys())[0]
+                        input_data = {input_name: input_tensor}
 
-                    # Run inference
-                    output_data = infer_pipeline.infer(input_data)
+                        # Run inference - this is where Hailo driver crashes can occur
+                        output_data = infer_pipeline.infer(input_data)
 
-                    # Parse BOTH detections and keypoints from pose model output
-                    detections, poses = self._parse_pose_model_output(output_data, w_4k, h_4k)
+                        # Parse BOTH detections and keypoints from pose model output
+                        detections, poses = self._parse_pose_model_output(output_data, w_4k, h_4k)
+
+            except OSError as e:
+                # Catch Hailo driver errors (ioctl failures, DMA errors)
+                error_str = str(e).lower()
+                if 'ioctl' in error_str or 'vdma' in error_str or 'hailo' in error_str:
+                    logger.error(f"Hailo driver error (non-fatal): {e}")
+                    # Increase rate limit temporarily to let driver recover
+                    self._min_inference_interval = min(0.500, self._min_inference_interval * 2)
+                    logger.warning(f"Increased inference interval to {self._min_inference_interval:.3f}s")
+                else:
+                    raise  # Re-raise non-Hailo errors
 
             return detections, poses
 
         except Exception as e:
-            logger.error(f"Combined inference error: {e}")
-            import traceback
-            traceback.print_exc()
+            # Catch-all to prevent any crash from killing the service
+            error_name = type(e).__name__
+            if 'HailoRT' in error_name or 'Hailo' in error_name:
+                logger.error(f"Hailo runtime error (non-fatal): {error_name}: {e}")
+            else:
+                logger.error(f"Combined inference error: {error_name}: {e}")
             return [], []
 
     def _parse_pose_model_output(self, outputs: Dict[str, np.ndarray], orig_w: int, orig_h: int) -> Tuple[List[Detection], List[PoseKeypoints]]:
@@ -659,8 +708,16 @@ class AI3StageControllerFixed:
             # Get temporal sequence from history (now contains full PoseKeypoints objects)
             sequence = list(self.pose_history)
 
-            # Build tensor from sequence: (T, num_dogs, 24, 2)
-            max_dogs = max(len(frame_poses) for frame_poses in sequence if frame_poses)
+            # Defensive check: ensure sequence has valid data
+            if not sequence:
+                return behaviors
+
+            # Filter out empty frame_poses and calculate max_dogs safely
+            valid_frame_poses = [fp for fp in sequence if fp and len(fp) > 0]
+            if not valid_frame_poses:
+                return behaviors
+
+            max_dogs = max(len(frame_poses) for frame_poses in valid_frame_poses)
             if max_dogs == 0:
                 return behaviors
 
@@ -757,17 +814,20 @@ class AI3StageControllerFixed:
                     self._behavior_log_counter += 1
                     if self._behavior_log_counter % 10 == 0:  # Every 10 frames (~1 sec)
                         prob_str = ", ".join([f"{b}:{p:.2f}" for b, p in zip(self.behaviors, dog_probs)])
-                        max_behavior = self.behaviors[np.argmax(dog_probs)]
+                        # Safe indexing for max_behavior
+                        max_behavior_idx = int(np.argmax(dog_probs))
+                        max_behavior = self.behaviors[max_behavior_idx] if max_behavior_idx < len(self.behaviors) else "unknown"
 
-                        # Log keypoint confidence stats for current pose
-                        if dog_idx < len(current_poses):
+                        # Log keypoint confidence stats for current pose (with bounds check)
+                        if dog_idx < len(current_poses) and current_poses[dog_idx] is not None:
                             kpts = current_poses[dog_idx].keypoints
-                            kpt_confs = kpts[:, 2]
-                            visible_kpts = np.sum(kpt_confs > 0.3)
-                            leg_confs = kpts[5:17, 2]  # Leg keypoints
-                            visible_legs = np.sum(leg_confs > 0.2)
-                            logger.info(f"Behavior probs: [{prob_str}] -> {max_behavior} | "
-                                       f"keypoints: {visible_kpts}/24 visible, {visible_legs}/12 legs")
+                            if kpts is not None and len(kpts) > 0:
+                                kpt_confs = kpts[:, 2] if kpts.shape[1] > 2 else np.zeros(len(kpts))
+                                visible_kpts = np.sum(kpt_confs > 0.3)
+                                leg_confs = kpts[5:17, 2] if len(kpts) > 17 and kpts.shape[1] > 2 else np.zeros(12)
+                                visible_legs = np.sum(leg_confs > 0.2)
+                                logger.info(f"Behavior probs: [{prob_str}] -> {max_behavior} | "
+                                           f"keypoints: {visible_kpts}/24 visible, {visible_legs}/12 legs")
 
                 # Determine behavior - try geometric fallback first if conditions met
                 behavior_name = None
@@ -819,7 +879,8 @@ class AI3StageControllerFixed:
                 # Fall back to LSTM if geometric didn't produce result
                 # NOTE: LSTM is mostly disabled (_force_geometric=True) due to poor keypoint quality
                 if behavior_name is None and max_prob > self.prob_th:
-                    if max_idx < len(self.behaviors):
+                    # Safe bounds check for behaviors list
+                    if self.behaviors and 0 <= max_idx < len(self.behaviors):
                         behavior_name = self.behaviors[max_idx]
                         classification_method = "lstm"
                         # Cross behavior removed from system - no post-processing needed
@@ -853,8 +914,11 @@ class AI3StageControllerFixed:
 
             return behaviors
 
+        except IndexError as e:
+            logger.warning(f"TorchScript behavior analysis index error (non-fatal): {e}")
+            return behaviors
         except Exception as e:
-            logger.error(f"TorchScript behavior analysis failed: {e}")
+            logger.error(f"TorchScript behavior analysis failed: {type(e).__name__}: {e}")
             return behaviors
 
     def _verify_cross_pose(self, keypoints: np.ndarray) -> bool:

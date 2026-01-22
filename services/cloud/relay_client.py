@@ -131,6 +131,7 @@ class RelayClient:
 
             self._connected = True
             self.logger.info("Connected to cloud relay")
+            print("[RelayClient] ✅ Connected to cloud relay", flush=True)
 
             # Send hello message
             await self._send({
@@ -210,7 +211,9 @@ class RelayClient:
     async def _handle_message(self, data: dict):
         """Route incoming message to appropriate handler"""
         msg_type = data.get('type')
-        self.logger.debug(f"Received message type: {msg_type}")
+        # Log at INFO level to ensure visibility
+        self.logger.info(f"📥 Relay message received: type={msg_type}")
+        print(f"[RelayClient] 📥 Message: type={msg_type}, data={data}", flush=True)
 
         handler = self._message_handlers.get(msg_type)
         if handler:
@@ -227,6 +230,7 @@ class RelayClient:
         ice_servers = data.get('ice_servers', {})
 
         self.logger.info(f"WebRTC request received: session={session_id}")
+        print(f"[RelayClient] 🎥 WebRTC request: session={session_id}, ice_servers={ice_servers}", flush=True)
 
         if not self._webrtc_service:
             self.logger.error("WebRTC service not available")
@@ -266,9 +270,14 @@ class RelayClient:
             })
 
             self.logger.info(f"Sent WebRTC offer for session {session_id}")
+            print(f"[RelayClient] ✅ Sent WebRTC offer for {session_id}", flush=True)
 
         except Exception as e:
+            import traceback
             self.logger.error(f"Failed to create WebRTC offer: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            print(f"[RelayClient] ❌ WebRTC offer failed: {e}", flush=True)
+            print(f"[RelayClient] Traceback: {traceback.format_exc()}", flush=True)
             await self._send({
                 'type': 'webrtc_error',
                 'session_id': session_id,
@@ -403,14 +412,22 @@ class RelayClient:
         self.logger.info("Stopping relay client...")
         self._running = False
 
-        # Schedule disconnect in the event loop
+        # Schedule disconnect in the event loop and wait for it
         if self._loop and self._connected:
-            asyncio.run_coroutine_threadsafe(self._disconnect(), self._loop)
+            try:
+                future = asyncio.run_coroutine_threadsafe(self._disconnect(), self._loop)
+                future.result(timeout=3.0)  # Wait for disconnect to complete
+            except Exception as e:
+                self.logger.debug(f"Disconnect wait error: {e}")
 
-        # Close session
+        # Close session and wait for it
         if self._session and not self._session.closed:
             if self._loop:
-                asyncio.run_coroutine_threadsafe(self._session.close(), self._loop)
+                try:
+                    future = asyncio.run_coroutine_threadsafe(self._session.close(), self._loop)
+                    future.result(timeout=2.0)  # Wait for session close
+                except Exception as e:
+                    self.logger.debug(f"Session close error: {e}")
 
         # Wait for thread
         if self._thread and self._thread.is_alive():
@@ -419,15 +436,18 @@ class RelayClient:
         self.logger.info("Relay client stopped")
 
     def send_event(self, event_type: str, data: dict):
-        """Send event to relay (thread-safe)"""
+        """Send event to relay (thread-safe)
+
+        Format: {"event": "<type>", ...data fields...}
+        The relay requires the "event" field to forward messages to the app.
+        """
         if not self._connected or not self._loop:
             return
 
+        # Flat message format with "event" field as required by relay API
         message = {
-            'type': 'event',
-            'event_type': event_type,
-            'data': data,
-            'timestamp': time.time()
+            'event': event_type,
+            **data
         }
 
         asyncio.run_coroutine_threadsafe(self._send(message), self._loop)

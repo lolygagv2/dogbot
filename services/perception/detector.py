@@ -73,6 +73,15 @@ class DetectorService:
         self.last_fps_time = time.time()
         self.current_fps = 0.0
 
+        # Rate limiting for detection events (prevent log spam)
+        self._last_detection_event_time = 0
+        self._detection_event_interval = 5.0  # Minimum seconds between detection events
+
+        # Camera retry logic
+        self._camera_error_reason = None
+        self._camera_retry_interval = 60  # seconds between retry attempts
+        self._last_camera_retry_time = 0
+
     def initialize(self) -> bool:
         """Initialize AI controller and camera"""
         try:
@@ -101,25 +110,70 @@ class DetectorService:
         try:
             if PICAMERA_AVAILABLE:
                 self.logger.info("Initializing Picamera2 for detection...")
+
+                # Check if any cameras are available BEFORE creating Picamera2
+                available_cameras = Picamera2.global_camera_info()
+                if not available_cameras:
+                    self.logger.error(
+                        "No cameras detected! CSI cameras require a system reboot after "
+                        "plugging in. Check ribbon cable connection and run: sudo reboot"
+                    )
+                    self._camera_error_reason = "no_cameras_detected"
+                    return False
+
+                self.logger.info(f"Detected cameras: {available_cameras}")
+
+                # Reset any stale camera instances
+                try:
+                    import subprocess
+                    # Kill any stale libcamera processes that might be holding the camera
+                    subprocess.run(['pkill', '-f', 'libcamera'], timeout=2, capture_output=True)
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+
                 self.camera = Picamera2()
                 config = self.camera.create_preview_configuration(
                     main={"size": (640, 640), "format": "RGB888"}
                 )
                 self.camera.configure(config)
                 self.camera.start()
+
+                # Wait for camera to stabilize and verify it's actually working
+                time.sleep(0.5)
+                try:
+                    # Test capture to verify camera is working
+                    test_frame = self.camera.capture_array()
+                    if test_frame is None:
+                        self.logger.error("Camera test capture returned None")
+                        return False
+                    self.logger.info(f"Camera test capture successful: {test_frame.shape}")
+                except Exception as e:
+                    self.logger.error(f"Camera test capture failed: {e}")
+                    return False
+
                 self.camera_initialized = True
                 self.logger.info("Picamera2 initialized for detection")
                 return True
             else:
                 self.logger.warning("Picamera2 not available, detection disabled")
                 return False
+        except IndexError as e:
+            self.logger.error(
+                f"Camera initialization error: {e} - No cameras found. "
+                "CSI cameras require a reboot after connecting the ribbon cable."
+            )
+            self._camera_error_reason = "no_cameras_detected"
+            return False
         except Exception as e:
             self.logger.error(f"Camera initialization error: {e}")
+            self._camera_error_reason = str(e)
             return False
 
     def _capture_frame(self):
         """Capture a frame from the camera"""
         if not self.camera_initialized or self.camera is None:
+            self.logger.debug("Camera not initialized or None")
             return None
         try:
             frame = self.camera.capture_array()
@@ -143,7 +197,37 @@ class DetectorService:
             return frame
         except Exception as e:
             self.logger.error(f"Frame capture error: {e}")
+            # Try to recover camera on repeated errors
+            self._camera_error_count = getattr(self, '_camera_error_count', 0) + 1
+            if self._camera_error_count >= 5:
+                self.logger.warning("Multiple camera errors, attempting to reinitialize...")
+                self._reinitialize_camera()
+                self._camera_error_count = 0
             return None
+
+    def _reinitialize_camera(self):
+        """Attempt to reinitialize camera after errors"""
+        try:
+            # Close existing camera
+            if self.camera:
+                try:
+                    self.camera.stop()
+                    self.camera.close()
+                except Exception as e:
+                    self.logger.warning(f"Error closing camera during reinit: {e}")
+                self.camera = None
+                self.camera_initialized = False
+
+            # Wait for resources to be released
+            time.sleep(0.5)
+
+            # Reinitialize
+            if self._initialize_camera():
+                self.logger.info("Camera reinitialized successfully")
+            else:
+                self.logger.error("Camera reinitialization failed")
+        except Exception as e:
+            self.logger.error(f"Camera reinitialization error: {e}")
 
     def _release_camera(self) -> None:
         """Release camera for external use (e.g., rpicam-still in MANUAL mode)"""
@@ -257,9 +341,16 @@ class DetectorService:
         self.logger.info("Detection loop started")
         self.last_fps_time = time.time()
         self.frame_count = 0
+        self._loop_iteration = 0
 
         while not self._stop_event.is_set():
             try:
+                self._loop_iteration += 1
+
+                # Log diagnostic every 100 iterations (or first 5 for debugging)
+                if self._loop_iteration <= 5 or self._loop_iteration % 100 == 0:
+                    self.logger.info(f"Detection loop alive: iter={self._loop_iteration}, camera_init={self.camera_initialized}, paused={self._camera_paused}, mode={self.state.get_mode()}")
+
                 # Check if we should be running based on mode
                 # AI vision runs in ALL operational modes for:
                 # - COACH: Active training (full detection + behavior)
@@ -282,12 +373,34 @@ class DetectorService:
                         time.sleep(1.0)
                         continue
 
+                # Periodic camera retry if not initialized (e.g., after hot-plug + reboot)
+                if not self.camera_initialized and not self._camera_paused:
+                    now = time.time()
+                    if now - self._last_camera_retry_time >= self._camera_retry_interval:
+                        self._last_camera_retry_time = now
+                        self.logger.info("Attempting periodic camera reinitialization...")
+                        if self._initialize_camera():
+                            self.logger.info("Camera reinitialized successfully on retry")
+                            self.state.update_hardware(camera_initialized=True)
+                        else:
+                            self.logger.warning(
+                                f"Camera retry failed. Next attempt in {self._camera_retry_interval}s. "
+                                f"Reason: {self._camera_error_reason}"
+                            )
+                    time.sleep(0.5)
+                    continue
+
                 # Capture frame from camera
+                if self._loop_iteration <= 5:
+                    self.logger.info(f"About to capture frame...")
                 frame = self._capture_frame()
                 if frame is None:
-                    self.logger.warning("No frame captured, waiting...")
+                    self.logger.warning(f"No frame captured (camera_init={self.camera_initialized}), waiting...")
                     time.sleep(0.1)
                     continue
+
+                if self._loop_iteration <= 5:
+                    self.logger.info(f"Frame captured: {frame.shape}")
 
                 # Detect ArUco markers for dog identification
                 aruco_markers = self._detect_aruco_markers(frame)
@@ -314,6 +427,11 @@ class DetectorService:
                     self.frame_count = 0
                     self.last_fps_time = now
                     self.logger.info(f"Detection FPS: {self.current_fps:.1f}")
+
+                # CRITICAL: Minimum loop interval to prevent Hailo driver exhaustion
+                # Primary rate limiting is in AI controller, this is a safety backstop
+                # Target ~10 FPS max to leave headroom for Hailo DMA operations
+                time.sleep(0.050)  # 50ms minimum between frames (20 FPS cap)
 
                 # Process results
                 if dogs:
@@ -355,6 +473,10 @@ class DetectorService:
             last_detection_time=time.time()
         )
 
+        # Rate limit detection events to prevent log spam
+        current_time = time.time()
+        should_publish_event = (current_time - self._last_detection_event_time) >= self._detection_event_interval
+
         # Process each dog (Detection dataclass)
         for i, dog in enumerate(dogs):
             # Use ArUco-identified name if available, otherwise generic ID
@@ -364,29 +486,34 @@ class DetectorService:
             bbox = [dog.x1, dog.y1, dog.x2, dog.y2]
             center = dog.center
 
-            # Publish dog detection event
-            publish_vision_event('dog_detected', {
-                'dog_id': dog_id,
-                'dog_name': dog_name,  # Will be None if not identified
-                'confidence': dog.confidence,
-                'bbox': bbox,
-                'center': list(center),
-                'timestamp': time.time()
-            }, 'detector_service')
+            # Publish dog detection event (rate limited to prevent spam)
+            if should_publish_event:
+                publish_vision_event('dog_detected', {
+                    'dog_id': dog_id,
+                    'dog_name': dog_name,  # Will be None if not identified
+                    'confidence': dog.confidence,
+                    'bbox': bbox,
+                    'center': list(center),
+                    'timestamp': current_time
+                }, 'detector_service')
 
-            # Log to store
-            self.store.log_event('vision', 'dog_detected', 'detector_service', {
-                'dog_id': dog_id,
-                'dog_name': dog_name,
-                'confidence': dog.confidence,
-                'bbox': bbox
-            })
+                # Log to store (also rate limited)
+                self.store.log_event('vision', 'dog_detected', 'detector_service', {
+                    'dog_id': dog_id,
+                    'dog_name': dog_name,
+                    'confidence': dog.confidence,
+                    'bbox': bbox
+                })
 
-            # Update dog seen in store
+            # Update dog seen in store (always update, just don't spam logs)
             self.store.update_dog_seen(dog_id)
 
-        # Process poses if available (PoseKeypoints dataclass)
-        if poses:
+        # Update last event time if we published
+        if should_publish_event and num_dogs > 0:
+            self._last_detection_event_time = current_time
+
+        # Process poses if available (PoseKeypoints dataclass) - rate limited
+        if poses and should_publish_event:
             for i, pose in enumerate(poses):
                 # Use ArUco-identified name if available
                 dog_name = dog_assignments.get(i)
@@ -399,7 +526,7 @@ class DetectorService:
                     'keypoints': keypoints,
                     'confidence': pose.detection.confidence if pose.detection else 0.0,
                     'num_keypoints': len(keypoints),
-                    'timestamp': time.time()
+                    'timestamp': current_time
                 }, 'detector_service')
 
         # Process behaviors if available (BehaviorResult dataclass)
@@ -453,6 +580,33 @@ class DetectorService:
             'frame_count': self.frame_count,
             'ai_status': self.ai.get_status() if self.ai else None
         }
+
+    def get_camera_status(self) -> Dict[str, Any]:
+        """Get camera-specific status for diagnostics"""
+        # Check for available cameras
+        available_cameras = []
+        if PICAMERA_AVAILABLE:
+            try:
+                available_cameras = Picamera2.global_camera_info()
+            except Exception as e:
+                self.logger.warning(f"Could not get camera info: {e}")
+
+        return {
+            'initialized': self.camera_initialized,
+            'paused': self._camera_paused,
+            'available_cameras': available_cameras,
+            'cameras_detected': len(available_cameras),
+            'error_reason': self._camera_error_reason,
+            'picamera_available': PICAMERA_AVAILABLE,
+            'last_frame_age': self.get_last_frame_age() if self.camera_initialized else None
+        }
+
+    def request_camera_reinitialize(self) -> Dict[str, Any]:
+        """Request camera reinitialization (public API method)"""
+        self.logger.info("Camera reinitialize requested via API")
+        self._camera_error_reason = None
+        self._reinitialize_camera()
+        return self.get_camera_status()
 
     def cleanup(self) -> None:
         """Clean shutdown"""
