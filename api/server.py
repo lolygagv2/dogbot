@@ -1217,14 +1217,23 @@ async def get_battery_voltage():
 # Telemetry endpoints
 @app.get("/telemetry")
 async def get_telemetry():
-    """Get system telemetry"""
+    """Get system telemetry including audio state"""
     state = get_state()
     store = get_store()
+
+    # Get audio state for telemetry
+    try:
+        usb_audio = get_usb_audio_service()
+        audio_status = usb_audio.get_status()
+        audio_telemetry = audio_status.get("audio", {"playing": False, "track": None})
+    except:
+        audio_telemetry = {"playing": False, "track": None}
 
     return {
         "system": state.get_status_summary(),
         "hardware": state.hardware.to_dict(),
         "detection": state.detection.to_dict(),
+        "audio": audio_telemetry,
         "recent_events": store.get_recent_events(10),
         "database_stats": store.get_database_stats()
     }
@@ -2155,13 +2164,20 @@ async def websocket_webrtc(websocket: WebSocket, session_id: str):
 # USB Audio Control endpoints
 @app.get("/audio/status")
 async def get_audio_status():
-    """Get USB audio status"""
+    """Get USB audio status with current track info"""
     try:
-        audio = get_audio_controller()
-        status = audio.get_status()
+        usb_audio = get_usb_audio_service()
+        result = usb_audio.get_status()
+
+        # Include audio telemetry for app UI
         return {
             "success": True,
-            "status": status
+            "status": result.get("status", {}),
+            "audio": result.get("audio", {
+                "playing": False,
+                "track": None,
+                "looping": False
+            })
         }
     except Exception as e:
         logger.error(f"Audio status error: {e}")
@@ -2285,14 +2301,16 @@ async def pause_audio():
 
 @app.post("/audio/next")
 async def next_audio():
-    """Play next track"""
+    """Play next track in playlist"""
     try:
-        audio = get_audio_controller()
-        success = audio.play_next()
+        usb_audio = get_usb_audio_service()
+        result = usb_audio.play_next()
 
         return {
-            "success": success,
-            "message": "Playing next track" if success else "Failed to play next"
+            "success": result.get("success", False),
+            "track": result.get("track_name"),
+            "track_index": result.get("track_index"),
+            "message": f"Playing: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to play next")
         }
     except Exception as e:
         logger.error(f"Audio next error: {e}")
@@ -2300,17 +2318,41 @@ async def next_audio():
 
 @app.post("/audio/previous")
 async def previous_audio():
-    """Play previous track"""
+    """Play previous track in playlist"""
     try:
-        audio = get_audio_controller()
-        success = audio.play_previous()
+        usb_audio = get_usb_audio_service()
+        result = usb_audio.play_previous()
 
         return {
-            "success": success,
-            "message": "Playing previous track" if success else "Failed to play previous"
+            "success": result.get("success", False),
+            "track": result.get("track_name"),
+            "track_index": result.get("track_index"),
+            "message": f"Playing: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to play previous")
         }
     except Exception as e:
         logger.error(f"Audio previous error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/audio/playlist")
+async def get_audio_playlist():
+    """Get current audio playlist"""
+    try:
+        usb_audio = get_usb_audio_service()
+        result = usb_audio.get_playlist()
+        return result
+    except Exception as e:
+        logger.error(f"Audio playlist error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/audio/playlist/refresh")
+async def refresh_audio_playlist():
+    """Refresh audio playlist from songs folder"""
+    try:
+        usb_audio = get_usb_audio_service()
+        result = usb_audio.refresh_playlist()
+        return result
+    except Exception as e:
+        logger.error(f"Audio playlist refresh error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Legacy relay endpoints - USB audio only now (no relay switching needed)
@@ -2928,8 +2970,8 @@ async def stop_audio():
     """Stop audio playback"""
     try:
         usb_audio_service = get_usb_audio_service()
-        success = usb_audio_service.stop()
-        return {"success": success}
+        result = usb_audio_service.stop()
+        return {"success": result.get("success", False), "message": result.get("message", "Stopped")}
     except Exception as e:
         logger.error(f"Audio stop error: {e}")
         return {"success": False, "error": str(e)}

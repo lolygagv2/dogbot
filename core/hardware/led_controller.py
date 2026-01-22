@@ -23,6 +23,7 @@ class LEDMode(Enum):
     DOG_DETECTED = "dog_detected"
     TREAT_LAUNCHING = "treat_launching"
     ERROR = "error"
+    WARNING = "warning"
     CHARGING = "charging"
     MANUAL_RC = "manual_rc"
     # New patterns for 165 LED strip
@@ -357,6 +358,38 @@ class LEDController:
         except Exception as e:
             print(f"Fire pattern error: {e}")
 
+    def warning_flash_pattern(self, flash_count=3, flash_delay=0.1):
+        """Rapid yellow/amber flash pattern for warnings (NO command)"""
+        if not self.pixels:
+            return
+
+        try:
+            while self.animation_active:
+                # Rapid flashes
+                for _ in range(flash_count):
+                    if not self.animation_active:
+                        break
+                    # Flash yellow
+                    self.pixels.fill(Colors.WARNING)
+                    self.pixels.show()
+                    time.sleep(flash_delay)
+
+                    if not self.animation_active:
+                        break
+                    # Flash purple
+                    self.pixels.fill(Colors.PURPLE)
+                    self.pixels.show()
+                    time.sleep(flash_delay)
+
+                # Brief pause between flash sequences
+                if self.animation_active:
+                    self.pixels.fill(Colors.OFF)
+                    self.pixels.show()
+                    time.sleep(0.3)
+
+        except Exception as e:
+            print(f"Warning flash pattern error: {e}")
+
     def _hsv_to_rgb(self, h, s, v):
         """Convert HSV to RGB"""
         h = h / 60.0
@@ -419,7 +452,11 @@ class LEDController:
         elif mode == LEDMode.ERROR:
             self.blue_off()
             self.start_animation(self.pulse_color, Colors.ERROR, 10, 0.1)
-            
+
+        elif mode == LEDMode.WARNING:
+            self.blue_on()
+            self.start_animation(self.warning_flash_pattern, 3, 0.1)
+
         elif mode == LEDMode.CHARGING:
             self.blue_on()  # Keep blue on for charging indicator
             self.start_animation(self.pulse_color, Colors.CHARGING, 20, 0.08)

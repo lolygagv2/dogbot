@@ -125,3 +125,4 @@ class Colors:
     YELLOW = (255, 255, 0)
     PINK = (255, 192, 203)
     WARM_WHITE = (255, 180, 120)
+    WARNING = (255, 200, 0)    # Amber/Yellow for warnings

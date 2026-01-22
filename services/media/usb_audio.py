@@ -9,7 +9,7 @@ import time
 import logging
 import threading
 import subprocess
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 def _detect_usb_audio_card() -> int:
     """Detect which card number the USB Audio Device is on"""
@@ -45,6 +45,15 @@ class USBAudioService:
         self.base_path = "/home/morgan/dogbot/VOICEMP3"
         self._lock = threading.Lock()
 
+        # Track cycling state
+        self._playlist: List[str] = []
+        self._current_index: int = -1
+        self._current_track: Optional[str] = None
+        self._is_looping: bool = False
+
+        # Build initial playlist from songs folder
+        self._build_playlist()
+
         try:
             # Initialize pygame mixer for audio playback (USB audio device)
             pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
@@ -53,6 +62,16 @@ class USBAudioService:
         except Exception as e:
             self.logger.error(f"USB Audio initialization failed: {e}")
             self.initialized = False
+
+    def _build_playlist(self):
+        """Build playlist from songs folder"""
+        songs_path = os.path.join(self.base_path, "songs")
+        if os.path.exists(songs_path):
+            self._playlist = sorted([
+                f for f in os.listdir(songs_path)
+                if f.lower().endswith(('.mp3', '.wav', '.ogg'))
+            ])
+            self.logger.info(f"Built playlist with {len(self._playlist)} tracks")
 
     def play_file(self, filepath: str, loop: bool = False) -> Dict[str, Any]:
         """Play an audio file
@@ -85,11 +104,22 @@ class USBAudioService:
                 # -1 = loop indefinitely, 0 = play once
                 pygame.mixer.music.play(-1 if loop else 0)
 
+                # Track current playing file
+                self._current_track = os.path.basename(full_path)
+                self._is_looping = loop
+
+                # Update playlist index if this is a song
+                if '/songs/' in full_path or full_path.startswith(os.path.join(self.base_path, 'songs')):
+                    track_name = os.path.basename(full_path)
+                    if track_name in self._playlist:
+                        self._current_index = self._playlist.index(track_name)
+
                 loop_msg = " (looping)" if loop else ""
                 self.logger.info(f"Playing audio{loop_msg}: {full_path}")
                 return {
                     "success": True,
                     "filepath": filepath,
+                    "track": self._current_track,
                     "loop": loop,
                     "message": f"Playing {filepath}{loop_msg}"
                 }
@@ -105,6 +135,8 @@ class USBAudioService:
 
         try:
             pygame.mixer.music.stop()
+            self._current_track = None
+            self._is_looping = False
             self.logger.info("Audio playback stopped")
             return {"success": True, "message": "Audio stopped"}
         except Exception as e:
@@ -141,13 +173,21 @@ class USBAudioService:
             return {"success": False, "error": str(e)}
 
     def get_status(self) -> Dict[str, Any]:
-        """Get audio system status"""
+        """Get audio system status with current track info"""
+        is_playing = pygame.mixer.music.get_busy() if self.initialized else False
         return {
             "success": True,
             "status": {
                 "initialized": self.initialized,
-                "playing": pygame.mixer.music.get_busy() if self.initialized else False,
+                "playing": is_playing,
                 "base_path": self.base_path
+            },
+            "audio": {
+                "playing": is_playing,
+                "track": self._current_track if is_playing else None,
+                "looping": self._is_looping if is_playing else False,
+                "playlist_index": self._current_index,
+                "playlist_length": len(self._playlist)
             }
         }
 
@@ -168,6 +208,62 @@ class USBAudioService:
         if self.initialized:
             return pygame.mixer.music.get_busy()
         return False
+
+    def play_next(self) -> Dict[str, Any]:
+        """Play next track in playlist"""
+        if not self.initialized:
+            return {"success": False, "error": "Audio not initialized"}
+
+        if not self._playlist:
+            return {"success": False, "error": "No tracks in playlist"}
+
+        with self._lock:
+            # Move to next track (wrap around)
+            self._current_index = (self._current_index + 1) % len(self._playlist)
+            track = self._playlist[self._current_index]
+            filepath = f"/songs/{track}"
+
+            result = self.play_file(filepath, loop=False)
+            result["track_index"] = self._current_index
+            result["track_name"] = track
+            return result
+
+    def play_previous(self) -> Dict[str, Any]:
+        """Play previous track in playlist"""
+        if not self.initialized:
+            return {"success": False, "error": "Audio not initialized"}
+
+        if not self._playlist:
+            return {"success": False, "error": "No tracks in playlist"}
+
+        with self._lock:
+            # Move to previous track (wrap around)
+            self._current_index = (self._current_index - 1) % len(self._playlist)
+            track = self._playlist[self._current_index]
+            filepath = f"/songs/{track}"
+
+            result = self.play_file(filepath, loop=False)
+            result["track_index"] = self._current_index
+            result["track_name"] = track
+            return result
+
+    def get_playlist(self) -> Dict[str, Any]:
+        """Get current playlist"""
+        return {
+            "success": True,
+            "playlist": self._playlist,
+            "current_index": self._current_index,
+            "current_track": self._current_track
+        }
+
+    def refresh_playlist(self) -> Dict[str, Any]:
+        """Refresh playlist from songs folder"""
+        self._build_playlist()
+        return {
+            "success": True,
+            "count": len(self._playlist),
+            "playlist": self._playlist
+        }
 
     def wait_for_completion(self, timeout: float = 5.0) -> bool:
         """
