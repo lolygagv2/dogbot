@@ -43,16 +43,26 @@ class USBAudioService:
         self.logger = logging.getLogger('USBAudio')
         self.initialized = False
         self.base_path = "/home/morgan/dogbot/VOICEMP3"
-        self._lock = threading.Lock()
+        # Use RLock (reentrant lock) to allow nested locking from same thread
+        # This fixes deadlock when play_next/play_previous call play_file
+        self._lock = threading.RLock()
 
-        # Track cycling state
+        # Track cycling state for music player
         self._playlist: List[str] = []
-        self._current_index: int = -1
-        self._current_track: Optional[str] = None
+        self._current_index: int = 0  # Start at first song
+        self._playlist_track: Optional[str] = None  # Currently selected playlist song
+        self._music_playing: bool = False  # Music player state (separate from voice/sfx)
         self._is_looping: bool = False
+
+        # General audio tracking (for any audio file)
+        self._current_track: Optional[str] = None  # Any audio currently playing
 
         # Build initial playlist from songs folder
         self._build_playlist()
+
+        # Set initial playlist track (but don't play)
+        if self._playlist:
+            self._playlist_track = self._playlist[0]
 
         try:
             # Initialize pygame mixer for audio playback (USB audio device)
@@ -108,11 +118,13 @@ class USBAudioService:
                 self._current_track = os.path.basename(full_path)
                 self._is_looping = loop
 
-                # Update playlist index if this is a song
+                # Update music player state if this is a playlist song
                 if '/songs/' in full_path or full_path.startswith(os.path.join(self.base_path, 'songs')):
                     track_name = os.path.basename(full_path)
                     if track_name in self._playlist:
                         self._current_index = self._playlist.index(track_name)
+                        self._playlist_track = track_name
+                        self._music_playing = True
 
                 loop_msg = " (looping)" if loop else ""
                 self.logger.info(f"Playing audio{loop_msg}: {full_path}")
@@ -135,10 +147,11 @@ class USBAudioService:
 
         try:
             pygame.mixer.music.stop()
-            self._current_track = None
+            # Keep _playlist_track so we know what song is selected
             self._is_looping = False
+            self._music_playing = False
             self.logger.info("Audio playback stopped")
-            return {"success": True, "message": "Audio stopped"}
+            return {"success": True, "message": "Audio stopped", "track": self._playlist_track}
         except Exception as e:
             self.logger.error(f"Audio stop error: {e}")
             return {"success": False, "error": str(e)}
@@ -151,8 +164,9 @@ class USBAudioService:
         try:
             if pygame.mixer.music.get_busy():
                 pygame.mixer.music.pause()
+                self._music_playing = False
                 self.logger.info("Audio playback paused")
-                return {"success": True, "message": "Audio paused"}
+                return {"success": True, "message": "Audio paused", "track": self._playlist_track}
             else:
                 return {"success": False, "error": "No audio playing"}
         except Exception as e:
@@ -166,26 +180,33 @@ class USBAudioService:
 
         try:
             pygame.mixer.music.unpause()
+            self._music_playing = True
             self.logger.info("Audio playback resumed")
-            return {"success": True, "message": "Audio resumed"}
+            return {"success": True, "message": "Audio resumed", "track": self._playlist_track}
         except Exception as e:
             self.logger.error(f"Audio resume error: {e}")
             return {"success": False, "error": str(e)}
 
     def get_status(self) -> Dict[str, Any]:
         """Get audio system status with current track info"""
-        is_playing = pygame.mixer.music.get_busy() if self.initialized else False
+        # Sync music player state with pygame's actual state
+        # (detects when music finishes naturally)
+        if self._music_playing and self.initialized:
+            if not pygame.mixer.music.get_busy():
+                self._music_playing = False
+                self._is_looping = False
+
         return {
             "success": True,
             "status": {
                 "initialized": self.initialized,
-                "playing": is_playing,
+                "playing": self._music_playing,
                 "base_path": self.base_path
             },
             "audio": {
-                "playing": is_playing,
-                "track": self._current_track if is_playing else None,
-                "looping": self._is_looping if is_playing else False,
+                "playing": self._music_playing,
+                "track": self._playlist_track,  # Show selected playlist track
+                "looping": self._is_looping,
                 "playlist_index": self._current_index,
                 "playlist_length": len(self._playlist)
             }
@@ -204,13 +225,43 @@ class USBAudioService:
         return 0
 
     def is_busy(self) -> bool:
-        """Check if audio is currently playing"""
+        """Check if any audio is currently playing"""
         if self.initialized:
             return pygame.mixer.music.get_busy()
         return False
 
+    def toggle(self) -> Dict[str, Any]:
+        """Toggle music playback - play current song if stopped, stop if playing"""
+        if not self.initialized:
+            return {"success": False, "error": "Audio not initialized"}
+
+        # Sync state with pygame before checking
+        if self._music_playing and not pygame.mixer.music.get_busy():
+            self._music_playing = False
+            self._is_looping = False
+
+        if self._music_playing:
+            # Music playing - stop
+            return self.stop()
+        else:
+            # Music not playing - play current song
+            return self._play_current()
+
+    def _play_current(self) -> Dict[str, Any]:
+        """Play the current track in playlist"""
+        if not self._playlist:
+            return {"success": False, "error": "No tracks in playlist"}
+
+        with self._lock:
+            track = self._playlist[self._current_index]
+            filepath = f"/songs/{track}"
+            result = self.play_file(filepath, loop=False)
+            result["track_index"] = self._current_index
+            result["track_name"] = track
+            return result
+
     def play_next(self) -> Dict[str, Any]:
-        """Play next track in playlist"""
+        """Move to next track in playlist (does NOT auto-play)"""
         if not self.initialized:
             return {"success": False, "error": "Audio not initialized"}
 
@@ -220,16 +271,19 @@ class USBAudioService:
         with self._lock:
             # Move to next track (wrap around)
             self._current_index = (self._current_index + 1) % len(self._playlist)
-            track = self._playlist[self._current_index]
-            filepath = f"/songs/{track}"
+            self._playlist_track = self._playlist[self._current_index]
 
-            result = self.play_file(filepath, loop=False)
-            result["track_index"] = self._current_index
-            result["track_name"] = track
-            return result
+            self.logger.info(f"Track changed to: {self._playlist_track} (index {self._current_index})")
+            return {
+                "success": True,
+                "track_index": self._current_index,
+                "track_name": self._playlist_track,
+                "playing": self._music_playing,
+                "message": f"Loaded track: {self._playlist_track}"
+            }
 
     def play_previous(self) -> Dict[str, Any]:
-        """Play previous track in playlist"""
+        """Move to previous track in playlist (does NOT auto-play)"""
         if not self.initialized:
             return {"success": False, "error": "Audio not initialized"}
 
@@ -239,13 +293,16 @@ class USBAudioService:
         with self._lock:
             # Move to previous track (wrap around)
             self._current_index = (self._current_index - 1) % len(self._playlist)
-            track = self._playlist[self._current_index]
-            filepath = f"/songs/{track}"
+            self._playlist_track = self._playlist[self._current_index]
 
-            result = self.play_file(filepath, loop=False)
-            result["track_index"] = self._current_index
-            result["track_name"] = track
-            return result
+            self.logger.info(f"Track changed to: {self._playlist_track} (index {self._current_index})")
+            return {
+                "success": True,
+                "track_index": self._current_index,
+                "track_name": self._playlist_track,
+                "playing": self._music_playing,
+                "message": f"Loaded track: {self._playlist_track}"
+            }
 
     def get_playlist(self) -> Dict[str, Any]:
         """Get current playlist"""
@@ -253,7 +310,8 @@ class USBAudioService:
             "success": True,
             "playlist": self._playlist,
             "current_index": self._current_index,
-            "current_track": self._current_track
+            "current_track": self._playlist_track,
+            "playing": self._music_playing
         }
 
     def refresh_playlist(self) -> Dict[str, Any]:

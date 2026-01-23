@@ -1924,18 +1924,16 @@ async def camera_pantilt(request: PanTiltRequest):
             if not pantilt_service.initialize():
                 raise HTTPException(status_code=500, detail="Failed to initialize servos")
 
-        # Move servos with optional smooth movement
-        if pantilt_service.servo:
-            if request.pan is not None:
-                # Use smooth parameter if provided
-                pantilt_service.servo.set_camera_pan(request.pan, smooth=request.smooth)
-                pantilt_service.current_pan = request.pan
+        # Use move_camera() for debounced, smoothed movement
+        # This prevents jerky servos from rapid API commands
+        # smooth=True always applies debounce/smoothing to prevent jerkiness
+        success = pantilt_service.move_camera(
+            pan=request.pan,
+            tilt=request.tilt,
+            smooth=True  # Always apply debounce/smoothing for API calls
+        )
 
-            if request.tilt is not None:
-                # Use smooth parameter if provided
-                pantilt_service.servo.set_camera_pitch(request.tilt, smooth=request.smooth)
-                pantilt_service.current_tilt = request.tilt
-
+        if success:
             return {
                 "success": True,
                 "pan": request.pan,
@@ -1946,7 +1944,7 @@ async def camera_pantilt(request: PanTiltRequest):
                 }
             }
         else:
-            raise HTTPException(status_code=500, detail="Servo controller not available")
+            raise HTTPException(status_code=500, detail="Servo movement failed")
 
     except Exception as e:
         logger.error(f"Pan/tilt control error: {e}")
@@ -2367,9 +2365,20 @@ async def pause_audio():
         logger.error(f"Audio pause error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/audio/toggle")
+async def toggle_audio():
+    """Toggle audio playback - play current song if stopped, stop if playing"""
+    try:
+        usb_audio = get_usb_audio_service()
+        result = usb_audio.toggle()
+        return result
+    except Exception as e:
+        logger.error(f"Audio toggle error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/audio/next")
 async def next_audio():
-    """Play next track in playlist"""
+    """Load next track in playlist (does NOT auto-play)"""
     try:
         usb_audio = get_usb_audio_service()
         result = usb_audio.play_next()
@@ -2378,7 +2387,8 @@ async def next_audio():
             "success": result.get("success", False),
             "track": result.get("track_name"),
             "track_index": result.get("track_index"),
-            "message": f"Playing: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to play next")
+            "playing": result.get("playing", False),
+            "message": f"Loaded: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to load next")
         }
     except Exception as e:
         logger.error(f"Audio next error: {e}")
@@ -2386,7 +2396,7 @@ async def next_audio():
 
 @app.post("/audio/previous")
 async def previous_audio():
-    """Play previous track in playlist"""
+    """Load previous track in playlist (does NOT auto-play)"""
     try:
         usb_audio = get_usb_audio_service()
         result = usb_audio.play_previous()
@@ -2395,7 +2405,8 @@ async def previous_audio():
             "success": result.get("success", False),
             "track": result.get("track_name"),
             "track_index": result.get("track_index"),
-            "message": f"Playing: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to play previous")
+            "playing": result.get("playing", False),
+            "message": f"Loaded: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to load previous")
         }
     except Exception as e:
         logger.error(f"Audio previous error: {e}")
@@ -2886,6 +2897,51 @@ async def turn_leds_off():
     except Exception as e:
         logger.error(f"LEDs off error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class MoodLedRequest(BaseModel):
+    """Request model for mood LED control"""
+    action: str  # on, off, toggle
+
+
+@app.post("/mood_led")
+async def mood_led_control(request: MoodLedRequest):
+    """
+    Control the blue LED tube (mood light) separately from NeoPixels.
+    Actions: on, off, toggle
+    """
+    try:
+        leds = get_led_controller()
+        action = request.action.lower()
+
+        if action == "on":
+            success = leds.blue_on()
+            state = "on"
+        elif action == "off":
+            success = leds.blue_off()
+            state = "off"
+        elif action == "toggle":
+            # Toggle based on current state
+            if leds.blue_is_on:
+                success = leds.blue_off()
+                state = "off"
+            else:
+                success = leds.blue_on()
+                state = "on"
+        else:
+            raise HTTPException(status_code=400, detail=f"Invalid action: {action}. Use on/off/toggle")
+
+        return {
+            "success": success,
+            "state": state,
+            "message": f"Mood LED {state}" if success else f"Failed to turn mood LED {action}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Mood LED control error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Emergency endpoints
 @app.post("/emergency/stop")

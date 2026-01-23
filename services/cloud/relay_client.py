@@ -88,6 +88,14 @@ class RelayClient:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
 
+        # Send failure tracking - suppress repeated log spam
+        self._send_fail_count = 0
+        self._send_fail_logged = False
+
+        # Message queue for offline buffering (limited)
+        self._message_queue: list = []
+        self._max_queue_size = 50
+
         self.logger.info(f"RelayClient initialized (enabled={config.enabled})")
 
     def set_webrtc_service(self, webrtc_service):
@@ -181,14 +189,32 @@ class RelayClient:
     async def _send(self, message: dict) -> bool:
         """Send message to relay server"""
         if not self._connected or not self._ws:
-            self.logger.debug("Cannot send - not connected")
+            # Queue message for later if not connected (limited buffer)
+            if len(self._message_queue) < self._max_queue_size:
+                self._message_queue.append(message)
+            return False
+
+        # Check if websocket is closing/closed
+        if self._ws.closed:
+            self._connected = False
+            if len(self._message_queue) < self._max_queue_size:
+                self._message_queue.append(message)
             return False
 
         try:
             await self._ws.send_json(message)
+            # Reset failure tracking on success
+            if self._send_fail_count > 0:
+                self.logger.info(f"Send recovered after {self._send_fail_count} failures")
+            self._send_fail_count = 0
+            self._send_fail_logged = False
             return True
         except Exception as e:
-            self.logger.error(f"Send failed: {e}")
+            self._send_fail_count += 1
+            # Only log first failure, then suppress until recovered
+            if not self._send_fail_logged:
+                self.logger.warning(f"Send failed (will suppress repeats): {e}")
+                self._send_fail_logged = True
             self._connected = False
             return False
 
@@ -521,8 +547,8 @@ class RelayClient:
             })
 
     async def _reconnect_loop(self):
-        """Reconnection loop with exponential backoff"""
-        backoff = self.config.reconnect_delay
+        """Reconnection loop with exponential backoff (1s, 2s, 4s, ... max 30s)"""
+        backoff = 1.0  # Start at 1 second
 
         while self._running:
             if not self._connected:
@@ -530,13 +556,33 @@ class RelayClient:
                 await asyncio.sleep(backoff)
 
                 if await self._connect():
-                    backoff = self.config.reconnect_delay
+                    backoff = 1.0  # Reset to 1 second on success
+                    # Flush queued messages
+                    await self._flush_queue()
                     # Start receive loop
                     await self._receive_loop()
                 else:
-                    backoff = min(backoff * 1.5, 60.0)  # Cap at 60s
+                    backoff = min(backoff * 2, 30.0)  # Double each time, cap at 30s
             else:
                 await asyncio.sleep(1.0)
+
+    async def _flush_queue(self):
+        """Send queued messages after reconnection"""
+        if not self._message_queue:
+            return
+
+        queue_size = len(self._message_queue)
+        self.logger.info(f"Flushing {queue_size} queued messages")
+
+        # Process queue
+        messages_to_send = self._message_queue.copy()
+        self._message_queue.clear()
+
+        for msg in messages_to_send:
+            if self._connected:
+                await self._send(msg)
+            else:
+                break  # Stop if we lost connection again
 
     async def _run(self):
         """Main async run loop"""

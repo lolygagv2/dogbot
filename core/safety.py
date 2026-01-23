@@ -46,11 +46,11 @@ class SafetyThresholds:
     battery_normal: float = 12.5       # Normal operation
 
     # Temperature thresholds (Celsius)
-    # Pi 5 + Hailo-8 HAT runs warm (65-75°C is normal under AI load)
-    temp_emergency: float = 85.0       # Immediate shutdown
-    temp_critical: float = 82.0        # Stop motors/AI (raised for Hailo)
-    temp_warning: float = 76.0         # Reduce performance (raised for Hailo)
-    temp_normal: float = 60.0          # Normal operation
+    # Pi 5 + Hailo-8 HAT runs warm (70-80°C is normal under AI load)
+    temp_emergency: float = 95.0       # Immediate shutdown
+    temp_critical: float = 92.0        # Stop motors/AI (raised for Hailo)
+    temp_warning: float = 86.0         # Reduce performance (raised +10C for Hailo)
+    temp_normal: float = 70.0          # Normal operation
 
     # CPU usage thresholds (%)
     cpu_critical: float = 95.0         # Stop non-essential processes

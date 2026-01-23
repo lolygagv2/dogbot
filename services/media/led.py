@@ -56,7 +56,17 @@ class LedService:
             # Silent Guardian product patterns
             'attention': self._pattern_attention,
             'waiting_quiet': self._pattern_waiting_quiet,
-            'dog_visible': self._pattern_dog_visible
+            'dog_visible': self._pattern_dog_visible,
+            # API convenience patterns (cloud commands)
+            'pulse': self._pattern_pulse,       # Generic pulse (uses fire as fallback)
+            'solid': self._pattern_solid,       # Solid blue
+            'ambient': self._pattern_ambient,   # Gentle breathing effect
+            # Solid color patterns for app
+            'solid_blue': self._pattern_solid_blue,
+            'solid_red': self._pattern_solid_red,
+            'solid_green': self._pattern_solid_green,
+            'solid_white': self._pattern_solid_white,
+            'solid_off': self._pattern_off,
         }
 
         # Pattern state
@@ -682,6 +692,111 @@ class LedService:
         # Don't turn off - let celebration pattern take over
 
     # ========== END NEW PATTERNS ==========
+
+    # ========== API CONVENIENCE PATTERNS ==========
+
+    def _pattern_pulse(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """
+        Generic pulse pattern - uses fire effect as it's visually appealing
+        Called via API command: led pattern=pulse
+        """
+        # Fire pattern provides a nice pulsing/flickering effect
+        self._pattern_fire(duration, color, **kwargs)
+
+    def _pattern_solid(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """
+        Solid color pattern - defaults to blue
+        Called via API command: led pattern=solid
+        """
+        if not self.led.pixels:
+            return
+
+        # Use provided color or default to blue
+        solid_color = color or 'blue'
+        self.led.set_solid_color(solid_color)
+
+        # Hold for duration or indefinitely
+        start_time = time.time()
+        while not self._stop_pattern.is_set():
+            if duration and (time.time() - start_time) >= duration:
+                break
+            time.sleep(0.1)
+
+    def _pattern_solid_blue(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Solid blue pattern for app"""
+        self._pattern_solid(duration, 'blue', **kwargs)
+
+    def _pattern_solid_red(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Solid red pattern for app"""
+        self._pattern_solid(duration, 'red', **kwargs)
+
+    def _pattern_solid_green(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Solid green pattern for app"""
+        self._pattern_solid(duration, 'green', **kwargs)
+
+    def _pattern_solid_white(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Solid white pattern for app"""
+        self._pattern_solid(duration, 'white', **kwargs)
+
+    def _pattern_ambient(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """
+        Ambient breathing pattern - gentle, slow breathing effect
+        Much slower than pulse_blue/pulse_green for a calming ambient light
+        Called via API command: led pattern=ambient
+
+        Also turns on the blue LED tube for full ambient effect.
+        """
+        if not self.led.pixels:
+            return
+
+        # Turn on blue LED tube for ambient mode
+        if self.led:
+            try:
+                self.led.blue_on()
+                self.logger.info("Blue LED tube ON for ambient mode")
+            except Exception as e:
+                self.logger.warning(f"Could not turn on blue LED: {e}")
+
+        # Use warm white for ambient by default, or specified color
+        if color and color in self.colors:
+            base_color = self.colors[color]
+        else:
+            # Warm, soft color for ambient mood
+            base_color = (100, 80, 60)  # Warm dim white
+
+        steps = 40  # More steps for smoother breathing
+        start_time = time.time()
+
+        while not self._stop_pattern.is_set():
+            if duration and (time.time() - start_time) >= duration:
+                break
+
+            # Breathe in (very slow fade up) - 2 seconds
+            for step in range(steps):
+                if self._stop_pattern.is_set():
+                    return
+
+                brightness = step / steps
+                dimmed_color = tuple(int(c * brightness) for c in base_color)
+                self.led.pixels.fill(dimmed_color)
+                self.led.pixels.show()
+                time.sleep(0.05)
+
+            # Breathe out (very slow fade down) - 2 seconds
+            for step in range(steps, 0, -1):
+                if self._stop_pattern.is_set():
+                    return
+
+                brightness = step / steps
+                dimmed_color = tuple(int(c * brightness) for c in base_color)
+                self.led.pixels.fill(dimmed_color)
+                self.led.pixels.show()
+                time.sleep(0.05)
+
+            # Brief pause at minimum brightness
+            time.sleep(0.3)
+
+    # ========== END API CONVENIENCE PATTERNS ==========
 
     def _on_system_event(self, event) -> None:
         """Handle system events to update LED patterns"""

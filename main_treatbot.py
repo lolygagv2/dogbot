@@ -155,8 +155,9 @@ class TreatBotMain:
         file_handler.setLevel(logging.DEBUG)  # Capture more detail to file
         file_handler.setFormatter(formatter)
 
-        # Configure root logger
+        # Configure root logger (clear existing handlers to prevent duplicates)
         root_logger = logging.getLogger()
+        root_logger.handlers.clear()  # Remove any existing handlers
         root_logger.setLevel(logging.DEBUG)
         root_logger.addHandler(console_handler)
         root_logger.addHandler(file_handler)
@@ -478,12 +479,18 @@ class TreatBotMain:
                 # Subscribe to detection events for LED feedback
                 self.bus.subscribe('vision', self._on_detection_for_feedback)
 
-            # Start bark detection if enabled
+            # Start bark detection if enabled AND in a mode that uses it
+            # Bark detection should only run in SILENT_GUARDIAN, COACH, MISSION
+            bark_modes = ['silent_guardian', 'coach', 'mission']
+            initial_mode = self.state.mode.value if hasattr(self.state.mode, 'value') else str(self.state.mode)
             if self.bark_detector.enabled:
-                self.bark_detector.start()
-                # Subscribe to bark events for feedback
+                # Always subscribe to bark events (for when mode changes)
                 self.bus.subscribe('audio', self._on_bark_for_feedback)
-                self.logger.info("🎤 Bark detection started")
+                if initial_mode in bark_modes:
+                    self.bark_detector.start()
+                    self.logger.info(f"🎤 Bark detection started (mode: {initial_mode})")
+                else:
+                    self.logger.info(f"🎤 Bark detection NOT started (mode: {initial_mode} - will start on mode change)")
 
             # Subscribe to mode changes to manage mode handlers
             self.state.subscribe('mode_change', self._on_mode_change)
@@ -681,12 +688,15 @@ class TreatBotMain:
                             pass
 
                     event_type = 'battery'
+                    # Get current mode for telemetry
+                    current_mode = self.state.get_mode().value if self.state else 'idle'
                     event_data = {
                         'level': event.data.get('percentage', 0),
                         'charging': event.data.get('charging', False) or event.subtype == 'battery_charging',
                         'voltage': event.data.get('voltage'),
                         'temperature': temperature,
                         'treats_today': treats_today,
+                        'mode': current_mode,
                     }
                     # Battery status is not throttled (already rate-limited at source)
 
@@ -766,6 +776,12 @@ class TreatBotMain:
                         })
                         self.logger.info(f"☁️ LED RGB -> {resp.status_code}")
 
+                elif command == 'mood_led':
+                    # Mood LED (blue tube) control: {"action": "on/off/toggle"}
+                    action = params.get('action', 'toggle')
+                    resp = client.post(f'{api_base}/mood_led', json={'action': action})
+                    self.logger.info(f"☁️ Mood LED {action} -> {resp.status_code}")
+
                 elif command == 'servo':
                     # Servo control: {"pan": x} or {"tilt": y} or {"center": true}
                     if params.get('center'):
@@ -808,6 +824,26 @@ class TreatBotMain:
                             'file': filename
                         })
                         self.logger.info(f"☁️ Audio play={filename} -> {resp.status_code}")
+
+                elif command == 'audio_toggle':
+                    # Toggle audio: play if stopped, stop if playing
+                    resp = client.post(f'{api_base}/audio/toggle')
+                    self.logger.info(f"☁️ Audio toggle -> {resp.status_code}")
+
+                elif command == 'audio_next':
+                    # Play next song in playlist
+                    resp = client.post(f'{api_base}/audio/next')
+                    self.logger.info(f"☁️ Audio next -> {resp.status_code}")
+
+                elif command == 'audio_prev':
+                    # Play previous song in playlist
+                    resp = client.post(f'{api_base}/audio/previous')
+                    self.logger.info(f"☁️ Audio prev -> {resp.status_code}")
+
+                elif command == 'audio_stop':
+                    # Stop audio playback
+                    resp = client.post(f'{api_base}/audio/stop')
+                    self.logger.info(f"☁️ Audio stop -> {resp.status_code}")
 
                 elif command == 'mode':
                     # Mode: {"mode": "coach"} or {"mode": "idle"}
@@ -922,6 +958,23 @@ class TreatBotMain:
                 if self.coaching_engine:
                     self.coaching_engine.start()
                     self.logger.info("🎓 Coach mode started")
+
+            # Bark detection management - only run in modes that need it
+            # Modes that need bark detection: silent_guardian, coach, mission
+            # Modes that DON'T need it: idle, manual
+            bark_modes = ['silent_guardian', 'coach', 'mission']
+
+            if new_mode in ['idle', 'manual'] and previous_mode in bark_modes:
+                # Entering IDLE/MANUAL from a bark-detection mode - stop bark detection
+                if self.bark_detector and self.bark_detector.enabled:
+                    self.bark_detector.stop()
+                    self.logger.info("🎤 Bark detection stopped (entering non-detection mode)")
+
+            elif new_mode in bark_modes and previous_mode in ['idle', 'manual']:
+                # Entering a bark-detection mode from IDLE/MANUAL - start bark detection
+                if self.bark_detector and self.bark_detector.enabled:
+                    self.bark_detector.start()
+                    self.logger.info("🎤 Bark detection started (entering detection mode)")
 
         except Exception as e:
             self.logger.error(f"Mode change handler error: {e}")

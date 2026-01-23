@@ -76,24 +76,35 @@ class WIMZVideoTrack(VideoStreamTrack):
         # Get frame from detector service
         frame = self.detector.get_last_frame()
 
+        # Log frame status periodically (every 100 frames)
+        if self.frame_count % 100 == 0:
+            if frame is not None:
+                self.logger.info(f"📹 Video frame {self.frame_count}: {frame.shape}, dtype={frame.dtype}")
+            else:
+                self.logger.warning(f"📹 Video frame {self.frame_count}: None (no camera feed)")
+
         if frame is None:
-            # Return black frame if no camera data
-            frame = np.zeros((640, 640, 3), dtype=np.uint8)
+            # Return black frame if no camera data - use detector's current resolution
+            resolution = getattr(self.detector, '_current_resolution', (640, 640))
+            height, width = resolution[1], resolution[0]  # resolution is (width, height)
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
             cv2.putText(
                 frame, "No Camera Feed",
-                (200, 320), cv2.FONT_HERSHEY_SIMPLEX,
+                (width // 3, height // 2), cv2.FONT_HERSHEY_SIMPLEX,
                 1.0, (255, 255, 255), 2
             )
+            frame_rgb = frame  # Already RGB (black frame)
         else:
-            # Frame is RGB from Picamera2, convert to BGR for OpenCV operations
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            # Picamera2 RGB888 outputs BGR despite the name (confirmed by testing)
+            # Frame is already BGR - perfect for OpenCV operations
+            frame_bgr = frame  # No conversion needed - already BGR
 
-            # Add AI overlays if enabled
+            # Add AI overlays if enabled (OpenCV expects BGR - we have BGR)
             if self.enable_overlay:
-                frame = self._add_overlays(frame)
+                frame_bgr = self._add_overlays(frame_bgr)
 
-        # Convert BGR to RGB for WebRTC
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Convert BGR to RGB for WebRTC/aiortc
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
         # Create VideoFrame for aiortc
         video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")

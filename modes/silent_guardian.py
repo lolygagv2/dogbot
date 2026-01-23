@@ -356,6 +356,10 @@ class SilentGuardianMode:
 
     def _on_audio_event(self, event):
         """Handle bark events"""
+        # Don't process events if not running
+        if not self.running:
+            return
+
         if event.subtype != 'bark_detected':
             return
 

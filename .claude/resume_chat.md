@@ -1,6 +1,82 @@
 # WIM-Z Resume Chat Log
 
-## Session: 2026-01-22 (Latest)
+## Session: 2026-01-23 03:00-04:30 EST (Latest)
+**Goal:** Multiple bug fixes - Audio, Motors, WebSocket, Camera
+**Status:** ✅ Complete
+
+---
+
+### Problems Solved This Session
+
+#### 1. Audio Deadlock Fix
+- **Issue:** Audio commands timing out after 5 seconds
+- **Cause:** `play_next()` calls `play_file()` which both try to acquire same `threading.Lock()`
+- **Fix:** Changed to `threading.RLock()` (reentrant lock) in `services/media/usb_audio.py`
+
+#### 2. Bark Detection Mode Control
+- **Issue:** Bark detection running in all modes (should only run in SILENT_GUARDIAN, COACH, MISSION)
+- **Fix:** Added start/stop logic in `_on_mode_change` in `main_treatbot.py`
+
+#### 3. Music Player Logic Overhaul
+- **Issue:** Music auto-played on startup, prev/next triggered playback
+- **Fix:** Complete rewrite of music player state tracking:
+  - `_music_playing` and `_playlist_track` separate from general audio
+  - `audio_next`/`audio_prev` only change index, don't auto-play
+  - `audio_toggle` plays current song if stopped, stops if playing
+  - Telemetry: `{"audio": {"playing": bool, "track": "song.mp3"}}`
+
+#### 4. Motor Watchdog Too Aggressive
+- **Issue:** "Stale movement command" stopping motors mid-drive at 1.0s threshold
+- **Fix:** Increased stale command threshold from 1.0s to 2.5s
+- **File:** `core/hardware/proper_pid_motor_controller.py`
+- Also reduced PID log interval from 1s to 2s
+
+#### 5. WebSocket Reconnection Handling
+- **Issue:** "Cannot write to closing transport" errors, log spam on disconnect
+- **Fix:** Updated `services/cloud/relay_client.py`:
+  - Check `_ws.closed` before sending
+  - Message queue (up to 50) for offline buffering
+  - Log suppression (only first failure logged)
+  - Better exponential backoff: 1s → 2s → 4s → ... max 30s
+  - Queue flush after reconnection
+
+#### 6. Duplicate Log Lines
+- **Issue:** Every log message appeared twice
+- **Fix:** Added `root_logger.handlers.clear()` before adding handlers in `main_treatbot.py`
+
+#### 7. Camera Color Inversion (BGR/RGB)
+- **Issue:** Blue door appeared orange in WebRTC stream
+- **Fix:** Updated `services/streaming/video_track.py` - Picamera2 RGB888 actually outputs BGR, removed unnecessary RGB→BGR conversion
+
+---
+
+### Files Modified This Session
+
+| File | Change |
+|------|--------|
+| `services/media/usb_audio.py` | RLock, music player state tracking |
+| `main_treatbot.py` | Bark detection mode control, logging fix |
+| `core/hardware/proper_pid_motor_controller.py` | Stale threshold 1.0s→2.5s, log interval 1s→2s |
+| `services/cloud/relay_client.py` | Connection state check, message queue, backoff |
+| `services/streaming/video_track.py` | BGR/RGB color fix |
+| `api/server.py` | Updated audio endpoint messages |
+| `core/safety.py` | Raised temp thresholds by 10°C |
+
+---
+
+### Unresolved Issues
+- **Fan hardware not spinning** - Physical connection issue, user to check JST connector
+- Temperature thresholds raised by 10°C as workaround until fan fixed
+
+### Next Session Tasks
+1. Verify camera colors are correct in app
+2. Test music player from app
+3. Monitor motor behavior during driving
+4. Physical fan inspection
+
+---
+
+## Session: 2026-01-22 (Earlier)
 **Goal:** Dog Identification System + Voice Command Storage + Two-Way Audio PTT
 **Status:** Complete
 
@@ -44,10 +120,6 @@ Custom voice recordings per dog for personalized commands:
 - `services/media/usb_audio.py` - Added play_command() method
 - `main_treatbot.py` - Added cloud command handlers for voice
 
-**WebSocket Commands:**
-- `{"type": "command", "command": "upload_voice", "name": "sit", "dog_id": "1", "data": "<base64>"}`
-- `{"type": "command", "command": "list_voices", "dog_id": "1"}`
-
 #### 3. Two-Way Audio Push-to-Talk
 Real-time audio communication between app and robot:
 - Play audio from app through speaker
@@ -58,47 +130,9 @@ Real-time audio communication between app and robot:
 **Files Created:**
 - `services/media/push_to_talk.py` - PTT service with arecord/aplay
 
-**Files Modified:**
-- `api/ws.py` - Added audio_message, audio_request handlers
-- `api/server.py` - Added REST endpoints: /ptt/*
-- `services/cloud/relay_client.py` - Added PTT message handlers
-- `main_treatbot.py` - Added ptt_play, ptt_record cloud handlers
-
-**WebSocket Messages:**
-- `{"type": "audio_message", "data": "<base64>", "format": "aac"}` - Play audio
-- `{"type": "audio_request", "duration": 5, "format": "aac"}` - Record audio
-
 ---
 
-### Files Created This Session
-- `core/dog_profile_manager.py`
-- `services/media/voice_manager.py`
-- `services/media/push_to_talk.py`
-
-### Files Modified This Session
-- `core/dog_tracker.py`
-- `core/ai_controller_3stage_fixed.py`
-- `core/state.py`
-- `services/perception/detector.py`
-- `services/cloud/relay_client.py`
-- `services/media/usb_audio.py`
-- `api/ws.py`
-- `api/server.py`
-- `main_treatbot.py`
-
----
-
-### Key Technical Decisions
-1. Used HSV color space for dog coat color classification (lighting-robust)
-2. Used arecord/aplay for PTT (reliable USB audio access)
-3. Pauses bark detector during PTT recording to free microphone
-4. Profile manager is a singleton with thread-safe access
-
-### Next Session Tasks
-1. Test dog identification with real dogs
-2. Test PTT audio quality
-3. Tune color classification thresholds if needed
-4. Test voice command uploads from app
+### Commit: 6956f5c3 - feat: Dog identification, voice commands, and push-to-talk audio
 
 ---
 
@@ -119,62 +153,16 @@ Created `services/network/` module for first-time WiFi setup:
 
 **Flow:** No WiFi → Creates "WIMZ-XXXX" AP → User connects → Configures WiFi → Reboots
 
-**Installation:** `sudo ./scripts/install_wifi_provision.sh`
-
 #### 2. "NO" Command Support
 - Added `LEDMode.WARNING` with yellow/purple flash pattern
 - Added `Colors.WARNING` (255, 200, 0) amber
-- `no.mp3` already exists in VOICEMP3/talks/
 
 #### 3. Audio Track Cycling
 - Added `play_next()` / `play_previous()` to USBAudioService
 - Playlist built from `/songs/` folder (12 tracks)
-- Track state: `_current_track`, `_current_index`
-- Updated endpoints: `/audio/next`, `/audio/previous`, `/audio/playlist`
-
-#### 4. Audio Telemetry
-- Added `audio` object to `/telemetry` endpoint
-- Format: `{"audio": {"playing": true, "track": "song.mp3", "looping": false}}`
 
 ---
 
 ### Commit: 37144d88 - feat: WiFi provisioning AP mode + NO command + audio cycling
-
----
-
-## Session: 2026-01-21
-**Goal:** Cloud Control Architecture - Fix cloud commands and WebRTC
-**Status:** Partial - Commands fixed, data receipt bugs remain
-
----
-
-### Work Completed This Session
-
-#### 1. Cloud Command Handler Fixed (`main_treatbot.py`)
-Rewrote `_handle_cloud_command()` to forward commands to local REST API:
-
-| Command | API Endpoint | Body |
-|---------|-------------|------|
-| `treat` | POST `/treat/dispense` | - |
-| `led` | POST `/led/pattern` | `{"pattern": "..."}` |
-| `servo` | POST `/servo/pan` / `/servo/tilt` | `{"angle": float}` |
-| `audio` | POST `/audio/play` | `{"file": "..."}` |
-| `mode` | POST `/mode/set` | `{"mode": "..."}` |
-| `motor` | *Ignored* | Goes via WebRTC data channel |
-
-#### 2. WebRTC Data Channel Added (`services/streaming/webrtc.py`)
-- Added data channel for low-latency motor control
-- Channel name: `"control"`, unreliable mode for speed
-- Message format: `{"type": "motor", "left": -1.0 to 1.0, "right": -1.0 to 1.0}`
-
-#### 3. Relay Client Bug Fixed (`services/cloud/relay_client.py`)
-**Critical bug found:** Relay sends params in `data` field, not `params` field.
-Fixed: `params = data.get('data', {})` instead of `data.get('params', {})`
-
----
-
-### Important Notes
-- Cloud relay message format: `{"type": "command", "command": "xxx", "data": {...}}`
-- Params are in `data` field, NOT `params` field
 
 ---

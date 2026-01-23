@@ -462,10 +462,11 @@ class ProperPIDMotorController:
 
                 # Additional safety: If motors are running but last non-zero command was too long ago
                 # This catches cases where the controller crashes while motors are moving
+                # Note: 2.5 second threshold allows for brief joystick pauses during driving
                 if not self.motors_should_be_stopped:
-                    if current_time - self.last_nonzero_command_time > 1.0:
-                        # Haven't received a fresh movement command in 1 second while motors running
-                        logger.warning("⏰ Stale movement command detected - forcing stop")
+                    if current_time - self.last_nonzero_command_time > 2.5:
+                        # Haven't received a fresh movement command in 2.5 seconds while motors running
+                        logger.info("⏰ Stale movement command (2.5s) - stopping motors")
                         with self.lock:
                             self.left.target_rpm = 0
                             self.right.target_rpm = 0
@@ -485,9 +486,9 @@ class ProperPIDMotorController:
                     self._apply_pwm(self.left, left_pwm)
                     self._apply_pwm(self.right, right_pwm)
 
-                # Debug logging every 1 second (50 cycles at 50Hz)
+                # Debug logging every 2 seconds (100 cycles at 50Hz) - reduce log spam
                 debug_counter += 1
-                if debug_counter >= 50:
+                if debug_counter >= 100:
                     logger.info(
                         f"🎯 PID: Target L={self.ramped_left_target:6.1f} R={self.ramped_right_target:6.1f} | "
                         f"Actual L={self.left.current_rpm:6.1f} R={self.right.current_rpm:6.1f} | "
