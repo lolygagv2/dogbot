@@ -64,9 +64,9 @@
 
 ---
 
-### Unresolved Issues
-- **Fan hardware not spinning** - Physical connection issue, user to check JST connector
-- Temperature thresholds raised by 10°C as workaround until fan fixed
+### Resolved Issues
+- **Fan hardware** - Original fan was dead, replaced with new fan - now working ✅
+- Temperature thresholds were raised by 10°C (can revert if needed now that fan works)
 
 ### Next Session Tasks
 1. Verify camera colors are correct in app
