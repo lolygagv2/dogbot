@@ -68,11 +68,13 @@
 - **Fan hardware** - Original fan was dead, replaced with new fan - now working ✅
 - Temperature thresholds were raised by 10°C (can revert if needed now that fan works)
 
+### Verified Working
+- ✅ Camera colors correct in app (BGR/RGB fix confirmed)
+- ✅ Fan replaced and working
+
 ### Next Session Tasks
-1. Verify camera colors are correct in app
-2. Test music player from app
-3. Monitor motor behavior during driving
-4. Physical fan inspection
+1. Test music player from app
+2. Monitor motor behavior during driving
 
 ---
 
