@@ -24,6 +24,9 @@ import aiohttp
 from core.bus import get_bus, CloudEvent
 from core.state import get_state, SystemMode
 
+# Robot version for connection announcement
+ROBOT_VERSION = "1.0.0"
+
 
 @dataclass
 class RelayConfig:
@@ -61,6 +64,7 @@ class RelayClient:
         self._connected = False
         self._running = False
         self._reconnect_task: Optional[asyncio.Task] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
 
         # WebRTC service reference (set during integration)
         self._webrtc_service = None
@@ -152,11 +156,11 @@ class RelayClient:
             self.logger.info("Connected to cloud relay")
             print("[RelayClient] ✅ Connected to cloud relay", flush=True)
 
-            # Send hello message
+            # Send robot_connected announcement
             await self._send({
-                'type': 'hello',
+                'type': 'robot_connected',
                 'device_id': self.config.device_id,
-                'capabilities': ['video', 'audio', 'commands']
+                'version': ROBOT_VERSION
             })
 
             # Request dog profiles from cloud
@@ -173,8 +177,23 @@ class RelayClient:
             self._connected = False
             return False
 
-    async def _disconnect(self):
-        """Close WebSocket connection"""
+    async def _disconnect(self, send_goodbye: bool = False):
+        """Close WebSocket connection
+
+        Args:
+            send_goodbye: If True, send robot_disconnecting before closing
+        """
+        # Send goodbye message if requested and still connected
+        if send_goodbye and self._connected and self._ws and not self._ws.closed:
+            try:
+                await self._ws.send_json({
+                    'type': 'robot_disconnecting',
+                    'device_id': self.config.device_id
+                })
+                self.logger.info("Sent robot_disconnecting to relay")
+            except Exception as e:
+                self.logger.debug(f"Could not send goodbye: {e}")
+
         self._connected = False
 
         if self._ws and not self._ws.closed:
@@ -248,12 +267,36 @@ class RelayClient:
                 self._connected = False
                 break
 
+    async def _heartbeat_loop(self):
+        """Send heartbeat every 30 seconds while connected"""
+        while self._running and self._connected:
+            try:
+                await asyncio.sleep(self.config.heartbeat_interval)
+                if self._connected:
+                    await self._send({
+                        'type': 'heartbeat',
+                        'device_id': self.config.device_id,
+                        'timestamp': int(time.time())
+                    })
+                    self.logger.debug("💓 Heartbeat sent")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.debug(f"Heartbeat error: {e}")
+
     async def _handle_message(self, data: dict):
         """Route incoming message to appropriate handler"""
         msg_type = data.get('type')
+        msg_device_id = data.get('device_id')
+
         # Log at INFO level to ensure visibility
-        self.logger.info(f"📥 Relay message received: type={msg_type}")
-        print(f"[RelayClient] 📥 Message: type={msg_type}, data={data}", flush=True)
+        self.logger.info(f"📥 Relay message received: type={msg_type}, device_id={msg_device_id}")
+        print(f"[RelayClient] 📥 Message: type={msg_type}, device_id={msg_device_id}, data={data}", flush=True)
+
+        # Filter by device_id if present - ignore messages for other robots
+        if msg_device_id and msg_device_id != self.config.device_id:
+            self.logger.debug(f"Ignoring message for different device: {msg_device_id}")
+            return
 
         handler = self._message_handlers.get(msg_type)
         if handler:
@@ -282,6 +325,7 @@ class RelayClient:
             self.logger.error("WebRTC service not available")
             await self._send({
                 'type': 'webrtc_error',
+                'device_id': self.config.device_id,
                 'session_id': session_id,
                 'error': 'WebRTC service not available'
             })
@@ -293,6 +337,7 @@ class RelayClient:
                 if candidate:
                     await self._send({
                         'type': 'webrtc_ice',
+                        'device_id': self.config.device_id,
                         'session_id': session_id,
                         'candidate': {
                             'candidate': candidate.candidate,
@@ -311,6 +356,7 @@ class RelayClient:
             # Send offer to relay
             await self._send({
                 'type': 'webrtc_offer',
+                'device_id': self.config.device_id,
                 'session_id': session_id,
                 'sdp': offer
             })
@@ -326,6 +372,7 @@ class RelayClient:
             print(f"[RelayClient] Traceback: {traceback.format_exc()}", flush=True)
             await self._send({
                 'type': 'webrtc_error',
+                'device_id': self.config.device_id,
                 'session_id': session_id,
                 'error': str(e)
             })
@@ -416,6 +463,12 @@ class RelayClient:
 
         if command is None:
             self.logger.warning(f"☁️ Missing command in message: {data}")
+            await self._send({
+                'type': 'command_ack',
+                'command': 'unknown',
+                'success': False,
+                'error': 'Missing command field'
+            })
             return
 
         # Handle set_mode command directly here (app sends this on connect)
@@ -426,9 +479,20 @@ class RelayClient:
                     new_mode = SystemMode(mode_name)
                     self.state.set_mode(new_mode, f"App command: {mode_name}")
                     self.logger.info(f"📱 Mode changed to {mode_name} via app command")
+                    await self._send({
+                        'type': 'command_ack',
+                        'command': command,
+                        'success': True
+                    })
                     return
                 except ValueError:
                     self.logger.warning(f"☁️ Invalid mode: {mode_name}")
+                    await self._send({
+                        'type': 'command_ack',
+                        'command': command,
+                        'success': False,
+                        'error': f'Invalid mode: {mode_name}'
+                    })
                     return
 
         # Publish command to event bus for other services to handle
@@ -438,9 +502,16 @@ class RelayClient:
             source='relay_client'
         ))
 
+        # Acknowledge command received (processing happens async via bus)
+        await self._send({
+            'type': 'command_ack',
+            'command': command,
+            'success': True
+        })
+
     async def _handle_ping(self, data: dict):
         """Handle ping from relay"""
-        await self._send({'type': 'pong', 'timestamp': time.time()})
+        await self._send({'type': 'pong', 'device_id': self.config.device_id, 'timestamp': time.time()})
 
     async def _handle_profiles(self, data: dict):
         """Handle dog profiles from cloud
@@ -501,6 +572,7 @@ class RelayClient:
             # Send response
             await self._send({
                 'event': 'audio_played',
+                'device_id': self.config.device_id,
                 'success': result.get('success'),
                 'error': result.get('error')
             })
@@ -527,6 +599,7 @@ class RelayClient:
             if result.get('success'):
                 await self._send({
                     'event': 'audio_message',
+                    'device_id': self.config.device_id,
                     'data': result.get('data'),
                     'format': audio_format,
                     'duration_ms': result.get('duration_ms'),
@@ -536,6 +609,7 @@ class RelayClient:
             else:
                 await self._send({
                     'event': 'audio_error',
+                    'device_id': self.config.device_id,
                     'error': result.get('error')
                 })
 
@@ -543,6 +617,7 @@ class RelayClient:
             self.logger.error(f"☁️ Audio request error: {e}")
             await self._send({
                 'event': 'audio_error',
+                'device_id': self.config.device_id,
                 'error': str(e)
             })
 
@@ -559,8 +634,13 @@ class RelayClient:
                     backoff = 1.0  # Reset to 1 second on success
                     # Flush queued messages
                     await self._flush_queue()
+                    # Start heartbeat in background
+                    self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
                     # Start receive loop
                     await self._receive_loop()
+                    # Cancel heartbeat when receive loop ends
+                    if self._heartbeat_task:
+                        self._heartbeat_task.cancel()
                 else:
                     backoff = min(backoff * 2, 30.0)  # Double each time, cap at 30s
             else:
@@ -589,7 +669,12 @@ class RelayClient:
         self._running = True
 
         if await self._connect():
+            # Start heartbeat in background
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             await self._receive_loop()
+            # Cancel heartbeat when receive loop ends
+            if self._heartbeat_task:
+                self._heartbeat_task.cancel()
 
         # Start reconnection loop if still running
         if self._running:
@@ -629,10 +714,16 @@ class RelayClient:
         self.logger.info("Stopping relay client...")
         self._running = False
 
-        # Schedule disconnect in the event loop and wait for it
+        # Cancel heartbeat task
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+
+        # Schedule disconnect in the event loop and wait for it (with goodbye message)
         if self._loop and self._connected:
             try:
-                future = asyncio.run_coroutine_threadsafe(self._disconnect(), self._loop)
+                future = asyncio.run_coroutine_threadsafe(
+                    self._disconnect(send_goodbye=True), self._loop
+                )
                 future.result(timeout=3.0)  # Wait for disconnect to complete
             except Exception as e:
                 self.logger.debug(f"Disconnect wait error: {e}")
@@ -655,15 +746,18 @@ class RelayClient:
     def send_event(self, event_type: str, data: dict):
         """Send event to relay (thread-safe)
 
-        Format: {"event": "<type>", ...data fields...}
+        Format: {"event": "<type>", "device_id": "<id>", ...data fields...}
         The relay requires the "event" field to forward messages to the app.
+        Device_id is included for routing/filtering on the relay/app side.
         """
         if not self._connected or not self._loop:
             return
 
         # Flat message format with "event" field as required by relay API
+        # Always include device_id for proper routing
         message = {
             'event': event_type,
+            'device_id': self.config.device_id,
             **data
         }
 
