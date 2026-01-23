@@ -323,13 +323,24 @@ class AI3StageControllerFixed:
             'detections': detections,
             'poses': poses,
             'behaviors': behaviors,
-            'dog_assignments': {}
+            'dog_assignments': {},
+            'dog_id_methods': {}  # Identification methods: aruco, color, persistence, unknown
         }
 
         # Apply dog tracking if available
         if self.dog_tracker and aruco_markers is not None:
-            assignments = self.dog_tracker.process_frame(detections, aruco_markers)
+            # Pass frame for color-based identification fallback
+            assignments = self.dog_tracker.process_frame(detections, aruco_markers, frame=frame_4k)
             result['dog_assignments'] = assignments
+
+            # Get identification methods from tracked dogs
+            tracked_dogs = self.dog_tracker.get_tracked_dogs()
+            for dog_name, dog_data in tracked_dogs.items():
+                id_method = dog_data.get('id_method', 'unknown')
+                # Find which detection index this dog name corresponds to
+                for idx, assigned_name in assignments.items():
+                    if assigned_name == dog_name:
+                        result['dog_id_methods'][idx] = id_method
 
             # Add dog names to behaviors and publish events
             for idx, behavior in enumerate(behaviors):

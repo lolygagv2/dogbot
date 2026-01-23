@@ -3,11 +3,29 @@
 Dog Tracking System with ArUco Persistence Rules
 Handles identification and tracking of multiple dogs using ArUco markers
 with smart persistence and fallback rules.
+
+Identification Priority:
+1. ARUCO marker (100% certain)
+2. Color match with single dog (high confidence)
+3. Color match with multiple dogs (uncertain - show generic)
+4. No match (show "Unknown Dog")
 """
 
 import time
 from typing import Dict, List, Tuple, Optional
 import numpy as np
+
+# Import profile manager for color-based identification
+try:
+    from core.dog_profile_manager import (
+        get_dog_profile_manager,
+        IdentificationMethod,
+        IdentificationResult
+    )
+    HAS_PROFILE_MANAGER = True
+except ImportError:
+    HAS_PROFILE_MANAGER = False
+    IdentificationMethod = None
 
 class DogTracker:
     """Smart dog tracking with ArUco persistence rules"""
@@ -42,22 +60,39 @@ class DogTracker:
         self.frame_count = 0
         self.active_dogs = set()
 
+        # Profile manager for color-based identification
+        self._profile_manager = None
+        self._last_frame = None  # Cache for color extraction
+        if HAS_PROFILE_MANAGER:
+            try:
+                self._profile_manager = get_dog_profile_manager()
+            except Exception as e:
+                print(f"Warning: Could not load profile manager: {e}")
+
     def update_valid_ids(self, dog_list: List[dict]):
         """Update the list of valid dog IDs (Rule 1 - user configurable)"""
         self.valid_dog_ids = {dog['marker_id']: dog['id'] for dog in dog_list}
         self.dog_names = {v: k for k, v in self.valid_dog_ids.items()}
 
-    def process_frame(self, detections: List, aruco_markers: List[Tuple[int, float, float]]) -> Dict:
+    def set_frame(self, frame):
+        """Set current frame for color extraction (call before process_frame)"""
+        self._last_frame = frame
+
+    def process_frame(self, detections: List, aruco_markers: List[Tuple[int, float, float]], frame=None) -> Dict:
         """
         Process a frame with detections and ArUco markers
 
         Args:
             detections: List of AI detection boxes
             aruco_markers: List of (marker_id, cx, cy) tuples
+            frame: Optional camera frame for color-based identification
 
         Returns:
             Dict mapping detection indices to dog identities
         """
+        # Store frame for color extraction
+        if frame is not None:
+            self._last_frame = frame
         self.frame_count += 1
         current_time = time.time()
         assignments = {}  # {detection_idx: dog_name}
@@ -90,13 +125,38 @@ class DogTracker:
                 dog_name = self.valid_dog_ids[dog_id]
                 assignments[idx] = dog_name
                 # Rule 2: Update persistence tracking
-                self._update_tracking(dog_id, bbox, current_time, confidence=1.0)
+                id_method = "aruco" if HAS_PROFILE_MANAGER else "aruco"
+                self._update_tracking(dog_id, bbox, current_time, confidence=1.0, id_method=id_method)
                 # Clear from unidentified tracking (ArUco found!)
                 if idx in self.unidentified_dogs:
                     del self.unidentified_dogs[idx]
 
             else:
-                # No marker found, try persistence rules
+                # No marker found - try color-based identification first
+                id_result = None
+                if self._profile_manager and self._last_frame is not None:
+                    id_result = self._profile_manager.identify_dog(
+                        bbox=bbox,
+                        frame=self._last_frame,
+                        aruco_markers=aruco_markers
+                    )
+
+                    if id_result and id_result.method.value in ("aruco", "color"):
+                        # High confidence identification (ARUCO or unique color)
+                        dog_name = id_result.dog_name.lower()
+                        assignments[idx] = dog_name
+                        # Find marker_id for this dog if we have it
+                        marker_id = self.dog_names.get(dog_name, hash(dog_name) % 10000)
+                        self._update_tracking(
+                            marker_id, bbox, current_time,
+                            confidence=id_result.confidence,
+                            id_method=id_result.method.value
+                        )
+                        if idx in self.unidentified_dogs:
+                            del self.unidentified_dogs[idx]
+                        continue  # Skip fallback rules
+
+                # Fallback to persistence rules
                 dog_name = self._apply_persistence_rules(bbox, valid_markers, len(detections), current_time)
 
                 if dog_name:
@@ -205,12 +265,13 @@ class DogTracker:
 
         return best_match
 
-    def _update_tracking(self, dog_id: int, bbox: List[float], timestamp: float, confidence: float):
+    def _update_tracking(self, dog_id: int, bbox: List[float], timestamp: float, confidence: float, id_method: str = "persistence"):
         """Update persistence tracking for a dog (Rule 2)"""
         self.last_known_positions[dog_id] = {
             'time': timestamp,
             'bbox': bbox,
-            'confidence': confidence
+            'confidence': confidence,
+            'id_method': id_method
         }
         self.active_dogs.add(dog_id)
 
@@ -281,3 +342,48 @@ class DogTracker:
             'default_dog': self.default_dog_name,
             'frame_count': self.frame_count
         }
+
+    def get_tracked_dogs(self) -> Dict:
+        """Get all currently tracked dogs with their data for overlay rendering
+
+        Returns:
+            Dict mapping dog_id to dog data:
+            {
+                'dog_name': {
+                    'bbox': [x1, y1, x2, y2],
+                    'name': 'bezik',
+                    'confidence': 0.85,
+                    'id_method': 'aruco',  # aruco, color, persistence, unknown
+                    'behavior': '',  # Set by behavior interpreter
+                    'keypoints': []  # Set by pose detector
+                }
+            }
+        """
+        current_time = time.time()
+        result = {}
+
+        for marker_id, tracking in self.last_known_positions.items():
+            # Only include dogs with recent tracking (within persistence time)
+            if current_time - tracking['time'] > self.persistence_time:
+                continue
+
+            dog_name = self.valid_dog_ids.get(marker_id, f"dog_{marker_id}")
+            result[dog_name] = {
+                'bbox': tracking.get('bbox', []),
+                'name': dog_name,
+                'confidence': tracking.get('confidence', 0.0),
+                'id_method': tracking.get('id_method', 'persistence'),
+                'behavior': tracking.get('behavior', ''),
+                'keypoints': tracking.get('keypoints', [])
+            }
+
+        return result
+
+    def update_dog_behavior(self, dog_name: str, behavior: str, confidence: float, keypoints: list = None):
+        """Update behavior and keypoints for a tracked dog (called by behavior interpreter)"""
+        marker_id = self.dog_names.get(dog_name)
+        if marker_id and marker_id in self.last_known_positions:
+            self.last_known_positions[marker_id]['behavior'] = behavior
+            self.last_known_positions[marker_id]['confidence'] = confidence
+            if keypoints:
+                self.last_known_positions[marker_id]['keypoints'] = keypoints

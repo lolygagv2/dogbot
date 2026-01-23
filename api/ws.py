@@ -19,6 +19,9 @@ from services.motion.motor import get_motor_service
 from services.motion.pan_tilt import get_pantilt_service
 from services.media.sfx import get_sfx_service
 from services.media.led import get_led_service
+from services.media.photo_capture import get_photo_capture_service
+from services.media.voice_manager import get_voice_manager
+from services.media.push_to_talk import get_push_to_talk_service
 
 
 class ConnectionManager:
@@ -188,6 +191,16 @@ class TreatBotWebSocketServer:
                 await self.manager.send_to_one(websocket, {"type": "auth_result", "success": True})
                 return
 
+            # Handle push-to-talk audio message (play from app)
+            if data.get("type") == "audio_message":
+                await self._handle_audio_message(websocket, data)
+                return
+
+            # Handle audio request (record and send back)
+            if data.get("type") == "audio_request":
+                await self._handle_audio_request(websocket, data)
+                return
+
             # Handle contract-style commands (API Contract format)
             if "command" in data and "params" not in data:
                 # This is an API contract format command
@@ -292,8 +305,238 @@ class TreatBotWebSocketServer:
                     if internal_mode:
                         mode_fsm.force_mode(internal_mode, "websocket_command")
 
+            elif command == "take_photo":
+                # {"command": "take_photo", "with_hud": true}
+                with_hud = data.get("with_hud", True)
+                await self._handle_take_photo(websocket, with_hud)
+
+            elif command == "upload_voice":
+                # {"command": "upload_voice", "name": "sit", "dog_id": "1", "data": "<base64>"}
+                await self._handle_upload_voice(websocket, data)
+
+            elif command == "list_voices":
+                # {"command": "list_voices", "dog_id": "1"}
+                await self._handle_list_voices(websocket, data)
+
+            elif command == "delete_voice":
+                # {"command": "delete_voice", "name": "sit", "dog_id": "1"}
+                await self._handle_delete_voice(websocket, data)
+
         except Exception as e:
             self.logger.error(f"Contract command error: {e}")
+
+    async def _handle_take_photo(self, websocket: WebSocket, with_hud: bool = True):
+        """Handle take_photo command - capture and send photo via WebSocket"""
+        try:
+            from services.perception.detector import get_detector_service
+
+            photo_service = get_photo_capture_service()
+            detector = get_detector_service()
+
+            # Capture photo with HUD
+            result = photo_service.capture_photo(
+                with_hud=with_hud,
+                detector=detector,
+                mission_engine=self.mission_engine
+            )
+
+            if result.get("success"):
+                # Send photo via WebSocket
+                await self.manager.send_to_one(websocket, {
+                    "type": "photo",
+                    "data": result.get("data"),
+                    "timestamp": result.get("timestamp"),
+                    "filename": result.get("filename"),
+                    "with_hud": with_hud
+                })
+                self.logger.info(f"Photo sent: {result.get('filename')}")
+            else:
+                await self.manager.send_to_one(websocket, {
+                    "type": "error",
+                    "message": f"Photo capture failed: {result.get('error')}",
+                    "timestamp": time.time()
+                })
+
+        except Exception as e:
+            self.logger.error(f"Take photo error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "error",
+                "message": str(e),
+                "timestamp": time.time()
+            })
+
+    async def _handle_upload_voice(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle upload_voice command - save custom voice recording"""
+        try:
+            voice_manager = get_voice_manager()
+
+            command_name = data.get("name")
+            dog_id = data.get("dog_id")
+            audio_data = data.get("data")  # Base64 encoded
+
+            if not command_name or not dog_id or not audio_data:
+                await self.manager.send_to_one(websocket, {
+                    "type": "voice_upload_result",
+                    "success": False,
+                    "error": "Missing required fields: name, dog_id, data"
+                })
+                return
+
+            # Save the voice file
+            result = voice_manager.save_voice_base64(dog_id, command_name, audio_data)
+
+            await self.manager.send_to_one(websocket, {
+                "type": "voice_upload_result",
+                **result
+            })
+
+            if result.get("success"):
+                self.logger.info(f"Voice uploaded: dog={dog_id}, command={command_name}")
+
+        except Exception as e:
+            self.logger.error(f"Upload voice error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "voice_upload_result",
+                "success": False,
+                "error": str(e)
+            })
+
+    async def _handle_list_voices(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle list_voices command - return available custom voices"""
+        try:
+            voice_manager = get_voice_manager()
+
+            dog_id = data.get("dog_id")
+
+            if dog_id:
+                # List voices for specific dog
+                result = voice_manager.list_voices(dog_id)
+            else:
+                # List all dogs' voices
+                result = voice_manager.get_all_dogs_voices()
+
+            await self.manager.send_to_one(websocket, {
+                "type": "voice_list",
+                **result
+            })
+
+        except Exception as e:
+            self.logger.error(f"List voices error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "voice_list",
+                "error": str(e)
+            })
+
+    async def _handle_delete_voice(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle delete_voice command - remove custom voice recording"""
+        try:
+            voice_manager = get_voice_manager()
+
+            command_name = data.get("name")
+            dog_id = data.get("dog_id")
+
+            if not command_name or not dog_id:
+                await self.manager.send_to_one(websocket, {
+                    "type": "voice_delete_result",
+                    "success": False,
+                    "error": "Missing required fields: name, dog_id"
+                })
+                return
+
+            result = voice_manager.delete_voice(dog_id, command_name)
+
+            await self.manager.send_to_one(websocket, {
+                "type": "voice_delete_result",
+                **result
+            })
+
+            if result.get("success"):
+                self.logger.info(f"Voice deleted: dog={dog_id}, command={command_name}")
+
+        except Exception as e:
+            self.logger.error(f"Delete voice error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "voice_delete_result",
+                "success": False,
+                "error": str(e)
+            })
+
+    async def _handle_audio_message(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle audio_message - play audio received from app (push-to-talk)
+
+        Expected format:
+        {"type": "audio_message", "data": "<base64>", "format": "aac"}
+        """
+        try:
+            ptt_service = get_push_to_talk_service()
+
+            audio_data = data.get("data")
+            audio_format = data.get("format", "aac")
+
+            if not audio_data:
+                await self.manager.send_to_one(websocket, {
+                    "type": "audio_played",
+                    "success": False,
+                    "error": "Missing audio data"
+                })
+                return
+
+            # Play the audio
+            result = ptt_service.play_audio_base64(audio_data, audio_format)
+
+            await self.manager.send_to_one(websocket, {
+                "type": "audio_played",
+                **result
+            })
+
+            if result.get("success"):
+                self.logger.info(f"PTT audio played: {result.get('size_bytes')} bytes")
+
+        except Exception as e:
+            self.logger.error(f"Audio message error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "audio_played",
+                "success": False,
+                "error": str(e)
+            })
+
+    async def _handle_audio_request(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle audio_request - record from mic and send back (listen feature)
+
+        Expected format:
+        {"type": "audio_request", "duration": 5, "format": "aac"}
+        """
+        try:
+            ptt_service = get_push_to_talk_service()
+
+            duration = data.get("duration", 5)
+            audio_format = data.get("format", "aac")
+
+            # Record audio
+            self.logger.info(f"PTT recording requested: {duration}s, format={audio_format}")
+            result = ptt_service.record_audio(duration=duration, format=audio_format)
+
+            if result.get("success"):
+                await self.manager.send_to_one(websocket, {
+                    "type": "audio_message",
+                    "data": result.get("data"),
+                    "format": audio_format,
+                    "duration_ms": result.get("duration_ms"),
+                    "size_bytes": result.get("size_bytes")
+                })
+                self.logger.info(f"PTT audio sent: {result.get('size_bytes')} bytes")
+            else:
+                await self.manager.send_to_one(websocket, {
+                    "type": "audio_error",
+                    "error": result.get("error")
+                })
+
+        except Exception as e:
+            self.logger.error(f"Audio request error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "audio_error",
+                "error": str(e)
+            })
 
     async def _execute_command(self, command: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a command from the client"""

@@ -826,6 +826,56 @@ class TreatBotMain:
                     resp = client.post(f'{api_base}/motor/stop')
                     self.logger.info(f"☁️ Emergency stop -> {resp.status_code}")
 
+                elif command == 'upload_voice':
+                    # Voice upload: {"name": "sit", "dog_id": "1", "data": "<base64>"}
+                    resp = client.post(f'{api_base}/voices/upload', json={
+                        'name': params.get('name'),
+                        'dog_id': params.get('dog_id'),
+                        'data': params.get('data')
+                    })
+                    self.logger.info(f"☁️ Voice upload -> {resp.status_code}")
+
+                elif command == 'list_voices':
+                    # List voices: {"dog_id": "1"} (optional)
+                    dog_id = params.get('dog_id')
+                    if dog_id:
+                        resp = client.get(f'{api_base}/voices/{dog_id}')
+                    else:
+                        resp = client.get(f'{api_base}/voices')
+                    self.logger.info(f"☁️ List voices -> {resp.status_code}")
+
+                elif command == 'delete_voice':
+                    # Delete voice: {"name": "sit", "dog_id": "1"}
+                    dog_id = params.get('dog_id')
+                    name = params.get('name')
+                    if dog_id and name:
+                        resp = client.delete(f'{api_base}/voices/{dog_id}/{name}')
+                        self.logger.info(f"☁️ Delete voice -> {resp.status_code}")
+
+                elif command == 'play_command':
+                    # Play voice command with custom voice support
+                    resp = client.post(f'{api_base}/audio/play_command', json={
+                        'command': params.get('command'),
+                        'dog_id': params.get('dog_id')
+                    })
+                    self.logger.info(f"☁️ Play command -> {resp.status_code}")
+
+                elif command == 'ptt_play':
+                    # Push-to-talk: play audio from app
+                    resp = client.post(f'{api_base}/ptt/play', json={
+                        'data': params.get('data'),
+                        'format': params.get('format', 'aac')
+                    })
+                    self.logger.info(f"☁️ PTT play -> {resp.status_code}")
+
+                elif command == 'ptt_record':
+                    # Push-to-talk: record from microphone
+                    resp = client.post(f'{api_base}/ptt/record', json={
+                        'duration': params.get('duration', 5),
+                        'format': params.get('format', 'aac')
+                    })
+                    self.logger.info(f"☁️ PTT record -> {resp.status_code}")
+
                 else:
                     self.logger.warning(f"☁️ Unknown cloud command: {command}")
 
@@ -880,11 +930,11 @@ class TreatBotMain:
         """Handle system events (controller connect/disconnect, etc.)"""
         try:
             if event.subtype == 'controller_disconnected':
-                # Controller disconnected - return to Silent Guardian mode
+                # Controller disconnected - return to IDLE mode
                 current_mode = self.state.get_mode()
                 if current_mode == SystemMode.MANUAL:
-                    self.logger.info("🎮 Xbox controller disconnected - returning to Silent Guardian")
-                    self.mode_fsm.force_mode(SystemMode.SILENT_GUARDIAN, "Controller disconnected")
+                    self.logger.info("🎮 Xbox controller disconnected - returning to IDLE")
+                    self.state.set_mode(SystemMode.IDLE, "Controller disconnected")
 
             elif event.subtype == 'controller_connected':
                 # Controller connected - switch to Manual mode
@@ -978,16 +1028,12 @@ class TreatBotMain:
         )
         self.main_thread.start()
 
-        # Set initial mode - SILENT_GUARDIAN is the primary boot mode
-        # Don't override manual mode if Xbox controller is active
+        # Set initial mode - IDLE is the boot mode
+        # Mode changes to MANUAL on Xbox/app connect, SILENT_GUARDIAN via app command
         current_mode = self.state.get_mode()
-        if current_mode != SystemMode.MANUAL:
-            self.state.set_mode(SystemMode.SILENT_GUARDIAN, "System ready - Silent Guardian active")
-            # Start Silent Guardian mode handler
-            if self.silent_guardian_mode:
-                self.silent_guardian_mode.start()
-                self.logger.info("🛡️ Silent Guardian mode activated")
-        else:
+        if current_mode == SystemMode.IDLE:
+            self.logger.info("System starting in IDLE mode - waiting for Xbox or app connect")
+        elif current_mode == SystemMode.MANUAL:
             self.logger.info("Xbox controller active - staying in MANUAL mode")
 
         self.logger.info("🚀 TreatBot main system started!")

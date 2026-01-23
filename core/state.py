@@ -123,11 +123,16 @@ class DetectionStatus:
     behavior_confidence: float = 0.0
     behavior_duration: float = 0.0
     pose_stable: bool = False
+    # Dog identification
+    dog_name: str = ""  # Identified dog name (e.g., "Bezik", "Elsa", "Dog")
+    id_method: str = ""  # Identification method: aruco, color, persistence, unknown
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             'dogs_detected': self.dogs_detected,
             'active_dog_id': self.active_dog_id,
+            'dog_name': self.dog_name,
+            'id_method': self.id_method,
             'last_detection_time': self.last_detection_time,
             'current_behavior': self.current_behavior,
             'behavior_confidence': self.behavior_confidence,

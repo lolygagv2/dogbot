@@ -1764,6 +1764,74 @@ async def capture_snapshot_from_stream():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class PhotoCaptureRequest(BaseModel):
+    with_hud: bool = True
+
+
+@app.post("/camera/photo_hud")
+async def capture_photo_with_hud(request: PhotoCaptureRequest = PhotoCaptureRequest()):
+    """
+    Capture photo with optional HUD overlay.
+
+    HUD includes:
+    - Dog bounding boxes with name labels
+    - Current mission/training state
+    - Timestamp
+
+    Returns base64-encoded JPEG and saves locally.
+    """
+    from services.media.photo_capture import get_photo_capture_service
+    from services.perception.detector import get_detector_service
+
+    try:
+        photo_service = get_photo_capture_service()
+        detector = get_detector_service()
+
+        result = photo_service.capture_photo(
+            with_hud=request.with_hud,
+            detector=detector
+        )
+
+        if result.get("success"):
+            return {
+                "success": True,
+                "filename": result.get("filename"),
+                "filepath": result.get("filepath"),
+                "timestamp": result.get("timestamp"),
+                "resolution": result.get("resolution"),
+                "size_bytes": result.get("size_bytes"),
+                "with_hud": result.get("with_hud"),
+                "data": result.get("data")  # base64 encoded
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error"))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Photo HUD capture error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/camera/photos")
+async def get_recent_photos(limit: int = 10):
+    """Get list of recent photos"""
+    from services.media.photo_capture import get_photo_capture_service
+
+    try:
+        photo_service = get_photo_capture_service()
+        photos = photo_service.get_recent_photos(limit)
+
+        return {
+            "success": True,
+            "photos": photos,
+            "count": len(photos)
+        }
+    except Exception as e:
+        logger.error(f"Get photos error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/camera/photo_opencv")
 async def capture_photo_opencv():
     """Capture a high-resolution photo"""
@@ -2387,6 +2455,196 @@ async def test_audio_system():
     except Exception as e:
         logger.error(f"Audio test error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Voice Command endpoints
+@app.get("/voices/status")
+async def get_voices_status():
+    """Get voice manager status"""
+    try:
+        from services.media.voice_manager import get_voice_manager
+        voice_manager = get_voice_manager()
+        return voice_manager.get_status()
+    except Exception as e:
+        logger.error(f"Voice status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/voices/{dog_id}")
+async def list_dog_voices(dog_id: str):
+    """List custom voices for a specific dog"""
+    try:
+        from services.media.voice_manager import get_voice_manager
+        voice_manager = get_voice_manager()
+        return voice_manager.list_voices(dog_id)
+    except Exception as e:
+        logger.error(f"List voices error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/voices")
+async def list_all_voices():
+    """List all dogs' custom voices"""
+    try:
+        from services.media.voice_manager import get_voice_manager
+        voice_manager = get_voice_manager()
+        return voice_manager.get_all_dogs_voices()
+    except Exception as e:
+        logger.error(f"List all voices error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class VoiceUploadRequest(BaseModel):
+    name: str  # Command name (e.g., "sit", "down")
+    dog_id: str  # Dog identifier
+    data: str  # Base64 encoded audio data
+
+
+@app.post("/voices/upload")
+async def upload_voice(request: VoiceUploadRequest):
+    """Upload a custom voice recording"""
+    try:
+        from services.media.voice_manager import get_voice_manager
+        voice_manager = get_voice_manager()
+        result = voice_manager.save_voice_base64(request.dog_id, request.name, request.data)
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Voice upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/voices/{dog_id}/{command}")
+async def delete_voice(dog_id: str, command: str):
+    """Delete a custom voice recording"""
+    try:
+        from services.media.voice_manager import get_voice_manager
+        voice_manager = get_voice_manager()
+        result = voice_manager.delete_voice(dog_id, command)
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Voice delete error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class PlayCommandRequest(BaseModel):
+    command: str  # Command name (e.g., "sit", "good_dog")
+    dog_id: Optional[str] = None  # Dog ID for custom voice lookup
+
+
+@app.post("/audio/play_command")
+async def play_voice_command(request: PlayCommandRequest):
+    """Play a voice command, using custom voice if available"""
+    try:
+        usb_audio = get_usb_audio_service()
+        result = usb_audio.play_command(request.command, dog_id=request.dog_id)
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Play command error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Push-to-Talk (PTT) endpoints
+@app.get("/ptt/status")
+async def get_ptt_status():
+    """Get push-to-talk service status"""
+    try:
+        from services.media.push_to_talk import get_push_to_talk_service
+        ptt_service = get_push_to_talk_service()
+        return ptt_service.get_status()
+    except Exception as e:
+        logger.error(f"PTT status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ptt/test/mic")
+async def test_ptt_microphone():
+    """Test microphone by recording a 1-second clip"""
+    try:
+        from services.media.push_to_talk import get_push_to_talk_service
+        ptt_service = get_push_to_talk_service()
+        result = ptt_service.test_microphone(duration=1.0)
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"PTT mic test error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ptt/test/speaker")
+async def test_ptt_speaker():
+    """Test speaker by playing a beep"""
+    try:
+        from services.media.push_to_talk import get_push_to_talk_service
+        ptt_service = get_push_to_talk_service()
+        result = ptt_service.test_speaker()
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"PTT speaker test error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class PTTRecordRequest(BaseModel):
+    duration: float = 5.0  # Recording duration in seconds (max 10)
+    format: str = "aac"  # Output format: aac, mp3, opus
+
+
+@app.post("/ptt/record")
+async def ptt_record(request: PTTRecordRequest):
+    """Record audio from microphone and return base64 encoded data"""
+    try:
+        from services.media.push_to_talk import get_push_to_talk_service
+        ptt_service = get_push_to_talk_service()
+        result = ptt_service.record_audio(duration=request.duration, format=request.format)
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"PTT record error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class PTTPlayRequest(BaseModel):
+    data: str  # Base64 encoded audio data
+    format: str = "aac"  # Audio format: aac, mp3, wav, opus
+
+
+@app.post("/ptt/play")
+async def ptt_play(request: PTTPlayRequest):
+    """Play base64 encoded audio through speaker"""
+    try:
+        from services.media.push_to_talk import get_push_to_talk_service
+        ptt_service = get_push_to_talk_service()
+        result = ptt_service.play_audio_base64(request.data, request.format)
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"PTT play error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # LED Control endpoints
 @app.get("/leds/status")

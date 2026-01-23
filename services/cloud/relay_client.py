@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import aiohttp
 
 from core.bus import get_bus, CloudEvent
+from core.state import get_state, SystemMode
 
 
 @dataclass
@@ -52,6 +53,7 @@ class RelayClient:
         self.config = config
         self.logger = logging.getLogger('RelayClient')
         self.bus = get_bus()
+        self.state = get_state()
 
         # Connection state
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -63,6 +65,9 @@ class RelayClient:
         # WebRTC service reference (set during integration)
         self._webrtc_service = None
 
+        # Track app connection state for mode restore on disconnect
+        self._app_connected = False
+
         # Message handlers
         self._message_handlers: Dict[str, Callable] = {
             'webrtc_request': self._handle_webrtc_request,
@@ -71,7 +76,13 @@ class RelayClient:
             'webrtc_close': self._handle_webrtc_close,
             'command': self._handle_command,
             'ping': self._handle_ping,
+            'profiles': self._handle_profiles,
+            'audio_message': self._handle_audio_message,
+            'audio_request': self._handle_audio_request,
         }
+
+        # Profile manager reference
+        self._profile_manager = None
 
         # Event loop for async operations
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -139,6 +150,9 @@ class RelayClient:
                 'device_id': self.config.device_id,
                 'capabilities': ['video', 'audio', 'commands']
             })
+
+            # Request dog profiles from cloud
+            await self.request_profiles()
 
             return True
 
@@ -225,12 +239,18 @@ class RelayClient:
             self.logger.warning(f"Unknown message type: {msg_type}")
 
     async def _handle_webrtc_request(self, data: dict):
-        """Handle WebRTC stream request from app via relay"""
+        """Handle WebRTC stream request from app via relay
+
+        Note: App sends set_mode command separately - we just track the connection here.
+        """
         session_id = data.get('session_id')
         ice_servers = data.get('ice_servers', {})
 
         self.logger.info(f"WebRTC request received: session={session_id}")
         print(f"[RelayClient] 🎥 WebRTC request: session={session_id}, ice_servers={ice_servers}", flush=True)
+
+        # Track that app is connected (mode change comes via set_mode command)
+        self._app_connected = True
 
         if not self._webrtc_service:
             self.logger.error("WebRTC service not available")
@@ -316,27 +336,74 @@ class RelayClient:
             self.logger.error(f"Failed to add ICE candidate: {e}")
 
     async def _handle_webrtc_close(self, data: dict):
-        """Handle WebRTC close request"""
+        """Handle WebRTC close request
+
+        On disconnect:
+        - If in MANUAL mode → return to IDLE
+        - If in SILENT_GUARDIAN/COACH/MISSION → stay in that mode
+        """
         session_id = data.get('session_id')
         self.logger.info(f"WebRTC close request: session={session_id}")
 
         if self._webrtc_service:
             await self._webrtc_service.close_connection(session_id)
 
+        # Handle mode restore on app disconnect
+        self._handle_app_disconnect()
+
+    def _handle_app_disconnect(self):
+        """Handle mode restore when app disconnects
+
+        Rules:
+        - If in MANUAL → return to IDLE
+        - If in SILENT_GUARDIAN/COACH/MISSION → stay in that mode
+        """
+        if not self._app_connected:
+            return
+
+        self._app_connected = False
+        current_mode = self.state.get_mode()
+
+        if current_mode == SystemMode.MANUAL:
+            # Return to IDLE when disconnecting from MANUAL
+            self.state.set_mode(SystemMode.IDLE, "App disconnected")
+            self.logger.info("📱 App disconnected - returned to IDLE from MANUAL")
+        else:
+            # Stay in current mode (SILENT_GUARDIAN, COACH, MISSION)
+            self.logger.info(f"📱 App disconnected - staying in {current_mode.value}")
+
     async def _handle_command(self, data: dict):
         """Handle command from app
 
-        Message format: {"type": "command", "command": "treat", "data": {...}}
-        The params are in the 'data' field, not 'params'.
+        Message formats supported:
+        - {"type": "command", "command": "treat", "data": {...}}
+        - {"type": "command", "command": "set_mode", "mode": "manual"}  (mode at top level)
         """
         command = data.get('command')
-        params = data.get('data', {})  # Params are in 'data' field
+        params = data.get('data', {})  # Params may be in 'data' field
+
+        # Also check for top-level params (app sends mode at top level)
+        if not params:
+            params = {k: v for k, v in data.items() if k not in ('type', 'command')}
 
         self.logger.info(f"☁️ Command: {command}, params: {params}")
 
         if command is None:
             self.logger.warning(f"☁️ Missing command in message: {data}")
             return
+
+        # Handle set_mode command directly here (app sends this on connect)
+        if command == 'set_mode':
+            mode_name = params.get('mode', '').lower()
+            if mode_name:
+                try:
+                    new_mode = SystemMode(mode_name)
+                    self.state.set_mode(new_mode, f"App command: {mode_name}")
+                    self.logger.info(f"📱 Mode changed to {mode_name} via app command")
+                    return
+                except ValueError:
+                    self.logger.warning(f"☁️ Invalid mode: {mode_name}")
+                    return
 
         # Publish command to event bus for other services to handle
         self.bus.publish(CloudEvent(
@@ -348,6 +415,110 @@ class RelayClient:
     async def _handle_ping(self, data: dict):
         """Handle ping from relay"""
         await self._send({'type': 'pong', 'timestamp': time.time()})
+
+    async def _handle_profiles(self, data: dict):
+        """Handle dog profiles from cloud
+
+        Expected format:
+        {
+            "type": "profiles",
+            "profiles": [
+                {"name": "Bezik", "aruco_id": 832, "color": "black"},
+                {"name": "Elsa", "aruco_id": 1, "color": "yellow"}
+            ]
+        }
+        """
+        profiles = data.get('profiles', [])
+        self.logger.info(f"📥 Received {len(profiles)} dog profiles from cloud")
+
+        # Get profile manager lazily to avoid circular import
+        if self._profile_manager is None:
+            try:
+                from core.dog_profile_manager import get_dog_profile_manager
+                self._profile_manager = get_dog_profile_manager()
+            except ImportError as e:
+                self.logger.warning(f"Could not import profile manager: {e}")
+                return
+
+        if self._profile_manager:
+            self._profile_manager.update_profiles_from_cloud(profiles)
+            self.logger.info(f"✅ Updated dog profiles from cloud")
+
+    async def request_profiles(self):
+        """Request dog profiles from cloud relay"""
+        await self._send({
+            'type': 'get_profiles',
+            'device_id': self.config.device_id
+        })
+        self.logger.info("📤 Requested dog profiles from cloud")
+
+    async def _handle_audio_message(self, data: dict):
+        """Handle audio_message - play audio from app (push-to-talk)
+
+        Expected format:
+        {"type": "audio_message", "data": "<base64>", "format": "aac"}
+        """
+        try:
+            from services.media.push_to_talk import get_push_to_talk_service
+            ptt_service = get_push_to_talk_service()
+
+            audio_data = data.get('data')
+            audio_format = data.get('format', 'aac')
+
+            if not audio_data:
+                self.logger.warning("☁️ Audio message missing data")
+                return
+
+            self.logger.info(f"🔊 Playing PTT audio from cloud ({audio_format})")
+            result = ptt_service.play_audio_base64(audio_data, audio_format)
+
+            # Send response
+            await self._send({
+                'event': 'audio_played',
+                'success': result.get('success'),
+                'error': result.get('error')
+            })
+
+        except Exception as e:
+            self.logger.error(f"☁️ Audio message error: {e}")
+
+    async def _handle_audio_request(self, data: dict):
+        """Handle audio_request - record from mic and send back (listen feature)
+
+        Expected format:
+        {"type": "audio_request", "duration": 5, "format": "aac"}
+        """
+        try:
+            from services.media.push_to_talk import get_push_to_talk_service
+            ptt_service = get_push_to_talk_service()
+
+            duration = data.get('duration', 5)
+            audio_format = data.get('format', 'aac')
+
+            self.logger.info(f"🎤 Recording PTT audio for cloud ({duration}s)")
+            result = ptt_service.record_audio(duration=duration, format=audio_format)
+
+            if result.get('success'):
+                await self._send({
+                    'event': 'audio_message',
+                    'data': result.get('data'),
+                    'format': audio_format,
+                    'duration_ms': result.get('duration_ms'),
+                    'size_bytes': result.get('size_bytes')
+                })
+                self.logger.info(f"📤 Sent PTT audio to cloud ({result.get('size_bytes')} bytes)")
+            else:
+                await self._send({
+                    'event': 'audio_error',
+                    'error': result.get('error')
+                })
+
+        except Exception as e:
+            self.logger.error(f"☁️ Audio request error: {e}")
+            await self._send({
+                'event': 'audio_error',
+                'error': str(e)
+            })
 
     async def _reconnect_loop(self):
         """Reconnection loop with exponential backoff"""

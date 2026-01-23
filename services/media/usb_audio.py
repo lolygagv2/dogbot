@@ -265,6 +265,61 @@ class USBAudioService:
             "playlist": self._playlist
         }
 
+    def play_command(self, command: str, dog_id: str = None, loop: bool = False) -> Dict[str, Any]:
+        """
+        Play a voice command, using custom voice if available.
+
+        Priority:
+        1. Custom voice for this dog (/voices/{dog_id}/{command}.mp3)
+        2. Default voice (/VOICEMP3/talks/{command}.mp3)
+
+        Args:
+            command: Command name (e.g., "sit", "good_dog")
+            dog_id: Dog identifier for custom voice lookup (optional)
+            loop: If True, loop the audio
+
+        Returns:
+            Dict with success status and voice source info
+        """
+        if not self.initialized:
+            return {"success": False, "error": "Audio not initialized"}
+
+        try:
+            from services.media.voice_manager import get_voice_manager
+            voice_manager = get_voice_manager()
+
+            # Get voice path (custom or default)
+            voice_path = None
+            voice_source = "default"
+
+            if dog_id:
+                voice_path = voice_manager.get_voice_path(dog_id, command)
+                if voice_path and "/voices/" in voice_path:
+                    voice_source = "custom"
+
+            # If no custom voice found, try default path
+            if not voice_path:
+                voice_path = f"/talks/{command}.mp3"
+                voice_source = "default"
+
+            # Play the voice
+            result = self.play_file(voice_path, loop=loop)
+            result["voice_source"] = voice_source
+            result["command"] = command
+            result["dog_id"] = dog_id
+
+            if result.get("success"):
+                self.logger.info(f"Playing {voice_source} voice for '{command}' (dog={dog_id})")
+
+            return result
+
+        except ImportError:
+            # VoiceManager not available, fall back to default
+            return self.play_file(f"/talks/{command}.mp3", loop=loop)
+        except Exception as e:
+            self.logger.error(f"Play command error: {e}")
+            return {"success": False, "error": str(e)}
+
     def wait_for_completion(self, timeout: float = 5.0) -> bool:
         """
         Wait for current audio to finish playing.

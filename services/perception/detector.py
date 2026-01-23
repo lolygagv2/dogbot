@@ -14,6 +14,20 @@ from typing import Optional, Dict, Any, List, Tuple
 from core.bus import get_bus, publish_vision_event
 from core.state import get_state, SystemMode
 from core.store import get_store
+
+# Mode-based resolution configuration
+# AI modes need 640x640 for Hailo inference
+# Non-AI modes can use higher resolution for better video quality
+MODE_RESOLUTIONS = {
+    SystemMode.IDLE: (1920, 1080),           # No AI, full HD video
+    SystemMode.MANUAL: (1920, 1080),          # No AI, full HD video
+    SystemMode.SILENT_GUARDIAN: (640, 640),  # AI active
+    SystemMode.COACH: (640, 640),            # AI active
+    SystemMode.PHOTOGRAPHY: (1920, 1080),     # High res photos
+    SystemMode.EMERGENCY: (640, 640),        # Safety mode
+    SystemMode.SHUTDOWN: (640, 640),         # Shutting down
+}
+DEFAULT_RESOLUTION = (640, 640)
 from core.ai_controller_3stage_fixed import AI3StageControllerFixed
 from config.config_loader import get_config
 
@@ -82,6 +96,14 @@ class DetectorService:
         self._camera_retry_interval = 60  # seconds between retry attempts
         self._last_camera_retry_time = 0
 
+        # Resolution tracking
+        self._current_resolution = DEFAULT_RESOLUTION
+        self._resolution_change_lock = threading.Lock()
+        self._resolution_change_in_progress = False
+
+        # Subscribe to mode changes for resolution switching
+        self.state.subscribe('mode_change', self._on_mode_change)
+
     def initialize(self) -> bool:
         """Initialize AI controller and camera"""
         try:
@@ -133,8 +155,15 @@ class DetectorService:
                     pass
 
                 self.camera = Picamera2()
+
+                # Use mode-based resolution
+                current_mode = self.state.get_mode()
+                target_resolution = MODE_RESOLUTIONS.get(current_mode, DEFAULT_RESOLUTION)
+                self._current_resolution = target_resolution
+                self.logger.info(f"Camera resolution for {current_mode.value}: {target_resolution}")
+
                 config = self.camera.create_preview_configuration(
-                    main={"size": (640, 640), "format": "RGB888"}
+                    main={"size": target_resolution, "format": "RGB888"}
                 )
                 self.camera.configure(config)
                 self.camera.start()
@@ -253,6 +282,121 @@ class DetectorService:
             return result
         return self.camera_initialized
 
+    def _on_mode_change(self, data: Dict[str, Any]) -> None:
+        """Handle mode change for resolution switching"""
+        try:
+            new_mode_str = data.get('new_mode', '')
+            previous_mode_str = data.get('previous_mode', '')
+
+            # Convert string to SystemMode enum
+            try:
+                new_mode = SystemMode(new_mode_str)
+            except ValueError:
+                self.logger.warning(f"Unknown mode: {new_mode_str}")
+                return
+
+            # Get target resolution for new mode
+            target_resolution = MODE_RESOLUTIONS.get(new_mode, DEFAULT_RESOLUTION)
+
+            # Only change if resolution differs
+            if target_resolution != self._current_resolution:
+                self.logger.info(
+                    f"📹 Mode change {previous_mode_str} → {new_mode_str}: "
+                    f"Resolution {self._current_resolution} → {target_resolution}"
+                )
+                self._change_resolution(target_resolution)
+            else:
+                self.logger.debug(f"Mode change to {new_mode_str}, resolution unchanged at {target_resolution}")
+
+        except Exception as e:
+            self.logger.error(f"Mode change handler error: {e}")
+
+    def _change_resolution(self, new_resolution: tuple) -> bool:
+        """Safely change camera resolution
+
+        Thread-safe method that:
+        1. Stops camera capture
+        2. Reconfigures with new resolution
+        3. Restarts camera
+
+        Returns True if successful, False otherwise.
+        Falls back to previous resolution on failure.
+        """
+        with self._resolution_change_lock:
+            if self._resolution_change_in_progress:
+                self.logger.warning("Resolution change already in progress, skipping")
+                return False
+
+            self._resolution_change_in_progress = True
+
+        old_resolution = self._current_resolution
+
+        try:
+            if not self.camera_initialized or self.camera is None:
+                # Camera not initialized, just update target resolution
+                self._current_resolution = new_resolution
+                self.logger.info(f"📹 Resolution set to {new_resolution} (camera not active)")
+                return True
+
+            self.logger.info(f"📹 Changing resolution from {old_resolution} to {new_resolution}...")
+
+            # Stop camera
+            try:
+                self.camera.stop()
+            except Exception as e:
+                self.logger.warning(f"Error stopping camera: {e}")
+
+            # Reconfigure
+            try:
+                config = self.camera.create_preview_configuration(
+                    main={"size": new_resolution, "format": "RGB888"}
+                )
+                self.camera.configure(config)
+            except Exception as e:
+                self.logger.error(f"Error configuring camera at {new_resolution}: {e}")
+                # Try to restore old resolution
+                try:
+                    config = self.camera.create_preview_configuration(
+                        main={"size": old_resolution, "format": "RGB888"}
+                    )
+                    self.camera.configure(config)
+                    self.camera.start()
+                    self.logger.warning(f"Restored previous resolution {old_resolution}")
+                except Exception as restore_error:
+                    self.logger.error(f"Failed to restore resolution: {restore_error}")
+                    self.camera_initialized = False
+                return False
+
+            # Restart camera
+            try:
+                self.camera.start()
+                time.sleep(0.3)  # Brief stabilization
+
+                # Verify with test capture
+                test_frame = self.camera.capture_array()
+                if test_frame is not None:
+                    actual_shape = test_frame.shape[:2]  # (height, width)
+                    expected_shape = (new_resolution[1], new_resolution[0])  # height, width
+                    self.logger.info(f"📹 Resolution changed successfully: {actual_shape}")
+                    self._current_resolution = new_resolution
+                    return True
+                else:
+                    self.logger.error("Test capture returned None after resolution change")
+                    return False
+
+            except Exception as e:
+                self.logger.error(f"Error restarting camera: {e}")
+                self.camera_initialized = False
+                return False
+
+        finally:
+            with self._resolution_change_lock:
+                self._resolution_change_in_progress = False
+
+    def get_current_resolution(self) -> tuple:
+        """Get current camera resolution"""
+        return self._current_resolution
+
     def get_last_frame(self) -> Optional[np.ndarray]:
         """Get last captured frame for snapshots (thread-safe)"""
         with self._frame_lock:
@@ -351,29 +495,18 @@ class DetectorService:
                 if self._loop_iteration <= 5 or self._loop_iteration % 100 == 0:
                     self.logger.info(f"Detection loop alive: iter={self._loop_iteration}, camera_init={self.camera_initialized}, paused={self._camera_paused}, mode={self.state.get_mode()}")
 
-                # Check if we should be running based on mode
-                # AI vision runs in ALL operational modes for:
-                # - COACH: Active training (full detection + behavior)
-                # - SILENT_GUARDIAN: Dog visibility checks for treat dispensing
-                # - IDLE: Background monitoring
-                # - PHOTOGRAPHY: Frame capture assistance
-                # NOT in: MANUAL (controller takes over), SHUTDOWN, EMERGENCY
+                # Check mode to determine behavior
+                # - SHUTDOWN/EMERGENCY: Stop everything
+                # - MANUAL/IDLE: Capture frames for WebRTC, NO AI processing (high res)
+                # - SILENT_GUARDIAN/COACH: Full AI processing (640x640)
                 current_mode = self.state.get_mode()
-                if current_mode in [SystemMode.MANUAL, SystemMode.SHUTDOWN, SystemMode.EMERGENCY]:
-                    # Release camera in MANUAL mode so rpicam-still can use it
-                    if not self._camera_paused and self.camera_initialized:
-                        self._release_camera()
+
+                # Modes that completely pause detection
+                if current_mode in [SystemMode.SHUTDOWN, SystemMode.EMERGENCY]:
                     time.sleep(0.1)
                     continue
 
-                # Re-acquire camera if we were paused (leaving MANUAL mode)
-                if self._camera_paused:
-                    if not self._reacquire_camera():
-                        self.logger.error("Failed to re-acquire camera")
-                        time.sleep(1.0)
-                        continue
-
-                # Periodic camera retry if not initialized (e.g., after hot-plug + reboot)
+                # Periodic camera retry if not initialized
                 if not self.camera_initialized and not self._camera_paused:
                     now = time.time()
                     if now - self._last_camera_retry_time >= self._camera_retry_interval:
@@ -390,7 +523,7 @@ class DetectorService:
                     time.sleep(0.5)
                     continue
 
-                # Capture frame from camera
+                # Capture frame from camera (always, for WebRTC streaming)
                 if self._loop_iteration <= 5:
                     self.logger.info(f"About to capture frame...")
                 frame = self._capture_frame()
@@ -402,22 +535,40 @@ class DetectorService:
                 if self._loop_iteration <= 5:
                     self.logger.info(f"Frame captured: {frame.shape}")
 
-                # Detect ArUco markers for dog identification
-                aruco_markers = self._detect_aruco_markers(frame)
+                # Determine if AI processing should run
+                # AI only runs in SILENT_GUARDIAN and COACH modes
+                ai_modes = [SystemMode.SILENT_GUARDIAN, SystemMode.COACH]
+                run_ai = current_mode in ai_modes
 
-                # Publish ArUco marker event for video recorder
-                if aruco_markers:
-                    publish_vision_event('aruco_detected', {
-                        'markers': aruco_markers,  # List of (id, cx, cy) tuples
-                        'timestamp': time.time()
-                    }, 'detector_service')
+                dogs = []
+                poses = []
+                behaviors = []
+                dog_assignments = {}
+                aruco_markers = []
 
-                # Process frame with dog identification
-                result = self.ai.process_frame_with_dogs(frame, aruco_markers)
-                dogs = result.get('detections', [])
-                poses = result.get('poses', [])
-                behaviors = result.get('behaviors', [])
-                dog_assignments = result.get('dog_assignments', {})
+                if run_ai:
+                    # Full AI processing for guardian/coach modes
+                    # Detect ArUco markers for dog identification
+                    aruco_markers = self._detect_aruco_markers(frame)
+
+                    # Publish ArUco marker event for video recorder
+                    if aruco_markers:
+                        publish_vision_event('aruco_detected', {
+                            'markers': aruco_markers,
+                            'timestamp': time.time()
+                        }, 'detector_service')
+
+                    # Process frame with dog identification
+                    result = self.ai.process_frame_with_dogs(frame, aruco_markers)
+                    dogs = result.get('detections', [])
+                    poses = result.get('poses', [])
+                    behaviors = result.get('behaviors', [])
+                    dog_assignments = result.get('dog_assignments', {})
+                    dog_id_methods = result.get('dog_id_methods', {})
+                else:
+                    # No AI in IDLE/MANUAL modes - just capture frames for WebRTC
+                    # Frame is already captured and stored via _capture_frame()
+                    pass
 
                 # Update FPS
                 self.frame_count += 1
@@ -435,12 +586,14 @@ class DetectorService:
 
                 # Process results
                 if dogs:
-                    self._process_detections(dogs, poses, behaviors, dog_assignments)
+                    self._process_detections(dogs, poses, behaviors, dog_assignments, dog_id_methods)
                 else:
                     # No dogs detected
                     self.state.update_detection(
                         dogs_detected=0,
                         active_dog_id=None,
+                        dog_name="",
+                        id_method="",
                         current_behavior="",
                         behavior_confidence=0.0
                     )
@@ -454,7 +607,7 @@ class DetectorService:
 
         self.logger.info("Detection loop stopped")
 
-    def _process_detections(self, dogs, poses, behaviors, dog_assignments: Dict[int, str] = None) -> None:
+    def _process_detections(self, dogs, poses, behaviors, dog_assignments: Dict[int, str] = None, dog_id_methods: Dict[int, str] = None) -> None:
         """Process detection results and publish events
 
         Args:
@@ -462,15 +615,23 @@ class DetectorService:
             poses: List of PoseKeypoints dataclass objects
             behaviors: List of BehaviorResult dataclass objects
             dog_assignments: Dict mapping detection index to dog name (from ArUco)
+            dog_id_methods: Dict mapping detection index to identification method
         """
         if dog_assignments is None:
             dog_assignments = {}
+        if dog_id_methods is None:
+            dog_id_methods = {}
 
         # Update state
         num_dogs = len(dogs)
+        # Get primary dog name and id method (first detection)
+        primary_dog_name = dog_assignments.get(0, "")
+        primary_id_method = dog_id_methods.get(0, "")
         self.state.update_detection(
             dogs_detected=num_dogs,
-            last_detection_time=time.time()
+            last_detection_time=time.time(),
+            dog_name=primary_dog_name.capitalize() if primary_dog_name else "",
+            id_method=primary_id_method
         )
 
         # Rate limit detection events to prevent log spam
@@ -540,8 +701,11 @@ class DetectorService:
 
                 # Update state with primary dog's behavior
                 if i == 0:
+                    id_method = dog_id_methods.get(i, "")
                     self.state.update_detection(
                         active_dog_id=dog_id,
+                        dog_name=dog_name.capitalize() if dog_name else "",
+                        id_method=id_method,
                         current_behavior=behavior_name,
                         behavior_confidence=confidence,
                         pose_stable=confidence > 0.7
@@ -598,7 +762,9 @@ class DetectorService:
             'cameras_detected': len(available_cameras),
             'error_reason': self._camera_error_reason,
             'picamera_available': PICAMERA_AVAILABLE,
-            'last_frame_age': self.get_last_frame_age() if self.camera_initialized else None
+            'last_frame_age': self.get_last_frame_age() if self.camera_initialized else None,
+            'current_resolution': self._current_resolution,
+            'resolution_change_in_progress': self._resolution_change_in_progress
         }
 
     def request_camera_reinitialize(self) -> Dict[str, Any]:
