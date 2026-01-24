@@ -1,6 +1,72 @@
 # WIM-Z Resume Chat Log
 
-## Session: 2026-01-23 03:00-04:30 EST (Latest)
+## Session: 2026-01-24 (Latest)
+**Goal:** Git Sync - Robot 01 → Robot 02
+**Status:** ✅ Complete
+
+---
+
+### Work Completed This Session
+
+#### 1. Git Repository Sync
+- **Issue:** Robot 02 was missing 60+ uncommitted files from Robot 01
+- **Cause:** Features developed on Robot 01 were never committed/pushed
+- **Fix:** Committed all working code and synced to origin
+
+#### 2. Robot Profile System Verified
+- Confirmed `config/robot_profiles/` exists with:
+  - `treatbot.yaml` - Primary unit (matched motors, PID enabled)
+  - `treatbot2.yaml` - Backup unit (mismatched motors, PID disabled)
+- Profile selection: hostname → `/etc/robot_id` → env var → default
+
+#### 3. Handled Git Divergence
+- Robot 02 had pushed 3 commits while Robot 01 was working
+- Successfully rebased Robot 01 changes on top of Robot 02's work
+- Resolved "unstable object source" errors from active database files
+
+---
+
+### Commits This Session
+
+| Hash | Description |
+|------|-------------|
+| `63ddf137` | sync: all working code from robot 01 - modes, commands, services |
+
+**Rebased on top of Robot 02's commits:**
+- `5015d17a` fix: Camera capture works without Hailo AI
+- `f7b29f44` feat: Add heartbeat and connection status messages to relay client
+- `17fe202a` fix: Remove duplicate manual timeout causing mode switch race condition
+
+---
+
+### Files Synced (87 files)
+Key changes pushed:
+- Audio deadlock fix (RLock)
+- Motor watchdog threshold adjustment
+- WebSocket reconnection handling
+- Camera BGR/RGB color fix
+- Music player state tracking
+- Dog identification system
+- Voice command storage
+- Push-to-talk audio
+- WiFi provisioning system
+
+---
+
+### Protected .env File
+- Added `.env` to `.gitignore` (contains API keys)
+- Robot 02 will need its own `.env` file created manually
+
+---
+
+### Next Session Tasks
+1. On Robot 02: `git pull origin main` to get synced code
+2. On Robot 02: Create `.env` file with appropriate credentials
+3. Test that both robots have identical behavior
+
+---
+
+## Session: 2026-01-23 03:00-04:30 EST
 **Goal:** Multiple bug fixes - Audio, Motors, WebSocket, Camera
 **Status:** ✅ Complete
 
