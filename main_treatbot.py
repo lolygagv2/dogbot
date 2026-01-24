@@ -750,10 +750,13 @@ class TreatBotMain:
             self.logger.info(f"☁️ Processing command={command} params={params}")
 
             with httpx.Client(timeout=5.0) as client:
-                if command == 'treat':
+                if command == 'treat' or command == 'dispense_treat':
                     # Treat dispensing: POST /treat/dispense
+                    # Accepts both 'treat' and 'dispense_treat' command names
                     resp = client.post(f'{api_base}/treat/dispense', json={
-                        'reason': 'cloud_command'
+                        'reason': 'cloud_command',
+                        'dog_id': params.get('dog_id'),
+                        'count': params.get('count', 1)
                     })
                     self.logger.info(f"☁️ Treat dispensed -> {resp.status_code}")
 
@@ -933,6 +936,16 @@ class TreatBotMain:
             new_mode = data.get('new_mode')  # String value
 
             self.logger.info(f"🔄 Mode change: {previous_mode} → {new_mode}")
+
+            # Notify app of mode change via relay
+            if self.relay_client and self.relay_client.connected:
+                import time
+                self.relay_client.send_event('status_update', {
+                    'mode': new_mode,
+                    'previous_mode': previous_mode,
+                    'timestamp': time.time()
+                })
+                self.logger.info(f"📱 Mode change notification sent to app: {new_mode}")
 
             # Play voice announcement for mode change
             self._announce_mode(new_mode)
