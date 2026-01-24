@@ -471,11 +471,15 @@ class TreatBotMain:
                 if self.pantilt.servo_initialized:
                     self.pantilt.start_tracking()
 
-            # Start AI detection - runs in ALL operational modes
+            # Start camera capture - runs in ALL operational modes for WebRTC
             # Vision is a core perception layer, not mode-specific
-            if self.detector.ai_initialized:
+            # Camera can run for WebRTC even if AI/Hailo isn't available
+            if self.detector.camera_initialized:
                 self.detector.start_detection()
-                self.logger.info("🧠 AI detection started (runs in all operational modes)")
+                if self.detector.ai_initialized:
+                    self.logger.info("🧠 AI detection started (full AI pipeline)")
+                else:
+                    self.logger.info("📹 Camera capture started (WebRTC only, no AI)")
                 # Subscribe to detection events for LED feedback
                 self.bus.subscribe('vision', self._on_detection_for_feedback)
 

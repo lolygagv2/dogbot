@@ -105,26 +105,39 @@ class DetectorService:
         self.state.subscribe('mode_change', self._on_mode_change)
 
     def initialize(self) -> bool:
-        """Initialize AI controller and camera"""
+        """Initialize AI controller and camera
+
+        Returns True if camera works (for WebRTC), even if AI/Hailo fails.
+        AI is optional - WebRTC streaming works without it.
+        """
         try:
-            # Initialize camera first
+            # Initialize camera first - this is required for WebRTC
             self._initialize_camera()
 
-            # Initialize AI controller
-            self.ai = AI3StageControllerFixed()
-            success = self.ai.initialize()
+            # Initialize AI controller (optional - Hailo may not be available)
+            try:
+                self.ai = AI3StageControllerFixed()
+                success = self.ai.initialize()
 
-            if success:
-                self.ai_initialized = True
-                self.logger.info("AI controller initialized")
-                self.state.update_hardware(camera_initialized=self.camera_initialized)
+                if success:
+                    self.ai_initialized = True
+                    self.logger.info("AI controller initialized (full pipeline)")
+                else:
+                    self.logger.warning("AI controller init failed - WebRTC will work, no AI processing")
+            except Exception as e:
+                self.logger.warning(f"AI controller not available: {e} - WebRTC will work, no AI processing")
+
+            self.state.update_hardware(camera_initialized=self.camera_initialized)
+
+            # Return True if camera works - AI is optional
+            if self.camera_initialized:
                 return True
             else:
-                self.logger.error("AI controller initialization failed")
+                self.logger.error("Camera initialization failed - no video available")
                 return False
 
         except Exception as e:
-            self.logger.error(f"AI controller initialization error: {e}")
+            self.logger.error(f"Detector initialization error: {e}")
             return False
 
     def _initialize_camera(self) -> bool:
@@ -439,13 +452,17 @@ class DetectorService:
         return markers
 
     def is_initialized(self) -> bool:
-        """Check if detector service is initialized"""
-        return self.ai_initialized
+        """Check if detector service is initialized (camera required, AI optional)"""
+        return self.camera_initialized
 
     def start_detection(self) -> bool:
-        """Start detection loop"""
-        if not self.ai_initialized:
-            self.logger.error("AI controller not initialized")
+        """Start detection loop
+
+        Starts frame capture loop. AI processing is optional - loop handles
+        modes where AI isn't needed (IDLE/MANUAL just capture for WebRTC).
+        """
+        if not self.camera_initialized:
+            self.logger.error("Camera not initialized - cannot start detection")
             return False
 
         if self.running:
