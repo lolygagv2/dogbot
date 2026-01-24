@@ -237,7 +237,7 @@ class PanTiltService:
             # Manual mode - don't interfere with Xbox controller
             return
 
-        if abs(self.current_pan - 90) > 5 or abs(self.current_tilt - 90) > 5:
+        if abs(self.current_pan - self.center_pan) > 5 or abs(self.current_tilt - self.center_tilt) > 5:
             self.center_camera()
 
     def _track_target(self, target: Tuple[float, float], dt: float) -> None:
@@ -413,7 +413,7 @@ class PanTiltService:
             if success_pan and success_tilt:
                 self.current_pan = self.center_pan
                 self.current_tilt = self.center_tilt
-                self.logger.info(f"Camera centered to pan={self.center_pan}, tilt={self.center_tilt}")
+                self.logger.debug(f"Camera centered to pan={self.center_pan}, tilt={self.center_tilt}")
                 publish_motion_event('camera_centered', {
                     'pan': self.center_pan,
                     'tilt': self.center_tilt
