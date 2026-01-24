@@ -4369,21 +4369,44 @@ async def treat_carousel_rotate_contract():
 async def led_pattern_contract(request: LEDPatternRequest):
     """Set LED pattern per API contract"""
     try:
+        # Map contract patterns to internal modes
+        pattern_map = {
+            "breathing": "idle",
+            "rainbow": "gradient_flow",
+            "celebration": "treat_launching",
+            "searching": "searching",
+            "alert": "error",
+            "idle": "idle",
+            "off": "off"
+        }
+        mode = pattern_map.get(request.pattern, request.pattern)
+
+        # Try LedService first (has full pattern support)
         from services.media.led import get_led_service
-        led = get_led_service()
-        if led:
-            # Map contract patterns to internal modes
-            pattern_map = {
-                "breathing": "idle",
-                "rainbow": "gradient_flow",
-                "celebration": "treat_launching",
-                "searching": "searching",
-                "alert": "error",
-                "idle": "idle"
+        led_service = get_led_service()
+        if led_service and led_service.led_initialized:
+            led_service.set_pattern(mode)
+            return {"success": True}
+
+        # Fallback to direct controller (same as Xbox uses)
+        leds = get_led_controller()
+        if leds:
+            # Map pattern names to LEDMode enum values
+            from core.hardware.led_controller import LEDMode
+            mode_map = {
+                "idle": LEDMode.IDLE,
+                "searching": LEDMode.SEARCHING,
+                "gradient_flow": LEDMode.RAINBOW,
+                "treat_launching": LEDMode.DOG_DETECTED,
+                "error": LEDMode.ERROR,
+                "off": LEDMode.OFF
             }
-            mode = pattern_map.get(request.pattern, request.pattern)
-            led.set_pattern(mode)
-        return {"success": True}
+            led_mode = mode_map.get(mode, LEDMode.IDLE)
+            leds.set_mode(led_mode)
+            logger.info(f"LED pattern set via fallback controller: {mode} -> {led_mode}")
+            return {"success": True}
+
+        return {"success": False, "error": {"code": "LED_ERROR", "message": "No LED controller available"}}
     except Exception as e:
         return {"success": False, "error": {"code": "LED_ERROR", "message": str(e)}}
 
