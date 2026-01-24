@@ -1,28 +1,53 @@
 # WIM-Z Resume Chat Log
 
-## Session: 2026-01-24 (Latest)
-**Goal:** Git Sync - Robot 01 → Robot 02
+## Session: 2026-01-24 02:30-03:00 EST (Robot 02)
+**Goal:** Relay heartbeat, WebRTC video fix, Hailo setup, cloud commands
 **Status:** ✅ Complete
 
 ---
 
 ### Work Completed This Session
 
-#### 1. Git Repository Sync
-- **Issue:** Robot 02 was missing 60+ uncommitted files from Robot 01
-- **Cause:** Features developed on Robot 01 were never committed/pushed
-- **Fix:** Committed all working code and synced to origin
+#### 1. Relay Client Heartbeat & Connection Status
+- **Added `robot_connected`** - Sent on WebSocket connect with device_id and version
+- **Added `heartbeat`** - Sent every 30 seconds with device_id and timestamp
+- **Added `command_ack`** - Sent after each command with success/error status
+- **Added `robot_disconnecting`** - Sent on clean shutdown before WebSocket close
+- **File:** `services/cloud/relay_client.py`
 
-#### 2. Robot Profile System Verified
-- Confirmed `config/robot_profiles/` exists with:
-  - `treatbot.yaml` - Primary unit (matched motors, PID enabled)
-  - `treatbot2.yaml` - Backup unit (mismatched motors, PID disabled)
-- Profile selection: hostname → `/etc/robot_id` → env var → default
+#### 2. WebRTC Video Fix (Camera without Hailo)
+- **Issue:** WebRTC connected but video was null - "Video frame 0: None" forever
+- **Cause:** `DetectorService.initialize()` returned False when Hailo unavailable
+- **Cause:** `start_detection()` required `ai_initialized`, not just camera
+- **Fix:** Camera now independent of AI - detection loop runs for WebRTC even without Hailo
+- **Files:** `services/perception/detector.py`, `main_treatbot.py`
 
-#### 3. Handled Git Divergence
-- Robot 02 had pushed 3 commits while Robot 01 was working
-- Successfully rebased Robot 01 changes on top of Robot 02's work
-- Resolved "unstable object source" errors from active database files
+#### 3. Hailo Python SDK Installation
+- **Issue:** "Hailo platform not available" despite hardware working
+- **Cause:** `python3-hailort` 4.20.0 (apt) didn't match `hailort` 4.21.0 (manual)
+- **Cause:** venv had `include-system-site-packages = false`
+- **Fix:** Enabled system site-packages in venv config
+- **Fix:** Installed matching wheel: `hailov2/hailort-4.21.0-cp311-cp311-linux_aarch64.whl`
+- **Note:** numpy downgraded 2.2.6 → 1.26.4 (models unaffected - .hef/.ts are independent)
+
+#### 4. Pan/Tilt Log Spam Fix
+- **Issue:** "Camera centered" logged every 100ms in idle mode
+- **Cause:** Idle handler checked `abs(pan - 90)` but center is actually 100
+- **Fix:** Changed to check `abs(pan - self.center_pan)`
+- **Fix:** Changed log level from INFO to DEBUG
+- **File:** `services/motion/pan_tilt.py`
+
+#### 5. LED Cloud Commands Fix
+- **Issue:** Cloud `/led/pattern` failed with "LEDs not initialized" while Xbox worked
+- **Cause:** Xbox uses `get_led_controller()` with fallback to DirectNeoPixelController
+- **Cause:** Cloud used `get_led_service().set_pattern()` with no fallback
+- **Fix:** `/led/pattern` now tries LedService first, then falls back to direct controller
+- **File:** `api/server.py`
+
+#### 6. Cloud Command Dispatch
+- **Added `dispense_treat`** to command dispatch table (was only `treat`)
+- **Added mode change notifications** - app now receives status_update on mode changes
+- **File:** `main_treatbot.py`
 
 ---
 
@@ -30,207 +55,53 @@
 
 | Hash | Description |
 |------|-------------|
-| `63ddf137` | sync: all working code from robot 01 - modes, commands, services |
-
-**Rebased on top of Robot 02's commits:**
-- `5015d17a` fix: Camera capture works without Hailo AI
-- `f7b29f44` feat: Add heartbeat and connection status messages to relay client
-- `17fe202a` fix: Remove duplicate manual timeout causing mode switch race condition
-
----
-
-### Files Synced (87 files)
-Key changes pushed:
-- Audio deadlock fix (RLock)
-- Motor watchdog threshold adjustment
-- WebSocket reconnection handling
-- Camera BGR/RGB color fix
-- Music player state tracking
-- Dog identification system
-- Voice command storage
-- Push-to-talk audio
-- WiFi provisioning system
+| `20c88e93` | fix: Add dispense_treat command + mode change notifications |
+| `b10e67f5` | fix: LED cloud commands use fallback controller like Xbox |
+| `667fb7da` | fix: Stop pan_tilt log spam in idle mode |
+| `5015d17a` | fix: Camera capture works without Hailo AI |
+| `f7b29f44` | feat: Add heartbeat and connection status messages to relay client |
 
 ---
 
-### Protected .env File
-- Added `.env` to `.gitignore` (contains API keys)
-- Robot 02 will need its own `.env` file created manually
+### Key Solutions
+
+1. **Hailo SDK version mismatch**: Runtime 4.21.0 but Python bindings 4.20.0 → Install matching wheel
+2. **Camera/AI independence**: Detection loop should run for WebRTC even without AI
+3. **Dual LED paths**: Xbox and Cloud used different code paths with different fallback behavior
+4. **Idle mode centering bug**: Hardcoded 90 instead of actual center positions (100, 55)
+
+---
+
+### Files Modified
+- `services/cloud/relay_client.py` - Heartbeat, connection status messages
+- `services/perception/detector.py` - Camera works without AI
+- `main_treatbot.py` - Detection startup, cloud commands, mode notifications
+- `services/motion/pan_tilt.py` - Fixed log spam and centering logic
+- `api/server.py` - LED endpoint fallback
+- `env_new/pyvenv.cfg` - Enable system site-packages
 
 ---
 
 ### Next Session Tasks
-1. On Robot 02: `git pull origin main` to get synced code
-2. On Robot 02: Create `.env` file with appropriate credentials
-3. Test that both robots have identical behavior
+1. Test app connection with video streaming
+2. Verify relay server handles new message types (robot_connected, heartbeat, command_ack)
+3. Test dispense_treat command from app
+4. Verify mode change notifications reach app
 
 ---
 
-## Session: 2026-01-23 03:00-04:30 EST
-**Goal:** Multiple bug fixes - Audio, Motors, WebSocket, Camera
+### Important Notes/Warnings
+- **numpy downgraded** to 1.26.4 - OpenCV may warn but works fine
+- **Hailo wheel location**: `/home/morgan/dogbot/hailov2/hailort-4.21.0-cp311-cp311-linux_aarch64.whl`
+- **Robot 02 differences**: treatbot2.yaml has different motor calibration, PID disabled
+
+---
+
+## Previous Sessions
+
+### Session: 2026-01-23 (Robot 01 → Robot 02 Sync)
+**Goal:** Git Sync
 **Status:** ✅ Complete
+- Synced 87 files from Robot 01 to Robot 02
+- Committed as `63ddf137`
 
----
-
-### Problems Solved This Session
-
-#### 1. Audio Deadlock Fix
-- **Issue:** Audio commands timing out after 5 seconds
-- **Cause:** `play_next()` calls `play_file()` which both try to acquire same `threading.Lock()`
-- **Fix:** Changed to `threading.RLock()` (reentrant lock) in `services/media/usb_audio.py`
-
-#### 2. Bark Detection Mode Control
-- **Issue:** Bark detection running in all modes (should only run in SILENT_GUARDIAN, COACH, MISSION)
-- **Fix:** Added start/stop logic in `_on_mode_change` in `main_treatbot.py`
-
-#### 3. Music Player Logic Overhaul
-- **Issue:** Music auto-played on startup, prev/next triggered playback
-- **Fix:** Complete rewrite of music player state tracking:
-  - `_music_playing` and `_playlist_track` separate from general audio
-  - `audio_next`/`audio_prev` only change index, don't auto-play
-  - `audio_toggle` plays current song if stopped, stops if playing
-  - Telemetry: `{"audio": {"playing": bool, "track": "song.mp3"}}`
-
-#### 4. Motor Watchdog Too Aggressive
-- **Issue:** "Stale movement command" stopping motors mid-drive at 1.0s threshold
-- **Fix:** Increased stale command threshold from 1.0s to 2.5s
-- **File:** `core/hardware/proper_pid_motor_controller.py`
-- Also reduced PID log interval from 1s to 2s
-
-#### 5. WebSocket Reconnection Handling
-- **Issue:** "Cannot write to closing transport" errors, log spam on disconnect
-- **Fix:** Updated `services/cloud/relay_client.py`:
-  - Check `_ws.closed` before sending
-  - Message queue (up to 50) for offline buffering
-  - Log suppression (only first failure logged)
-  - Better exponential backoff: 1s → 2s → 4s → ... max 30s
-  - Queue flush after reconnection
-
-#### 6. Duplicate Log Lines
-- **Issue:** Every log message appeared twice
-- **Fix:** Added `root_logger.handlers.clear()` before adding handlers in `main_treatbot.py`
-
-#### 7. Camera Color Inversion (BGR/RGB)
-- **Issue:** Blue door appeared orange in WebRTC stream
-- **Fix:** Updated `services/streaming/video_track.py` - Picamera2 RGB888 actually outputs BGR, removed unnecessary RGB→BGR conversion
-
----
-
-### Files Modified This Session
-
-| File | Change |
-|------|--------|
-| `services/media/usb_audio.py` | RLock, music player state tracking |
-| `main_treatbot.py` | Bark detection mode control, logging fix |
-| `core/hardware/proper_pid_motor_controller.py` | Stale threshold 1.0s→2.5s, log interval 1s→2s |
-| `services/cloud/relay_client.py` | Connection state check, message queue, backoff |
-| `services/streaming/video_track.py` | BGR/RGB color fix |
-| `api/server.py` | Updated audio endpoint messages |
-| `core/safety.py` | Raised temp thresholds by 10°C |
-
----
-
-### Resolved Issues
-- **Fan hardware** - Original fan was dead, replaced with new fan - now working ✅
-- Temperature thresholds were raised by 10°C (can revert if needed now that fan works)
-
-### Verified Working
-- ✅ Camera colors correct in app (BGR/RGB fix confirmed)
-- ✅ Fan replaced and working
-- ✅ Music controls working (prev/next/toggle)
-
-### Next Session Tasks
-1. Monitor motor behavior during driving
-
----
-
-## Session: 2026-01-22 (Earlier)
-**Goal:** Dog Identification System + Voice Command Storage + Two-Way Audio PTT
-**Status:** Complete
-
----
-
-### Work Completed This Session
-
-#### 1. Dog Identification System
-Created multi-method dog identification with priority system:
-- **ARUCO markers** (100% confidence) - Direct marker detection
-- **Color matching** (80% confidence) - HSV-based coat color extraction
-- **Persistence tracking** - Based on tracking history
-- **Unknown fallback** - Generic "Dog" label
-
-**Files Created:**
-- `core/dog_profile_manager.py` - Profile management with color extraction
-
-**Files Modified:**
-- `core/dog_tracker.py` - Integrated color-based identification
-- `core/ai_controller_3stage_fixed.py` - Added dog_id_methods to results
-- `core/state.py` - Added dog_name and id_method to DetectionStatus
-- `services/perception/detector.py` - Updated state with identification info
-- `services/cloud/relay_client.py` - Added profile fetching from cloud
-
-**Telemetry Format:**
-```json
-{"detection": {"dog_name": "Bezik", "id_method": "aruco", ...}}
-```
-
-#### 2. Voice Command Storage
-Custom voice recordings per dog for personalized commands:
-- Storage: `/home/morgan/dogbot/voices/{dog_id}/{command}.mp3`
-- Priority: Custom voice → Default voice fallback
-
-**Files Created:**
-- `services/media/voice_manager.py` - Voice file storage and retrieval
-
-**Files Modified:**
-- `api/ws.py` - Added upload_voice, list_voices, delete_voice handlers
-- `api/server.py` - Added REST endpoints: /voices/*, /audio/play_command
-- `services/media/usb_audio.py` - Added play_command() method
-- `main_treatbot.py` - Added cloud command handlers for voice
-
-#### 3. Two-Way Audio Push-to-Talk
-Real-time audio communication between app and robot:
-- Play audio from app through speaker
-- Record from USB mic and send back to app
-- Supports AAC, MP3, Opus, WAV formats
-- Auto-pauses bark detector during recording
-
-**Files Created:**
-- `services/media/push_to_talk.py` - PTT service with arecord/aplay
-
----
-
-### Commit: 6956f5c3 - feat: Dog identification, voice commands, and push-to-talk audio
-
----
-
-## Session: 2026-01-22 (Earlier)
-**Goal:** WiFi Provisioning + App UI Support (NO command, audio cycling)
-**Status:** Complete
-
----
-
-### Work Completed This Session
-
-#### 1. WiFi Provisioning System (AP Mode)
-Created `services/network/` module for first-time WiFi setup:
-- `wifi_manager.py` - NetworkManager wrapper (nmcli commands)
-- `captive_portal.py` - FastAPI server on port 80
-- `wifi_provisioning.py` - Main orchestrator
-- `templates/setup.html` - Mobile-friendly setup page
-
-**Flow:** No WiFi → Creates "WIMZ-XXXX" AP → User connects → Configures WiFi → Reboots
-
-#### 2. "NO" Command Support
-- Added `LEDMode.WARNING` with yellow/purple flash pattern
-- Added `Colors.WARNING` (255, 200, 0) amber
-
-#### 3. Audio Track Cycling
-- Added `play_next()` / `play_previous()` to USBAudioService
-- Playlist built from `/songs/` folder (12 tracks)
-
----
-
-### Commit: 37144d88 - feat: WiFi provisioning AP mode + NO command + audio cycling
-
----
