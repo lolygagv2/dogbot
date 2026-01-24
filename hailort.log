@@ -806,4 +806,53 @@
 [2025-12-27 16:15:42.727] [1681] [HailoRT] [info] [edge_elements.cpp:287] [create] Created (HwReadEl4best_pose_v8/conv79 | hw_frame_size: 400)
 [2025-12-27 16:15:42.727] [1681] [HailoRT] [info] [queue_elements.cpp:657] [create] Created (PullQEl_hw_read4best_pose_v8/conv79)
 [2025-12-27 16:15:42.727] [1681] [HailoRT] [info] [filter_elements.cpp:372] [create] Created (PostInferEl4best_pose_v8/conv79 | Quantization - src_type: UINT8, dst_type FLOAT32, limvals_min: -120.381, limvals_max: 2.90074)
-[2025-12-27 16:15:42.72
+[2025-12-27 16:15:42.72[2026-01-24 02:38:24.242] [752519] [HailoRT] [info] [vdevice.cpp:535] [create] Creating vdevice with params: device_count: 1, scheduling_algorithm: NONE, multi_process_service: false
+[2026-01-24 02:38:24.254] [752519] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2026-01-24 02:38:24.255] [752519] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2026-01-24 02:38:24.255] [752519] [HailoRT] [info] [vdevice.cpp:681] [create] VDevice Infos: 0001:01:00.0
+[2026-01-24 02:38:24.328] [752519] [HailoRT] [info] [internal_buffer_manager.cpp:77] [print_execution_results] Planned internal buffer memory: CMA=0 CMA-Desc=262144 Pinned=821248. memory to edge layer usage factor is 1
+[2026-01-24 02:38:24.328] [752519] [HailoRT] [info] [internal_buffer_manager.cpp:86] [print_execution_results] Default Internal buffer planner executed successfully
+[2026-01-24 02:38:24.367] [752519] [HailoRT] [info] [device_internal.cpp:57] [configure] Configuring HEF took 48.745083 milliseconds
+[2026-01-24 02:38:24.367] [752519] [HailoRT] [info] [vdevice.cpp:779] [configure] Configuring HEF on VDevice took 49.191683 milliseconds
+[2026-01-24 02:38:24.367] [752519] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
+[2026-01-24 02:38:24.367] [752519] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
+[2026-01-24 02:44:28.700] [762124] [HailoRT] [info] [vdevice.cpp:535] [create] Creating vdevice with params: device_count: 1, scheduling_algorithm: NONE, multi_process_service: false
+[2026-01-24 02:44:28.711] [762124] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2026-01-24 02:44:28.711] [762124] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2026-01-24 02:44:28.711] [762124] [HailoRT] [info] [vdevice.cpp:681] [create] VDevice Infos: 0001:01:00.0
+[2026-01-24 02:44:28.784] [762124] [HailoRT] [info] [internal_buffer_manager.cpp:77] [print_execution_results] Planned internal buffer memory: CMA=0 CMA-Desc=262144 Pinned=821248. memory to edge layer usage factor is 1
+[2026-01-24 02:44:28.784] [762124] [HailoRT] [info] [internal_buffer_manager.cpp:86] [print_execution_results] Default Internal buffer planner executed successfully
+[2026-01-24 02:44:28.819] [762124] [HailoRT] [info] [device_internal.cpp:57] [configure] Configuring HEF took 44.451847 milliseconds
+[2026-01-24 02:44:28.819] [762124] [HailoRT] [info] [vdevice.cpp:779] [configure] Configuring HEF on VDevice took 44.902007 milliseconds
+[2026-01-24 02:44:28.819] [762124] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
+[2026-01-24 02:44:28.819] [762124] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
+[2026-01-24 03:58:33.645] [832324] [HailoRT] [info] [vdevice.cpp:535] [create] Creating vdevice with params: device_count: 1, scheduling_algorithm: NONE, multi_process_service: false
+[2026-01-24 03:58:33.657] [832324] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2026-01-24 03:58:33.658] [832324] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2026-01-24 03:58:33.658] [832324] [HailoRT] [info] [vdevice.cpp:681] [create] VDevice Infos: 0001:01:00.0
+[2026-01-24 03:58:33.727] [832324] [HailoRT] [info] [internal_buffer_manager.cpp:77] [print_execution_results] Planned internal buffer memory: CMA=0 CMA-Desc=262144 Pinned=821248. memory to edge layer usage factor is 1
+[2026-01-24 03:58:33.727] [832324] [HailoRT] [info] [internal_buffer_manager.cpp:86] [print_execution_results] Default Internal buffer planner executed successfully
+[2026-01-24 03:58:33.761] [832324] [HailoRT] [info] [device_internal.cpp:57] [configure] Configuring HEF took 40.45341 milliseconds
+[2026-01-24 03:58:33.761] [832324] [HailoRT] [info] [vdevice.cpp:779] [configure] Configuring HEF on VDevice took 40.896654 milliseconds
+[2026-01-24 03:58:33.761] [832324] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
+[2026-01-24 03:58:33.761] [832324] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
+[2026-01-24 04:10:09.048] [842522] [HailoRT] [info] [vdevice.cpp:535] [create] Creating vdevice with params: device_count: 1, scheduling_algorithm: NONE, multi_process_service: false
+[2026-01-24 04:10:09.059] [842522] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2026-01-24 04:10:09.059] [842522] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2026-01-24 04:10:09.059] [842522] [HailoRT] [info] [vdevice.cpp:681] [create] VDevice Infos: 0001:01:00.0
+[2026-01-24 04:10:09.136] [842522] [HailoRT] [info] [internal_buffer_manager.cpp:77] [print_execution_results] Planned internal buffer memory: CMA=0 CMA-Desc=262144 Pinned=821248. memory to edge layer usage factor is 1
+[2026-01-24 04:10:09.136] [842522] [HailoRT] [info] [internal_buffer_manager.cpp:86] [print_execution_results] Default Internal buffer planner executed successfully
+[2026-01-24 04:10:09.172] [842522] [HailoRT] [info] [device_internal.cpp:57] [configure] Configuring HEF took 43.844245 milliseconds
+[2026-01-24 04:10:09.172] [842522] [HailoRT] [info] [vdevice.cpp:779] [configure] Configuring HEF on VDevice took 44.300966 milliseconds
+[2026-01-24 04:10:09.172] [842522] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
+[2026-01-24 04:10:09.172] [842522] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
+[2026-01-24 04:23:23.829] [856076] [HailoRT] [info] [vdevice.cpp:535] [create] Creating vdevice with params: device_count: 1, scheduling_algorithm: NONE, multi_process_service: false
+[2026-01-24 04:23:23.839] [856076] [HailoRT] [info] [device.cpp:51] [Device] OS Version: Linux 6.12.34-v8-16k+ #1889 SMP PREEMPT Mon Jun 23 11:12:50 BST 2025 aarch64
+[2026-01-24 04:23:23.839] [856076] [HailoRT] [info] [control.cpp:113] [control__parse_identify_results] firmware_version is: 4.21.0
+[2026-01-24 04:23:23.839] [856076] [HailoRT] [info] [vdevice.cpp:681] [create] VDevice Infos: 0001:01:00.0
+[2026-01-24 04:23:23.910] [856076] [HailoRT] [info] [internal_buffer_manager.cpp:77] [print_execution_results] Planned internal buffer memory: CMA=0 CMA-Desc=262144 Pinned=821248. memory to edge layer usage factor is 1
+[2026-01-24 04:23:23.910] [856076] [HailoRT] [info] [internal_buffer_manager.cpp:86] [print_execution_results] Default Internal buffer planner executed successfully
+[2026-01-24 04:23:23.941] [856076] [HailoRT] [info] [device_internal.cpp:57] [configure] Configuring HEF took 37.682452 milliseconds
+[2026-01-24 04:23:23.941] [856076] [HailoRT] [info] [vdevice.cpp:779] [configure] Configuring HEF on VDevice took 38.142009 milliseconds
+[2026-01-24 04:23:23.942] [856076] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
+[2026-01-24 04:23:23.942] [856076] [HailoRT] [info] [hef.cpp:1994] [get_network_group_and_network_name] No name was given. Addressing all networks of default network_group: best_pose_v8
