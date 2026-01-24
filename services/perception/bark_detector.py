@@ -18,7 +18,7 @@ from scipy.signal import butter, sosfilt
 
 # Core components
 from core.bus import get_bus, AudioEvent, RewardEvent, VisionEvent, publish_audio_event, publish_reward_event
-from core.state import get_state
+from core.state import get_state, SystemMode
 
 # New 3-stage bark detection system
 from core.audio.bark_detector import BarkDetector, BarkEvent
@@ -303,6 +303,12 @@ class BarkDetectorService:
 
                 if audio_chunk is not None:
                     detection_count += 1
+
+                    # Mode-aware bark detection: only process in active modes
+                    current_mode = self.state.get_mode()
+                    if current_mode not in [SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION]:
+                        # Skip bark detection in IDLE, MANUAL, etc.
+                        continue
 
                     # Filter to dog bark frequency range (400-4000Hz) before energy calculation
                     # This filters out non-bark sounds like HVAC, footsteps, electronic noise

@@ -298,6 +298,7 @@ class TreatBotWebSocketServer:
                         "idle": SystemMode.IDLE,
                         "guardian": SystemMode.SILENT_GUARDIAN,
                         "training": SystemMode.COACH,
+                        "mission": SystemMode.MISSION,
                         "manual": SystemMode.MANUAL,
                         "docking": SystemMode.IDLE  # No docking mode yet
                     }

@@ -156,41 +156,46 @@ class BatteryMonitorService:
             self.critical_warning_sent = False
 
     def _check_charging(self) -> None:
-        """Check if charging started (voltage increasing)"""
+        """Check if charging (voltage increasing OR near full charge)"""
         # Track voltage history
         self.voltage_history.append(self.voltage)
         if len(self.voltage_history) > 3:
             self.voltage_history.pop(0)
 
-        # Need at least 3 readings to detect trend
-        if len(self.voltage_history) < 3:
-            return
-
-        # Check if voltage is consistently increasing (charging)
-        v1, v2, v3 = self.voltage_history
-        voltage_increase = v3 - v1
-
-        # Detect charging: voltage increased by 0.05V+ over last 3 readings (~15 seconds)
-        # Even small voltage increases indicate charger is connected
         now = time.time()
-        if voltage_increase >= 0.05 and not self.charging_detected:
+        was_charging = self.charging_detected
+
+        # Method 1: Voltage is very high (near full charge = charger connected)
+        # 4S LiPo full charge is 16.8V, consider >16.5V as "on charger"
+        if self.voltage >= 16.5:
+            self.charging_detected = True
+        # Method 2: Voltage is increasing (charger connected, not yet full)
+        elif len(self.voltage_history) >= 3:
+            v1, v2, v3 = self.voltage_history
+            voltage_increase = v3 - v1
+            if voltage_increase >= 0.05:
+                self.charging_detected = True
+            elif voltage_increase < -0.1:
+                # Voltage dropping significantly = not charging
+                self.charging_detected = False
+        # Method 3: Voltage is stable and high (95%+) = likely on charger
+        elif self.percentage >= 95:
             self.charging_detected = True
 
-            # Play charging audio if cooldown elapsed
+        # Announce charging started
+        if self.charging_detected and not was_charging:
             if now - self.last_charging_announce >= self.charging_announce_cooldown:
-                self.logger.info(f"Charging detected: voltage rose {voltage_increase:.2f}V")
+                self.logger.info(f"Charging detected: {self.voltage:.2f}V ({self.percentage}%)")
                 self._play_charging_audio()
                 self.last_charging_announce = now
 
                 publish_system_event('battery_charging', {
                     'voltage': self.voltage,
-                    'percentage': self.percentage,
-                    'voltage_increase': voltage_increase
+                    'percentage': self.percentage
                 }, 'battery_monitor')
 
-        # Reset charging flag if voltage drops (charger disconnected)
-        elif voltage_increase < 0 and self.charging_detected:
-            self.charging_detected = False
+        # Log charging stopped
+        if was_charging and not self.charging_detected:
             self.logger.info("Charging stopped: voltage decreasing")
 
     def _play_charging_audio(self) -> None:
@@ -206,6 +211,7 @@ class BatteryMonitorService:
     def _monitor_loop(self) -> None:
         """Background monitoring loop"""
         self.logger.info("Battery monitoring started")
+        last_telemetry = 0
 
         while self.running:
             try:
@@ -216,6 +222,16 @@ class BatteryMonitorService:
                 # Log periodically
                 if int(time.time()) % 60 == 0:  # Every minute
                     self.logger.debug(f"Battery: {self.voltage:.2f}V ({self.percentage}%)")
+
+                # Send battery telemetry every 30 seconds for app display
+                now = time.time()
+                if now - last_telemetry >= 30:
+                    publish_system_event('battery_status', {
+                        'percentage': self.percentage,
+                        'voltage': self.voltage,
+                        'charging': self.charging_detected
+                    }, 'battery_monitor')
+                    last_telemetry = now
 
             except Exception as e:
                 self.logger.error(f"Monitor loop error: {e}")

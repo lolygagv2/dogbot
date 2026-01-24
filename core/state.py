@@ -18,6 +18,7 @@ class SystemMode(Enum):
     IDLE = "idle"
     SILENT_GUARDIAN = "silent_guardian"  # Primary mode - bark-focused passive monitoring
     COACH = "coach"                       # Opportunistic trick training when dog approaches
+    MISSION = "mission"                   # Running a structured mission/program
     PHOTOGRAPHY = "photography"
     MANUAL = "manual"
     EMERGENCY = "emergency"

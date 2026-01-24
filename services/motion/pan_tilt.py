@@ -63,6 +63,21 @@ class PanTiltService:
         self.current_pan = 90
         self.current_tilt = 90
 
+        # Configurable center position (calibrated default viewing angle)
+        # These values are the actual servo positions for "looking straight ahead"
+        # pan=100 is physically centered, tilt=55 is level with ground
+        self.center_pan = 100   # Pan center position (internal servo units)
+        self.center_tilt = 55   # Tilt center position (internal servo units)
+
+        # Servo command rate limiting (debounce)
+        self.last_servo_command_time = 0.0
+        self.min_command_interval = 0.05  # 50ms minimum between servo commands
+
+        # Movement smoothing for API commands
+        self.smoothing_factor = 0.3  # 0.0 = no smoothing, 1.0 = maximum smoothing
+        self.pending_pan = None  # Target pan from API (smoothed towards)
+        self.pending_tilt = None  # Target tilt from API (smoothed towards)
+
         # Scan pattern
         self.scan_positions = [
             (50, 90),   # left
@@ -329,13 +344,24 @@ class PanTiltService:
             self._move_to_position(target_pan, target_tilt)
             self.logger.debug(f"Smooth scan: pan={target_pan:.1f}°")
 
-    def _move_to_position(self, pan: float, tilt: float) -> None:
-        """Move servos to specified position with limits"""
+    def _move_to_position(self, pan: float, tilt: float, force: bool = False) -> None:
+        """Move servos to specified position with limits, debounce, and smoothing
+
+        Args:
+            pan: Target pan angle
+            tilt: Target tilt angle
+            force: If True, bypass debounce (for internal tracking)
+        """
         # Apply limits
         pan = max(self.pan_limits[0], min(self.pan_limits[1], pan))
         tilt = max(self.tilt_limits[0], min(self.tilt_limits[1], tilt))
 
-        # Only move if significant change
+        # Debounce: skip if too soon since last command (unless forced)
+        now = time.time()
+        if not force and (now - self.last_servo_command_time) < self.min_command_interval:
+            return
+
+        # Only move if significant change (>1 degree)
         if abs(pan - self.current_pan) > 1 or abs(tilt - self.current_tilt) > 1:
             try:
                 self.servo.set_camera_pan(pan)
@@ -343,6 +369,7 @@ class PanTiltService:
 
                 self.current_pan = pan
                 self.current_tilt = tilt
+                self.last_servo_command_time = now
 
                 # Update state
                 self.state.update_hardware(
@@ -358,7 +385,11 @@ class PanTiltService:
                 self.logger.error(f"Servo movement error: {e}")
 
     def center_camera(self) -> bool:
-        """Center camera to neutral position"""
+        """Center camera to calibrated default viewing position
+
+        Uses self.center_pan and self.center_tilt which are the calibrated
+        servo positions for the desired default viewing angle.
+        """
         # Check if Xbox controller is active - if so, don't center
         import subprocess
         try:
@@ -370,17 +401,44 @@ class PanTiltService:
         except:
             pass
 
+        if not self.servo_initialized or not self.servo:
+            self.logger.error("Servos not initialized")
+            return False
+
         try:
-            success = self.servo.center_camera()
-            if success:
-                self.current_pan = 90
-                self.current_tilt = 90
-                self.logger.info("Camera centered")
-                publish_motion_event('camera_centered', {}, 'pan_tilt_service')
-            return success
+            # Use configurable center positions instead of hardcoded values
+            success_pan = self.servo.set_camera_pan(self.center_pan, smooth=True)
+            success_tilt = self.servo.set_camera_pitch(self.center_tilt, smooth=True)
+
+            if success_pan and success_tilt:
+                self.current_pan = self.center_pan
+                self.current_tilt = self.center_tilt
+                self.logger.info(f"Camera centered to pan={self.center_pan}, tilt={self.center_tilt}")
+                publish_motion_event('camera_centered', {
+                    'pan': self.center_pan,
+                    'tilt': self.center_tilt
+                }, 'pan_tilt_service')
+                return True
+            else:
+                self.logger.warning(f"Center camera partial failure: pan={success_pan}, tilt={success_tilt}")
+                return False
         except Exception as e:
             self.logger.error(f"Center camera error: {e}")
             return False
+
+    def set_center_position(self, pan: int = None, tilt: int = None) -> None:
+        """Configure the center position for the camera
+
+        Args:
+            pan: Pan center position in servo units (10-200), None to keep current
+            tilt: Tilt center position in servo units (20-160), None to keep current
+        """
+        if pan is not None:
+            self.center_pan = max(self.pan_limits[0], min(self.pan_limits[1], pan))
+            self.logger.info(f"Center pan set to {self.center_pan}")
+        if tilt is not None:
+            self.center_tilt = max(self.tilt_limits[0], min(self.tilt_limits[1], tilt))
+            self.logger.info(f"Center tilt set to {self.center_tilt}")
 
     def _on_vision_event(self, event) -> None:
         """Handle vision events"""
@@ -396,13 +454,15 @@ class PanTiltService:
             # Clear target
             self.target_position = None
 
-    def move_camera(self, pan: Optional[float] = None, tilt: Optional[float] = None) -> bool:
+    def move_camera(self, pan: Optional[float] = None, tilt: Optional[float] = None,
+                    smooth: bool = True) -> bool:
         """
-        Move camera to specified position
+        Move camera to specified position with optional smoothing
 
         Args:
             pan: Pan angle in degrees (10-200), None to keep current
             tilt: Tilt angle in degrees (20-160), None to keep current
+            smooth: If True, apply smoothing to prevent jerky movements (default True)
 
         Returns:
             bool: True if movement was successful
@@ -416,10 +476,24 @@ class PanTiltService:
             target_pan = pan if pan is not None else self.current_pan
             target_tilt = tilt if tilt is not None else self.current_tilt
 
-            # Use the private method to move
-            self._move_to_position(target_pan, target_tilt)
+            # Apply smoothing for API commands to prevent jerkiness
+            if smooth and self.smoothing_factor > 0:
+                # Interpolate between current and target position
+                smoothed_pan = self.current_pan + (target_pan - self.current_pan) * (1 - self.smoothing_factor)
+                smoothed_tilt = self.current_tilt + (target_tilt - self.current_tilt) * (1 - self.smoothing_factor)
 
-            self.logger.info(f"Camera moved to pan={target_pan:.1f}°, tilt={target_tilt:.1f}°")
+                # Store pending targets for gradual movement
+                self.pending_pan = target_pan
+                self.pending_tilt = target_tilt
+
+                # Move to smoothed position
+                self._move_to_position(smoothed_pan, smoothed_tilt)
+                self.logger.debug(f"Camera smoothed to pan={smoothed_pan:.1f}° (target={target_pan:.1f}°)")
+            else:
+                # Direct movement
+                self._move_to_position(target_pan, target_tilt)
+                self.logger.info(f"Camera moved to pan={target_pan:.1f}°, tilt={target_tilt:.1f}°")
+
             return True
 
         except Exception as e:

@@ -15,6 +15,7 @@ logger = logging.getLogger('MotorBus')
 
 class CommandSource(Enum):
     XBOX_CONTROLLER = "xbox"
+    WEBRTC = "webrtc"
     API = "api"
     AUTONOMOUS = "auto"
     EMERGENCY = "emergency"
@@ -91,9 +92,17 @@ class MotorCommandBus:
         self.running = False
         if self.motor_controller:
             try:
-                # Emergency stop
-                self.motor_controller.set_motor_speed('left', 0, 'forward')
-                self.motor_controller.set_motor_speed('right', 0, 'forward')
+                # Use controller's native stop method if available (ProperPIDMotorController)
+                if hasattr(self.motor_controller, 'stop'):
+                    self.motor_controller.stop()
+                # Fallback to set_motor_rpm for zero speed
+                elif hasattr(self.motor_controller, 'set_motor_rpm'):
+                    self.motor_controller.set_motor_rpm(0, 0)
+                # Last resort - legacy interface
+                elif hasattr(self.motor_controller, 'set_motor_speed'):
+                    self.motor_controller.set_motor_speed('left', 0, 'forward')
+                    self.motor_controller.set_motor_speed('right', 0, 'forward')
+
                 if hasattr(self.motor_controller, 'cleanup'):
                     self.motor_controller.cleanup()
             except Exception as e:

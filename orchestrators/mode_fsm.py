@@ -70,11 +70,12 @@ class ModeFSM:
         # Transition rules
         # Note: SILENT_GUARDIAN <-> COACH requires manual switch (API/schedule)
         self.valid_transitions = {
-            SystemMode.IDLE: [SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
-            SystemMode.SILENT_GUARDIAN: [SystemMode.IDLE, SystemMode.COACH, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
-            SystemMode.COACH: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
-            SystemMode.PHOTOGRAPHY: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.EMERGENCY, SystemMode.MANUAL],
-            SystemMode.MANUAL: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY],
+            SystemMode.IDLE: [SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.SILENT_GUARDIAN: [SystemMode.IDLE, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.COACH: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.MISSION: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.PHOTOGRAPHY: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.MANUAL: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY],
             SystemMode.EMERGENCY: [SystemMode.SHUTDOWN]
         }
 

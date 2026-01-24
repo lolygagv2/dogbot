@@ -20,6 +20,7 @@ class EventType(Enum):
     SYSTEM = "system"
     REWARD = "reward"
     SAFETY = "safety"
+    CLOUD = "cloud"
 
 @dataclass
 class Event:
@@ -78,6 +79,12 @@ class SafetyEvent(Event):
     """Safety monitoring events"""
     def __init__(self, subtype: str, data: Dict[str, Any], source: str = "safety"):
         super().__init__(EventType.SAFETY, subtype, time.time(), data, source)
+
+@dataclass
+class CloudEvent(Event):
+    """Cloud relay events (commands from app)"""
+    def __init__(self, subtype: str, data: Dict[str, Any], source: str = "cloud"):
+        super().__init__(EventType.CLOUD, subtype, time.time(), data, source)
 
 
 class EventBus:

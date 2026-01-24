@@ -325,16 +325,12 @@ Pin # | Assignment
 
 ### Active Sensors
 - [x] **IMX500 Camera** (vision, pose detection)
-  - **⚠️ STATUS:** Needs testing with new longer cable
 - [x] **Conference Microphone** (audio input, bark detection)
-  - **⚠️ STATUS:** Upgraded hardware, needs testing
 - [x] **Motor Encoders** (odometry, navigation)
-  - **⚠️ STATUS:** New DFRobot motors with built-in encoders
 
 ### Recently Added (OFFLINE - Power Issues)
 - [🔧] **IR Sensors** (Roomba-style docking)
   - **Location:** Rear Right, Rear Center, Rear Left
-  - **⚠️ ISSUE:** Caused Pi not to start when connected
   - **STATUS:** Hardware installed but disconnected pending power debug
 
 - [x] **Charging Pads** (Roomba-style charging)
