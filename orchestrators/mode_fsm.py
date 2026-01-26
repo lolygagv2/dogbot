@@ -63,7 +63,7 @@ class ModeFSM:
         self.timeouts = {
             'silent_guardian_timeout': 0,      # SILENT_GUARDIAN: No auto-timeout (persistent)
             'coach_timeout': 0,                # COACH: No auto-timeout (persistent training mode)
-            'manual_timeout': 120.0,           # MANUAL -> previous mode (2 minutes no input)
+            'manual_timeout': 300.0,           # MANUAL -> previous mode (5 minutes no input)
             'override_timeout': 86400.0        # Max override duration (24 hours - effectively indefinite)
         }
 

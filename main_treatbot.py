@@ -117,6 +117,10 @@ class TreatBotMain:
         self._relay_event_times: Dict[str, float] = {}
         self._relay_throttle_interval = 5.0  # seconds
 
+        # Startup grace period - ignore stale cloud commands for first N seconds
+        self._startup_time = time.time()
+        self._startup_grace_period = 5.0  # seconds - ignore commands during this window
+
         # Performance tracking
         self.start_time = time.time()
         self.loop_count = 0
@@ -199,7 +203,8 @@ class TreatBotMain:
         try:
             # Event bus
             self.bus = get_bus()
-            self.logger.info("✅ Event bus ready")
+            self.bus.clear_history()  # Clear stale events from previous session
+            self.logger.info("✅ Event bus ready (history cleared)")
 
             # State manager
             self.state = get_state()
@@ -521,6 +526,10 @@ class TreatBotMain:
 
             # Start cloud relay client if enabled
             if self.relay_client and self.relay_client.config.enabled:
+                # Clear any stale outgoing messages from previous session
+                if hasattr(self.relay_client, '_message_queue'):
+                    self.relay_client._message_queue.clear()
+                    self.logger.info("☁️ Cleared stale relay message queue")
                 self.relay_client.start()
                 self.logger.info("☁️ Cloud relay client started")
                 # Subscribe to events for relay forwarding
@@ -747,6 +756,17 @@ class TreatBotMain:
         Motor commands are ignored here - they go via WebRTC data channel for low latency.
         """
         if event.subtype != 'command':
+            return
+
+        # Ignore stale commands during startup grace period
+        # Prevents buffered relay commands from previous session from executing
+        elapsed_since_startup = time.time() - self._startup_time
+        if elapsed_since_startup < self._startup_grace_period:
+            command = event.data.get('command', 'unknown')
+            self.logger.warning(
+                f"☁️ Ignoring stale command '{command}' during startup grace period "
+                f"({elapsed_since_startup:.1f}s < {self._startup_grace_period}s)"
+            )
             return
 
         try:
