@@ -68,11 +68,13 @@ class VoiceManager:
     def save_voice(self, dog_id: str, command: str, audio_data: bytes) -> Dict[str, Any]:
         """
         Save a custom voice recording for a dog command.
+        Accepts any audio format (WAV, AAC, MP3, etc.) and converts to MP3 for
+        consistent storage and playback via pygame.
 
         Args:
             dog_id: Dog identifier (e.g., "1", "832", "bezik")
             command: Command name (e.g., "sit", "down", "good_dog")
-            audio_data: Raw audio bytes (MP3 format expected)
+            audio_data: Raw audio bytes (any format)
 
         Returns:
             Dict with success status and file path
@@ -87,19 +89,48 @@ class VoiceManager:
                 dog_dir = VOICES_DIR / dog_id
                 dog_dir.mkdir(parents=True, exist_ok=True)
 
-                # Save audio file
                 filepath = dog_dir / f"{command}.mp3"
-                with open(filepath, 'wb') as f:
-                    f.write(audio_data)
 
-                self.logger.info(f"Saved custom voice: {filepath} ({len(audio_data)} bytes)")
+                # Detect format from header to decide if conversion is needed
+                is_mp3 = (audio_data[:3] == b'ID3' or
+                          (len(audio_data) >= 2 and audio_data[:2] == b'\xff\xfb'))
+                is_wav = audio_data[:4] == b'RIFF'
+
+                if is_mp3:
+                    # Already MP3, save directly
+                    with open(filepath, 'wb') as f:
+                        f.write(audio_data)
+                    self.logger.info(f"Saved custom voice (mp3): {filepath} ({len(audio_data)} bytes)")
+                else:
+                    # Non-MP3 (WAV, AAC, etc.) - convert to MP3 via ffmpeg
+                    import subprocess
+                    import tempfile
+                    # Guess extension for ffmpeg input
+                    ext = '.wav' if is_wav else '.aac'
+                    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                        tmp.write(audio_data)
+                        tmp_path = tmp.name
+
+                    try:
+                        result = subprocess.run(
+                            ['ffmpeg', '-y', '-i', tmp_path,
+                             '-c:a', 'libmp3lame', '-b:a', '128k', str(filepath)],
+                            capture_output=True, timeout=15
+                        )
+                        if result.returncode != 0:
+                            self.logger.error(f"Voice conversion failed: {result.stderr.decode()}")
+                            return {"success": False, "error": "Audio conversion failed"}
+                    finally:
+                        os.unlink(tmp_path)
+
+                    self.logger.info(f"Saved custom voice (converted to mp3): {filepath} ({filepath.stat().st_size} bytes)")
 
                 return {
                     "success": True,
                     "filepath": str(filepath),
                     "dog_id": dog_id,
                     "command": command,
-                    "size_bytes": len(audio_data)
+                    "size_bytes": filepath.stat().st_size
                 }
 
             except Exception as e:

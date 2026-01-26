@@ -127,7 +127,10 @@ class USBAudioService:
                         self._music_playing = True
 
                 loop_msg = " (looping)" if loop else ""
-                self.logger.info(f"Playing audio{loop_msg}: {full_path}")
+                # Log with call stack to trace where audio is triggered from
+                import traceback
+                caller_info = "".join(traceback.format_stack()[-4:-1]).strip().replace('\n', ' | ')
+                self.logger.info(f"🔊 AUDIO PLAY{loop_msg}: {full_path} [source: {caller_info[:200]}...]")
                 return {
                     "success": True,
                     "filepath": filepath,

@@ -6,6 +6,7 @@ Provides monitoring and control interface
 
 import sys
 import os
+import asyncio
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
@@ -2507,7 +2508,7 @@ async def list_all_voices():
 
 class VoiceUploadRequest(BaseModel):
     name: str  # Command name (e.g., "sit", "down")
-    dog_id: str  # Dog identifier
+    dog_id: str = "default"  # Dog identifier (defaults to "default" if not provided)
     data: str  # Base64 encoded audio data
 
 
@@ -3161,6 +3162,124 @@ async def websocket_control(websocket: WebSocket):
         })
         await websocket.close()
 
+
+# WebSocket for local mode direct control (when connected to WIMZ hotspot)
+@app.websocket("/ws/local")
+async def websocket_local(websocket: WebSocket):
+    """WebSocket endpoint for local mode direct control.
+
+    This is used when the phone is connected directly to the robot's hotspot.
+    It provides the same control as /ws/control plus mode switching and status.
+    """
+    await websocket.accept()
+    motor_service = None
+    pantilt_service = None
+
+    try:
+        motor_service = get_motor_service()
+        pantilt_service = get_pantilt_service()
+        state = get_state()
+
+        logger.info("📱 Local mode WebSocket connection established")
+
+        # Send initial status
+        await websocket.send_json({
+            "type": "connected",
+            "mode": "local",
+            "current_mode": state.current_mode.value,
+            "api_version": "1.0"
+        })
+
+        while True:
+            data = await websocket.receive_json()
+            command = data.get("command")
+
+            if command == "motor":
+                left = data.get("left", 0)
+                right = data.get("right", 0)
+                motor_service.set_motor_speeds(left, right)
+                await websocket.send_json({"type": "motor_ack", "left": left, "right": right})
+
+            elif command == "joystick":
+                x = data.get("x", 0)
+                y = data.get("y", 0)
+                left = int((y + x) * 100)
+                right = int((y - x) * 100)
+                left = max(-100, min(100, left))
+                right = max(-100, min(100, right))
+                motor_service.set_motor_speeds(left, right)
+                await websocket.send_json({"type": "joystick_ack", "motors": {"left": left, "right": right}})
+
+            elif command == "camera":
+                pan = data.get("pan")
+                tilt = data.get("tilt")
+                if pan is not None:
+                    pantilt_service.set_pan(pan)
+                if tilt is not None:
+                    pantilt_service.set_tilt(tilt)
+                await websocket.send_json({"type": "camera_ack", "position": pantilt_service.get_position()})
+
+            elif command == "stop":
+                motor_service.emergency_stop()
+                await websocket.send_json({"type": "stop_ack", "message": "Motors stopped"})
+
+            elif command == "treat":
+                dispenser = get_dispenser_service()
+                dispenser.dispense_treat(reason="local_mode")
+                await websocket.send_json({"type": "treat_ack", "message": "Treat dispensed"})
+
+            elif command == "set_mode":
+                mode_name = data.get("mode", "").lower()
+                try:
+                    new_mode = SystemMode(mode_name)
+                    state.set_mode(new_mode, f"Local mode: {mode_name}")
+                    await websocket.send_json({"type": "mode_ack", "mode": mode_name, "success": True})
+                except ValueError:
+                    await websocket.send_json({"type": "mode_ack", "mode": mode_name, "success": False, "error": "Invalid mode"})
+
+            elif command == "get_status":
+                status = {
+                    "type": "status",
+                    "mode": state.current_mode.value,
+                    "network_mode": "local",
+                    "services": {
+                        "motor": motor_service is not None,
+                        "pantilt": pantilt_service is not None
+                    }
+                }
+                await websocket.send_json(status)
+
+            elif command == "cloud_mode":
+                # Request to switch back to cloud mode
+                await websocket.send_json({
+                    "type": "cloud_mode_starting",
+                    "message": "Switching to cloud mode, connection will close"
+                })
+                await asyncio.sleep(0.5)
+
+                # Switch to cloud mode (this will disconnect the local connection)
+                from services.network.wifi_manager import WiFiManager
+                wifi = WiFiManager()
+                wifi.stop_hotspot()
+                wifi.try_connect_known(timeout=30)
+                break
+
+            elif command == "ping":
+                await websocket.send_json({"type": "pong", "timestamp": data.get("timestamp")})
+
+            else:
+                await websocket.send_json({"type": "error", "message": f"Unknown command: {command}"})
+
+    except WebSocketDisconnect:
+        logger.info("📱 Local mode WebSocket disconnected")
+        if motor_service:
+            motor_service.emergency_stop()
+    except Exception as e:
+        logger.error(f"Local mode WebSocket error: {e}")
+        await websocket.send_json({"type": "error", "message": str(e)})
+        await websocket.close()
+
+
 # System endpoints
 @app.get("/system/status")
 async def get_system_status():
@@ -3198,6 +3317,110 @@ async def get_system_status():
         status["services"] = {"error": str(e)}
 
     return status
+
+
+@app.post("/system/local-mode")
+async def enter_local_mode():
+    """Switch to AP mode for direct local control.
+
+    This disconnects from WiFi and creates a hotspot for direct phone→robot control.
+    After calling this, connect to the WIMZ-XXXX hotspot and use the API at 192.168.4.1:8000
+    """
+    try:
+        from services.network.wifi_manager import WiFiManager
+
+        wifi = WiFiManager()
+
+        # Generate SSID
+        serial = wifi.get_device_serial()
+        ssid = f"WIMZ-{serial}"
+        password = "wimzsetup"
+
+        logger.info(f"🔄 Switching to Local Mode (AP: {ssid})")
+
+        # Start hotspot
+        success = wifi.start_hotspot(ssid, password)
+
+        if success:
+            return {
+                "status": "switching",
+                "ssid": ssid,
+                "password": password,
+                "ip": "192.168.4.1",
+                "api": "http://192.168.4.1:8000",
+                "ws": "ws://192.168.4.1:8000/ws/local",
+                "message": f"Connect to {ssid} hotspot, then use app in Local Mode"
+            }
+        else:
+            return {"status": "error", "message": "Failed to start AP mode"}
+
+    except Exception as e:
+        logger.error(f"Local mode error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/system/cloud-mode")
+async def enter_cloud_mode():
+    """Switch back to client mode for cloud connection.
+
+    This stops the hotspot and reconnects to the saved WiFi network.
+    """
+    try:
+        from services.network.wifi_manager import WiFiManager
+
+        wifi = WiFiManager()
+
+        logger.info("🔄 Switching to Cloud Mode (stopping hotspot)")
+
+        # Stop hotspot (returns to client mode)
+        wifi.stop_hotspot()
+
+        # Try to reconnect to known networks
+        connected = wifi.try_connect_known(timeout=30)
+
+        if connected:
+            status = wifi.get_connection_status()
+            return {
+                "status": "connected",
+                "ssid": status.get('ssid'),
+                "ip": status.get('ip_address'),
+                "message": "Reconnected to WiFi, cloud mode active"
+            }
+        else:
+            return {
+                "status": "disconnected",
+                "message": "Hotspot stopped but could not reconnect to WiFi"
+            }
+
+    except Exception as e:
+        logger.error(f"Cloud mode error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/system/network-status")
+async def get_network_status():
+    """Get current network status (AP mode vs client mode)"""
+    try:
+        from services.network.wifi_manager import WiFiManager
+
+        wifi = WiFiManager()
+        status = wifi.get_connection_status()
+
+        # Check if we're in hotspot mode
+        is_hotspot = status.get('ssid', '').startswith('WIMZ-')
+
+        return {
+            "mode": "local" if is_hotspot else "cloud",
+            "connected": status.get('connected', False),
+            "ssid": status.get('ssid'),
+            "ip": status.get('ip_address'),
+            "signal": status.get('signal')
+        }
+
+    except Exception as e:
+        logger.error(f"Network status error: {e}")
+        return {"mode": "unknown", "error": str(e)}
+
 
 # ============================================================================
 # Audio Control Endpoints

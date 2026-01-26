@@ -16,7 +16,7 @@ from typing import Dict, Any, Optional
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Core infrastructure
-from core.bus import get_bus
+from core.bus import get_bus, publish_system_event
 from core.state import get_state, SystemMode
 from core.store import get_store
 from core.safety import get_safety_monitor
@@ -251,21 +251,32 @@ class TreatBotMain:
             self.logger.error(f"Pan/tilt service failed: {e}")
             services_status['pantilt'] = False
 
-        # Motor bus - Direct hardware control for WebRTC and Xbox controller
-        # Uses singleton pattern so won't conflict if Xbox controller also starts it
-        try:
-            from core.motor_command_bus import get_motor_bus
-            self.motor_bus = get_motor_bus()
-            if self.motor_bus.start():
-                services_status['motor'] = True
-                self.logger.info("✅ Motor bus initialized (direct hardware control for WebRTC)")
-            else:
-                services_status['motor'] = False
-                self.logger.warning("⚠️ Motor bus failed to start")
-        except Exception as e:
-            self.logger.error(f"Motor bus failed: {e}")
-            services_status['motor'] = False
+        # Motor bus - Conditional initialization based on Xbox controller presence
+        # Xbox controller subprocess needs exclusive GPIO access for low-latency control
+        # If no Xbox connected, main process owns motor_bus for WebRTC direct control
+        import os
+        xbox_connected = os.path.exists('/dev/input/js0')
+
+        if xbox_connected:
+            # Xbox controller will spawn subprocess that owns motor GPIO
             self.motor_bus = None
+            services_status['motor'] = False
+            self.logger.info("🎮 Xbox controller detected - motor GPIO reserved for Xbox subprocess")
+        else:
+            # No Xbox - main process can own motor_bus for WebRTC low-latency control
+            try:
+                from core.motor_command_bus import get_motor_bus
+                self.motor_bus = get_motor_bus()
+                if self.motor_bus.start():
+                    services_status['motor'] = True
+                    self.logger.info("✅ Motor bus initialized (WebRTC direct control - no Xbox)")
+                else:
+                    services_status['motor'] = False
+                    self.logger.warning("⚠️ Motor bus failed to start")
+            except Exception as e:
+                self.logger.error(f"Motor bus failed: {e}")
+                services_status['motor'] = False
+                self.motor_bus = None
 
         # Dispenser service
         try:
@@ -731,6 +742,7 @@ class TreatBotMain:
         - {"command": "servo_center"} → POST /servo/center
         - {"command": "audio", "params": {"file": "..."}} → POST /audio/play
         - {"command": "mode", "params": {"mode": "..."}} → POST /mode/set
+        - {"command": "set_volume", "level": 0.5} → Set audio volume
 
         Motor commands are ignored here - they go via WebRTC data channel for low latency.
         """
@@ -739,6 +751,17 @@ class TreatBotMain:
 
         try:
             import httpx
+
+            # CRITICAL: Reset manual mode timeout when receiving app commands
+            # This prevents the FSM from reverting to IDLE while app is in use
+            current_mode = self.state.get_mode()
+            if current_mode == SystemMode.MANUAL:
+                # Publish manual input event to reset FSM timeout
+                publish_system_event('manual_input_detected', {
+                    'source': 'cloud_command',
+                    'command': event.data.get('command')
+                }, 'treatbot')
+                self.logger.debug("☁️ Reset manual mode timeout (cloud activity)")
 
             # Log full event data for debugging
             self.logger.info(f"☁️ Event data: {event.data}")
@@ -852,6 +875,54 @@ class TreatBotMain:
                     resp = client.post(f'{api_base}/audio/stop')
                     self.logger.info(f"☁️ Audio stop -> {resp.status_code}")
 
+                elif command == 'set_volume':
+                    # Set audio volume: {"level": 0.5} (0.0-1.0)
+                    level = event.data.get('level', params.get('level', 0.5))
+                    volume = int(float(level) * 100)  # Convert 0.0-1.0 to 0-100
+                    volume = max(0, min(100, volume))  # Clamp to 0-100
+                    resp = client.post(f'{api_base}/audio/volume', json={
+                        'volume': volume
+                    })
+                    self.logger.info(f"☁️ Volume set={volume}% (level={level}) -> {resp.status_code}")
+
+                elif command == 'audio_volume':
+                    # Set audio volume: {"level": 50} (0-100 from app)
+                    level = params.get('level', event.data.get('level', 50))
+                    volume = max(0, min(100, int(float(level))))
+                    resp = client.post(f'{api_base}/audio/volume', json={
+                        'volume': volume
+                    })
+                    self.logger.info(f"☁️ Volume set={volume}% -> {resp.status_code}")
+
+                elif command == 'take_photo':
+                    # Photo capture: returns snapshot from AI stream
+                    resp = client.post(f'{api_base}/camera/snapshot')
+                    self.logger.info(f"☁️ Photo captured -> {resp.status_code}")
+
+                    # Send photo back to app via relay
+                    if resp.status_code == 200:
+                        resp_data = resp.json()
+                        filepath = resp_data.get('filepath')
+                        if filepath and os.path.exists(filepath):
+                            import base64
+                            from datetime import datetime
+                            with open(filepath, 'rb') as f:
+                                image_data = base64.b64encode(f.read()).decode('utf-8')
+                            if self.relay_client and self.relay_client.connected:
+                                self.relay_client.send_event('photo', {
+                                    'data': image_data,
+                                    'filename': os.path.basename(filepath),
+                                    'timestamp': datetime.now().isoformat(),
+                                    'resolution': resp_data.get('resolution', ''),
+                                    'size_bytes': resp_data.get('size_bytes', 0),
+                                    'with_hud': params.get('with_hud', False)
+                                })
+                                self.logger.info(f"📸 Photo sent to app: {len(image_data)} chars base64")
+                            else:
+                                self.logger.warning("📸 Photo captured but relay not connected")
+                        else:
+                            self.logger.error(f"📸 Photo file not found: {filepath}")
+
                 elif command == 'mode':
                     # Mode: {"mode": "coach"} or {"mode": "idle"}
                     mode_name = params.get('mode', '').lower()
@@ -871,10 +942,15 @@ class TreatBotMain:
 
                 elif command == 'upload_voice':
                     # Voice upload: {"name": "sit", "dog_id": "1", "data": "<base64>"}
+                    # dog_id defaults to "default" if app doesn't provide it
+                    upload_name = params.get('name') or event.data.get('name')
+                    upload_dog_id = params.get('dog_id') or event.data.get('dog_id') or 'default'
+                    upload_data = params.get('data') or event.data.get('data')
+                    self.logger.info(f"☁️ Voice upload: name={upload_name}, dog_id={upload_dog_id}, data_len={len(upload_data) if upload_data else 0}")
                     resp = client.post(f'{api_base}/voices/upload', json={
-                        'name': params.get('name'),
-                        'dog_id': params.get('dog_id'),
-                        'data': params.get('data')
+                        'name': upload_name,
+                        'dog_id': upload_dog_id,
+                        'data': upload_data
                     })
                     self.logger.info(f"☁️ Voice upload -> {resp.status_code}")
 
@@ -919,6 +995,32 @@ class TreatBotMain:
                     })
                     self.logger.info(f"☁️ PTT record -> {resp.status_code}")
 
+                elif command == 'call_dog':
+                    # Call the dog by name or generic fallback
+                    # Dog-specific files: {name}_come.mp3 (e.g., elsa_come.mp3)
+                    # Fallback: dog_0.mp3
+                    dog_name = params.get('dog_name') or event.data.get('dog_name')
+                    self.logger.info(f"☁️ Call dog: name={dog_name}")
+
+                    played = False
+                    if dog_name:
+                        # Try dog-specific come file: /talks/{name}_come.mp3
+                        come_file = f"/talks/{dog_name.lower()}_come.mp3"
+                        resp = client.post(f'{api_base}/audio/play/file', json={
+                            'filepath': come_file
+                        })
+                        if resp.status_code == 200 and resp.json().get('success'):
+                            played = True
+                            self.logger.info(f"☁️ Playing {come_file}")
+
+                    if not played:
+                        # Fallback to generic dog call
+                        resp = client.post(f'{api_base}/audio/play/file', json={
+                            'filepath': '/talks/dog_0.mp3'
+                        })
+                        self.logger.info(f"☁️ Playing dog_0.mp3 (fallback)")
+                    self.logger.info(f"☁️ Call dog -> {resp.status_code}")
+
                 else:
                     self.logger.warning(f"☁️ Unknown cloud command: {command}")
 
@@ -934,8 +1036,12 @@ class TreatBotMain:
         try:
             previous_mode = data.get('previous_mode')  # String value
             new_mode = data.get('new_mode')  # String value
+            reason = data.get('reason', 'unknown')  # Reason for mode change
 
-            self.logger.info(f"🔄 Mode change: {previous_mode} → {new_mode}")
+            # Log with reason and traceback for debugging
+            import traceback
+            caller_info = "".join(traceback.format_stack()[-5:-1]).strip().replace('\n', ' | ')
+            self.logger.info(f"🔄 MODE CHANGE: {previous_mode} → {new_mode} [reason: {reason}] [source: {caller_info[:300]}]")
 
             # Notify app of mode change via relay
             if self.relay_client and self.relay_client.connected:

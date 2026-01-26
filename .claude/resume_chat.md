@@ -1,5 +1,116 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-26 (Robot 02 - Bug Fix Marathon)
+**Goal:** Critical bug fixes for app integration, audio, mode management, PTT two-way audio
+**Status:** ✅ Complete
+
+---
+
+### Work Completed This Session
+
+#### Bug 1: Random Sounds Playing in IDLE Mode
+- **Problem:** Robot playing "No", "Good dog", "Do you want a treat" when idle
+- **Root Cause:** `RewardLogic._on_audio_event()` processed bark events in ALL modes
+- **Fix:** Added mode check in `orchestrators/reward_logic.py` to skip IDLE/MANUAL modes
+- **Additional:** Added call stack tracing to `usb_audio.py` `play_file()` for future debugging
+
+#### Bug 2: Mode Reverts to IDLE from MANUAL
+- **Problem:** App sets Manual mode, reverts to Idle after 120s timeout
+- **Root Cause:** `ModeFSM._evaluate_manual_transitions()` has 120s timeout, only reset by Xbox controller
+- **Fix:** Cloud command handler in `main_treatbot.py` now publishes `manual_input_detected` event on every cloud command while in MANUAL mode, resetting the timeout
+- **Import Fix:** Added `publish_system_event` to imports from `core.bus` (was causing NameError blocking ALL commands)
+
+#### Bug 3: Volume Command Handler
+- **Fix:** Added `set_volume` (0.0-1.0) and `audio_volume` (0-100) handlers in cloud command handler
+
+#### Bug 4: Photo Handler Verification
+- **Verified:** `/camera/snapshot` and `/camera/photo_hud` endpoints work correctly
+- **Note:** No `/command` REST endpoint exists - use specific endpoints
+
+#### Missing Cloud Command Handlers
+- Added `audio_volume` (app sends 0-100 scale)
+- Added `take_photo` → `/camera/snapshot`
+- Added `call_dog` → plays `{name}_come.mp3` or fallback `dog_0.mp3`
+
+#### Photo Send-Back to App (CRITICAL)
+- **Problem:** Photo captured but never sent back to app via relay
+- **Fix:** After snapshot capture, base64 encodes JPEG and sends via `relay_client.send_event('photo', {...})`
+
+#### Voice Upload 422 Fix
+- **Problem:** `/voices/upload` returned 422 because `dog_id` was required but app didn't send it
+- **Fix:** Made `dog_id` optional (defaults to `"default"`) in Pydantic model and cloud handler
+
+#### WAV Audio Format Support
+- **PTT play:** Already handled WAV correctly (skips ffmpeg, plays directly)
+- **Voice upload:** Fixed `voice_manager.py` to auto-detect format from file header (RIFF=WAV, ID3=MP3) and convert non-MP3 to MP3 via ffmpeg for consistent storage
+
+#### PTT Playback "Device Busy" Fix (CRITICAL)
+- **Problem:** `aplay` failed because USBAudio service held the device via pygame
+- **Fix:** Replaced direct `aplay` calls with routing through `USBAudioService.play_file()` via pygame. PTT stops current audio first (priority playback)
+
+#### PTT Listen Feature (Two-Way Audio)
+- **Problem:** `record_audio()` blocked the asyncio event loop for 5+ seconds
+- **Fix:** Wrapped in `run_in_executor()` in relay client handler
+- **Fix:** Changed `hw:2,0` to `plughw:2,0` for proper sample rate conversion (16kHz)
+- **Verified:** Full pipeline works: record → ffmpeg encode → base64 → send
+
+#### Warning LED Pattern
+- Added `warning` pattern (orange/red flash) to LED service
+- Fixed infinite loop: auto-stops after 3 seconds
+
+#### Fire LED Race Condition (LOW PRIORITY)
+- **Problem:** Two pattern threads could write to pixels simultaneously
+- **Root Cause:** `_stop_current_pattern()` join timeout (1s) too short, then `_stop_pattern.clear()` re-enabled old thread
+- **Fix:** Increased join timeout to 2s with retry
+
+---
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `main_treatbot.py` | Added import, cloud command handlers (volume, photo, call_dog, upload_voice), manual timeout reset, photo send-back |
+| `orchestrators/reward_logic.py` | Added IDLE/MANUAL mode check on audio events |
+| `services/media/usb_audio.py` | Added call stack tracing to play_file logging |
+| `services/media/push_to_talk.py` | Fixed `hw:` → `plughw:` for recording, replaced aplay with USBAudio routing |
+| `services/media/voice_manager.py` | Auto-detect audio format, convert WAV→MP3 for storage |
+| `services/media/led.py` | Added `warning` pattern (3s auto-stop), fixed pattern thread race condition |
+| `services/cloud/relay_client.py` | Fixed async blocking in audio_request handler with run_in_executor |
+| `api/server.py` | Made `dog_id` optional in VoiceUploadRequest |
+
+---
+
+### System Status (Robot 02)
+| Component | Status |
+|-----------|--------|
+| LEDs | ✅ Working (warning pattern added) |
+| Audio | ✅ Fixed (no random sounds in IDLE) |
+| PTT Play | ✅ Fixed (routed through pygame, no device busy) |
+| PTT Listen | ✅ Fixed (async, correct sample rate) |
+| Mode FSM | ✅ Fixed (manual mode persists with app) |
+| Photo | ✅ Fixed (sends back to app via relay) |
+| Voice Upload | ✅ Fixed (accepts WAV, defaults dog_id) |
+| Volume | ✅ Added (both 0-1 and 0-100 scales) |
+
+---
+
+### Next Session Tasks
+1. Test full app flow end-to-end (PTT talk + listen, photo, mode changes)
+2. Monitor logs for any remaining random audio in IDLE mode
+3. App-side: Fix iOS audio recording (empty M4A files - 28 bytes header only)
+4. App-side: Handle incoming `photo` event and display in UI
+5. App-side: Add remote debug logging (RemoteLogger)
+6. Consider committing all changes
+
+---
+
+### Important Notes/Warnings
+- **Uncommitted changes:** 8+ source files modified - needs commit
+- **App audio recording broken:** iOS sends 28-byte M4A headers with no audio content
+- **`=1.6.0` file** in project root is a pip artifact - safe to delete
+- **Audio stack trace logging** is verbose - may want to reduce to DEBUG level after debugging
+
+---
+
 ## Session: 2026-01-24 03:30-04:30 EST (Robot 02)
 **Goal:** LED initialization fix, continued from previous session
 **Status:** ✅ Complete

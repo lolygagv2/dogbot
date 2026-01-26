@@ -67,6 +67,8 @@ class LedService:
             'solid_green': self._pattern_solid_green,
             'solid_white': self._pattern_solid_white,
             'solid_off': self._pattern_off,
+            # Alert patterns
+            'warning': self._pattern_warning,
         }
 
         # Pattern state
@@ -189,7 +191,11 @@ class LedService:
         if self.pattern_running:
             self._stop_pattern.set()
             if self.pattern_thread and self.pattern_thread.is_alive():
-                self.pattern_thread.join(timeout=1.0)
+                self.pattern_thread.join(timeout=2.0)
+                # If thread is still alive after join, warn and wait more
+                if self.pattern_thread.is_alive():
+                    self.logger.warning("LED pattern thread slow to stop, waiting...")
+                    self.pattern_thread.join(timeout=2.0)
 
     def _run_pattern(self, pattern_name: str, duration: Optional[float],
                     color: Optional[str], kwargs: Dict[str, Any]) -> None:
@@ -795,6 +801,35 @@ class LedService:
 
             # Brief pause at minimum brightness
             time.sleep(0.3)
+
+    def _pattern_warning(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Warning pattern - fast orange/red flash, auto-stops after 3 seconds"""
+        if not self.led.pixels:
+            return
+
+        orange = (255, 165, 0)
+        red = (255, 0, 0)
+        # Default to 3 seconds if no duration specified
+        max_duration = duration if duration else 3.0
+        start_time = time.time()
+
+        while not self._stop_pattern.is_set():
+            if (time.time() - start_time) >= max_duration:
+                break
+
+            self.led.pixels.fill(orange)
+            self.led.pixels.show()
+            time.sleep(0.15)
+
+            if self._stop_pattern.is_set():
+                break
+
+            self.led.pixels.fill(red)
+            self.led.pixels.show()
+            time.sleep(0.15)
+
+        self.led.pixels.fill((0, 0, 0))
+        self.led.pixels.show()
 
     # ========== END API CONVENIENCE PATTERNS ==========
 

@@ -106,7 +106,8 @@ class PushToTalkService:
 
     def play_audio(self, audio_data: bytes, format: str = "aac") -> Dict[str, Any]:
         """
-        Play audio received from app.
+        Play audio received from app via USBAudio service (pygame).
+        Routes through USBAudio to avoid device conflicts with aplay.
 
         Args:
             audio_data: Raw audio bytes
@@ -121,67 +122,64 @@ class PushToTalkService:
         with self._lock:
             self._playing = True
             try:
-                # Save to temp file with appropriate extension
                 ext = format.lower()
                 if ext not in ('aac', 'mp3', 'wav', 'opus', 'm4a'):
                     ext = 'aac'
 
                 input_file = INCOMING_AUDIO.with_suffix(f'.{ext}')
-                wav_file = INCOMING_AUDIO.with_suffix('.wav')
 
-                # Write incoming audio to file
+                # Write incoming audio to temp file
                 with open(input_file, 'wb') as f:
                     f.write(audio_data)
 
-                self.logger.info(f"Received audio: {len(audio_data)} bytes, format={format}")
+                self.logger.info(f"PTT received: {len(audio_data)} bytes, format={format}")
 
-                # Convert to WAV for playback (unless already WAV)
-                if ext != 'wav':
-                    convert_cmd = [
-                        'ffmpeg', '-y', '-i', str(input_file),
-                        '-ar', '44100', '-ac', '2',
-                        str(wav_file)
-                    ]
+                # Determine playable file path
+                # pygame handles WAV and MP3 natively; convert others
+                if ext in ('wav', 'mp3'):
+                    play_file = input_file
+                else:
+                    # Convert AAC/opus/m4a to WAV for pygame compatibility
+                    play_file = INCOMING_AUDIO.with_suffix('.wav')
                     result = subprocess.run(
-                        convert_cmd,
-                        capture_output=True,
-                        timeout=10
+                        ['ffmpeg', '-y', '-i', str(input_file),
+                         '-ar', '44100', '-ac', '2', str(play_file)],
+                        capture_output=True, timeout=10
                     )
                     if result.returncode != 0:
                         self.logger.error(f"Audio conversion failed: {result.stderr.decode()}")
                         return {"success": False, "error": "Audio conversion failed"}
-                    play_file = wav_file
+
+                # Route through USBAudio service to avoid device conflicts
+                # PTT has priority - stop any current playback first
+                from services.media.usb_audio import get_usb_audio_service
+                usb_audio = get_usb_audio_service()
+
+                if usb_audio.is_busy():
+                    usb_audio.stop()
+                    self.logger.info("PTT: Stopped current audio for priority playback")
+
+                result = usb_audio.play_file(str(play_file))
+
+                if result.get('success'):
+                    # Wait for PTT audio to finish playing
+                    usb_audio.wait_for_completion(timeout=30)
+                    self.logger.info("PTT playback completed")
+                    return {
+                        "success": True,
+                        "message": "Audio played",
+                        "size_bytes": len(audio_data),
+                        "format": format
+                    }
                 else:
-                    play_file = input_file
-
-                # Play through USB speaker
-                play_cmd = [
-                    'aplay', '-D', f'plughw:{USB_AUDIO_CARD},0',
-                    str(play_file)
-                ]
-                result = subprocess.run(
-                    play_cmd,
-                    capture_output=True,
-                    timeout=30
-                )
-
-                if result.returncode != 0:
-                    self.logger.error(f"Playback failed: {result.stderr.decode()}")
-                    return {"success": False, "error": "Playback failed"}
-
-                self.logger.info("Audio playback completed")
-                return {
-                    "success": True,
-                    "message": "Audio played",
-                    "size_bytes": len(audio_data),
-                    "format": format
-                }
+                    self.logger.error(f"PTT playback failed: {result.get('error')}")
+                    return {"success": False, "error": result.get('error', 'Playback failed')}
 
             except subprocess.TimeoutExpired:
-                self.logger.error("Audio playback timed out")
-                return {"success": False, "error": "Playback timed out"}
+                self.logger.error("Audio conversion timed out")
+                return {"success": False, "error": "Conversion timed out"}
             except Exception as e:
-                self.logger.error(f"Play audio error: {e}")
+                self.logger.error(f"PTT play error: {e}")
                 return {"success": False, "error": str(e)}
             finally:
                 self._playing = False
@@ -238,10 +236,11 @@ class PushToTalkService:
                     time.sleep(0.3)
 
                 # Record from USB microphone
+                # Use plughw: (not hw:) for automatic sample rate conversion
                 self.logger.info(f"Recording {duration}s from USB mic (card {USB_AUDIO_CARD})...")
                 record_cmd = [
                     'arecord',
-                    '-D', f'hw:{USB_AUDIO_CARD},0',
+                    '-D', f'plughw:{USB_AUDIO_CARD},0',
                     '-f', 'S16_LE',
                     '-r', str(SAMPLE_RATE),
                     '-c', str(CHANNELS),

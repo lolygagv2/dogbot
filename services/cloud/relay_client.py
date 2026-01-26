@@ -495,6 +495,16 @@ class RelayClient:
                     })
                     return
 
+        # Handle local_mode command - switch to AP mode for direct control
+        if command == 'local_mode':
+            await self._handle_local_mode_switch()
+            return
+
+        # Handle cloud_mode command - switch back to client/cloud mode
+        if command == 'cloud_mode':
+            await self._handle_cloud_mode_switch()
+            return
+
         # Publish command to event bus for other services to handle
         self.bus.publish(CloudEvent(
             subtype='command',
@@ -512,6 +522,79 @@ class RelayClient:
     async def _handle_ping(self, data: dict):
         """Handle ping from relay"""
         await self._send({'type': 'pong', 'device_id': self.config.device_id, 'timestamp': time.time()})
+
+    async def _handle_local_mode_switch(self):
+        """Switch to AP mode for direct local control.
+
+        This sends the hotspot info BEFORE switching (since we'll lose relay connection).
+        """
+        try:
+            from services.network.wifi_manager import WiFiManager
+
+            wifi = WiFiManager()
+            serial = wifi.get_device_serial()
+            ssid = f"WIMZ-{serial}"
+            password = "wimzsetup"
+
+            self.logger.info(f"📡 Switching to Local Mode (AP: {ssid})")
+
+            # Send response BEFORE switching (we'll lose relay connection)
+            await self._send({
+                'type': 'local_mode_starting',
+                'ssid': ssid,
+                'password': password,
+                'ip': '192.168.4.1',
+                'api': 'http://192.168.4.1:8000',
+                'ws': 'ws://192.168.4.1:8000/ws/local'
+            })
+
+            # Give time for message to send
+            await asyncio.sleep(1)
+
+            # Now switch to AP mode (this will disconnect us from relay)
+            success = wifi.start_hotspot(ssid, password)
+
+            if success:
+                self.logger.info(f"✅ Local Mode active - AP: {ssid}")
+            else:
+                self.logger.error("❌ Failed to start AP mode")
+
+        except Exception as e:
+            self.logger.error(f"Local mode switch error: {e}")
+            await self._send({
+                'type': 'command_ack',
+                'command': 'local_mode',
+                'success': False,
+                'error': str(e)
+            })
+
+    async def _handle_cloud_mode_switch(self):
+        """Switch back to client/cloud mode.
+
+        This stops the hotspot and reconnects to saved WiFi.
+        """
+        try:
+            from services.network.wifi_manager import WiFiManager
+
+            wifi = WiFiManager()
+
+            self.logger.info("☁️ Switching to Cloud Mode")
+
+            # Stop hotspot
+            wifi.stop_hotspot()
+
+            # Try to reconnect to known networks
+            connected = wifi.try_connect_known(timeout=30)
+
+            if connected:
+                status = wifi.get_connection_status()
+                self.logger.info(f"✅ Cloud Mode active - connected to {status.get('ssid')}")
+                # Note: The relay client will auto-reconnect to relay server
+            else:
+                self.logger.warning("⚠️ Hotspot stopped but could not reconnect to WiFi")
+
+        except Exception as e:
+            self.logger.error(f"Cloud mode switch error: {e}")
 
     async def _handle_profiles(self, data: dict):
         """Handle dog profiles from cloud
@@ -587,16 +670,23 @@ class RelayClient:
         {"type": "audio_request", "duration": 5, "format": "aac"}
         """
         try:
+            import asyncio
             from services.media.push_to_talk import get_push_to_talk_service
             ptt_service = get_push_to_talk_service()
 
             duration = data.get('duration', 5)
             audio_format = data.get('format', 'aac')
 
-            self.logger.info(f"🎤 Recording PTT audio for cloud ({duration}s)")
-            result = ptt_service.record_audio(duration=duration, format=audio_format)
+            self.logger.info(f"🎤 AUDIO_REQUEST: Starting mic capture ({duration}s, format={audio_format})")
+
+            # Run blocking record_audio in a thread to avoid freezing the event loop
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: ptt_service.record_audio(duration=duration, format=audio_format)
+            )
 
             if result.get('success'):
+                self.logger.info(f"🎤 Recording complete, sending {result.get('size_bytes')} bytes to app")
                 await self._send({
                     'event': 'audio_message',
                     'device_id': self.config.device_id,
@@ -607,6 +697,7 @@ class RelayClient:
                 })
                 self.logger.info(f"📤 Sent PTT audio to cloud ({result.get('size_bytes')} bytes)")
             else:
+                self.logger.error(f"🎤 Recording failed: {result.get('error')}")
                 await self._send({
                     'event': 'audio_error',
                     'device_id': self.config.device_id,
@@ -614,7 +705,7 @@ class RelayClient:
                 })
 
         except Exception as e:
-            self.logger.error(f"☁️ Audio request error: {e}")
+            self.logger.error(f"☁️ Audio request error: {e}", exc_info=True)
             await self._send({
                 'event': 'audio_error',
                 'device_id': self.config.device_id,

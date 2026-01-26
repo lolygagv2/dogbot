@@ -130,6 +130,13 @@ class RewardLogic:
 
     def _on_audio_event(self, event) -> None:
         """Handle audio events for bark-based rewards"""
+        # CRITICAL: Skip bark processing in IDLE or MANUAL mode
+        # Bark rewards should only happen in COACH, SILENT_GUARDIAN, MISSION modes
+        from core.state import SystemMode
+        current_mode = self.state.get_mode()
+        if current_mode in [SystemMode.IDLE, SystemMode.MANUAL]:
+            return
+
         if event.subtype == 'bark_detected':
             self._process_bark_detection(event.data)
 
