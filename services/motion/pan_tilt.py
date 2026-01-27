@@ -89,6 +89,9 @@ class PanTiltService:
         self.scan_index = 0
         self.scan_delay = 2.0  # seconds per position
 
+        # Manual camera control flag (app drive screen overrides auto-tracking)
+        self._manual_camera_control = False
+
         # Subscribe to vision events
         self.bus.subscribe('vision', self._on_vision_event)
 
@@ -180,6 +183,10 @@ class PanTiltService:
 
                 # Skip entire control loop in MANUAL mode to prevent conflicts
                 if current_mode == SystemMode.MANUAL:
+                    continue
+
+                # Skip auto-tracking when app has manual camera control
+                if self._manual_camera_control:
                     continue
 
                 now = time.time()
@@ -509,12 +516,22 @@ class PanTiltService:
             self.logger.info("Tracking disabled")
             self.center_camera()
 
+    def set_manual_camera(self, active: bool) -> None:
+        """Enable/disable manual camera control from app drive screen.
+
+        When active, auto-tracking and scanning are suppressed so the app
+        can control the camera via move_camera() without interference.
+        """
+        self._manual_camera_control = active
+        self.logger.info(f"Manual camera control {'enabled' if active else 'disabled'}")
+
     def get_status(self) -> Dict[str, Any]:
         """Get pan/tilt service status"""
         return {
             'initialized': self.servo_initialized,
             'running': self.running,
             'tracking_enabled': self.tracking_enabled,
+            'manual_camera_control': self._manual_camera_control,
             'current_position': {'pan': self.current_pan, 'tilt': self.current_tilt},
             'target_position': self.target_position,
             'has_target': self.target_position is not None,

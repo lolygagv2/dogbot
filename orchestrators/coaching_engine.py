@@ -579,15 +579,28 @@ class CoachingEngine:
         if self.led:
             self.led.set_pattern('attention', duration=2.0)
 
-        # Say dog's name - try specific name first, fallback to generic
-        name_audio = f'{dog_name.lower()}.mp3'
-        base_path = '/home/morgan/dogbot/VOICEMP3/talks'
-        if not os.path.exists(os.path.join(base_path, name_audio)):
-            # Fallback to generic greeting for unknown dogs
-            name_audio = 'dogs_come.mp3'
-            logger.info(f"No audio for '{dog_name}', using generic greeting")
+        # Say dog's name - try custom voice first, then default files
+        dog_id = self.current_session.dog_id if self.current_session else None
+        name_played = False
 
-        self._play_audio(name_audio, wait=True, timeout=5.0)
+        # Try custom voice for dog name via play_command
+        if dog_id and self.audio:
+            result = self.audio.play_command(dog_name.lower(), dog_id=dog_id)
+            if result.get('success'):
+                name_played = True
+                if result.get('voice_source') == 'custom':
+                    logger.info(f"Using custom voice for '{dog_name}'")
+                self.audio.wait_for_completion(timeout=5.0)
+
+        if not name_played:
+            # Fallback: try default name audio file
+            name_audio = f'{dog_name.lower()}.mp3'
+            base_path = '/home/morgan/dogbot/VOICEMP3/talks'
+            if not os.path.exists(os.path.join(base_path, name_audio)):
+                name_audio = 'dogs_come.mp3'
+                logger.info(f"No audio for '{dog_name}', using generic greeting")
+            self._play_audio(name_audio, wait=True, timeout=5.0)
+
         time.sleep(0.5)  # Brief pause between name and command
 
         self.fsm_state = CoachState.COMMAND
@@ -747,13 +760,23 @@ class CoachingEngine:
         if self.led:
             self.led.set_pattern('attention', duration=2.0)
 
-        # Say dog's name again - try specific name first, fallback to generic
-        name_audio = f'{dog_name.lower()}.mp3'
-        base_path = '/home/morgan/dogbot/VOICEMP3/talks'
-        if not os.path.exists(os.path.join(base_path, name_audio)):
-            name_audio = 'dogs_come.mp3'
+        # Say dog's name again - try custom voice first, then default files
+        dog_id = self.current_session.dog_id if self.current_session else None
+        name_played = False
 
-        self._play_audio(name_audio, wait=True, timeout=5.0)
+        if dog_id and self.audio:
+            result = self.audio.play_command(dog_name.lower(), dog_id=dog_id)
+            if result.get('success'):
+                name_played = True
+                self.audio.wait_for_completion(timeout=5.0)
+
+        if not name_played:
+            name_audio = f'{dog_name.lower()}.mp3'
+            base_path = '/home/morgan/dogbot/VOICEMP3/talks'
+            if not os.path.exists(os.path.join(base_path, name_audio)):
+                name_audio = 'dogs_come.mp3'
+            self._play_audio(name_audio, wait=True, timeout=5.0)
+
         time.sleep(0.5)  # Brief pause between name and command
 
         self.fsm_state = CoachState.RETRY_COMMAND
@@ -908,22 +931,36 @@ class CoachingEngine:
         logger.info("Returning to WAITING_FOR_DOG state")
 
     def _play_audio(self, filename: str, wait: bool = False, timeout: float = 5.0):
-        """Play audio file from talks directory
+        """Play audio file, using custom voice when dog_id is available
 
         Args:
-            filename: Audio filename (e.g., 'bezik.mp3')
+            filename: Audio filename (e.g., 'bezik.mp3') or command name
             wait: If True, block until audio finishes (up to timeout)
             timeout: Max seconds to wait for audio completion (default 5s)
         """
         try:
+            if not self.audio:
+                return
+
+            # Try custom voice via play_command when session has dog_id
+            dog_id = self.current_session.dog_id if self.current_session else None
+            if dog_id:
+                # Strip .mp3 extension to get command name for play_command()
+                command = filename.replace('.mp3', '').replace('.wav', '')
+                result = self.audio.play_command(command, dog_id=dog_id)
+                if result.get('success'):
+                    if wait:
+                        self.audio.wait_for_completion(timeout=timeout)
+                    return
+
+            # Fallback to direct file path
             base = '/home/morgan/dogbot/VOICEMP3/talks'
             full_path = os.path.join(base, filename)
 
             if os.path.exists(full_path):
-                if self.audio:
-                    self.audio.play_file(full_path)
-                    if wait:
-                        self.audio.wait_for_completion(timeout=timeout)
+                self.audio.play_file(full_path)
+                if wait:
+                    self.audio.wait_for_completion(timeout=timeout)
             else:
                 logger.warning(f"Audio file not found: {full_path}")
 

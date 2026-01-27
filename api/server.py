@@ -1982,6 +1982,31 @@ async def camera_center():
         logger.error(f"Camera center error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+class ManualCameraRequest(BaseModel):
+    active: bool = True
+
+
+@app.post("/camera/manual_control")
+async def set_manual_camera_control(request: ManualCameraRequest):
+    """Enable/disable manual camera control from app drive screen.
+
+    When active, auto-tracking and scanning are suppressed so the app
+    can control the camera via pantilt endpoints without interference.
+    """
+    try:
+        pantilt_service = get_pantilt_service()
+        pantilt_service.set_manual_camera(request.active)
+
+        return {
+            "success": True,
+            "manual_camera_control": request.active,
+            "message": f"Manual camera control {'enabled' if request.active else 'disabled'}"
+        }
+    except Exception as e:
+        logger.error(f"Manual camera control error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============================================================================
 # Video Recording endpoints
 # ============================================================================
@@ -2434,6 +2459,87 @@ async def refresh_audio_playlist():
     except Exception as e:
         logger.error(f"Audio playlist refresh error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/music/list")
+async def list_music():
+    """List all songs (system + user uploaded)"""
+    try:
+        usb_audio = get_usb_audio_service()
+        return usb_audio.list_songs()
+    except Exception as e:
+        logger.error(f"Music list error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SongUploadRequest(BaseModel):
+    filename: str  # e.g., "my_song.mp3"
+    data: str      # base64-encoded audio data
+
+
+@app.post("/music/upload")
+async def upload_song(request: SongUploadRequest):
+    """Upload a song to user songs folder"""
+    import base64
+    import re
+
+    try:
+        # Validate filename (alphanumeric, dashes, underscores, dots only)
+        if not re.match(r'^[\w\-. ]+\.(mp3|wav|ogg)$', request.filename, re.IGNORECASE):
+            raise HTTPException(status_code=400, detail="Invalid filename. Use alphanumeric with .mp3/.wav/.ogg extension")
+
+        user_songs_path = "/home/morgan/dogbot/VOICEMP3/songs/user"
+        os.makedirs(user_songs_path, exist_ok=True)
+
+        filepath = os.path.join(user_songs_path, request.filename)
+
+        # Decode and save
+        audio_data = base64.b64decode(request.data)
+        with open(filepath, 'wb') as f:
+            f.write(audio_data)
+
+        # Refresh playlist to include new song
+        usb_audio = get_usb_audio_service()
+        usb_audio.refresh_playlist()
+
+        return {
+            "success": True,
+            "filename": request.filename,
+            "path": f"user/{request.filename}",
+            "size_bytes": len(audio_data),
+            "message": f"Song '{request.filename}' uploaded"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Song upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/music/user/{filename}")
+async def delete_user_song(filename: str):
+    """Delete a user-uploaded song"""
+    try:
+        filepath = os.path.join("/home/morgan/dogbot/VOICEMP3/songs/user", filename)
+        if not os.path.exists(filepath):
+            raise HTTPException(status_code=404, detail=f"Song not found: {filename}")
+
+        os.remove(filepath)
+
+        # Refresh playlist
+        usb_audio = get_usb_audio_service()
+        usb_audio.refresh_playlist()
+
+        return {
+            "success": True,
+            "filename": filename,
+            "message": f"Song '{filename}' deleted"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Song delete error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Legacy relay endpoints - USB audio only now (no relay switching needed)
 @app.post("/audio/relay/pi")

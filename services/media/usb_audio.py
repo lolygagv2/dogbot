@@ -74,14 +74,33 @@ class USBAudioService:
             self.initialized = False
 
     def _build_playlist(self):
-        """Build playlist from songs folder"""
+        """Build playlist from songs folder, merging system + user songs"""
         songs_path = os.path.join(self.base_path, "songs")
+        user_songs_path = os.path.join(songs_path, "user")
+
+        # Ensure user songs directory exists
+        os.makedirs(user_songs_path, exist_ok=True)
+
+        playlist = []
+
+        # System songs (top-level songs/)
         if os.path.exists(songs_path):
-            self._playlist = sorted([
+            playlist.extend(sorted([
                 f for f in os.listdir(songs_path)
                 if f.lower().endswith(('.mp3', '.wav', '.ogg'))
-            ])
-            self.logger.info(f"Built playlist with {len(self._playlist)} tracks")
+                and os.path.isfile(os.path.join(songs_path, f))
+            ]))
+
+        # User-uploaded songs (songs/user/) - prefixed with "user/"
+        if os.path.exists(user_songs_path):
+            playlist.extend(sorted([
+                f"user/{f}" for f in os.listdir(user_songs_path)
+                if f.lower().endswith(('.mp3', '.wav', '.ogg'))
+                and os.path.isfile(os.path.join(user_songs_path, f))
+            ]))
+
+        self._playlist = playlist
+        self.logger.info(f"Built playlist with {len(self._playlist)} tracks")
 
     def play_file(self, filepath: str, loop: bool = False) -> Dict[str, Any]:
         """Play an audio file
@@ -322,6 +341,23 @@ class USBAudioService:
             "success": True,
             "count": len(self._playlist),
             "playlist": self._playlist
+        }
+
+    def list_songs(self) -> Dict[str, Any]:
+        """List all songs with source info (system vs user)"""
+        self._build_playlist()
+        songs = []
+        for track in self._playlist:
+            if track.startswith("user/"):
+                songs.append({"filename": track, "source": "user", "name": track[5:]})
+            else:
+                songs.append({"filename": track, "source": "system", "name": track})
+        return {
+            "success": True,
+            "songs": songs,
+            "total": len(songs),
+            "system_count": sum(1 for s in songs if s["source"] == "system"),
+            "user_count": sum(1 for s in songs if s["source"] == "user")
         }
 
     def play_command(self, command: str, dog_id: str = None, loop: bool = False) -> Dict[str, Any]:

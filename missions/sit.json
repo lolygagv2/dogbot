@@ -1,0 +1,42 @@
+{
+  "name": "sit",
+  "description": "Quick sit mission - wait for dog, then reward sit",
+  "enabled": true,
+  "schedule": "manual",
+  "max_rewards": 3,
+  "duration_minutes": 10,
+  "stages": [
+    {
+      "name": "wait_for_dog",
+      "timeout": 120.0,
+      "success_event": "VisionEvent.DogDetected",
+      "min_duration": 0.0,
+      "max_attempts": 3,
+      "sequence": null,
+      "cooldown": 0.0,
+      "conditions": {}
+    },
+    {
+      "name": "wait_for_sit",
+      "timeout": 60.0,
+      "success_event": "VisionEvent.Pose.Sit",
+      "min_duration": 2.0,
+      "max_attempts": 3,
+      "sequence": "celebrate_sit",
+      "cooldown": 10.0,
+      "conditions": {
+        "min_confidence": 0.7
+      }
+    }
+  ],
+  "completion": {
+    "success": "Sit mission complete!",
+    "timeout": "Dog did not sit in time",
+    "max_rewards": "Great job - treats earned!"
+  },
+  "config": {
+    "treat_sound": "good_dog.mp3",
+    "celebration_lights": "green_flash",
+    "daily_limit": 10
+  }
+}

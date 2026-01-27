@@ -697,6 +697,35 @@ class TreatBotMain:
                         'previous': event.data.get('previous'),
                     }
                     # Mode changes are not throttled
+
+                elif event.subtype == 'mission.started':
+                    event_type = 'mission_progress'
+                    event_data = {
+                        'action': 'started',
+                        'mission': event.data.get('mission_name'),
+                        'mission_id': event.data.get('mission_id'),
+                        'dog_id': event.data.get('dog_id'),
+                    }
+
+                elif event.subtype == 'mission.completed':
+                    event_type = 'mission_complete'
+                    event_data = {
+                        'mission': event.data.get('mission_name'),
+                        'mission_id': event.data.get('mission_id'),
+                        'success': event.data.get('success', False),
+                        'reason': event.data.get('reason'),
+                        'rewards_given': event.data.get('rewards_given', 0),
+                    }
+
+                elif event.subtype == 'mission.stopped':
+                    event_type = 'mission_stopped'
+                    event_data = {
+                        'mission': event.data.get('mission_name'),
+                        'mission_id': event.data.get('mission_id'),
+                        'reason': event.data.get('reason'),
+                        'rewards_given': event.data.get('rewards_given', 0),
+                    }
+
                 elif event.subtype in ('battery_low', 'battery_critical', 'battery_charging', 'battery_status'):
                     # Battery events are published as SYSTEM events
                     # Include temperature and treats info for full telemetry
@@ -947,33 +976,34 @@ class TreatBotMain:
                     self.logger.info(f"☁️ Volume set={volume}% -> {resp.status_code}")
 
                 elif command == 'take_photo':
-                    # Photo capture: returns snapshot from AI stream
-                    resp = client.post(f'{api_base}/camera/snapshot')
-                    self.logger.info(f"☁️ Photo captured -> {resp.status_code}")
+                    # Photo capture with HUD overlay (bboxes, names, timestamps)
+                    # HUD defaults to on; app can send with_hud: false to disable
+                    with_hud = params.get('with_hud', True)
+                    resp = client.post(f'{api_base}/camera/photo_hud', json={
+                        'with_hud': with_hud
+                    })
+                    self.logger.info(f"☁️ Photo captured (hud={with_hud}) -> {resp.status_code}")
 
                     # Send photo back to app via relay
                     if resp.status_code == 200:
                         resp_data = resp.json()
-                        filepath = resp_data.get('filepath')
-                        if filepath and os.path.exists(filepath):
-                            import base64
+                        image_data = resp_data.get('data')  # base64 from photo_hud
+                        if image_data:
                             from datetime import datetime
-                            with open(filepath, 'rb') as f:
-                                image_data = base64.b64encode(f.read()).decode('utf-8')
                             if self.relay_client and self.relay_client.connected:
                                 self.relay_client.send_event('photo', {
                                     'data': image_data,
-                                    'filename': os.path.basename(filepath),
-                                    'timestamp': datetime.now().isoformat(),
+                                    'filename': resp_data.get('filename', 'photo.jpg'),
+                                    'timestamp': resp_data.get('timestamp', datetime.now().isoformat()),
                                     'resolution': resp_data.get('resolution', ''),
                                     'size_bytes': resp_data.get('size_bytes', 0),
-                                    'with_hud': params.get('with_hud', False)
+                                    'with_hud': with_hud
                                 })
                                 self.logger.info(f"📸 Photo sent to app: {len(image_data)} chars base64")
                             else:
                                 self.logger.warning("📸 Photo captured but relay not connected")
                         else:
-                            self.logger.error(f"📸 Photo file not found: {filepath}")
+                            self.logger.error("📸 Photo HUD returned no image data")
 
                 elif command == 'mode':
                     # Mode: {"mode": "coach"} or {"mode": "idle"}
@@ -1046,6 +1076,109 @@ class TreatBotMain:
                         'format': params.get('format', 'aac')
                     })
                     self.logger.info(f"☁️ PTT record -> {resp.status_code}")
+
+                elif command == 'upload_song':
+                    # Upload a song: {"filename": "my_song.mp3", "data": "<base64>"}
+                    song_filename = params.get('filename')
+                    song_data = params.get('data')
+                    if song_filename and song_data:
+                        resp = client.post(f'{api_base}/music/upload', json={
+                            'filename': song_filename,
+                            'data': song_data
+                        })
+                        self.logger.info(f"☁️ Song upload '{song_filename}' -> {resp.status_code}")
+                        if self.relay_client and self.relay_client.connected:
+                            self.relay_client.send_event('music_update', resp.json() if resp.status_code == 200 else {'success': False})
+                    else:
+                        self.logger.warning("☁️ upload_song: missing filename or data")
+
+                elif command == 'delete_song':
+                    # Delete a user song: {"filename": "my_song.mp3"}
+                    song_filename = params.get('filename')
+                    if song_filename:
+                        resp = client.delete(f'{api_base}/music/user/{song_filename}')
+                        self.logger.info(f"☁️ Song delete '{song_filename}' -> {resp.status_code}")
+                        if self.relay_client and self.relay_client.connected:
+                            self.relay_client.send_event('music_update', resp.json() if resp.status_code == 200 else {'success': False})
+                    else:
+                        self.logger.warning("☁️ delete_song: missing filename")
+
+                elif command == 'list_songs':
+                    # List all songs (system + user)
+                    resp = client.get(f'{api_base}/music/list')
+                    self.logger.info(f"☁️ List songs -> {resp.status_code}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('music_update', {
+                            'action': 'list',
+                            **(resp.json() if resp.status_code == 200 else {'success': False})
+                        })
+
+                elif command == 'start_mission':
+                    # Start a training mission: {"mission": "sit", "dog_id": "1"}
+                    mission_name = params.get('mission') or params.get('name')
+                    dog_id = params.get('dog_id')
+                    if mission_name:
+                        from orchestrators.mission_engine import get_mission_engine
+                        engine = get_mission_engine()
+                        started = engine.start_mission(mission_name, dog_id=dog_id)
+                        self.logger.info(f"☁️ Start mission '{mission_name}' -> {started}")
+                        if self.relay_client and self.relay_client.connected:
+                            status = engine.get_mission_status()
+                            self.relay_client.send_event('mission_progress', {
+                                'action': 'started' if started else 'failed',
+                                'mission': mission_name,
+                                **status
+                            })
+                    else:
+                        self.logger.warning("☁️ start_mission: no mission name provided")
+
+                elif command == 'cancel_mission':
+                    # Cancel active mission
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    status = engine.get_mission_status()  # grab before stopping
+                    cancelled = engine.stop_mission(reason='app_cancelled')
+                    self.logger.info(f"☁️ Cancel mission -> {cancelled}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('mission_stopped', {
+                            'reason': 'app_cancelled',
+                            'success': cancelled,
+                            **status
+                        })
+
+                elif command == 'mission_status':
+                    # Get current mission status
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    status = engine.get_mission_status()
+                    self.logger.info(f"☁️ Mission status -> {status.get('active', False)}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('mission_progress', {
+                            'action': 'status',
+                            **status
+                        })
+
+                elif command == 'list_missions':
+                    # List available missions
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    missions = engine.get_available_missions()
+                    self.logger.info(f"☁️ List missions -> {len(missions)} available")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('mission_progress', {
+                            'action': 'list',
+                            'missions': missions
+                        })
+
+                elif command == 'camera_control':
+                    # Manual camera control toggle for app drive screen
+                    # {"active": true} to suppress auto-tracking
+                    # {"active": false} to resume auto-tracking
+                    active = params.get('active', True)
+                    resp = client.post(f'{api_base}/camera/manual_control', json={
+                        'active': active
+                    })
+                    self.logger.info(f"☁️ Camera manual control active={active} -> {resp.status_code}")
 
                 elif command == 'call_dog':
                     # Call the dog by name
