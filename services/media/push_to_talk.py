@@ -349,6 +349,93 @@ class PushToTalkService:
             finally:
                 self._recording = False
 
+    def capture_audio(self, duration: float = DEFAULT_DURATION) -> Dict[str, Any]:
+        """
+        Capture audio from USB microphone and return as base64 WAV.
+        Simpler than record_audio - no format conversion, returns raw WAV.
+        Used by tap-to-listen feature.
+
+        Args:
+            duration: Recording duration in seconds (max 10s)
+
+        Returns:
+            Dict with base64 encoded WAV data
+        """
+        if not self._mic_available:
+            return {"success": False, "error": "Microphone not available"}
+
+        if self._recording:
+            return {"success": False, "error": "Already recording"}
+
+        # Clamp duration
+        duration = min(max(duration, 1), MAX_DURATION)
+
+        with self._lock:
+            self._recording = True
+            try:
+                wav_file = TEMP_DIR / "capture_audio.wav"
+
+                # Pause bark detector if running
+                bark_paused = self._pause_bark_detector()
+                if bark_paused:
+                    time.sleep(0.3)
+
+                # Record from USB microphone
+                self.logger.info(f"[MIC] Capturing {duration}s from USB mic (card {USB_AUDIO_CARD})")
+                record_cmd = [
+                    'arecord',
+                    '-D', f'plughw:{USB_AUDIO_CARD},0',
+                    '-f', 'S16_LE',
+                    '-r', str(SAMPLE_RATE),
+                    '-c', str(CHANNELS),
+                    '-d', str(int(duration)),
+                    str(wav_file)
+                ]
+
+                result = subprocess.run(
+                    record_cmd,
+                    capture_output=True,
+                    timeout=duration + 5
+                )
+
+                # Re-enable bark detector
+                if bark_paused:
+                    self._resume_bark_detector()
+
+                if result.returncode != 0:
+                    self.logger.error(f"[MIC] Capture failed: {result.stderr.decode()}")
+                    return {"success": False, "error": "Capture failed - microphone busy"}
+
+                if not wav_file.exists() or wav_file.stat().st_size < 1000:
+                    return {"success": False, "error": "Capture produced no data"}
+
+                # Read WAV and encode as base64
+                with open(wav_file, 'rb') as f:
+                    audio_bytes = f.read()
+
+                audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+                self.logger.info(f"[MIC] Captured {len(audio_bytes)} bytes ({duration}s)")
+
+                return {
+                    "success": True,
+                    "data": audio_base64,
+                    "format": "wav",
+                    "duration_ms": int(duration * 1000),
+                    "size_bytes": len(audio_bytes)
+                }
+
+            except subprocess.TimeoutExpired:
+                self.logger.error("[MIC] Capture timed out")
+                self._resume_bark_detector()
+                return {"success": False, "error": "Capture timed out"}
+            except Exception as e:
+                self.logger.error(f"[MIC] Capture error: {e}")
+                self._resume_bark_detector()
+                return {"success": False, "error": str(e)}
+            finally:
+                self._recording = False
+
     def _pause_bark_detector(self) -> bool:
         """Pause bark detector to free microphone"""
         try:

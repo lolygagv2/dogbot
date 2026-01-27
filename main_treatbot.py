@@ -792,6 +792,38 @@ class TreatBotMain:
 
             self.logger.info(f"☁️ Processing command={command} params={params}")
 
+            # Handle long-running commands in background thread (avoids blocking event bus)
+            if command == 'audio_request':
+                duration = params.get('duration', 5)
+                duration = max(1, min(10, int(duration)))
+                self.logger.info(f"☁️ Audio request: capture {duration}s from mic")
+
+                def _capture_and_send():
+                    try:
+                        with httpx.Client(timeout=duration + 10) as capture_client:
+                            resp = capture_client.post(
+                                f'{api_base}/ptt/capture',
+                                json={'duration': duration}
+                            )
+                            if resp.status_code == 200:
+                                result = resp.json()
+                                if self.relay_client and self.relay_client.connected:
+                                    self.relay_client.send_event('audio_message', {
+                                        'data': result['data'],
+                                        'format': result['format'],
+                                        'duration_ms': result['duration_ms']
+                                    })
+                                    self.logger.info(f"☁️ Audio capture sent to app: {result['duration_ms']}ms")
+                                else:
+                                    self.logger.warning("☁️ Audio captured but relay not connected")
+                            else:
+                                self.logger.error(f"☁️ Audio capture failed: {resp.status_code}")
+                    except Exception as e:
+                        self.logger.error(f"☁️ Audio capture error: {e}")
+
+                threading.Thread(target=_capture_and_send, daemon=True, name="AudioCapture").start()
+                return
+
             with httpx.Client(timeout=5.0) as client:
                 if command == 'treat' or command == 'dispense_treat':
                     # Treat dispensing: POST /treat/dispense
@@ -1016,29 +1048,49 @@ class TreatBotMain:
                     self.logger.info(f"☁️ PTT record -> {resp.status_code}")
 
                 elif command == 'call_dog':
-                    # Call the dog by name or generic fallback
-                    # Dog-specific files: {name}_come.mp3 (e.g., elsa_come.mp3)
-                    # Fallback: dog_0.mp3
+                    # Call the dog by name
+                    # Priority: 1) custom voice come/name, 2) {name}_come.mp3, 3) dog_0.mp3
                     dog_name = params.get('dog_name') or event.data.get('dog_name')
-                    self.logger.info(f"☁️ Call dog: name={dog_name}")
+                    dog_id = params.get('dog_id') or event.data.get('dog_id')
+                    self.logger.info(f"☁️ Call dog: name={dog_name}, dog_id={dog_id}")
 
                     played = False
-                    if dog_name:
-                        # Try dog-specific come file: /talks/{name}_come.mp3
+
+                    # Check for custom voice recordings first
+                    if dog_id or dog_name:
+                        lookup_id = dog_id or dog_name
+                        custom_paths = [
+                            f"/home/morgan/dogbot/voices/{lookup_id}/come.mp3",
+                            f"/home/morgan/dogbot/voices/{lookup_id}/come.wav",
+                            f"/home/morgan/dogbot/voices/{lookup_id}/name.mp3",
+                            f"/home/morgan/dogbot/voices/{lookup_id}/name.wav",
+                        ]
+                        for path in custom_paths:
+                            if os.path.exists(path):
+                                resp = client.post(f'{api_base}/audio/play/file', json={
+                                    'filepath': path
+                                })
+                                if resp.status_code == 200 and resp.json().get('success'):
+                                    played = True
+                                    self.logger.info(f"☁️ Call dog: using custom voice {path}")
+                                    break
+
+                    # Try dog-specific come file: /talks/{name}_come.mp3
+                    if not played and dog_name:
                         come_file = f"/talks/{dog_name.lower()}_come.mp3"
                         resp = client.post(f'{api_base}/audio/play/file', json={
                             'filepath': come_file
                         })
                         if resp.status_code == 200 and resp.json().get('success'):
                             played = True
-                            self.logger.info(f"☁️ Playing {come_file}")
+                            self.logger.info(f"☁️ Call dog: playing {come_file}")
 
+                    # Fallback to generic dog call
                     if not played:
-                        # Fallback to generic dog call
                         resp = client.post(f'{api_base}/audio/play/file', json={
                             'filepath': '/talks/dog_0.mp3'
                         })
-                        self.logger.info(f"☁️ Playing dog_0.mp3 (fallback)")
+                        self.logger.info(f"☁️ Call dog: using default dog_0.mp3")
                     self.logger.info(f"☁️ Call dog -> {resp.status_code}")
 
                 else:

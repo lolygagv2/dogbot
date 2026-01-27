@@ -2379,7 +2379,7 @@ async def toggle_audio():
 
 @app.post("/audio/next")
 async def next_audio():
-    """Load next track in playlist (does NOT auto-play)"""
+    """Next track in playlist (auto-plays)"""
     try:
         usb_audio = get_usb_audio_service()
         result = usb_audio.play_next()
@@ -2388,8 +2388,8 @@ async def next_audio():
             "success": result.get("success", False),
             "track": result.get("track_name"),
             "track_index": result.get("track_index"),
-            "playing": result.get("playing", False),
-            "message": f"Loaded: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to load next")
+            "playing": True if result.get("success") else False,
+            "message": f"Playing: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to play next")
         }
     except Exception as e:
         logger.error(f"Audio next error: {e}")
@@ -2397,7 +2397,7 @@ async def next_audio():
 
 @app.post("/audio/previous")
 async def previous_audio():
-    """Load previous track in playlist (does NOT auto-play)"""
+    """Previous track in playlist (auto-plays)"""
     try:
         usb_audio = get_usb_audio_service()
         result = usb_audio.play_previous()
@@ -2406,8 +2406,8 @@ async def previous_audio():
             "success": result.get("success", False),
             "track": result.get("track_name"),
             "track_index": result.get("track_index"),
-            "playing": result.get("playing", False),
-            "message": f"Loaded: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to load previous")
+            "playing": True if result.get("success") else False,
+            "message": f"Playing: {result.get('track_name')}" if result.get("success") else result.get("error", "Failed to play previous")
         }
     except Exception as e:
         logger.error(f"Audio previous error: {e}")
@@ -2655,6 +2655,30 @@ async def ptt_play(request: PTTPlayRequest):
         raise
     except Exception as e:
         logger.error(f"PTT play error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class PTTCaptureRequest(BaseModel):
+    duration: float = 5.0  # Capture duration in seconds (1-10)
+
+
+@app.post("/ptt/capture")
+async def ptt_capture(request: PTTCaptureRequest):
+    """Capture audio from USB mic for tap-to-listen (returns WAV base64)"""
+    try:
+        if request.duration < 1 or request.duration > 10:
+            raise HTTPException(status_code=400, detail="Duration must be 1-10 seconds")
+
+        from services.media.push_to_talk import get_push_to_talk_service
+        ptt_service = get_push_to_talk_service()
+        result = ptt_service.capture_audio(duration=request.duration)
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"PTT capture error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

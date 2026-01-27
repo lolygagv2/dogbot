@@ -264,7 +264,7 @@ class USBAudioService:
             return result
 
     def play_next(self) -> Dict[str, Any]:
-        """Move to next track in playlist (does NOT auto-play)"""
+        """Move to next track in playlist and auto-play"""
         if not self.initialized:
             return {"success": False, "error": "Audio not initialized"}
 
@@ -276,17 +276,16 @@ class USBAudioService:
             self._current_index = (self._current_index + 1) % len(self._playlist)
             self._playlist_track = self._playlist[self._current_index]
 
-            self.logger.info(f"Track changed to: {self._playlist_track} (index {self._current_index})")
-            return {
-                "success": True,
-                "track_index": self._current_index,
-                "track_name": self._playlist_track,
-                "playing": self._music_playing,
-                "message": f"Loaded track: {self._playlist_track}"
-            }
+            # Auto-play the new track
+            filepath = f"/songs/{self._playlist_track}"
+            result = self.play_file(filepath, loop=False)
+            result["track_index"] = self._current_index
+            result["track_name"] = self._playlist_track
+            self.logger.info(f"Next track: {self._playlist_track} (auto-playing)")
+            return result
 
     def play_previous(self) -> Dict[str, Any]:
-        """Move to previous track in playlist (does NOT auto-play)"""
+        """Move to previous track in playlist and auto-play"""
         if not self.initialized:
             return {"success": False, "error": "Audio not initialized"}
 
@@ -298,14 +297,13 @@ class USBAudioService:
             self._current_index = (self._current_index - 1) % len(self._playlist)
             self._playlist_track = self._playlist[self._current_index]
 
-            self.logger.info(f"Track changed to: {self._playlist_track} (index {self._current_index})")
-            return {
-                "success": True,
-                "track_index": self._current_index,
-                "track_name": self._playlist_track,
-                "playing": self._music_playing,
-                "message": f"Loaded track: {self._playlist_track}"
-            }
+            # Auto-play the new track
+            filepath = f"/songs/{self._playlist_track}"
+            result = self.play_file(filepath, loop=False)
+            result["track_index"] = self._current_index
+            result["track_name"] = self._playlist_track
+            self.logger.info(f"Previous track: {self._playlist_track} (auto-playing)")
+            return result
 
     def get_playlist(self) -> Dict[str, Any]:
         """Get current playlist"""
