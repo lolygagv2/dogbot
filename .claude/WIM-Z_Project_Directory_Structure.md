@@ -1,5 +1,5 @@
 # WIM-Z Project Directory Structure
-*Last Updated: January 11, 2026*
+*Last Updated: January 27, 2026*
 
 ## Project Status
 **Build Phase:** COMPLETE - All systems operational, in live testing phase
@@ -44,7 +44,7 @@
          kahnshik.mp3               # Korean command
          kokoma.mp3                 # Korean command
          scooby_intro.mp3           # Fun intro audio
-      songs/                        # Music files (12 files)
+      songs/                        # Music files (12 system + user uploads)
          Wimz_theme.mp3             # WIM-Z theme song
          who_let_dogs_out.mp3       # Fun song
          hungry_like_wolf.mp3       # Fun song
@@ -57,6 +57,7 @@
          Ocean Eyes (Astronomyy Remix).mp3
          3LAU - Tokyo feat. XIRA.mp3
          BEST EDM REMIXES OF 2023.mp3
+         user/                      # User-uploaded songs (via app)
       wimz/                         # System sounds (21 files)
          WimZOnline.mp3             # Startup announcement
          CoachMode.mp3              # Coach mode announcement
@@ -109,6 +110,10 @@
          detection_plugins/
             aruco_detector.py       # ArUco marker detector
 
+   voices/                          # Custom voice recordings (per dog)
+      default/                     # Default dog voice overrides
+      {dog_id}/                    # Per-dog custom voices (e.g., come.mp3, name.mp3)
+
    services/                        # Service layer
       perception/
          detector.py                # AI detection service (YOLOv8)
@@ -122,6 +127,15 @@
          led.py                     # LED control (165 NeoPixels)
          sfx.py                     # Sound effects service
          usb_audio.py               # USB audio playback (pygame)
+         voice_manager.py           # Custom voice management
+         photo_capture.py           # Photo capture with HUD overlay
+         push_to_talk.py            # PTT two-way audio
+         video_recorder.py          # Video recording service
+      cloud/
+         relay_client.py            # Cloud relay WebSocket client
+      streaming/
+         webrtc.py                  # WebRTC video streaming
+         video_track.py             # Video track for WebRTC
       control/
          xbox_controller.py         # Xbox controller service
          bluetooth_esc.py           # Bluetooth ESC gamepad
@@ -135,11 +149,36 @@
          gui.py                     # UI service
 
    orchestrators/                   # High-level coordination
-      coaching_engine.py            # Trick coaching (retry logic)
+      coaching_engine.py            # Trick coaching (retry logic, custom voice)
       mode_fsm.py                   # Mode state machine
       mission_engine.py             # Formal mission execution
       reward_logic.py               # Reward decision engine
       sequence_engine.py            # Celebration sequences
+      program_engine.py             # Training programs
+
+   missions/                        # Mission JSON definitions
+      sit.json                     # Quick sit mission (2 stages)
+      come_and_sit.json            # Come + sit mission (4 stages)
+      sit_training.json            # Extended sit training
+      sit_sustained.json           # Sustained sit training
+      down_sustained.json          # Sustained down training
+      sit_and_speak.json           # Sit + speak combo
+      speak_morning.json           # Morning speak training
+      speak_afternoon.json         # Afternoon speak training
+      alert_training.json          # Alert bark training
+      bark_prevention.json         # Bark prevention mission
+      stop_barking.json            # Stop barking training
+      comfort_scared.json          # Comfort scared dog
+      morning_chill.json           # Morning calm period
+      morning_quiet_2hr.json       # Extended morning quiet
+      afternoon_down_3.json        # Afternoon down training
+      afternoon_sit_5.json         # Afternoon sit training
+      evening_calm_transition.json # Evening calm transition
+      evening_settle.json          # Evening settle mission
+      night_quiet_90pct.json       # Night quiet enforcement
+      quiet_progressive.json       # Progressive quiet training
+      train_sit_daily.json         # Daily sit training
+      rules_engine.py              # Mission rules engine
 
    modes/                           # Autonomous operation modes
       silent_guardian.py            # Bark quiet training

@@ -1,5 +1,248 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-27 (Build 24 - 5 Fixes)
+**Goal:** Build 24 - Custom voice coaching, song uploads, photo HUD, missions, camera control
+**Status:** Complete
+
+---
+
+### Work Completed This Session
+
+#### FIX 2: Custom Dog Voice in Coaching Engine
+- **Problem:** Coaching engine hardcoded paths to `/VOICEMP3/talks/`, ignoring custom voice recordings
+- **Fix:** `_play_audio()` now tries `play_command(command, dog_id)` when session has dog_id, falls back to direct file path
+- **Fix:** `_state_greeting()` and `_state_retry_greeting()` check custom voice via `play_command()` before fallback
+- **File:** `orchestrators/coaching_engine.py`
+
+#### FIX 3: User Upload Songs
+- **Problem:** No way for users to upload custom songs via the app
+- **Fix:** `_build_playlist()` now merges system songs + `songs/user/` songs (prefixed as `user/filename.mp3`)
+- **Fix:** Added `list_songs()` method with source info (system vs user)
+- **Fix:** Created `/VOICEMP3/songs/user/` directory
+- **API:** `GET /music/list`, `POST /music/upload`, `DELETE /music/user/{filename}`
+- **Cloud:** `upload_song`, `delete_song`, `list_songs`
+- **Files:** `services/media/usb_audio.py`, `api/server.py`, `main_treatbot.py`
+
+#### FIX 4: Photo HUD Overlay
+- **Problem:** `take_photo` used `/camera/snapshot` (no HUD overlay)
+- **Fix:** Changed to `POST /camera/photo_hud` which draws bounding boxes, names, timestamps
+- **Fix:** HUD defaults to on, app can send `with_hud: false`; base64 data returned directly (no file read)
+- **File:** `main_treatbot.py`
+
+#### FIX 5: Missions (App-Triggered)
+- **Problem:** MissionEngine existed but no mission definitions or cloud routing
+- **Fix:** Created `missions/sit.json` (2 stages: wait_for_dog, wait_for_sit)
+- **Fix:** Created `missions/come_and_sit.json` (4 stages: call_dog, wait_for_dog, command_sit, wait_for_sit)
+- **Cloud:** `start_mission`, `cancel_mission`, `mission_status`, `list_missions`
+- **Relay events:** `mission_progress`, `mission_complete`, `mission_stopped` (matches app listener names)
+- **Bus forwarding:** Internal `mission.started`/`.completed`/`.stopped` events now forwarded to relay
+- **Files:** `missions/sit.json`, `missions/come_and_sit.json`, `main_treatbot.py`
+
+#### FIX 8: Camera Manual Control
+- **Problem:** App drive screen couldn't suppress auto-tracking/scanning
+- **Fix:** Added `_manual_camera_control` flag to PanTiltService
+- **Fix:** `set_manual_camera(active)` method; `_control_loop()` skips auto-tracking when flag is active
+- **API:** `POST /camera/manual_control`
+- **Cloud:** `camera_control` command
+- **Files:** `services/motion/pan_tilt.py`, `api/server.py`, `main_treatbot.py`
+
+#### Mission Event Type Fix (mid-session correction)
+- **Problem:** App listens for `mission_progress`, `mission_complete`, `mission_stopped` but robot emitted `mission_update`
+- **Fix:** Changed cloud command replies and added bus event forwarding to use correct event types
+
+---
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `orchestrators/coaching_engine.py` | `_play_audio()`, `_state_greeting()`, `_state_retry_greeting()` use custom voice via `play_command()` |
+| `services/media/usb_audio.py` | `_build_playlist()` merges system+user songs, added `list_songs()` |
+| `services/motion/pan_tilt.py` | Added `_manual_camera_control` flag, `set_manual_camera()`, control loop check |
+| `api/server.py` | Added `POST /camera/manual_control`, `GET /music/list`, `POST /music/upload`, `DELETE /music/user/{filename}` |
+| `main_treatbot.py` | Photo HUD, mission commands, song commands, camera control, mission bus forwarding |
+| `missions/sit.json` | New mission definition |
+| `missions/come_and_sit.json` | New mission definition |
+
+---
+
+### New API Endpoints
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/camera/manual_control` | Toggle auto-tracking suppression |
+| GET | `/music/list` | List system + user songs |
+| POST | `/music/upload` | Upload song (base64) |
+| DELETE | `/music/user/{filename}` | Delete user song |
+
+### New Cloud Commands
+| Command | Params | Relay Event |
+|---------|--------|-------------|
+| `upload_song` | `filename`, `data` | `music_update` |
+| `delete_song` | `filename` | `music_update` |
+| `list_songs` | none | `music_update` |
+| `start_mission` | `mission`, `dog_id` | `mission_progress` |
+| `cancel_mission` | none | `mission_stopped` |
+| `mission_status` | none | `mission_progress` |
+| `list_missions` | none | `mission_progress` |
+| `camera_control` | `active` | none (fire-and-forget) |
+
+---
+
+### Commit
+`c719251b` - feat: Build 24 - custom voice coaching, song uploads, photo HUD, missions, camera control
+
+---
+
+### Remaining Uncommitted Changes (pre-existing)
+- `services/control/xbox_controller.py` -- modified from previous session
+- `=1.6.0` -- pip artifact in project root (safe to delete)
+- Various snapshot JPGs in `captures/`
+
+---
+
+### Next Session Tasks
+1. Test custom voice playback in coaching mode with a dog that has custom recordings
+2. Test song upload/delete/list from app
+3. Test photo HUD -- verify bounding boxes on returned image
+4. Test `start_mission sit` from app -- verify mission engine starts
+5. Test camera_control on/off from drive screen
+6. Consider committing `xbox_controller.py` changes
+7. Clean up `=1.6.0` pip artifact file
+
+---
+
+### Important Notes/Warnings
+- **Mission event types:** App expects `mission_progress`, `mission_complete`, `mission_stopped` -- robot now emits these correctly
+- **`xbox_controller.py` still uncommitted** from previous session
+- **`=1.6.0` file** in project root is a pip artifact -- safe to delete
+- **User songs directory:** `/home/morgan/dogbot/VOICEMP3/songs/user/` created and ready
+
+---
+
+## Session: 2026-01-27 (Build 23 - WebRTC + Safety Fix)
+**Goal:** Fix WebRTC session accumulation, mode revert on disconnect, startup error audio
+**Status:** Complete
+
+---
+
+### Work Completed This Session
+
+#### FIX 1: Safety Monitor Startup Grace Period
+- **Problem:** Error audio (`Wimz_errorlogs.mp3`) playing on every restart — CPU at 97-100% triggers CRITICAL alert after 45s grace period expires while Pi 5 is still loading Hailo model
+- **Fix:** Extended CPU and memory startup grace period from 45s to 90s in `core/safety.py`
+
+#### FIX 2: WebRTC Mode Revert on Disconnect (CRITICAL)
+- **Problem:** Mode reverts to IDLE when ANY WebRTC session closes, even if app is still connected (e.g., during session replacement)
+- **Root Cause:** `_handle_webrtc_close()` in `relay_client.py` called `_handle_app_disconnect()` which set mode to IDLE from MANUAL
+- **Fix:** Removed `_handle_app_disconnect()` entirely. Mode now ONLY changes via explicit `set_mode` command from the app. WebRTC session lifecycle is independent of mode state.
+
+#### FIX 3: WebRTC Connection Tracking Logs
+- **Added:** `[WEBRTC]` prefixed logs throughout `webrtc.py` showing active connections after every session create/cleanup
+- **Covers:** `create_peer_connection`, `create_offer`, `_cleanup_connection`, connection state changes, ICE state changes
+
+---
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `core/safety.py` | CPU/memory startup grace: 45s → 90s |
+| `services/cloud/relay_client.py` | Removed `_handle_app_disconnect()`, WebRTC close no longer reverts mode |
+| `services/streaming/webrtc.py` | Added `[WEBRTC]` connection tracking logs, "mode unchanged" notes |
+
+---
+
+### Commit
+`413e50c6` - fix: WebRTC single session enforcement, no mode revert on disconnect, safety grace period
+
+---
+
+### Remaining Uncommitted Changes (pre-existing, not from this session)
+- `services/control/xbox_controller.py` — modified (from previous session)
+- `services/streaming/webrtc.py` — had pre-existing uncommitted motor API fallback changes (included in this commit)
+- `=1.6.0` — pip artifact in project root (safe to delete)
+- Various snapshot JPGs in `captures/`
+
+---
+
+### Next Session Tasks
+1. Test WebRTC reconnection — verify mode persists when app reconnects
+2. Test startup — verify no error audio on clean boot (90s grace period)
+3. Monitor `[WEBRTC] Active connections:` logs to confirm single-session enforcement
+4. Consider committing remaining `xbox_controller.py` changes
+5. Clean up `=1.6.0` pip artifact file
+
+---
+
+### Important Notes/Warnings
+- **Mode no longer auto-reverts on WebRTC disconnect** — app must explicitly send `set_mode` to change mode
+- **Xbox controller disconnect still reverts MANUAL→IDLE** (in `main_treatbot.py:1180-1185`) — this is correct behavior
+- **`xbox_controller.py` still uncommitted** from previous session
+- **`=1.6.0` file** in project root is a pip artifact — safe to delete
+
+---
+
+## Session: 2026-01-26 (Robot 02 - 3 Critical Fixes)
+**Goal:** PTT async playback, manual mode timeout, startup command guard
+**Status:** ✅ Complete
+
+---
+
+### Work Completed This Session
+
+#### FIX 1: PTT Timeout (CRITICAL)
+- **Problem:** `/ptt/play` blocked synchronously waiting for audio to finish; HTTP timeout at 5s killed requests for clips >5s
+- **Root Cause:** `play_audio()` in `push_to_talk.py` called `usb_audio.wait_for_completion(timeout=30)` while holding lock
+- **Fix:** Moved conversion + playback into a background daemon thread (`PTTPlayback`). Method returns `{"success": True, "message": "Audio playback started"}` immediately. `_playing` flag cleared in thread's `finally` block.
+
+#### FIX 2: Manual Mode Timeout
+- **Problem:** Manual mode timeout too short for app usage
+- **Fix:** Changed `manual_timeout` from `120.0` (2 min) to `300.0` (5 min) in `orchestrators/mode_fsm.py`
+- **Note:** Activity reset already works — `_handle_cloud_command` publishes `manual_input_detected` on every app command in MANUAL mode
+
+#### FIX 3: Stale Commands on Startup
+- **Problem:** On restart, relay server sends buffered commands from previous session (music plays, treats dispense)
+- **Fix:** Added 5-second startup grace period in `_handle_cloud_command` — any cloud commands arriving within `_startup_grace_period` are logged and ignored
+- **Additional:** Clear relay client `_message_queue` and event bus history on startup
+
+---
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `services/media/push_to_talk.py` | `play_audio()` now runs in background thread, returns immediately |
+| `orchestrators/mode_fsm.py` | `manual_timeout`: 120 → 300 seconds |
+| `main_treatbot.py` | Added startup grace period (5s), clear relay queue + event bus history on boot |
+
+---
+
+### Commit
+`685b7e22` - fix: PTT async playback, manual mode 5min timeout, startup command guard
+
+---
+
+### Remaining Uncommitted Changes (pre-existing, not from this session)
+- `services/control/xbox_controller.py` — modified (from previous session)
+- `services/streaming/webrtc.py` — modified (from previous session)
+- `=1.6.0` — pip artifact in project root (safe to delete)
+- Various snapshot JPGs in `captures/`
+
+---
+
+### Next Session Tasks
+1. Test PTT play from app — verify audio plays without timeout errors
+2. Test manual mode persistence — verify 5-minute timeout works with app
+3. Test restart behavior — verify stale commands are ignored
+4. Consider committing remaining `xbox_controller.py` and `webrtc.py` changes
+5. Clean up `=1.6.0` pip artifact file
+
+---
+
+### Important Notes/Warnings
+- **2 source files still uncommitted** from previous session: `xbox_controller.py`, `webrtc.py`
+- **`=1.6.0` file** in project root is a pip artifact — safe to delete
+- **PTT `_playing` flag** is now managed by background thread — if thread crashes, flag stays True until next call resets it
+
+---
+
 ## Session: 2026-01-26 (Robot 02 - Bug Fix Marathon)
 **Goal:** Critical bug fixes for app integration, audio, mode management, PTT two-way audio
 **Status:** ✅ Complete
