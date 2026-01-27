@@ -105,22 +105,36 @@ class WebRTCService:
                     left_pct = int(left * 100)
                     right_pct = int(right * 100)
 
-                    # DIRECT hardware control via motor bus (same as Xbox controller)
+                    # Motor control - try direct bus first, fallback to API
+                    motor_sent = False
                     if MOTOR_BUS_AVAILABLE:
                         try:
                             motor_bus = get_motor_bus()
                             if motor_bus and motor_bus.running:
                                 cmd = create_motor_command(left_pct, right_pct, CommandSource.WEBRTC)
                                 motor_bus.send_command(cmd)
+                                motor_sent = True
                                 # Only log periodically to avoid spam
                                 if abs(left_pct) > 10 or abs(right_pct) > 10:
                                     self.logger.debug(f"Motor: L={left_pct}% R={right_pct}%")
-                            else:
-                                self.logger.warning("Motor bus not running - motor commands ignored")
                         except Exception as e:
-                            self.logger.error(f"Motor bus error: {e}")
-                    else:
-                        self.logger.warning("Motor bus not available - motor commands ignored")
+                            self.logger.debug(f"Motor bus error, using API: {e}")
+
+                    # Fallback to API if motor bus not available (Xbox controller owns GPIO)
+                    if not motor_sent:
+                        try:
+                            import aiohttp
+                            async with aiohttp.ClientSession() as session:
+                                async with session.post(
+                                    'http://localhost:8000/motor/control',
+                                    json={'left_speed': left_pct, 'right_speed': right_pct},
+                                    timeout=aiohttp.ClientTimeout(total=0.5)
+                                ) as resp:
+                                    if resp.status == 200:
+                                        if abs(left_pct) > 10 or abs(right_pct) > 10:
+                                            self.logger.debug(f"Motor (API): L={left_pct}% R={right_pct}%")
+                        except Exception as e:
+                            self.logger.debug(f"Motor API fallback failed: {e}")
 
                 except ValueError as e:
                     self.logger.warning(f"Invalid motor values: {e}")
@@ -132,16 +146,33 @@ class WebRTCService:
                 self.logger.debug(f"Data channel ping from {session_id}")
 
             elif msg_type == 'stop':
-                # Emergency stop
+                # Emergency stop - try bus first, fallback to API
+                stop_sent = False
                 try:
                     if MOTOR_BUS_AVAILABLE:
                         motor_bus = get_motor_bus()
                         if motor_bus and motor_bus.running:
                             cmd = create_motor_command(0, 0, CommandSource.WEBRTC)
                             motor_bus.send_command(cmd)
+                            stop_sent = True
                             self.logger.info("Emergency stop from data channel")
                 except Exception as e:
-                    self.logger.error(f"Emergency stop error: {e}")
+                    self.logger.debug(f"Motor bus stop error: {e}")
+
+                # API fallback for emergency stop
+                if not stop_sent:
+                    try:
+                        import aiohttp
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(
+                                'http://localhost:8000/motor/stop',
+                                json={'reason': 'webrtc_emergency'},
+                                timeout=aiohttp.ClientTimeout(total=0.5)
+                            ) as resp:
+                                if resp.status == 200:
+                                    self.logger.info("Emergency stop via API")
+                    except Exception as e:
+                        self.logger.error(f"Emergency stop API fallback failed: {e}")
 
             else:
                 self.logger.debug(f"Unknown data channel message type: {msg_type}")
@@ -256,7 +287,7 @@ class WebRTCService:
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
             state = pc.connectionState
-            self.logger.info(f"Connection {session_id}: {state}")
+            self.logger.info(f"[WEBRTC] Connection {session_id}: {state}")
 
             publish_system_event('webrtc_connection_state', {
                 'session_id': session_id,
@@ -264,6 +295,7 @@ class WebRTCService:
             }, 'webrtc_service')
 
             if state in ["failed", "closed", "disconnected"]:
+                self.logger.info(f"[WEBRTC] Session {session_id} {state} - cleaning up (mode unchanged)")
                 await self._cleanup_connection(session_id)
 
         # ICE candidate handler
@@ -273,26 +305,27 @@ class WebRTCService:
                 if candidate and session_id in self.ice_callbacks:
                     await self.ice_callbacks[session_id](candidate)
             except Exception as e:
-                self.logger.warning(f"ICE candidate callback error for {session_id}: {e}")
+                self.logger.warning(f"[WEBRTC] ICE candidate callback error for {session_id}: {e}")
 
         # ICE connection state handler
         @pc.on("iceconnectionstatechange")
         async def on_ice_state_change():
             try:
                 state = pc.iceConnectionState
-                self.logger.info(f"ICE state {session_id}: {state}")
+                self.logger.info(f"[WEBRTC] ICE state {session_id}: {state}")
                 # Proactively clean up on ICE failure to prevent crashes
                 if state in ["failed", "disconnected", "closed"]:
-                    self.logger.warning(f"ICE {state} for {session_id}, scheduling cleanup...")
+                    self.logger.warning(f"[WEBRTC] ICE {state} for {session_id}, scheduling cleanup...")
                     # Use asyncio.create_task to avoid blocking
                     asyncio.create_task(self._safe_cleanup_connection(session_id))
             except Exception as e:
-                self.logger.error(f"ICE state change handler error: {e}")
+                self.logger.error(f"[WEBRTC] ICE state change handler error: {e}")
 
         with self._lock:
             self.connections[session_id] = pc
 
-        self.logger.info(f"Created peer connection: {session_id}")
+        self.logger.info(f"[WEBRTC] Created peer connection: {session_id}")
+        self.logger.info(f"[WEBRTC] Active connections: {list(self.connections.keys())}")
         return pc
 
     async def handle_offer(self, session_id: str, sdp: str) -> str:
@@ -404,15 +437,16 @@ class WebRTCService:
         # Multiple simultaneous sessions cause race conditions in MediaRelay/VP8 encoding
         existing_sessions = list(self.connections.keys())
         if existing_sessions:
-            self.logger.info(f"Closing {len(existing_sessions)} existing session(s) before creating new one")
+            self.logger.warning(f"[WEBRTC] Closing {len(existing_sessions)} existing session(s) before new request: {existing_sessions}")
             for old_session_id in existing_sessions:
                 try:
                     await self._cleanup_connection(old_session_id)
-                    self.logger.info(f"Closed existing session: {old_session_id}")
+                    self.logger.info(f"[WEBRTC] Closed existing session: {old_session_id}")
                 except Exception as e:
-                    self.logger.warning(f"Error closing session {old_session_id}: {e}")
+                    self.logger.warning(f"[WEBRTC] Error closing session {old_session_id}: {e}")
             # Small delay to allow cleanup to complete
             await asyncio.sleep(0.2)
+            self.logger.info(f"[WEBRTC] Active connections after cleanup: {list(self.connections.keys())}")
 
         with self._lock:
             if len(self.connections) >= self.config.max_connections:
@@ -480,7 +514,7 @@ class WebRTCService:
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
             state = pc.connectionState
-            self.logger.info(f"Connection {session_id}: {state}")
+            self.logger.info(f"[WEBRTC] Connection {session_id}: {state}")
 
             publish_system_event('webrtc_connection_state', {
                 'session_id': session_id,
@@ -488,6 +522,7 @@ class WebRTCService:
             }, 'webrtc_service')
 
             if state in ["failed", "closed", "disconnected"]:
+                self.logger.info(f"[WEBRTC] Session {session_id} {state} - cleaning up (mode unchanged)")
                 await self._cleanup_connection(session_id)
 
         # ICE candidate handler
@@ -497,28 +532,30 @@ class WebRTCService:
                 if candidate and session_id in self.ice_callbacks:
                     await self.ice_callbacks[session_id](candidate)
             except Exception as e:
-                self.logger.warning(f"ICE candidate callback error for {session_id}: {e}")
+                self.logger.warning(f"[WEBRTC] ICE candidate callback error for {session_id}: {e}")
 
         # ICE connection state handler
         @pc.on("iceconnectionstatechange")
         async def on_ice_state_change():
             try:
                 state = pc.iceConnectionState
-                self.logger.info(f"ICE state {session_id}: {state}")
+                self.logger.info(f"[WEBRTC] ICE state {session_id}: {state}")
                 if state in ["failed", "disconnected", "closed"]:
-                    self.logger.warning(f"ICE {state} for {session_id}, scheduling cleanup...")
+                    self.logger.warning(f"[WEBRTC] ICE {state} for {session_id}, scheduling cleanup...")
                     asyncio.create_task(self._safe_cleanup_connection(session_id))
             except Exception as e:
-                self.logger.error(f"ICE state change handler error: {e}")
+                self.logger.error(f"[WEBRTC] ICE state change handler error: {e}")
 
         with self._lock:
             self.connections[session_id] = pc
+
+        self.logger.info(f"[WEBRTC] Active connections: {list(self.connections.keys())}")
 
         # Create offer
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
 
-        self.logger.info(f"Created offer for session {session_id}")
+        self.logger.info(f"[WEBRTC] Created offer for session {session_id}")
 
         return {
             "type": "offer",
@@ -567,8 +604,9 @@ class WebRTCService:
                 if pc.connectionState not in ["closed"]:
                     await pc.close()
             except Exception as e:
-                self.logger.warning(f"Error closing connection {session_id}: {e}")
-            self.logger.info(f"Cleaned up connection: {session_id}")
+                self.logger.warning(f"[WEBRTC] Error closing connection {session_id}: {e}")
+            self.logger.info(f"[WEBRTC] Cleaned up connection: {session_id}")
+            self.logger.info(f"[WEBRTC] Active connections: {list(self.connections.keys())}")
 
         # Stop video track if no connections remain
         with self._lock:

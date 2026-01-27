@@ -255,8 +255,8 @@ class SafetyMonitor:
     def _check_cpu_usage(self, cpu_pct: float) -> None:
         """Check CPU usage"""
         # Startup grace period - CPU spikes to 100% when loading AI models/Hailo
-        # Don't alert during first 45 seconds
-        if time.time() - self.start_time < 45.0:
+        # 90s needed: Pi 5 + Hailo model load + all services can peg CPU for >60s
+        if time.time() - self.start_time < 90.0:
             return
 
         if cpu_pct >= self.thresholds.cpu_critical:
@@ -274,7 +274,7 @@ class SafetyMonitor:
     def _check_memory_usage(self, mem_pct: float) -> None:
         """Check memory usage"""
         # Startup grace period - memory can spike when loading models or starting tools
-        if time.time() - self.start_time < 45.0:
+        if time.time() - self.start_time < 90.0:
             return
 
         if mem_pct >= self.thresholds.memory_critical:

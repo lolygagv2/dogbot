@@ -69,7 +69,7 @@ class RelayClient:
         # WebRTC service reference (set during integration)
         self._webrtc_service = None
 
-        # Track app connection state for mode restore on disconnect
+        # Track app connection state (informational only - no mode changes on disconnect)
         self._app_connected = False
 
         # Message handlers
@@ -411,39 +411,14 @@ class RelayClient:
     async def _handle_webrtc_close(self, data: dict):
         """Handle WebRTC close request
 
-        On disconnect:
-        - If in MANUAL mode → return to IDLE
-        - If in SILENT_GUARDIAN/COACH/MISSION → stay in that mode
+        Mode is NOT changed here — only explicit set_mode commands change mode.
+        WebRTC session lifecycle is independent of mode state.
         """
         session_id = data.get('session_id')
-        self.logger.info(f"WebRTC close request: session={session_id}")
+        self.logger.info(f"[WEBRTC] Close request: session={session_id} - mode unchanged")
 
         if self._webrtc_service:
             await self._webrtc_service.close_connection(session_id)
-
-        # Handle mode restore on app disconnect
-        self._handle_app_disconnect()
-
-    def _handle_app_disconnect(self):
-        """Handle mode restore when app disconnects
-
-        Rules:
-        - If in MANUAL → return to IDLE
-        - If in SILENT_GUARDIAN/COACH/MISSION → stay in that mode
-        """
-        if not self._app_connected:
-            return
-
-        self._app_connected = False
-        current_mode = self.state.get_mode()
-
-        if current_mode == SystemMode.MANUAL:
-            # Return to IDLE when disconnecting from MANUAL
-            self.state.set_mode(SystemMode.IDLE, "App disconnected")
-            self.logger.info("📱 App disconnected - returned to IDLE from MANUAL")
-        else:
-            # Stay in current mode (SILENT_GUARDIAN, COACH, MISSION)
-            self.logger.info(f"📱 App disconnected - staying in {current_mode.value}")
 
     async def _handle_command(self, data: dict):
         """Handle command from app
