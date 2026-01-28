@@ -1205,6 +1205,7 @@ class TreatBotMain:
                     dog_id = params.get('dog_id')
                     if voice_type:
                         try:
+                            from services.media.usb_audio import get_usb_audio_service
                             audio_svc = get_usb_audio_service()
                             if audio_svc and audio_svc.is_initialized:
                                 result = audio_svc.play_command(voice_type, dog_id=dog_id)
