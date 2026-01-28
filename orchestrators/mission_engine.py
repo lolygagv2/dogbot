@@ -16,9 +16,11 @@ from pathlib import Path
 from core.bus import get_bus, publish_system_event, AudioEvent
 from core.state import get_state, SystemMode
 from core.store import get_store
+from core.behavior_interpreter import get_behavior_interpreter
 from orchestrators.sequence_engine import get_sequence_engine
 from orchestrators.reward_logic import get_reward_logic
 from services.media.usb_audio import get_usb_audio_service
+from services.cloud.relay_client import get_relay_client
 
 
 class MissionState(Enum):
@@ -62,6 +64,16 @@ class Mission:
     config: Dict[str, Any] = field(default_factory=dict)
 
 
+# Maps mission JSON success_event pose names to trick_rules.yaml trick names
+# "Down" -> trick "down" -> behavior "lie" (interpreter handles internally)
+POSE_TO_TRICK = {
+    "Sit": "sit",
+    "Down": "down",
+    "Spin": "spin",
+    "Stand": "stand",
+}
+
+
 @dataclass
 class MissionSession:
     """Active mission session"""
@@ -76,6 +88,7 @@ class MissionSession:
     attempts: int = 0
     events_log: List[Dict[str, Any]] = field(default_factory=list)
     last_event_time: float = field(default_factory=time.time)
+    pose_tracking_reset: bool = False  # Whether interpreter.reset_tracking() called for current pose stage
 
 
 # Mission engine singleton
@@ -101,6 +114,7 @@ class MissionEngine:
         self.store = get_store()
         self.sequence_engine = get_sequence_engine()
         self.reward_logic = get_reward_logic()
+        self.interpreter = get_behavior_interpreter()
 
         self.logger = logging.getLogger(__name__)
 
@@ -366,6 +380,21 @@ class MissionEngine:
         finally:
             self.running = False
 
+    def _is_pose_stage(self, stage: MissionStage) -> bool:
+        """Check if a stage expects a pose/trick detection"""
+        return stage.success_event.startswith("VisionEvent.Pose.")
+
+    def _get_trick_name(self, stage: MissionStage) -> Optional[str]:
+        """Extract trick name from stage success_event (e.g. 'VisionEvent.Pose.Sit' -> 'sit')"""
+        if not self._is_pose_stage(stage):
+            return None
+        # Extract pose name: "VisionEvent.Pose.Sit" -> "Sit"
+        parts = stage.success_event.split(".")
+        if len(parts) >= 3:
+            pose_name = parts[2]  # "Sit", "Down", "Spin", "Stand"
+            return POSE_TO_TRICK.get(pose_name)
+        return None
+
     def _process_stage(self):
         """Process current mission stage"""
         session = self.active_session
@@ -387,8 +416,146 @@ class MissionEngine:
             session.state = MissionState.WAITING_FOR_DOG
             self.logger.info(f"Starting stage: {stage.name}")
 
-        # Stage-specific logic handled by event handlers
-        # Events will trigger state transitions
+        # For pose stages in WAITING_FOR_BEHAVIOR, poll the interpreter
+        if session.state == MissionState.WAITING_FOR_BEHAVIOR and self._is_pose_stage(stage):
+            self._poll_pose_stage(stage)
+
+        # Other stage types (bark, quiet, dog detection) handled by event handlers
+
+    def _poll_pose_stage(self, stage: MissionStage):
+        """
+        Poll BehaviorInterpreter for pose/trick stages.
+
+        Replicates coaching engine pattern:
+        - Reset tracking once on stage entry
+        - Poll check_trick() each loop iteration (10Hz from mission_loop sleep)
+        - For sustained hold missions, check hold_duration >= stage.min_duration
+        - Send progress events to app via relay
+        """
+        session = self.active_session
+        trick_name = self._get_trick_name(stage)
+
+        if not trick_name:
+            self.logger.warning(f"Could not map pose stage to trick: {stage.success_event}")
+            return
+
+        # Reset tracking once on stage entry
+        if not session.pose_tracking_reset:
+            self.interpreter.reset_tracking()
+            session.pose_tracking_reset = True
+            self.logger.info(f"Mission pose stage: watching for '{trick_name}' (reset tracking)")
+
+            # Send initial watching event to app
+            hold_required = stage.min_duration if stage.min_duration > 0 else 0
+            try:
+                relay = get_relay_client()
+                if relay and relay.connected:
+                    relay.send_event("mission_progress", {
+                        "stage": "watching",
+                        "trick": trick_name,
+                        "progress": 0,
+                        "target_sec": hold_required,
+                    })
+            except Exception:
+                pass
+
+        # Poll the interpreter
+        result = self.interpreter.check_trick(trick_name)
+
+        # Determine hold requirement: stage.min_duration overrides trick_rules default
+        # For sustained missions (e.g. down_sustained.json min_duration=30s),
+        # the interpreter reports completed=True after trick_rules hold (e.g. 1.5s),
+        # but we need to wait for the full stage.min_duration
+        hold_required = stage.min_duration if stage.min_duration > 0 else 0
+        trick_rules = self.interpreter.get_trick_rules(trick_name)
+        trick_hold = trick_rules.get('hold_duration_sec', 1.0) if trick_rules else 1.0
+
+        # Send progress updates (throttled to ~1Hz via stage_start_time check)
+        if result.behavior_detected and result.hold_duration > 0:
+            stage_elapsed = time.time() - session.stage_start_time
+            # Send progress every ~1 second
+            if int(stage_elapsed) != int(stage_elapsed - 0.1):
+                try:
+                    relay = get_relay_client()
+                    if relay and relay.connected:
+                        relay.send_event("mission_progress", {
+                            "stage": "watching",
+                            "trick": trick_name,
+                            "progress": round(result.hold_duration, 1),
+                            "target_sec": hold_required if hold_required > 0 else trick_hold,
+                        })
+                except Exception:
+                    pass
+
+        # Check completion
+        if hold_required > 0:
+            # Sustained hold: interpreter must show the right behavior AND hold_duration >= min_duration
+            if result.behavior_detected and result.hold_duration >= hold_required:
+                self._handle_pose_success(stage, trick_name, result)
+                return
+        else:
+            # Standard hold: rely on interpreter's completed flag (uses trick_rules hold)
+            if result.completed:
+                self._handle_pose_success(stage, trick_name, result)
+                return
+
+        # Log progress for debugging
+        if result.behavior_detected:
+            self.logger.debug(f"Mission pose watch: {result.reason}")
+
+    def _handle_pose_success(self, stage: MissionStage, trick_name: str, result):
+        """Handle successful pose detection in a mission stage"""
+        session = self.active_session
+
+        self.logger.info(
+            f"Mission pose success: {trick_name} "
+            f"(detected: {result.behavior_detected}, "
+            f"held: {result.hold_duration:.1f}s, conf: {result.confidence:.2f})"
+        )
+
+        # Trigger reward logic
+        reward_given = self.reward_logic.evaluate_reward(
+            behavior=result.behavior_detected,
+            confidence=result.confidence,
+            dog_id=session.dog_id
+        )
+
+        if reward_given:
+            session.rewards_given += 1
+            self.store.log_reward(
+                dog_id=session.dog_id,
+                behavior=result.behavior_detected,
+                confidence=result.confidence,
+                success=True,
+                treats_dispensed=1,
+                mission_name=session.mission.name
+            )
+
+        # Log event
+        session.events_log.append({
+            "type": "pose_success",
+            "trick": trick_name,
+            "behavior": result.behavior_detected,
+            "hold_duration": result.hold_duration,
+            "confidence": result.confidence,
+            "reward_given": reward_given,
+            "time": time.time()
+        })
+
+        # Send success event to app
+        try:
+            relay = get_relay_client()
+            if relay and relay.connected:
+                relay.send_event("mission_progress", {
+                    "stage": "success",
+                    "trick": trick_name,
+                    "hold_time": round(result.hold_duration, 1),
+                })
+        except Exception:
+            pass
+
+        # Advance to next stage
+        self._advance_stage()
 
     def _advance_stage(self):
         """Advance to next mission stage"""
@@ -410,6 +577,7 @@ class MissionEngine:
         session.current_stage += 1
         session.stage_start_time = time.time()
         session.attempts = 0
+        session.pose_tracking_reset = False  # Fresh reset for next pose stage
 
         if session.current_stage >= len(session.mission.stages):
             self._complete_mission("all_stages_completed")
@@ -421,7 +589,41 @@ class MissionEngine:
     def _handle_stage_timeout(self, stage: MissionStage):
         """Handle stage timeout"""
         session = self.active_session
+
+        # Optional stages skip to next on timeout instead of failing
+        if stage.conditions.get("optional", False):
+            self.logger.info(f"Optional stage '{stage.name}' timed out - skipping")
+            # Send failure event to app for this stage
+            trick_name = self._get_trick_name(stage)
+            if trick_name:
+                try:
+                    relay = get_relay_client()
+                    if relay and relay.connected:
+                        relay.send_event("mission_progress", {
+                            "stage": "failure",
+                            "trick": trick_name,
+                            "reason": "timeout_optional_skipped",
+                        })
+                except Exception:
+                    pass
+            self._advance_stage()
+            return
+
         session.attempts += 1
+
+        # Send failure event to app
+        trick_name = self._get_trick_name(stage)
+        if trick_name:
+            try:
+                relay = get_relay_client()
+                if relay and relay.connected:
+                    relay.send_event("mission_progress", {
+                        "stage": "failure",
+                        "trick": trick_name,
+                        "reason": "timeout",
+                    })
+            except Exception:
+                pass
 
         if session.attempts >= stage.max_attempts:
             self._complete_mission("stage_timeout")
@@ -429,6 +631,7 @@ class MissionEngine:
             # Retry stage
             session.stage_start_time = time.time()
             session.state = MissionState.WAITING_FOR_DOG
+            session.pose_tracking_reset = False  # Fresh reset on retry
             self.logger.warning(f"Stage timeout, retrying: {stage.name}")
 
     def _complete_mission(self, reason: str):
@@ -458,6 +661,19 @@ class MissionEngine:
             "reason": reason,
             "rewards_given": session.rewards_given
         })
+
+        # Send mission_complete event to app via relay
+        try:
+            relay = get_relay_client()
+            if relay and relay.connected:
+                relay.send_event("mission_complete", {
+                    "success": success,
+                    "tricks_completed": session.current_stage,
+                    "treats_given": session.rewards_given,
+                    "reason": reason,
+                })
+        except Exception:
+            pass
 
         # Play mission complete audio on success
         if success:
@@ -490,12 +706,11 @@ class MissionEngine:
         event_data = event.data
         subtype = event.subtype
 
-        if subtype == "DogDetected":
+        if subtype == "dog_detected":
             self._handle_dog_detected(event_data)
-        elif subtype == "DogLost":
+        elif subtype == "dog_lost":
             self._handle_dog_lost(event_data)
-        elif subtype == "Pose":
-            self._handle_pose_detected(event_data)
+        # Pose stages are now polled via _poll_pose_stage(), not event-driven
 
     def _on_reward_event(self, event):
         """Handle reward events"""
@@ -549,52 +764,6 @@ class MissionEngine:
         if session.state == MissionState.WAITING_FOR_BEHAVIOR:
             session.state = MissionState.WAITING_FOR_DOG
             self.logger.info("Dog lost, waiting for detection")
-
-    def _handle_pose_detected(self, event_data: Dict[str, Any]):
-        """Handle pose detection event"""
-        session = self.active_session
-
-        if session.state != MissionState.WAITING_FOR_BEHAVIOR:
-            return
-
-        if session.current_stage >= len(session.mission.stages):
-            return
-
-        stage = session.mission.stages[session.current_stage]
-        pose = event_data.get("pose", "")
-        confidence = event_data.get("confidence", 0.0)
-
-        # Check if this pose matches stage success criteria
-        if stage.success_event == f"VisionEvent.Pose.{pose.capitalize()}":
-            # Check minimum duration
-            if stage.min_duration > 0:
-                # Would need pose duration tracking
-                duration = event_data.get("duration", 0.0)
-                if duration < stage.min_duration:
-                    return
-
-            # Trigger reward logic
-            reward_given = self.reward_logic.evaluate_reward(
-                behavior=pose,
-                confidence=confidence,
-                dog_id=session.dog_id
-            )
-
-            if reward_given:
-                session.rewards_given += 1
-                session.state = MissionState.EXECUTING_REWARD
-
-                # Log reward
-                self.store.log_reward(
-                    dog_id=session.dog_id,
-                    behavior=pose,
-                    confidence=confidence,
-                    success=True,
-                    treats_dispensed=1,
-                    mission_name=session.mission.name
-                )
-
-                self.logger.info(f"Reward given for {pose}")
 
     def _handle_reward_completed(self, event_data: Dict[str, Any]):
         """Handle reward completion"""

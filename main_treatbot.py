@@ -1124,7 +1124,11 @@ class TreatBotMain:
 
                 elif command == 'start_mission':
                     # Start a training mission: {"mission": "sit", "dog_id": "1"}
-                    mission_name = params.get('mission') or params.get('name')
+                    # Accept mission_name, mission_id, mission, or name
+                    mission_name = (params.get('mission_name')
+                                    or params.get('mission_id')
+                                    or params.get('mission')
+                                    or params.get('name'))
                     dog_id = params.get('dog_id')
                     if mission_name:
                         from orchestrators.mission_engine import get_mission_engine
@@ -1141,16 +1145,17 @@ class TreatBotMain:
                     else:
                         self.logger.warning("☁️ start_mission: no mission name provided")
 
-                elif command == 'cancel_mission':
-                    # Cancel active mission
+                elif command in ('cancel_mission', 'stop_mission'):
+                    # Cancel/stop active mission
                     from orchestrators.mission_engine import get_mission_engine
                     engine = get_mission_engine()
                     status = engine.get_mission_status()  # grab before stopping
-                    cancelled = engine.stop_mission(reason='app_cancelled')
-                    self.logger.info(f"☁️ Cancel mission -> {cancelled}")
+                    reason = 'user_cancelled' if command == 'stop_mission' else 'app_cancelled'
+                    cancelled = engine.stop_mission(reason=reason)
+                    self.logger.info(f"☁️ {command} -> {cancelled}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('mission_stopped', {
-                            'reason': 'app_cancelled',
+                            'reason': reason,
                             'success': cancelled,
                             **status
                         })
@@ -1189,6 +1194,28 @@ class TreatBotMain:
                     })
                     self.logger.info(f"☁️ Camera manual control active={active} -> {resp.status_code}")
 
+                elif command == 'set_manual_control':
+                    # Manual control toggle (from app drive screen)
+                    active = params.get('active', False)
+                    self.logger.info(f"☁️ Manual control {'active' if active else 'inactive'}")
+
+                elif command == 'play_voice':
+                    # Play a voice command with custom voice support
+                    voice_type = params.get('voice_type')
+                    dog_id = params.get('dog_id')
+                    if voice_type:
+                        try:
+                            audio_svc = get_usb_audio_service()
+                            if audio_svc and audio_svc.is_initialized:
+                                result = audio_svc.play_command(voice_type, dog_id=dog_id)
+                                self.logger.info(f"☁️ Play voice '{voice_type}' dog_id={dog_id} -> {result}")
+                            else:
+                                self.logger.warning("☁️ play_voice: USB audio not available")
+                        except Exception as e:
+                            self.logger.error(f"☁️ play_voice error: {e}")
+                    else:
+                        self.logger.warning("☁️ play_voice: no voice_type provided")
+
                 elif command == 'call_dog':
                     # Call the dog by name
                     # Priority: 1) custom voice come/name, 2) {name}_come.mp3, 3) dog_0.mp3
@@ -1199,6 +1226,7 @@ class TreatBotMain:
                               or event.data.get('dog_id'))
                     self.logger.info(f"☁️ Call dog: name={dog_name}, dog_id={dog_id}")
 
+                    resp = None
                     played = False
 
                     # Try play_command with custom voice support (uses VoiceManager)
@@ -1260,7 +1288,10 @@ class TreatBotMain:
                             'filepath': '/talks/dog_0.mp3'
                         })
                         self.logger.info(f"☁️ Call dog: using default dog_0.mp3")
-                    self.logger.info(f"☁️ Call dog -> {resp.status_code}")
+                    if resp is not None:
+                        self.logger.info(f"☁️ Call dog -> {resp.status_code}")
+                    else:
+                        self.logger.info(f"☁️ Call dog -> played via play_command")
 
                 else:
                     self.logger.warning(f"☁️ Unknown cloud command: {command}")
