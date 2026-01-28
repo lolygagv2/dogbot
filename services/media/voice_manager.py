@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Voice storage configuration
 VOICES_DIR = Path("/home/morgan/dogbot/voices")
+CUSTOM_VOICES_DIR = Path("/home/morgan/dogbot/VOICEMP3/custom")
 DEFAULT_VOICES_DIR = Path("/home/morgan/dogbot/VOICEMP3/talks")
 
 # Standard commands that can have custom voices
@@ -180,12 +181,19 @@ class VoiceManager:
             Path to audio file, or None if not found
         """
         command = command.lower()
+        safe_dog_id = self._sanitize_filename(str(dog_id))
 
-        # Check for custom voice first
-        custom_path = VOICES_DIR / self._sanitize_filename(str(dog_id)) / f"{command}.mp3"
+        # Check for custom voice in voices/ directory first
+        custom_path = VOICES_DIR / safe_dog_id / f"{command}.mp3"
         if custom_path.exists():
-            self.logger.debug(f"Using custom voice: {custom_path}")
+            self.logger.info(f"Using custom voice (voices/): {custom_path}")
             return str(custom_path)
+
+        # Check for custom voice in VOICEMP3/custom/ directory
+        custom_mp3_path = CUSTOM_VOICES_DIR / safe_dog_id / f"{command}.mp3"
+        if custom_mp3_path.exists():
+            self.logger.info(f"Using custom voice (VOICEMP3/custom/): {custom_mp3_path}")
+            return str(custom_mp3_path)
 
         # Fallback to default voice
         default_path = DEFAULT_VOICES_DIR / f"{command}.mp3"
@@ -203,8 +211,12 @@ class VoiceManager:
 
     def has_custom_voice(self, dog_id: str, command: str) -> bool:
         """Check if a custom voice exists for a dog command."""
-        custom_path = VOICES_DIR / self._sanitize_filename(str(dog_id)) / f"{command.lower()}.mp3"
-        return custom_path.exists()
+        safe_dog_id = self._sanitize_filename(str(dog_id))
+        cmd = command.lower()
+        return (
+            (VOICES_DIR / safe_dog_id / f"{cmd}.mp3").exists() or
+            (CUSTOM_VOICES_DIR / safe_dog_id / f"{cmd}.mp3").exists()
+        )
 
     def list_voices(self, dog_id: str) -> Dict[str, Any]:
         """

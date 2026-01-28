@@ -353,6 +353,14 @@ class DetectorService:
 
             self.logger.info(f"📹 Changing resolution from {old_resolution} to {new_resolution}...")
 
+            # Pause WebRTC video track before camera reconfig to prevent stale reads
+            publish_vision_event('webrtc_pause_requested', {
+                'reason': 'camera_reconfig',
+                'old_resolution': old_resolution,
+                'new_resolution': new_resolution
+            })
+            time.sleep(0.5)  # Allow WebRTC to pause
+
             # Stop camera
             try:
                 self.camera.stop()
@@ -378,6 +386,8 @@ class DetectorService:
                 except Exception as restore_error:
                     self.logger.error(f"Failed to restore resolution: {restore_error}")
                     self.camera_initialized = False
+                # Resume WebRTC even on failure
+                publish_vision_event('webrtc_resume_requested', {'reason': 'camera_reconfig_failed'})
                 return False
 
             # Restart camera
@@ -403,6 +413,11 @@ class DetectorService:
                 return False
 
         finally:
+            # Resume WebRTC video track after camera reconfig completes (success or failure)
+            publish_vision_event('webrtc_resume_requested', {
+                'reason': 'camera_reconfig_complete',
+                'resolution': list(self._current_resolution)
+            })
             with self._resolution_change_lock:
                 self._resolution_change_in_progress = False
 

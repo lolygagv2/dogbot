@@ -4,6 +4,7 @@ Safety monitoring and emergency stops for TreatBot
 Monitors battery, temperature, and system health
 """
 
+import gc
 import threading
 import time
 import psutil
@@ -411,6 +412,45 @@ class SafetyMonitor:
         elif alert_type.startswith('cpu_') or alert_type.startswith('memory_'):
             # Reduce AI inference rate, clear caches
             pass  # Handled by service layer
+
+    def check_memory_before_command(self) -> Dict[str, Any]:
+        """Check memory before processing a command.
+
+        Returns:
+            dict with 'allowed' (bool), 'memory_pct' (float), and 'action' (str)
+            - allowed=True: safe to proceed
+            - allowed=False: reject command (memory >= 95%)
+            - action='cleanup': gc.collect triggered (memory >= 90%)
+        """
+        mem_pct = psutil.virtual_memory().percent
+        result = {'allowed': True, 'memory_pct': mem_pct, 'action': 'none'}
+
+        if mem_pct >= 95.0:
+            # REJECT - too dangerous to process
+            self.logger.error(f"MEMORY GATE: Rejecting command at {mem_pct:.1f}% memory")
+            gc.collect()
+            self._publish_safety_event('memory_reject', {
+                'memory_pct': mem_pct,
+                'reason': 'memory_at_95_percent'
+            })
+            result['allowed'] = False
+            result['action'] = 'rejected'
+            return result
+
+        if mem_pct >= 90.0:
+            # CLEANUP - try to free memory before proceeding
+            self.logger.warning(f"MEMORY GATE: Cleanup at {mem_pct:.1f}% memory")
+            gc.collect()
+            self._publish_safety_event('memory_cleanup_requested', {
+                'memory_pct': mem_pct,
+                'reason': 'memory_at_90_percent'
+            })
+            result['action'] = 'cleanup'
+            # Re-check after gc
+            result['memory_pct'] = psutil.virtual_memory().percent
+            self.logger.info(f"MEMORY GATE: After gc.collect: {result['memory_pct']:.1f}%")
+
+        return result
 
     def heartbeat(self) -> None:
         """Update heartbeat timestamp (called by main loop)"""

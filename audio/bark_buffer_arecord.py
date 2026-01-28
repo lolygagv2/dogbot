@@ -92,8 +92,19 @@ class BarkAudioBufferArecord:
         logger.info("Started audio recording with arecord")
 
     def stop(self):
-        """Stop recording audio"""
+        """Stop recording audio - drains queue before cleanup"""
         self.is_recording = False
+
+        # Drain audio queue to release memory before killing arecord
+        drained = 0
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+                drained += 1
+            except queue.Empty:
+                break
+        if drained > 0:
+            logger.info(f"Drained {drained} audio chunks from queue")
 
         if self.record_thread:
             self.record_thread.join(timeout=5.0)

@@ -389,7 +389,7 @@ class USBAudioService:
 
             if dog_id:
                 voice_path = voice_manager.get_voice_path(dog_id, command)
-                if voice_path and "/voices/" in voice_path:
+                if voice_path and ("/voices/" in voice_path or "/custom/" in voice_path):
                     voice_source = "custom"
 
             # If no custom voice found, try default path

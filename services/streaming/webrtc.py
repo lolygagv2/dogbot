@@ -74,6 +74,9 @@ class WebRTCService:
         self._lock = threading.Lock()
         self._detector = None  # Lazy loaded
 
+        # Subscribe to camera reconfig pause/resume events
+        self.bus.subscribe('vision', self._on_vision_event)
+
         self.logger.info(f"WebRTCService initialized (max {self.config.max_connections} connections)")
 
     async def _handle_data_channel_message(self, message: str, session_id: str):
@@ -197,6 +200,17 @@ class WebRTCService:
             self.logger.info(f"📥 Data channel message from {session_id}: {message[:200]}")
             print(f"[WebRTC] 📥 Data channel message: {message[:200]}", flush=True)
             await self._handle_data_channel_message(message, session_id)
+
+    def _on_vision_event(self, event):
+        """Handle vision events - pause/resume video track during camera reconfig"""
+        if event.subtype == 'webrtc_pause_requested':
+            if self.video_track:
+                self.video_track.pause()
+                self.logger.info("Video track paused for camera reconfig")
+        elif event.subtype == 'webrtc_resume_requested':
+            if self.video_track:
+                self.video_track.resume()
+                self.logger.info("Video track resumed after camera reconfig")
 
     def _get_detector(self):
         """Lazy load detector service to avoid circular imports"""

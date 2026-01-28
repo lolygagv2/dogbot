@@ -500,13 +500,14 @@ class TreatBotMain:
                 self.bus.subscribe('vision', self._on_detection_for_feedback)
 
             # Start bark detection if enabled AND in a mode that uses it
-            # Bark detection should only run in SILENT_GUARDIAN, COACH, MISSION
-            bark_modes = ['silent_guardian', 'coach', 'mission']
+            # Bark detection should only run in SILENT_GUARDIAN, COACH
+            # MISSION mode only if mission declares requires_bark_detection: true
+            bark_start_modes = ['silent_guardian', 'coach']
             initial_mode = self.state.mode.value if hasattr(self.state.mode, 'value') else str(self.state.mode)
             if self.bark_detector.enabled:
                 # Always subscribe to bark events (for when mode changes)
                 self.bus.subscribe('audio', self._on_bark_for_feedback)
-                if initial_mode in bark_modes:
+                if initial_mode in bark_start_modes:
                     self.bark_detector.start()
                     self.logger.info(f"🎤 Bark detection started (mode: {initial_mode})")
                 else:
@@ -800,6 +801,14 @@ class TreatBotMain:
 
         try:
             import httpx
+
+            # Memory gate - reject commands when memory is critically high
+            from core.safety import get_safety_monitor
+            mem_check = get_safety_monitor().check_memory_before_command()
+            if not mem_check['allowed']:
+                command = event.data.get('command', 'unknown')
+                self.logger.error(f"☁️ REJECTED command '{command}' - memory at {mem_check['memory_pct']:.1f}%")
+                return
 
             # CRITICAL: Reset manual mode timeout when receiving app commands
             # This prevents the FSM from reverting to IDLE while app is in use
@@ -1184,17 +1193,44 @@ class TreatBotMain:
                     # Call the dog by name
                     # Priority: 1) custom voice come/name, 2) {name}_come.mp3, 3) dog_0.mp3
                     dog_name = params.get('dog_name') or event.data.get('dog_name')
-                    dog_id = params.get('dog_id') or event.data.get('dog_id')
+                    # Extract dog_id from multiple possible locations
+                    dog_id = (params.get('dog_id')
+                              or params.get('data', {}).get('dog_id')
+                              or event.data.get('dog_id'))
                     self.logger.info(f"☁️ Call dog: name={dog_name}, dog_id={dog_id}")
 
                     played = False
 
-                    # Check for custom voice recordings first
-                    if dog_id or dog_name:
+                    # Try play_command with custom voice support (uses VoiceManager)
+                    if dog_id:
+                        try:
+                            from services.media.usb_audio import get_usb_audio_service
+                            audio_svc = get_usb_audio_service()
+                            if audio_svc and audio_svc.is_initialized:
+                                # Try 'come' command with dog_id for custom voice lookup
+                                result = audio_svc.play_command('come', dog_id=dog_id)
+                                if result.get('success'):
+                                    played = True
+                                    voice_src = result.get('voice_source', 'default')
+                                    self.logger.info(f"☁️ Call dog: play_command 'come' ({voice_src}) for {dog_id}")
+                                else:
+                                    # Try 'name' command
+                                    result = audio_svc.play_command('name', dog_id=dog_id)
+                                    if result.get('success'):
+                                        played = True
+                                        voice_src = result.get('voice_source', 'default')
+                                        self.logger.info(f"☁️ Call dog: play_command 'name' ({voice_src}) for {dog_id}")
+                        except Exception as e:
+                            self.logger.warning(f"☁️ Call dog play_command error: {e}")
+
+                    # Check for custom voice recordings (filesystem fallback)
+                    if not played and (dog_id or dog_name):
                         lookup_id = dog_id or dog_name
                         custom_paths = [
+                            f"/home/morgan/dogbot/VOICEMP3/custom/{lookup_id}/come.mp3",
                             f"/home/morgan/dogbot/voices/{lookup_id}/come.mp3",
                             f"/home/morgan/dogbot/voices/{lookup_id}/come.wav",
+                            f"/home/morgan/dogbot/VOICEMP3/custom/{lookup_id}/name.mp3",
                             f"/home/morgan/dogbot/voices/{lookup_id}/name.mp3",
                             f"/home/morgan/dogbot/voices/{lookup_id}/name.wav",
                         ]
@@ -1288,21 +1324,39 @@ class TreatBotMain:
                     self.logger.info("🎓 Coach mode started")
 
             # Bark detection management - only run in modes that need it
-            # Modes that need bark detection: silent_guardian, coach, mission
+            # Modes that always need bark detection: silent_guardian, coach
+            # MISSION mode: only if mission declares requires_bark_detection: true
             # Modes that DON'T need it: idle, manual
-            bark_modes = ['silent_guardian', 'coach', 'mission']
+            bark_needed = False
+            if new_mode in ['silent_guardian', 'coach']:
+                bark_needed = True
+            elif new_mode == 'mission':
+                # Check if the current mission requires bark detection
+                try:
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    mission = engine.current_mission if hasattr(engine, 'current_mission') else None
+                    if mission and mission.get('requires_bark_detection', False):
+                        bark_needed = True
+                        self.logger.info("🎤 Mission requires bark detection")
+                    else:
+                        self.logger.info("🎤 Mission does NOT require bark detection - skipping")
+                except Exception as e:
+                    self.logger.warning(f"Could not check mission bark requirement: {e}")
 
-            if new_mode in ['idle', 'manual'] and previous_mode in bark_modes:
-                # Entering IDLE/MANUAL from a bark-detection mode - stop bark detection
-                if self.bark_detector and self.bark_detector.enabled:
+            previous_bark_modes = ['silent_guardian', 'coach', 'mission']
+
+            if not bark_needed and previous_mode in previous_bark_modes:
+                # Leaving a bark-detection mode or entering mode that doesn't need it
+                if self.bark_detector and self.bark_detector.enabled and self.bark_detector.is_running:
                     self.bark_detector.stop()
-                    self.logger.info("🎤 Bark detection stopped (entering non-detection mode)")
+                    self.logger.info("🎤 Bark detection stopped (not needed in current mode)")
 
-            elif new_mode in bark_modes and previous_mode in ['idle', 'manual']:
-                # Entering a bark-detection mode from IDLE/MANUAL - start bark detection
+            elif bark_needed and not (self.bark_detector and self.bark_detector.is_running):
+                # Need bark detection but it's not running - start it
                 if self.bark_detector and self.bark_detector.enabled:
                     self.bark_detector.start()
-                    self.logger.info("🎤 Bark detection started (entering detection mode)")
+                    self.logger.info("🎤 Bark detection started (needed for current mode)")
 
         except Exception as e:
             self.logger.error(f"Mode change handler error: {e}")

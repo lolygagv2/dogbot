@@ -1,6 +1,7 @@
 {
   "name": "sit",
   "description": "Quick sit mission - wait for dog, then reward sit",
+  "requires_bark_detection": false,
   "enabled": true,
   "schedule": "manual",
   "max_rewards": 3,

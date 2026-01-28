@@ -23,24 +23,37 @@ from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Singleton instance for BarkClassifier
+_bark_classifier_instance = None
+
+
 class BarkClassifier:
     """
-    Real-time bark emotion classifier for TreatBot
-    
+    Real-time bark emotion classifier for TreatBot (SINGLETON)
+
     Emotions detected:
     - alert, attention, anxious, aggressive
     - scared, playful, notbark, other
+
+    Uses singleton pattern to prevent loading the TFLite model multiple times.
     """
-    
-    def __init__(self, 
+
+    def __new__(cls, *args, **kwargs):
+        global _bark_classifier_instance
+        if _bark_classifier_instance is None:
+            _bark_classifier_instance = super().__new__(cls)
+            _bark_classifier_instance._initialized = False
+        return _bark_classifier_instance
+
+    def __init__(self,
                  model_path: str = '/home/morgan/dogbot/ai/models/dog_bark_classifier.tflite',
                  emotion_mapping_path: str = '/home/morgan/dogbot/ai/models/emotion_mapping.json',
                  sample_rate: int = 22050,
                  duration: float = 3.0,
                  n_mels: int = 128):
         """
-        Initialize bark classifier
-        
+        Initialize bark classifier (singleton - only runs once)
+
         Args:
             model_path: Path to TFLite model
             emotion_mapping_path: Path to emotion mapping JSON
@@ -48,10 +61,14 @@ class BarkClassifier:
             duration: Audio clip duration (seconds)
             n_mels: Number of mel frequency bands
         """
+        if self._initialized:
+            logger.debug("BarkClassifier already initialized (singleton)")
+            return
+
         self.sample_rate = sample_rate
         self.duration = duration
         self.n_mels = n_mels
-        
+
         # Load TFLite model
         try:
             self.interpreter = tflite.Interpreter(model_path=model_path)
@@ -60,11 +77,11 @@ class BarkClassifier:
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             raise
-        
+
         # Get model input/output details
         self.input_details = self.interpreter.get_input_details()
         self.output_details = self.interpreter.get_output_details()
-        
+
         # Load emotion mapping
         try:
             with open(emotion_mapping_path, 'r') as f:
@@ -74,6 +91,9 @@ class BarkClassifier:
         except Exception as e:
             logger.error(f"Failed to load emotion mapping: {e}")
             raise
+
+        self._initialized = True
+        logger.info("BarkClassifier initialized (singleton)")
     
     def preprocess_audio(self, audio_data: np.ndarray) -> np.ndarray:
         """

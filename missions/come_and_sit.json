@@ -1,6 +1,7 @@
 {
   "name": "come_and_sit",
   "description": "Call the dog over, then ask for a sit",
+  "requires_bark_detection": false,
   "enabled": true,
   "schedule": "manual",
   "max_rewards": 3,

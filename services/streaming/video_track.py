@@ -59,6 +59,7 @@ class WIMZVideoTrack(VideoStreamTrack):
 
         # Track state
         self._running = True
+        self._paused = False  # Pause during camera reconfig to prevent stale frame reads
 
         self.logger.info(f"WIMZVideoTrack initialized at {fps} FPS, overlay={enable_overlay}")
 
@@ -73,8 +74,8 @@ class WIMZVideoTrack(VideoStreamTrack):
             await asyncio.sleep(self.frame_interval - elapsed)
         self.last_frame_time = time.time()
 
-        # Get frame from detector service
-        frame = self.detector.get_last_frame()
+        # Get frame from detector service (return black frame if paused during camera reconfig)
+        frame = None if self._paused else self.detector.get_last_frame()
 
         # Log frame status periodically (every 100 frames)
         if self.frame_count % 100 == 0:
@@ -204,6 +205,16 @@ class WIMZVideoTrack(VideoStreamTrack):
                         x1, y1 = int(kp1[0]), int(kp1[1])
                         x2, y2 = int(kp2[0]), int(kp2[1])
                         cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Yellow
+
+    def pause(self):
+        """Pause video track during camera reconfiguration"""
+        self._paused = True
+        self.logger.info("WIMZVideoTrack paused (camera reconfig)")
+
+    def resume(self):
+        """Resume video track after camera reconfiguration"""
+        self._paused = False
+        self.logger.info("WIMZVideoTrack resumed")
 
     def stop(self):
         """Stop the video track"""
