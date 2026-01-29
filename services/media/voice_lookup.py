@@ -26,25 +26,29 @@ def get_voice_path(voice_type: str, dog_id: str = None) -> str | None:
         Path to mp3 file, or None if not found
     """
     if voice_type not in VOICE_TYPES:
-        logger.warning(f"[VOICE] Unknown voice type: {voice_type}")
+        logger.warning(f"[VOICE] Unknown voice type: {voice_type} (valid: {VOICE_TYPES})")
 
     talks_base = f"{VOICEMP3_BASE}/talks"
 
     # 1. Try custom dog-specific file first
     if dog_id:
         custom_path = f"{talks_base}/{dog_id}/{voice_type}.mp3"
+        logger.info(f"[VOICE] Checking custom path: {custom_path}")
         if os.path.exists(custom_path):
-            logger.debug(f"[VOICE] Using custom: {custom_path}")
+            logger.info(f"[VOICE] Found custom voice: {custom_path}")
             return custom_path
+        else:
+            logger.info(f"[VOICE] Custom not found, checking default...")
 
     # 2. Fall back to default
     default_path = f"{talks_base}/default/{voice_type}.mp3"
+    logger.info(f"[VOICE] Checking default path: {default_path}")
     if os.path.exists(default_path):
-        logger.debug(f"[VOICE] Using default: {default_path}")
+        logger.info(f"[VOICE] Using default: {default_path}")
         return default_path
 
     # 3. Not found
-    logger.error(f"[VOICE] File not found: {voice_type} (dog={dog_id})")
+    logger.error(f"[VOICE] File NOT FOUND: {voice_type} (dog={dog_id}), tried: {default_path}")
     return None
 
 

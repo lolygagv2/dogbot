@@ -1212,37 +1212,42 @@ class TreatBotMain:
                               or params.get('data', {}).get('dog_id')
                               or event.data.get('dog_id'))
 
-                    self.logger.info(f"☁️ {command}: voice_type={voice_type}, dog_id={dog_id}")
+                    self.logger.info(f"☁️ {command}: voice_type={voice_type}, dog_id={dog_id}, params={params}")
 
                     if not voice_type:
-                        self.logger.warning(f"☁️ {command}: no voice_type provided")
+                        self.logger.warning(f"☁️ {command}: no voice_type provided, params={params}")
                     else:
                         # Get path using voice_lookup (custom first, default fallback)
                         audio_path = get_voice_path(voice_type, dog_id)
+                        self.logger.info(f"☁️ {command}: get_voice_path({voice_type}, {dog_id}) -> {audio_path}")
 
                         if audio_path:
                             try:
                                 audio_svc = get_usb_audio_service()
+                                self.logger.info(f"☁️ {command}: audio_svc initialized={audio_svc.is_initialized if audio_svc else 'None'}")
                                 if audio_svc and audio_svc.is_initialized:
-                                    audio_svc.play_file(audio_path)
-                                    self.logger.info(f"☁️ {command}: playing {audio_path}")
+                                    result = audio_svc.play_file(audio_path)
+                                    self.logger.info(f"☁️ {command}: play_file({audio_path}) result={result}")
                                 else:
-                                    self.logger.warning(f"☁️ {command}: USB audio not available")
+                                    self.logger.warning(f"☁️ {command}: USB audio not initialized (svc={audio_svc})")
                             except Exception as e:
-                                self.logger.error(f"☁️ {command} error: {e}")
+                                self.logger.error(f"☁️ {command} error: {e}", exc_info=True)
                         else:
                             # For call_dog, fall back to default come.mp3 if custom not found
                             if command == 'call_dog':
                                 fallback_path = "/home/morgan/dogbot/VOICEMP3/talks/default/come.mp3"
+                                self.logger.info(f"☁️ call_dog: trying fallback {fallback_path}")
                                 try:
                                     audio_svc = get_usb_audio_service()
                                     if audio_svc and audio_svc.is_initialized:
-                                        audio_svc.play_file(fallback_path)
-                                        self.logger.info(f"☁️ call_dog: using fallback {fallback_path}")
+                                        result = audio_svc.play_file(fallback_path)
+                                        self.logger.info(f"☁️ call_dog: fallback play result={result}")
+                                    else:
+                                        self.logger.warning(f"☁️ call_dog: USB audio not available for fallback")
                                 except Exception as e:
-                                    self.logger.error(f"☁️ call_dog fallback error: {e}")
+                                    self.logger.error(f"☁️ call_dog fallback error: {e}", exc_info=True)
                             else:
-                                self.logger.error(f"☁️ {command}: voice file not found: {voice_type}")
+                                self.logger.error(f"☁️ {command}: voice file not found for type={voice_type}, dog={dog_id}")
 
                 else:
                     self.logger.warning(f"☁️ Unknown cloud command: {command}")

@@ -568,8 +568,8 @@ class DetectorService:
                     self.logger.info(f"Frame captured: {frame.shape}")
 
                 # Determine if AI processing should run
-                # AI only runs in SILENT_GUARDIAN and COACH modes
-                ai_modes = [SystemMode.SILENT_GUARDIAN, SystemMode.COACH]
+                # AI runs in SILENT_GUARDIAN, COACH, and MISSION modes
+                ai_modes = [SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION]
                 run_ai = current_mode in ai_modes
 
                 dogs = []

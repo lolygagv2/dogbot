@@ -453,9 +453,11 @@ class ProperPIDMotorController:
                 current_time = time.time()
 
                 # Watchdog safety check - no commands at all
-                if current_time - self.last_command_time > self.watchdog_timeout:
+                time_since_cmd = current_time - self.last_command_time
+                if time_since_cmd > self.watchdog_timeout:
                     if not self.emergency_stopped:
-                        logger.warning("⏰ Watchdog timeout - no commands received, stopping motors")
+                        logger.warning(f"⏰ Watchdog timeout - no commands for {time_since_cmd:.1f}s (threshold={self.watchdog_timeout}s), stopping motors")
+                        logger.warning(f"   Last command time: {self.last_command_time:.3f}, open_loop={self.open_loop_mode}")
                         self._emergency_stop()
                     time.sleep(pid_interval)
                     continue
