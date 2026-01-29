@@ -271,8 +271,8 @@ class XboxHybridControllerFixed:
     # Add new MP3 files to those folders and they'll be automatically discovered on startup
 
     REWARD_SOUNDS = [
-        ("/talks/good_dog.mp3", "Good Dog"),
-        ("/talks/treat.mp3", "Treat")
+        ("/talks/default/good.mp3", "Good Dog"),
+        ("/talks/default/treat.mp3", "Treat")
     ]
 
     def __init__(self, device_path: str = '/dev/input/js0'):
@@ -497,16 +497,16 @@ class XboxHybridControllerFixed:
 
     def _scan_audio_folders(self):
         """Scan VOICEMP3 folders and update track lists. Can be called to refresh after new recordings."""
-        # Scan talks and songs folders
-        self.TALK_TRACKS = self._scan_folder("talks")
-        self.SONG_TRACKS = self._scan_folder("songs")
+        # Scan talks/default and songs/default folders
+        self.TALK_TRACKS = self._scan_folder("talks/default")
+        self.SONG_TRACKS = self._scan_folder("songs/default")
 
         # Fallback if folders are empty
         if not self.TALK_TRACKS:
-            self.TALK_TRACKS = [("/talks/treat.mp3", "Treat")]
+            self.TALK_TRACKS = [("/talks/default/treat.mp3", "Treat")]
             logger.warning("No talks found, using fallback")
         if not self.SONG_TRACKS:
-            self.SONG_TRACKS = [("/songs/scooby_snacks.mp3", "Scooby Snacks")]
+            self.SONG_TRACKS = [("/songs/default/scooby_snacks.mp3", "Scooby Snacks")]
             logger.warning("No songs found, using fallback")
 
         # Reset indices if they exceed new list bounds
@@ -913,13 +913,13 @@ class XboxHybridControllerFixed:
             normalized_trigger = value / 32767.0
             if normalized_trigger > self.TRIGGER_DEADZONE:
                 self.state.right_trigger = normalized_trigger
-                # Play good_dog.mp3 with cooldown to prevent spam
+                # Play good.mp3 with cooldown to prevent spam
                 current_time = time.time()
                 if not hasattr(self, '_last_rt_time'):
                     self._last_rt_time = 0
                 if current_time - self._last_rt_time > 1.0:  # 1 second cooldown
-                    logger.info("RT: Playing good_dog.mp3")
-                    self.api_request('POST', '/audio/play/file', {"filepath": "/talks/good_dog.mp3"})
+                    logger.info("RT: Playing good.mp3")
+                    self.api_request('POST', '/audio/play/file', {"filepath": "/talks/default/good.mp3"})
                     self._last_rt_time = current_time
             else:
                 self.state.right_trigger = 0.0
@@ -1260,7 +1260,7 @@ class XboxHybridControllerFixed:
             self.state.b_button = pressed
             if pressed:
                 logger.info("B button: Playing 'sit' command")
-                self.api_request('POST', '/audio/play/file', {"filepath": "/talks/sit.mp3"})
+                self.api_request('POST', '/audio/play/file', {"filepath": "/talks/default/sit.mp3"})
 
         elif number == 2:  # X button - Toggle LED
             self.state.x_button = pressed
@@ -1583,7 +1583,7 @@ class XboxHybridControllerFixed:
     def play_reward_sound(self):
         """Play TREAT sound (Y button)"""
         logger.info("Y button: Playing 'Treat' sound")
-        self.api_request('POST', '/audio/play/file', {"filepath": "/talks/treat.mp3"})
+        self.api_request('POST', '/audio/play/file', {"filepath": "/talks/default/treat.mp3"})
 
 
     def play_selected_talk(self):

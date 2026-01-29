@@ -120,6 +120,18 @@ class USBAudioService:
                 elif filepath.startswith('/talks/') or filepath.startswith('/songs/') or filepath.startswith('/02/'):
                     # Map short paths to full paths
                     full_path = os.path.join(self.base_path, filepath[1:])
+
+                    # For /talks/ and /songs/, check default/ subfolder first (consolidation)
+                    if filepath.startswith('/talks/') and '/default/' not in filepath:
+                        filename = os.path.basename(filepath)
+                        default_path = os.path.join(self.base_path, 'talks', 'default', filename)
+                        if os.path.exists(default_path):
+                            full_path = default_path
+                    elif filepath.startswith('/songs/') and '/default/' not in filepath:
+                        filename = os.path.basename(filepath)
+                        default_path = os.path.join(self.base_path, 'songs', 'default', filename)
+                        if os.path.exists(default_path):
+                            full_path = default_path
                 else:
                     full_path = filepath
 
@@ -394,7 +406,7 @@ class USBAudioService:
 
             # If no custom voice found, try default path
             if not voice_path:
-                voice_path = f"/talks/{command}.mp3"
+                voice_path = f"/talks/default/{command}.mp3"
                 voice_source = "default"
 
             # Play the voice
@@ -410,7 +422,7 @@ class USBAudioService:
 
         except ImportError:
             # VoiceManager not available, fall back to default
-            return self.play_file(f"/talks/{command}.mp3", loop=loop)
+            return self.play_file(f"/talks/default/{command}.mp3", loop=loop)
         except Exception as e:
             self.logger.error(f"Play command error: {e}")
             return {"success": False, "error": str(e)}

@@ -179,13 +179,38 @@ class StateManager:
         self.state_updates = 0
         self.start_time = time.time()
 
-    def set_mode(self, new_mode: SystemMode, reason: str = "") -> bool:
+        # Mode locking (for mission protection)
+        self._mode_locked = False
+        self._mode_lock_reason = None
+
+    def lock_mode(self, reason: str):
+        """Lock mode - only mission system should call this."""
+        with self._lock:
+            self._mode_locked = True
+            self._mode_lock_reason = reason
+            self.logger.info(f"[MODE] Locked: {reason}")
+
+    def unlock_mode(self):
+        """Unlock mode - only mission system should call this."""
+        with self._lock:
+            self._mode_locked = False
+            self._mode_lock_reason = None
+            self.logger.info("[MODE] Unlocked")
+
+    @property
+    def is_mode_locked(self) -> bool:
+        """Check if mode is locked."""
+        with self._lock:
+            return self._mode_locked
+
+    def set_mode(self, new_mode: SystemMode, reason: str = "", force: bool = False) -> bool:
         """
-        Change system mode with validation
+        Change system mode with validation and lock protection.
 
         Args:
             new_mode: New system mode
             reason: Reason for mode change
+            force: Override mode lock (for emergencies only)
 
         Returns:
             bool: True if mode changed successfully
@@ -193,6 +218,18 @@ class StateManager:
         with self._lock:
             if new_mode == self.mode:
                 return True
+
+            # Check mode lock (unless force override for emergencies)
+            if self._mode_locked and not force:
+                self.logger.warning(f"[MODE] BLOCKED '{new_mode.value}' - mode locked: {self._mode_lock_reason}")
+                # Publish rejection event for app notification
+                from core.bus import publish_system_event
+                publish_system_event('mode_change_rejected', {
+                    'requested': new_mode.value,
+                    'current': self.mode.value,
+                    'reason': self._mode_lock_reason
+                })
+                return False
 
             # Validate mode transition
             if not self._is_valid_transition(self.mode, new_mode):
@@ -210,7 +247,8 @@ class StateManager:
                 'previous_mode': self.previous_mode.value,
                 'new_mode': new_mode.value,
                 'reason': reason,
-                'timestamp': self.mode_changed_time
+                'timestamp': self.mode_changed_time,
+                'locked': self._mode_locked
             })
 
             return True

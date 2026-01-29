@@ -933,7 +933,7 @@ class TreatBotMain:
                     self.logger.info(f"☁️ Servo centered -> {resp.status_code}")
 
                 elif command == 'audio':
-                    # Audio: {"file": "good_dog.mp3"} or {"stop": true}
+                    # Audio: {"file": "good.mp3"} or {"stop": true}
                     if params.get('stop'):
                         resp = client.post(f'{api_base}/audio/stop')
                         self.logger.info(f"☁️ Audio stopped -> {resp.status_code}")
@@ -1199,100 +1199,50 @@ class TreatBotMain:
                     active = params.get('active', False)
                     self.logger.info(f"☁️ Manual control {'active' if active else 'inactive'}")
 
-                elif command == 'play_voice':
-                    # Play a voice command with custom voice support
-                    voice_type = params.get('voice_type')
-                    dog_id = params.get('dog_id')
-                    if voice_type:
-                        try:
-                            from services.media.usb_audio import get_usb_audio_service
-                            audio_svc = get_usb_audio_service()
-                            if audio_svc and audio_svc.is_initialized:
-                                result = audio_svc.play_command(voice_type, dog_id=dog_id)
-                                self.logger.info(f"☁️ Play voice '{voice_type}' dog_id={dog_id} -> {result}")
-                            else:
-                                self.logger.warning("☁️ play_voice: USB audio not available")
-                        except Exception as e:
-                            self.logger.error(f"☁️ play_voice error: {e}")
-                    else:
-                        self.logger.warning("☁️ play_voice: no voice_type provided")
+                elif command in ('play_voice', 'call_dog'):
+                    # Unified voice playback handler
+                    # - play_voice: plays any voice_type (sit, down, good, no, etc.)
+                    # - call_dog: plays 'come' voice_type
+                    from services.media.voice_lookup import get_voice_path
+                    from services.media.usb_audio import get_usb_audio_service
 
-                elif command == 'call_dog':
-                    # Call the dog by name
-                    # Priority: 1) custom voice come/name, 2) {name}_come.mp3, 3) dog_0.mp3
-                    dog_name = params.get('dog_name') or event.data.get('dog_name')
-                    # Extract dog_id from multiple possible locations
+                    # Get voice_type: for call_dog it's always 'come'
+                    voice_type = params.get('voice_type') or params.get('command') or ('come' if command == 'call_dog' else None)
                     dog_id = (params.get('dog_id')
                               or params.get('data', {}).get('dog_id')
                               or event.data.get('dog_id'))
-                    self.logger.info(f"☁️ Call dog: name={dog_name}, dog_id={dog_id}")
 
-                    resp = None
-                    played = False
+                    self.logger.info(f"☁️ {command}: voice_type={voice_type}, dog_id={dog_id}")
 
-                    # Try play_command with custom voice support (uses VoiceManager)
-                    if dog_id:
-                        try:
-                            from services.media.usb_audio import get_usb_audio_service
-                            audio_svc = get_usb_audio_service()
-                            if audio_svc and audio_svc.is_initialized:
-                                # Try 'come' command with dog_id for custom voice lookup
-                                result = audio_svc.play_command('come', dog_id=dog_id)
-                                if result.get('success'):
-                                    played = True
-                                    voice_src = result.get('voice_source', 'default')
-                                    self.logger.info(f"☁️ Call dog: play_command 'come' ({voice_src}) for {dog_id}")
-                                else:
-                                    # Try 'name' command
-                                    result = audio_svc.play_command('name', dog_id=dog_id)
-                                    if result.get('success'):
-                                        played = True
-                                        voice_src = result.get('voice_source', 'default')
-                                        self.logger.info(f"☁️ Call dog: play_command 'name' ({voice_src}) for {dog_id}")
-                        except Exception as e:
-                            self.logger.warning(f"☁️ Call dog play_command error: {e}")
-
-                    # Check for custom voice recordings (filesystem fallback)
-                    if not played and (dog_id or dog_name):
-                        lookup_id = dog_id or dog_name
-                        custom_paths = [
-                            f"/home/morgan/dogbot/VOICEMP3/custom/{lookup_id}/come.mp3",
-                            f"/home/morgan/dogbot/voices/{lookup_id}/come.mp3",
-                            f"/home/morgan/dogbot/voices/{lookup_id}/come.wav",
-                            f"/home/morgan/dogbot/VOICEMP3/custom/{lookup_id}/name.mp3",
-                            f"/home/morgan/dogbot/voices/{lookup_id}/name.mp3",
-                            f"/home/morgan/dogbot/voices/{lookup_id}/name.wav",
-                        ]
-                        for path in custom_paths:
-                            if os.path.exists(path):
-                                resp = client.post(f'{api_base}/audio/play/file', json={
-                                    'filepath': path
-                                })
-                                if resp.status_code == 200 and resp.json().get('success'):
-                                    played = True
-                                    self.logger.info(f"☁️ Call dog: using custom voice {path}")
-                                    break
-
-                    # Try dog-specific come file: /talks/{name}_come.mp3
-                    if not played and dog_name:
-                        come_file = f"/talks/{dog_name.lower()}_come.mp3"
-                        resp = client.post(f'{api_base}/audio/play/file', json={
-                            'filepath': come_file
-                        })
-                        if resp.status_code == 200 and resp.json().get('success'):
-                            played = True
-                            self.logger.info(f"☁️ Call dog: playing {come_file}")
-
-                    # Fallback to generic dog call
-                    if not played:
-                        resp = client.post(f'{api_base}/audio/play/file', json={
-                            'filepath': '/talks/dog_0.mp3'
-                        })
-                        self.logger.info(f"☁️ Call dog: using default dog_0.mp3")
-                    if resp is not None:
-                        self.logger.info(f"☁️ Call dog -> {resp.status_code}")
+                    if not voice_type:
+                        self.logger.warning(f"☁️ {command}: no voice_type provided")
                     else:
-                        self.logger.info(f"☁️ Call dog -> played via play_command")
+                        # Get path using voice_lookup (custom first, default fallback)
+                        audio_path = get_voice_path(voice_type, dog_id)
+
+                        if audio_path:
+                            try:
+                                audio_svc = get_usb_audio_service()
+                                if audio_svc and audio_svc.is_initialized:
+                                    audio_svc.play_file(audio_path)
+                                    self.logger.info(f"☁️ {command}: playing {audio_path}")
+                                else:
+                                    self.logger.warning(f"☁️ {command}: USB audio not available")
+                            except Exception as e:
+                                self.logger.error(f"☁️ {command} error: {e}")
+                        else:
+                            # For call_dog, fall back to default come.mp3 if custom not found
+                            if command == 'call_dog':
+                                fallback_path = "/home/morgan/dogbot/VOICEMP3/talks/default/come.mp3"
+                                try:
+                                    audio_svc = get_usb_audio_service()
+                                    if audio_svc and audio_svc.is_initialized:
+                                        audio_svc.play_file(fallback_path)
+                                        self.logger.info(f"☁️ call_dog: using fallback {fallback_path}")
+                                except Exception as e:
+                                    self.logger.error(f"☁️ call_dog fallback error: {e}")
+                            else:
+                                self.logger.error(f"☁️ {command}: voice file not found: {voice_type}")
 
                 else:
                     self.logger.warning(f"☁️ Unknown cloud command: {command}")

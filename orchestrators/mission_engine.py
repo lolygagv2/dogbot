@@ -233,12 +233,16 @@ class MissionEngine:
                 dog_id=dog_id
             )
 
+            # Set mode to MISSION and lock it to prevent interruption
+            self.state.set_mode(SystemMode.MISSION, reason=f'Mission: {mission_name}')
+            self.state.lock_mode(f'Mission active: {mission_name}')
+
             # Start mission thread
             self.running = True
             self.mission_thread = threading.Thread(target=self._mission_loop, daemon=True)
             self.mission_thread.start()
 
-            self.logger.info(f"Started mission: {mission_name} (ID: {mission_id})")
+            self.logger.info(f"Started mission: {mission_name} (ID: {mission_id}), mode locked to MISSION")
             publish_system_event("mission.started", {
                 "mission_name": mission_name,
                 "mission_id": mission_id,
@@ -271,7 +275,11 @@ class MissionEngine:
                 }
             )
 
-            self.logger.info(f"Stopped mission: {session.mission.name} ({reason})")
+            # Unlock mode FIRST, then set to idle
+            self.state.unlock_mode()
+            self.state.set_mode(SystemMode.IDLE, reason=f'Mission stopped: {reason}')
+
+            self.logger.info(f"Stopped mission: {session.mission.name} ({reason}), mode unlocked")
             publish_system_event("mission.stopped", {
                 "mission_name": session.mission.name,
                 "mission_id": session.mission_id,
@@ -653,7 +661,11 @@ class MissionEngine:
             }
         )
 
-        self.logger.info(f"Mission completed: {session.mission.name} ({reason})")
+        # Unlock mode and set to idle
+        self.state.unlock_mode()
+        self.state.set_mode(SystemMode.IDLE, reason=f'Mission {reason}')
+
+        self.logger.info(f"Mission completed: {session.mission.name} ({reason}), mode unlocked")
         publish_system_event("mission.completed", {
             "mission_name": session.mission.name,
             "mission_id": session.mission_id,
