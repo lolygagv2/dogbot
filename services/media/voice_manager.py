@@ -6,7 +6,8 @@ Manages custom voice recordings for dog-specific commands.
 Voices are stored per dog and per command, with fallback to default audio.
 
 Storage structure:
-/home/morgan/dogbot/voices/{dog_id}/{command}.mp3
+/home/morgan/dogbot/VOICEMP3/talks/dog_{id}/{command}.mp3  (custom per-dog)
+/home/morgan/dogbot/VOICEMP3/talks/default/{command}.mp3   (default fallback)
 """
 
 import os
@@ -18,10 +19,9 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
-# Voice storage configuration
-VOICES_DIR = Path("/home/morgan/dogbot/voices")
-CUSTOM_VOICES_DIR = Path("/home/morgan/dogbot/VOICEMP3/custom")
-DEFAULT_VOICES_DIR = Path("/home/morgan/dogbot/VOICEMP3/talks")
+# Voice storage configuration - ALL voices in VOICEMP3/talks/
+VOICES_BASE_DIR = Path("/home/morgan/dogbot/VOICEMP3/talks")
+DEFAULT_VOICES_DIR = VOICES_BASE_DIR / "default"
 
 # Standard commands that can have custom voices
 STANDARD_COMMANDS = [
@@ -61,10 +61,11 @@ class VoiceManager:
         self.logger = logging.getLogger('VoiceManager')
         self._lock = threading.Lock()
 
-        # Ensure voices directory exists
-        VOICES_DIR.mkdir(parents=True, exist_ok=True)
+        # Ensure base voices directory exists
+        VOICES_BASE_DIR.mkdir(parents=True, exist_ok=True)
+        DEFAULT_VOICES_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.logger.info(f"VoiceManager initialized (voices_dir={VOICES_DIR})")
+        self.logger.info(f"VoiceManager initialized (voices_dir={VOICES_BASE_DIR})")
 
     def save_voice(self, dog_id: str, command: str, audio_data: bytes) -> Dict[str, Any]:
         """
@@ -86,8 +87,8 @@ class VoiceManager:
                 dog_id = self._sanitize_filename(str(dog_id))
                 command = self._sanitize_filename(command.lower())
 
-                # Create dog directory if needed
-                dog_dir = VOICES_DIR / dog_id
+                # Create dog directory in VOICEMP3/talks/dog_{id}/
+                dog_dir = VOICES_BASE_DIR / f"dog_{dog_id}"
                 dog_dir.mkdir(parents=True, exist_ok=True)
 
                 filepath = dog_dir / f"{command}.mp3"
@@ -183,19 +184,13 @@ class VoiceManager:
         command = command.lower()
         safe_dog_id = self._sanitize_filename(str(dog_id))
 
-        # Check for custom voice in voices/ directory first
-        custom_path = VOICES_DIR / safe_dog_id / f"{command}.mp3"
+        # Check for custom voice in VOICEMP3/talks/dog_{id}/
+        custom_path = VOICES_BASE_DIR / f"dog_{safe_dog_id}" / f"{command}.mp3"
         if custom_path.exists():
-            self.logger.info(f"Using custom voice (voices/): {custom_path}")
+            self.logger.info(f"Using custom voice: {custom_path}")
             return str(custom_path)
 
-        # Check for custom voice in VOICEMP3/custom/ directory
-        custom_mp3_path = CUSTOM_VOICES_DIR / safe_dog_id / f"{command}.mp3"
-        if custom_mp3_path.exists():
-            self.logger.info(f"Using custom voice (VOICEMP3/custom/): {custom_mp3_path}")
-            return str(custom_mp3_path)
-
-        # Fallback to default voice
+        # Fallback to default voice in VOICEMP3/talks/default/
         default_path = DEFAULT_VOICES_DIR / f"{command}.mp3"
         if default_path.exists():
             self.logger.debug(f"Using default voice: {default_path}")
@@ -213,10 +208,7 @@ class VoiceManager:
         """Check if a custom voice exists for a dog command."""
         safe_dog_id = self._sanitize_filename(str(dog_id))
         cmd = command.lower()
-        return (
-            (VOICES_DIR / safe_dog_id / f"{cmd}.mp3").exists() or
-            (CUSTOM_VOICES_DIR / safe_dog_id / f"{cmd}.mp3").exists()
-        )
+        return (VOICES_BASE_DIR / f"dog_{safe_dog_id}" / f"{cmd}.mp3").exists()
 
     def list_voices(self, dog_id: str) -> Dict[str, Any]:
         """
@@ -228,8 +220,8 @@ class VoiceManager:
         Returns:
             Dict with voices status: {"sit": true, "down": false, ...}
         """
-        dog_id = self._sanitize_filename(str(dog_id))
-        dog_dir = VOICES_DIR / dog_id
+        safe_dog_id = self._sanitize_filename(str(dog_id))
+        dog_dir = VOICES_BASE_DIR / f"dog_{safe_dog_id}"
 
         # Build voice status for all standard commands
         voices = {}
@@ -245,7 +237,7 @@ class VoiceManager:
                     voices[command] = True
 
         return {
-            "dog_id": dog_id,
+            "dog_id": safe_dog_id,
             "voices": voices,
             "custom_count": sum(1 for v in voices.values() if v),
             "total_commands": len(voices)
@@ -264,10 +256,10 @@ class VoiceManager:
         """
         with self._lock:
             try:
-                dog_id = self._sanitize_filename(str(dog_id))
+                safe_dog_id = self._sanitize_filename(str(dog_id))
                 command = self._sanitize_filename(command.lower())
 
-                filepath = VOICES_DIR / dog_id / f"{command}.mp3"
+                filepath = VOICES_BASE_DIR / f"dog_{safe_dog_id}" / f"{command}.mp3"
 
                 if not filepath.exists():
                     return {
@@ -281,7 +273,7 @@ class VoiceManager:
                 return {
                     "success": True,
                     "filepath": str(filepath),
-                    "dog_id": dog_id,
+                    "dog_id": safe_dog_id,
                     "command": command
                 }
 
@@ -301,10 +293,11 @@ class VoiceManager:
         """
         result = {}
 
-        if VOICES_DIR.exists():
-            for dog_dir in VOICES_DIR.iterdir():
-                if dog_dir.is_dir():
-                    dog_id = dog_dir.name
+        if VOICES_BASE_DIR.exists():
+            for dog_dir in VOICES_BASE_DIR.iterdir():
+                # Only process dog_* directories (skip 'default')
+                if dog_dir.is_dir() and dog_dir.name.startswith("dog_"):
+                    dog_id = dog_dir.name.replace("dog_", "")
                     result[dog_id] = self.list_voices(dog_id)
 
         return {
@@ -324,14 +317,14 @@ class VoiceManager:
         dog_count = 0
         voice_count = 0
 
-        if VOICES_DIR.exists():
-            for dog_dir in VOICES_DIR.iterdir():
-                if dog_dir.is_dir():
+        if VOICES_BASE_DIR.exists():
+            for dog_dir in VOICES_BASE_DIR.iterdir():
+                if dog_dir.is_dir() and dog_dir.name.startswith("dog_"):
                     dog_count += 1
                     voice_count += len(list(dog_dir.glob("*.mp3")))
 
         return {
-            "voices_dir": str(VOICES_DIR),
+            "voices_base_dir": str(VOICES_BASE_DIR),
             "default_voices_dir": str(DEFAULT_VOICES_DIR),
             "dogs_with_custom_voices": dog_count,
             "total_custom_voices": voice_count,

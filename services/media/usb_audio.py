@@ -377,8 +377,8 @@ class USBAudioService:
         Play a voice command, using custom voice if available.
 
         Priority:
-        1. Custom voice for this dog (/voices/{dog_id}/{command}.mp3)
-        2. Default voice (/VOICEMP3/talks/{command}.mp3)
+        1. Custom voice for this dog (/VOICEMP3/talks/dog_{id}/{command}.mp3)
+        2. Default voice (/VOICEMP3/talks/default/{command}.mp3)
 
         Args:
             command: Command name (e.g., "sit", "good_dog")
@@ -401,7 +401,7 @@ class USBAudioService:
 
             if dog_id:
                 voice_path = voice_manager.get_voice_path(dog_id, command)
-                if voice_path and ("/voices/" in voice_path or "/custom/" in voice_path):
+                if voice_path and "/dog_" in voice_path:
                     voice_source = "custom"
 
             # If no custom voice found, try default path
