@@ -73,34 +73,38 @@ class USBAudioService:
             self.logger.error(f"USB Audio initialization failed: {e}")
             self.initialized = False
 
-    def _build_playlist(self):
-        """Build playlist from songs folder, merging system + user songs"""
-        songs_path = os.path.join(self.base_path, "songs")
-        user_songs_path = os.path.join(songs_path, "user")
-
-        # Ensure user songs directory exists
-        os.makedirs(user_songs_path, exist_ok=True)
+    def _build_playlist(self, dog_id: str = None):
+        """Build playlist from songs folder, using dog-specific or default songs"""
+        songs_base = os.path.join(self.base_path, "songs")
+        default_path = os.path.join(songs_base, "default")
 
         playlist = []
 
-        # System songs (top-level songs/)
-        if os.path.exists(songs_path):
-            playlist.extend(sorted([
-                f for f in os.listdir(songs_path)
-                if f.lower().endswith(('.mp3', '.wav', '.ogg'))
-                and os.path.isfile(os.path.join(songs_path, f))
-            ]))
+        # Check for dog-specific songs first
+        if dog_id:
+            dog_path = os.path.join(songs_base, dog_id)
+            if os.path.isdir(dog_path):
+                dog_songs = sorted([
+                    f for f in os.listdir(dog_path)
+                    if f.lower().endswith(('.mp3', '.wav', '.ogg'))
+                    and os.path.isfile(os.path.join(dog_path, f))
+                ])
+                if dog_songs:
+                    playlist.extend([f"{dog_id}/{f}" for f in dog_songs])
+                    self._playlist = playlist
+                    self.logger.info(f"Built playlist with {len(playlist)} tracks for {dog_id}")
+                    return
 
-        # User-uploaded songs (songs/user/) - prefixed with "user/"
-        if os.path.exists(user_songs_path):
+        # Fall back to default songs
+        if os.path.isdir(default_path):
             playlist.extend(sorted([
-                f"user/{f}" for f in os.listdir(user_songs_path)
+                f"default/{f}" for f in os.listdir(default_path)
                 if f.lower().endswith(('.mp3', '.wav', '.ogg'))
-                and os.path.isfile(os.path.join(user_songs_path, f))
+                and os.path.isfile(os.path.join(default_path, f))
             ]))
 
         self._playlist = playlist
-        self.logger.info(f"Built playlist with {len(self._playlist)} tracks")
+        self.logger.info(f"Built playlist with {len(self._playlist)} tracks (default)")
 
     def play_file(self, filepath: str, loop: bool = False) -> Dict[str, Any]:
         """Play an audio file
@@ -355,21 +359,23 @@ class USBAudioService:
             "playlist": self._playlist
         }
 
-    def list_songs(self) -> Dict[str, Any]:
-        """List all songs with source info (system vs user)"""
-        self._build_playlist()
+    def list_songs(self, dog_id: str = None) -> Dict[str, Any]:
+        """List all songs with source info (default vs custom)"""
+        self._build_playlist(dog_id)
         songs = []
         for track in self._playlist:
-            if track.startswith("user/"):
-                songs.append({"filename": track, "source": "user", "name": track[5:]})
+            if track.startswith("default/"):
+                songs.append({"filename": track, "source": "default", "name": track[8:]})
             else:
-                songs.append({"filename": track, "source": "system", "name": track})
+                # Dog-specific: dog_XXXXX/filename.mp3
+                parts = track.split("/", 1)
+                songs.append({"filename": track, "source": parts[0], "name": parts[1] if len(parts) > 1 else track})
         return {
             "success": True,
             "songs": songs,
             "total": len(songs),
-            "system_count": sum(1 for s in songs if s["source"] == "system"),
-            "user_count": sum(1 for s in songs if s["source"] == "user")
+            "default_count": sum(1 for s in songs if s["source"] == "default"),
+            "custom_count": sum(1 for s in songs if s["source"] != "default")
         }
 
     def play_command(self, command: str, dog_id: str = None, loop: bool = False) -> Dict[str, Any]:

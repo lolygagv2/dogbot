@@ -87,8 +87,11 @@ class VoiceManager:
                 dog_id = self._sanitize_filename(str(dog_id))
                 command = self._sanitize_filename(command.lower())
 
-                # Create dog directory in VOICEMP3/talks/dog_{id}/
-                dog_dir = VOICES_BASE_DIR / f"dog_{dog_id}"
+                # Create dog directory in VOICEMP3/talks/{dog_id}/
+                # App sends dog_id with or without 'dog_' prefix - handle both
+                folder_name = dog_id if dog_id.startswith("dog_") else f"dog_{dog_id}"
+                dog_dir = VOICES_BASE_DIR / folder_name
+                self.logger.info(f"Voice save: dog_id={dog_id}, folder={folder_name}, path={dog_dir}")
                 dog_dir.mkdir(parents=True, exist_ok=True)
 
                 filepath = dog_dir / f"{command}.mp3"
@@ -184,8 +187,11 @@ class VoiceManager:
         command = command.lower()
         safe_dog_id = self._sanitize_filename(str(dog_id))
 
-        # Check for custom voice in VOICEMP3/talks/dog_{id}/
-        custom_path = VOICES_BASE_DIR / f"dog_{safe_dog_id}" / f"{command}.mp3"
+        # Handle dog_id with or without 'dog_' prefix
+        folder_name = safe_dog_id if safe_dog_id.startswith("dog_") else f"dog_{safe_dog_id}"
+
+        # Check for custom voice in VOICEMP3/talks/{folder}/
+        custom_path = VOICES_BASE_DIR / folder_name / f"{command}.mp3"
         if custom_path.exists():
             self.logger.info(f"Using custom voice: {custom_path}")
             return str(custom_path)
@@ -207,8 +213,9 @@ class VoiceManager:
     def has_custom_voice(self, dog_id: str, command: str) -> bool:
         """Check if a custom voice exists for a dog command."""
         safe_dog_id = self._sanitize_filename(str(dog_id))
+        folder_name = safe_dog_id if safe_dog_id.startswith("dog_") else f"dog_{safe_dog_id}"
         cmd = command.lower()
-        return (VOICES_BASE_DIR / f"dog_{safe_dog_id}" / f"{cmd}.mp3").exists()
+        return (VOICES_BASE_DIR / folder_name / f"{cmd}.mp3").exists()
 
     def list_voices(self, dog_id: str) -> Dict[str, Any]:
         """
@@ -221,7 +228,8 @@ class VoiceManager:
             Dict with voices status: {"sit": true, "down": false, ...}
         """
         safe_dog_id = self._sanitize_filename(str(dog_id))
-        dog_dir = VOICES_BASE_DIR / f"dog_{safe_dog_id}"
+        folder_name = safe_dog_id if safe_dog_id.startswith("dog_") else f"dog_{safe_dog_id}"
+        dog_dir = VOICES_BASE_DIR / folder_name
 
         # Build voice status for all standard commands
         voices = {}
@@ -259,7 +267,8 @@ class VoiceManager:
                 safe_dog_id = self._sanitize_filename(str(dog_id))
                 command = self._sanitize_filename(command.lower())
 
-                filepath = VOICES_BASE_DIR / f"dog_{safe_dog_id}" / f"{command}.mp3"
+                folder_name = safe_dog_id if safe_dog_id.startswith("dog_") else f"dog_{safe_dog_id}"
+                filepath = VOICES_BASE_DIR / folder_name / f"{command}.mp3"
 
                 if not filepath.exists():
                     return {

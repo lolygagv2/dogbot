@@ -1032,8 +1032,8 @@ class TreatBotMain:
                     self.logger.info(f"☁️ Emergency stop -> {resp.status_code}")
 
                 elif command == 'upload_voice':
-                    # Voice upload: {"name": "sit", "dog_id": "1", "data": "<base64>"}
-                    # dog_id defaults to "default" if app doesn't provide it
+                    # Voice upload: {"name": "sit", "dog_id": "dog_123", "data": "<base64>"}
+                    # Saves to VOICEMP3/talks/{dog_id}/{name}.mp3
                     upload_name = params.get('name') or event.data.get('name')
                     upload_dog_id = params.get('dog_id') or event.data.get('dog_id') or 'default'
                     upload_data = params.get('data') or event.data.get('data')
@@ -1043,10 +1043,10 @@ class TreatBotMain:
                         'dog_id': upload_dog_id,
                         'data': upload_data
                     })
-                    self.logger.info(f"☁️ Voice upload -> {resp.status_code}")
+                    self.logger.info(f"☁️ Voice upload -> {resp.status_code}: {resp.text[:200] if resp.text else 'no body'}")
 
                 elif command == 'list_voices':
-                    # List voices: {"dog_id": "1"} (optional)
+                    # List voices: {"dog_id": "dog_123"} (optional)
                     dog_id = params.get('dog_id')
                     if dog_id:
                         resp = client.get(f'{api_base}/voices/{dog_id}')
@@ -1059,7 +1059,7 @@ class TreatBotMain:
                     dog_id = params.get('dog_id')
                     name = params.get('name')
                     if dog_id and name:
-                        resp = client.delete(f'{api_base}/voices/{dog_id}/{name}')
+                        resp = client.delete(f'{api_base}/ VOICEMP3/{dog_id}/{name}')
                         self.logger.info(f"☁️ Delete voice -> {resp.status_code}")
 
                 elif command == 'play_command':

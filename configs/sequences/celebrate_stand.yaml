@@ -1,0 +1,44 @@
+# Celebration sequence for stand behavior
+name: celebrate_stand
+description: "Celebration sequence when dog stands successfully"
+version: "1.0"
+
+steps:
+  - type: parallel
+    description: "Start celebration effects"
+    actions:
+      - service: led
+        command: pattern
+        params:
+          pattern: "celebration"
+          duration: 3
+          color: "yellow"
+        description: "Yellow celebration LEDs"
+
+      - service: audio
+        command: play
+        params:
+          sound: "good"
+          dog_id: "$dog_id"
+        description: "Play 'good dog' voice"
+
+  - type: wait
+    duration: 0.5
+
+  - type: action
+    service: treat
+    command: dispense
+    params:
+      count: 1
+      dog_id: "$dog_id"
+      reason: "stand_reward"
+
+  - type: wait
+    duration: 2.0
+
+metadata:
+  duration_estimate: 5.5
+  interrupt_safe: false
+  priority: high
+  category: "reward"
+  behavior: "stand"

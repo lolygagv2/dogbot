@@ -1,0 +1,53 @@
+# Celebration sequence for sit behavior
+# Triggers LED celebration, plays 'good' voice, dispenses treat
+
+name: celebrate_sit
+description: "Celebration sequence when dog sits successfully"
+version: "1.0"
+
+# Context variables available:
+# $dog_id - ID of the dog being rewarded
+# $confidence - Detection confidence (0.0-1.0)
+
+steps:
+  - type: parallel
+    description: "Start celebration effects"
+    actions:
+      - service: led
+        command: pattern
+        params:
+          pattern: "celebration"
+          duration: 3
+          color: "green"
+        description: "Green celebration LEDs"
+
+      - service: audio
+        command: play
+        params:
+          sound: "good"
+          dog_id: "$dog_id"
+        description: "Play 'good dog' voice"
+
+  - type: wait
+    description: "Brief pause before treat"
+    duration: 0.5
+
+  - type: action
+    service: treat
+    command: dispense
+    params:
+      count: 1
+      dog_id: "$dog_id"
+      reason: "sit_reward"
+    description: "Dispense treat"
+
+  - type: wait
+    description: "Cooldown before next detection"
+    duration: 2.0
+
+metadata:
+  duration_estimate: 5.5
+  interrupt_safe: false
+  priority: high
+  category: "reward"
+  behavior: "sit"

@@ -2478,7 +2478,7 @@ class SongUploadRequest(BaseModel):
 
 @app.post("/music/upload")
 async def upload_song(request: SongUploadRequest):
-    """Upload a song to user songs folder"""
+    """Upload a song to default songs folder"""
     import base64
     import re
 
@@ -2487,10 +2487,12 @@ async def upload_song(request: SongUploadRequest):
         if not re.match(r'^[\w\-. ]+\.(mp3|wav|ogg)$', request.filename, re.IGNORECASE):
             raise HTTPException(status_code=400, detail="Invalid filename. Use alphanumeric with .mp3/.wav/.ogg extension")
 
-        user_songs_path = "/home/morgan/dogbot/VOICEMP3/songs/user"
-        os.makedirs(user_songs_path, exist_ok=True)
+        # Save to default songs folder (available to all dogs)
+        songs_path = "/home/morgan/dogbot/VOICEMP3/songs/default"
+        os.makedirs(songs_path, exist_ok=True)
 
-        filepath = os.path.join(user_songs_path, request.filename)
+        filepath = os.path.join(songs_path, request.filename)
+        logger.info(f"Saving song to: {filepath}")
 
         # Decode and save
         audio_data = base64.b64decode(request.data)
@@ -2504,7 +2506,7 @@ async def upload_song(request: SongUploadRequest):
         return {
             "success": True,
             "filename": request.filename,
-            "path": f"user/{request.filename}",
+            "path": f"default/{request.filename}",
             "size_bytes": len(audio_data),
             "message": f"Song '{request.filename}' uploaded"
         }
@@ -2576,7 +2578,7 @@ async def test_audio_system():
 
 
 # Voice Command endpoints
-@app.get("/voices/status")
+@app.get("/ VOICEMP3/status")
 async def get_voices_status():
     """Get voice manager status"""
     try:
@@ -2588,7 +2590,7 @@ async def get_voices_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/voices/{dog_id}")
+@app.get("/ VOICEMP3/{dog_id}")
 async def list_dog_voices(dog_id: str):
     """List custom voices for a specific dog"""
     try:
@@ -3561,7 +3563,7 @@ async def play_audio(request: dict):
     """Play audio file or track via USB audio
 
     Accepts:
-    - {"file": "good_dog.mp3"} - plays from VOICEMP3/talks/
+    - {"file": "good.mp3"} - plays from VOICEMP3/talks/
     - {"track": 1} - plays by track number (legacy)
     """
     try:
