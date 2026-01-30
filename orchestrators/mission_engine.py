@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+import os
 from core.bus import get_bus, publish_system_event, AudioEvent
 from core.state import get_state, SystemMode
 from core.store import get_store
@@ -20,15 +21,30 @@ from core.behavior_interpreter import get_behavior_interpreter
 from orchestrators.sequence_engine import get_sequence_engine
 from orchestrators.reward_logic import get_reward_logic
 from services.media.usb_audio import get_usb_audio_service
+from services.reward.dispenser import get_dispenser_service
+from services.media.led import get_led_service
 from services.cloud.relay_client import get_relay_client
 
 
 class MissionState(Enum):
-    """Mission execution states"""
+    """Mission execution states - mirrors coaching engine for consistency"""
     IDLE = "idle"
     STARTING = "starting"
+    # Coach-style states for trick execution
     WAITING_FOR_DOG = "waiting_for_dog"
-    WAITING_FOR_BEHAVIOR = "waiting_for_behavior"
+    ATTENTION_CHECK = "attention_check"
+    GREETING = "greeting"
+    COMMAND = "command"
+    WATCHING = "watching"
+    SUCCESS = "success"
+    FAILURE = "failure"
+    # Retry states
+    RETRY_GREETING = "retry_greeting"
+    RETRY_COMMAND = "retry_command"
+    RETRY_WATCHING = "retry_watching"
+    FINAL_FAILURE = "final_failure"
+    # Mission-level states
+    STAGE_COOLDOWN = "stage_cooldown"
     EXECUTING_REWARD = "executing_reward"
     COOLDOWN = "cooldown"
     PAUSED = "paused"
@@ -76,19 +92,25 @@ POSE_TO_TRICK = {
 
 @dataclass
 class MissionSession:
-    """Active mission session"""
+    """Active mission session - includes coach-style tracking"""
     mission_id: int
     mission: Mission
     dog_id: Optional[str] = None
+    dog_name: Optional[str] = None
     start_time: float = field(default_factory=time.time)
     current_stage: int = 0
     stage_start_time: float = field(default_factory=time.time)
     state: MissionState = MissionState.IDLE
     rewards_given: int = 0
-    attempts: int = 0
+    attempts: int = 0  # Attempts for current stage (max 2)
     events_log: List[Dict[str, Any]] = field(default_factory=list)
     last_event_time: float = field(default_factory=time.time)
     pose_tracking_reset: bool = False  # Whether interpreter.reset_tracking() called for current pose stage
+    # Coach-style tracking
+    trick_requested: Optional[str] = None  # Current trick being requested
+    command_time: Optional[float] = None  # When command was given
+    behavior_detected: Optional[str] = None  # What behavior was actually detected
+    attention_start: Optional[float] = None  # When attention check started
 
 
 # Mission engine singleton
@@ -100,6 +122,15 @@ class MissionEngine:
     """
     Mission state machine and coordination engine
 
+    NOW uses coach-style flow for trick stages:
+    1. Wait for dog (with presence check)
+    2. Attention check (2-3s)
+    3. Greeting (play dog name)
+    4. Command (play trick audio)
+    5. Watch for behavior (10s default)
+    6. Success/Failure handling
+    7. Retry logic (2 attempts)
+
     Manages:
     - Loading mission definitions from JSON
     - Tracking mission progress through stages
@@ -108,6 +139,13 @@ class MissionEngine:
     - Mission state persistence
     """
 
+    # Coach-style timing constants
+    DETECTION_TIME_SEC = 3.0  # Dog must be visible this long
+    PRESENCE_RATIO_MIN = 0.66  # Dog must be in 66% of frames
+    ATTENTION_DURATION_SEC = 2.0  # Attention check duration
+    WATCH_DURATION_SEC = 10.0  # Default watch window
+    STALE_TIMEOUT_SEC = 2.0  # Dog considered gone after this
+
     def __init__(self):
         self.bus = get_bus()
         self.state = get_state()
@@ -115,6 +153,9 @@ class MissionEngine:
         self.sequence_engine = get_sequence_engine()
         self.reward_logic = get_reward_logic()
         self.interpreter = get_behavior_interpreter()
+        self.audio = get_usb_audio_service()
+        self.dispenser = get_dispenser_service()
+        self.led = get_led_service()
 
         self.logger = logging.getLogger(__name__)
 
@@ -124,6 +165,23 @@ class MissionEngine:
         self.mission_thread: Optional[threading.Thread] = None
         self.running = False
         self._lock = threading.Lock()
+
+        # Coach-style dog tracking (same as coaching_engine.py)
+        self.dogs_in_view: Dict[str, Dict[str, Any]] = {}
+
+        # Dog name mapping
+        self.dog_names = {
+            'aruco_315': 'Elsa',
+            'aruco_832': 'Bezik',
+            315: 'Elsa',
+            832: 'Bezik'
+        }
+
+        # Bark tracking for speak missions
+        self.bark_count = 0
+        self.bark_timestamps: List[float] = []
+        self.listening_for_barks = False
+        self._listening_started_at = 0.0
 
         # Load missions
         self._load_missions()
@@ -351,12 +409,25 @@ class MissionEngine:
             }
 
     def _mission_loop(self):
-        """Main mission execution loop"""
+        """
+        Main mission execution loop - NOW uses coach-style flow!
+
+        For each pose/trick stage:
+        1. WAITING_FOR_DOG - wait for dog presence (3s, 66% visibility)
+        2. ATTENTION_CHECK - verify dog is attentive
+        3. GREETING - play dog's name audio
+        4. COMMAND - play trick command audio
+        5. WATCHING - poll for behavior (10s default)
+        6. SUCCESS/FAILURE - handle outcome
+        7. Retry on first failure (2 attempts per stage)
+        """
         session = self.active_session
 
         try:
             session.state = MissionState.STARTING
             session.stage_start_time = time.time()
+
+            self.logger.info(f"🎯 Mission loop started: {session.mission.name}")
 
             while self.running and session.state not in [
                 MissionState.COMPLETED, MissionState.FAILED, MissionState.STOPPED
@@ -376,17 +447,476 @@ class MissionEngine:
                     self._complete_mission("max_rewards_reached")
                     break
 
-                # Process current stage
-                self._process_stage()
+                # Clean stale dogs (like coaching engine)
+                self._cleanup_stale_dogs()
 
-                time.sleep(0.1)  # Prevent tight loop
+                # Increment frame counter for presence ratio
+                for dog_id in self.dogs_in_view:
+                    self.dogs_in_view[dog_id]['frames_total'] += 1
+
+                # Process current state (coach-style state machine)
+                self._process_state()
+
+                time.sleep(0.1)  # 10Hz loop
 
         except Exception as e:
-            self.logger.error(f"Mission loop error: {e}")
+            self.logger.error(f"Mission loop error: {e}", exc_info=True)
             session.state = MissionState.FAILED
 
         finally:
             self.running = False
+            self.listening_for_barks = False
+
+    def _cleanup_stale_dogs(self):
+        """Remove dogs not seen recently (same as coaching engine)"""
+        cutoff = time.time() - self.STALE_TIMEOUT_SEC
+        stale = [
+            dog_id for dog_id, info in self.dogs_in_view.items()
+            if info['last_seen'] < cutoff
+        ]
+        for dog_id in stale:
+            del self.dogs_in_view[dog_id]
+
+    def _get_dog_name(self, dog_id: str) -> str:
+        """Get friendly name for dog (same as coaching engine)"""
+        if dog_id in self.dogs_in_view:
+            tracked_name = self.dogs_in_view[dog_id].get('name')
+            if tracked_name:
+                return tracked_name
+
+        if dog_id in self.dog_names:
+            return self.dog_names[dog_id]
+
+        if dog_id.startswith('aruco_'):
+            try:
+                aruco_id = int(dog_id.split('_')[1])
+                if aruco_id in self.dog_names:
+                    return self.dog_names[aruco_id]
+            except (ValueError, IndexError):
+                pass
+
+        return dog_id
+
+    def _play_audio(self, filename: str, wait: bool = True, timeout: float = 5.0):
+        """Play audio file (same as coaching engine)"""
+        if not self.audio:
+            return
+
+        try:
+            base_path = '/home/morgan/dogbot/VOICEMP3/talks'
+            full_path = os.path.join(base_path, filename)
+
+            if not os.path.exists(full_path):
+                # Try default directory
+                full_path = os.path.join(base_path, 'default', filename)
+
+            if os.path.exists(full_path):
+                self.audio.play_file(full_path)
+                if wait:
+                    self.audio.wait_for_completion(timeout=timeout)
+            else:
+                self.logger.warning(f"Audio file not found: {filename}")
+        except Exception as e:
+            self.logger.error(f"Audio playback error: {e}")
+
+    def _process_state(self):
+        """Process current FSM state (coach-style state machine)"""
+        session = self.active_session
+        if not session:
+            return
+
+        # Check if we've completed all stages
+        if session.current_stage >= len(session.mission.stages):
+            self._complete_mission("all_stages_completed")
+            return
+
+        stage = session.mission.stages[session.current_stage]
+
+        # Route to state handler
+        if session.state == MissionState.STARTING:
+            self._state_starting()
+        elif session.state == MissionState.WAITING_FOR_DOG:
+            self._state_waiting_for_dog()
+        elif session.state == MissionState.ATTENTION_CHECK:
+            self._state_attention_check()
+        elif session.state == MissionState.GREETING:
+            self._state_greeting()
+        elif session.state == MissionState.COMMAND:
+            self._state_command()
+        elif session.state == MissionState.WATCHING:
+            self._state_watching()
+        elif session.state == MissionState.SUCCESS:
+            self._state_success()
+        elif session.state == MissionState.FAILURE:
+            self._state_failure()
+        elif session.state == MissionState.RETRY_GREETING:
+            self._state_retry_greeting()
+        elif session.state == MissionState.RETRY_COMMAND:
+            self._state_retry_command()
+        elif session.state == MissionState.RETRY_WATCHING:
+            self._state_retry_watching()
+        elif session.state == MissionState.FINAL_FAILURE:
+            self._state_final_failure()
+        elif session.state == MissionState.STAGE_COOLDOWN:
+            self._state_stage_cooldown()
+
+    def _state_starting(self):
+        """Initialize first stage"""
+        session = self.active_session
+        stage = session.mission.stages[session.current_stage]
+
+        self.logger.info(f"📋 Starting stage {session.current_stage + 1}: {stage.name}")
+        session.state = MissionState.WAITING_FOR_DOG
+        session.stage_start_time = time.time()
+        session.attempts = 0
+
+        # Send status to app
+        self._send_mission_status("waiting_for_dog", stage.name)
+
+    def _state_waiting_for_dog(self):
+        """Wait for dog to be visible and meet presence requirements"""
+        session = self.active_session
+        stage = session.mission.stages[session.current_stage]
+        now = time.time()
+
+        # Check stage timeout
+        if now - session.stage_start_time > stage.timeout:
+            self._handle_stage_timeout(stage)
+            return
+
+        # Find eligible dog (same logic as coaching engine)
+        eligible_dogs = []
+        for dog_id, info in self.dogs_in_view.items():
+            time_elapsed = now - info['first_seen']
+            presence_ratio = info['frames_seen'] / max(info['frames_total'], 1)
+
+            if time_elapsed >= self.DETECTION_TIME_SEC and presence_ratio >= self.PRESENCE_RATIO_MIN:
+                has_aruco_name = info.get('name') is not None
+                eligible_dogs.append((dog_id, info, has_aruco_name, time_elapsed, presence_ratio))
+
+        if not eligible_dogs:
+            return
+
+        # Prefer ArUco-identified dogs
+        eligible_dogs.sort(key=lambda x: (not x[2], -x[3]))
+        dog_id, info, has_aruco_name, time_elapsed, presence_ratio = eligible_dogs[0]
+        dog_name = self._get_dog_name(dog_id)
+
+        self.logger.info(f"🐕 Dog ready for mission: {dog_name} "
+                        f"({time_elapsed:.1f}s, {presence_ratio*100:.0f}% presence)")
+
+        # Update session
+        session.dog_id = dog_id
+        session.dog_name = dog_name
+        session.trick_requested = self._get_trick_name(stage)
+        session.attention_start = now
+        session.state = MissionState.ATTENTION_CHECK
+
+    def _state_attention_check(self):
+        """Verify dog is still attentive (brief check)"""
+        session = self.active_session
+        dog_id = session.dog_id
+
+        # Check dog is still visible
+        if dog_id not in self.dogs_in_view:
+            self.logger.info("Dog left during attention check")
+            session.state = MissionState.WAITING_FOR_DOG
+            return
+
+        # Attention confirmed - move to greeting
+        session.state = MissionState.GREETING
+
+    def _state_greeting(self):
+        """Greet the dog by name"""
+        session = self.active_session
+        dog_name = session.dog_name or 'dog'
+        trick = session.trick_requested or 'trick'
+
+        self.logger.info(f"👋 Greeting {dog_name} for {trick}")
+
+        # LED attention pattern
+        if self.led:
+            try:
+                self.led.set_pattern('attention', duration=2.0)
+            except Exception:
+                pass
+
+        # Play dog's name
+        dog_id = session.dog_id
+        name_played = False
+
+        if dog_id and self.audio:
+            result = self.audio.play_command(dog_name.lower(), dog_id=dog_id)
+            if result.get('success'):
+                name_played = True
+                self.audio.wait_for_completion(timeout=5.0)
+
+        if not name_played:
+            name_audio = f'{dog_name.lower()}.mp3'
+            base_path = '/home/morgan/dogbot/VOICEMP3/talks'
+            if not os.path.exists(os.path.join(base_path, name_audio)):
+                name_audio = 'dogs_come.mp3'
+            self._play_audio(name_audio, wait=True, timeout=5.0)
+
+        time.sleep(0.5)
+        session.state = MissionState.COMMAND
+
+    def _state_command(self):
+        """Give the trick command"""
+        session = self.active_session
+        trick = session.trick_requested
+
+        if not trick:
+            # Non-pose stage - skip to watching
+            session.command_time = time.time()
+            session.state = MissionState.WATCHING
+            return
+
+        self.logger.info(f"🎤 Commanding: {trick}")
+
+        # Play trick command audio
+        trick_rules = self.interpreter.get_trick_rules(trick)
+        audio_file = trick_rules.get('audio_command', f'{trick}.mp3') if trick_rules else f'{trick}.mp3'
+        self._play_audio(audio_file, wait=True, timeout=5.0)
+
+        # Reset behavior tracking AFTER audio
+        self.interpreter.reset_tracking()
+
+        # Start bark listening for speak trick
+        if trick == 'speak':
+            time.sleep(0.3)
+            self.bark_count = 0
+            self.bark_timestamps = []
+            self._listening_started_at = time.time()
+            self.listening_for_barks = True
+            self.logger.info("🎤 Listening for barks (speak mission)...")
+
+        session.command_time = time.time()
+        session.pose_tracking_reset = True
+        session.state = MissionState.WATCHING
+
+        self._send_mission_status("watching", trick)
+
+    def _state_watching(self):
+        """Watch for behavior response (same as coaching engine)"""
+        session = self.active_session
+        stage = session.mission.stages[session.current_stage]
+        trick = session.trick_requested
+        dog_name = session.dog_name or 'unknown'
+
+        watch_elapsed = time.time() - session.command_time
+        trick_rules = self.interpreter.get_trick_rules(trick) if trick else {}
+        detection_window = trick_rules.get('detection_window_sec', self.WATCH_DURATION_SEC) if trick_rules else self.WATCH_DURATION_SEC
+
+        # Use stage timeout if longer than trick default
+        if stage.timeout > detection_window:
+            detection_window = min(stage.timeout, 30.0)  # Cap at 30s
+
+        # Special handling for speak trick
+        if trick == 'speak':
+            speak_rules = trick_rules or {}
+            min_barks = speak_rules.get('min_barks', 1)
+            max_barks = speak_rules.get('max_barks', 2)
+            speak_timeout = speak_rules.get('detection_window_sec', 5.0)
+
+            if self.bark_count > max_barks:
+                self.listening_for_barks = False
+                session.state = MissionState.FAILURE
+                self.logger.info(f"Speak failed - too many barks ({self.bark_count})")
+                return
+
+            if self.bark_count >= min_barks:
+                self.listening_for_barks = False
+                session.behavior_detected = 'bark'
+                session.state = MissionState.SUCCESS
+                self.logger.info(f"✅ Success! Dog spoke with {self.bark_count} bark(s)")
+                return
+
+            if watch_elapsed >= speak_timeout:
+                self.listening_for_barks = False
+                session.state = MissionState.FAILURE
+                self.logger.info(f"Speak timeout - only {self.bark_count} bark(s)")
+                return
+            return
+
+        # Standard pose-based tricks
+        if trick:
+            result = self.interpreter.check_trick(trick, dog_id=dog_name)
+
+            # Check for sustained hold requirement
+            hold_required = stage.min_duration if stage.min_duration > 0 else 0
+
+            if hold_required > 0:
+                if result.behavior_detected and result.hold_duration >= hold_required:
+                    session.behavior_detected = result.behavior_detected
+                    session.state = MissionState.SUCCESS
+                    self.logger.info(f"✅ Success! {dog_name} held {trick} for {result.hold_duration:.1f}s")
+                    return
+            else:
+                if result.completed:
+                    session.behavior_detected = result.behavior_detected
+                    session.state = MissionState.SUCCESS
+                    self.logger.info(f"✅ Success! {dog_name} performed {trick}")
+                    return
+
+            # Log progress
+            if result.behavior_detected:
+                self.logger.debug(f"Watching: {result.reason}")
+
+        # Check timeout
+        if watch_elapsed >= detection_window:
+            session.state = MissionState.FAILURE
+            self.logger.info(f"⏱️ Watch timeout for {trick}")
+
+    def _state_success(self):
+        """Handle successful behavior detection"""
+        session = self.active_session
+        stage = session.mission.stages[session.current_stage]
+        dog_name = session.dog_name or 'unknown'
+        trick = session.trick_requested
+
+        self.logger.info(f"🎉 Mission stage success: {trick} by {dog_name}")
+
+        # Play success audio
+        self._play_audio('good_dog.mp3', wait=True, timeout=3.0)
+
+        # LED celebration
+        if self.led:
+            try:
+                self.led.set_pattern('celebrate', duration=2.0)
+            except Exception:
+                pass
+
+        # Dispense treat
+        if self.dispenser:
+            try:
+                self.dispenser.dispense_treat()
+                session.rewards_given += 1
+                self.logger.info(f"🍖 Treat dispensed ({session.rewards_given}/{session.mission.max_rewards})")
+            except Exception as e:
+                self.logger.error(f"Dispenser error: {e}")
+
+        # Log to store
+        self.store.log_reward(
+            dog_id=session.dog_id,
+            behavior=session.behavior_detected or trick,
+            confidence=0.8,
+            success=True,
+            treats_dispensed=1,
+            mission_name=session.mission.name
+        )
+
+        # Send success to app
+        self._send_mission_status("success", trick)
+
+        # Advance to next stage
+        self._advance_stage()
+
+    def _state_failure(self):
+        """Handle first failure - retry once"""
+        session = self.active_session
+        session.attempts += 1
+
+        if session.attempts >= 2:
+            # Already retried - final failure
+            session.state = MissionState.FINAL_FAILURE
+            return
+
+        self.logger.info(f"😔 First attempt failed, retrying...")
+        self._play_audio('good_dog.mp3', wait=True, timeout=2.0)  # "Good try!"
+        time.sleep(1.0)
+        session.state = MissionState.RETRY_GREETING
+
+    def _state_retry_greeting(self):
+        """Retry - greet again"""
+        session = self.active_session
+        dog_name = session.dog_name or 'dog'
+
+        # Check dog still visible
+        if session.dog_id not in self.dogs_in_view:
+            self.logger.info("Dog left during retry")
+            session.state = MissionState.WAITING_FOR_DOG
+            return
+
+        self.logger.info(f"🔄 Retry greeting {dog_name}")
+        name_audio = f'{dog_name.lower()}.mp3'
+        self._play_audio(name_audio, wait=True, timeout=3.0)
+        time.sleep(0.3)
+        session.state = MissionState.RETRY_COMMAND
+
+    def _state_retry_command(self):
+        """Retry - give command again"""
+        session = self.active_session
+        trick = session.trick_requested
+
+        self.logger.info(f"🔄 Retry command: {trick}")
+
+        trick_rules = self.interpreter.get_trick_rules(trick) if trick else {}
+        audio_file = trick_rules.get('audio_command', f'{trick}.mp3') if trick_rules else f'{trick}.mp3'
+        self._play_audio(audio_file, wait=True, timeout=5.0)
+
+        self.interpreter.reset_tracking()
+
+        if trick == 'speak':
+            time.sleep(0.3)
+            self.bark_count = 0
+            self.bark_timestamps = []
+            self._listening_started_at = time.time()
+            self.listening_for_barks = True
+
+        session.command_time = time.time()
+        session.state = MissionState.RETRY_WATCHING
+
+    def _state_retry_watching(self):
+        """Retry watching - same as regular watching"""
+        self._state_watching()
+        # After watching completes, it sets SUCCESS or FAILURE
+        # If FAILURE again, we'll hit FINAL_FAILURE
+
+    def _state_final_failure(self):
+        """Handle final failure after retry"""
+        session = self.active_session
+        stage = session.mission.stages[session.current_stage]
+        trick = session.trick_requested
+
+        self.logger.info(f"❌ Mission stage failed after retry: {trick}")
+
+        # Play consolation
+        self._play_audio('good_dog.mp3', wait=True, timeout=2.0)
+
+        # Send failure to app
+        self._send_mission_status("failed", trick)
+
+        # Decide: advance to next stage or fail mission
+        # For now, advance to give other stages a chance
+        self._advance_stage()
+
+    def _state_stage_cooldown(self):
+        """Brief cooldown between stages"""
+        session = self.active_session
+        stage = session.mission.stages[session.current_stage]
+
+        if stage.cooldown > 0:
+            time.sleep(min(stage.cooldown, 5.0))
+
+        self._advance_stage()
+
+    def _send_mission_status(self, status: str, trick: str = None):
+        """Send mission status to app via relay"""
+        try:
+            relay = get_relay_client()
+            if relay and relay.connected:
+                session = self.active_session
+                relay.send_event("mission_progress", {
+                    "status": status,
+                    "trick": trick,
+                    "stage": session.current_stage + 1 if session else 0,
+                    "total_stages": len(session.mission.stages) if session else 0,
+                    "dog_name": session.dog_name if session else None,
+                    "rewards": session.rewards_given if session else 0,
+                })
+        except Exception:
+            pass
 
     def _is_pose_stage(self, stage: MissionStage) -> bool:
         """Check if a stage expects a pose/trick detection"""
@@ -459,8 +989,12 @@ class MissionEngine:
                 relay = get_relay_client()
                 if relay and relay.connected:
                     relay.send_event("mission_progress", {
-                        "stage": "watching",
+                        "status": "watching",
                         "trick": trick_name,
+                        "stage": session.current_stage + 1,
+                        "total_stages": len(session.mission.stages),
+                        "dog_name": session.dog_name,
+                        "rewards": session.rewards_given,
                         "progress": 0,
                         "target_sec": hold_required,
                     })
@@ -487,8 +1021,12 @@ class MissionEngine:
                     relay = get_relay_client()
                     if relay and relay.connected:
                         relay.send_event("mission_progress", {
-                            "stage": "watching",
+                            "status": "watching",
                             "trick": trick_name,
+                            "stage": session.current_stage + 1,
+                            "total_stages": len(session.mission.stages),
+                            "dog_name": session.dog_name,
+                            "rewards": session.rewards_given,
                             "progress": round(result.hold_duration, 1),
                             "target_sec": hold_required if hold_required > 0 else trick_hold,
                         })
@@ -555,9 +1093,14 @@ class MissionEngine:
             relay = get_relay_client()
             if relay and relay.connected:
                 relay.send_event("mission_progress", {
-                    "stage": "success",
+                    "status": "success",
                     "trick": trick_name,
-                    "hold_time": round(result.hold_duration, 1),
+                    "stage": session.current_stage + 1,
+                    "total_stages": len(session.mission.stages),
+                    "dog_name": session.dog_name,
+                    "rewards": session.rewards_given,
+                    "progress": round(result.hold_duration, 1),
+                    "target_sec": result.hold_duration,
                 })
         except Exception:
             pass
@@ -601,16 +1144,19 @@ class MissionEngine:
         # Optional stages skip to next on timeout instead of failing
         if stage.conditions.get("optional", False):
             self.logger.info(f"Optional stage '{stage.name}' timed out - skipping")
-            # Send failure event to app for this stage
+            # Send skip event to app for this stage
             trick_name = self._get_trick_name(stage)
             if trick_name:
                 try:
                     relay = get_relay_client()
                     if relay and relay.connected:
                         relay.send_event("mission_progress", {
-                            "stage": "failure",
+                            "status": "skipped",
                             "trick": trick_name,
-                            "reason": "timeout_optional_skipped",
+                            "stage": session.current_stage + 1,
+                            "total_stages": len(session.mission.stages),
+                            "dog_name": session.dog_name,
+                            "rewards": session.rewards_given,
                         })
                 except Exception:
                     pass
@@ -626,9 +1172,12 @@ class MissionEngine:
                 relay = get_relay_client()
                 if relay and relay.connected:
                     relay.send_event("mission_progress", {
-                        "stage": "failure",
+                        "status": "failed",
                         "trick": trick_name,
-                        "reason": "timeout",
+                        "stage": session.current_stage + 1,
+                        "total_stages": len(session.mission.stages),
+                        "dog_name": session.dog_name,
+                        "rewards": session.rewards_given,
                     })
             except Exception:
                 pass
@@ -741,6 +1290,20 @@ class MissionEngine:
         subtype = event.subtype
 
         if subtype == "bark_detected":
+            # Coach-style bark tracking for speak trick
+            if self.listening_for_barks:
+                session = self.active_session
+                if session and session.trick_requested == 'speak':
+                    # Reject stale bark events from before listening started
+                    if hasattr(event, 'timestamp') and event.timestamp < self._listening_started_at:
+                        self.logger.debug(f"Ignoring stale bark event")
+                        return
+
+                    self.bark_count += 1
+                    self.bark_timestamps.append(time.time())
+                    self.logger.info(f"🐕 Bark detected during speak mission! Count: {self.bark_count}")
+
+            # Also handle for bark-based stages
             self._handle_bark_for_mission(event_data)
         elif subtype == "quiet_period":
             self._handle_quiet_period(event_data)
@@ -751,23 +1314,45 @@ class MissionEngine:
             self._handle_emergency_stop(event.data)
 
     def _handle_dog_detected(self, event_data: Dict[str, Any]):
-        """Handle dog detection event"""
+        """Handle dog detection event - track dogs like coaching engine"""
+        dog_id = event_data.get('dog_id')
+        dog_name = event_data.get('dog_name')
+
+        if not dog_id:
+            return
+
+        now = time.time()
+
+        if dog_id not in self.dogs_in_view:
+            # New dog - initialize tracking
+            self.dogs_in_view[dog_id] = {
+                'first_seen': now,
+                'last_seen': now,
+                'frames_seen': 1,
+                'frames_total': 1,
+                'name': dog_name if dog_name not in ['unknown', None] else None
+            }
+            display_name = dog_name if dog_name and dog_name not in ['unknown', None] else dog_id
+            self.logger.info(f"🐕 Dog entered view for mission: {display_name}")
+        else:
+            # Existing dog - update tracking
+            entry = self.dogs_in_view[dog_id]
+            entry['last_seen'] = now
+            entry['frames_seen'] += 1
+
+            # Update name if ArUco identified
+            if dog_name and dog_name not in ['unknown', None] and entry['name'] is None:
+                entry['name'] = dog_name
+                self.logger.info(f"🏷️ Dog {dog_id} identified as {dog_name}")
+
+        # Check if dog detection is the success event (non-pose stages)
         session = self.active_session
-
-        if session.state == MissionState.WAITING_FOR_DOG:
-            session.dog_id = event_data.get("dog_id")
-
-            # Check if dog detection is the success event for current stage
+        if session and session.state == MissionState.WATCHING:
             if session.current_stage < len(session.mission.stages):
                 stage = session.mission.stages[session.current_stage]
                 if stage.success_event == "VisionEvent.DogDetected":
-                    # Dog detection IS the success event - advance stage
                     self._advance_stage()
                     self.logger.info(f"Dog detected (success), advanced to stage {session.current_stage + 1}")
-                else:
-                    # Dog detection is not the goal - just switch to behavior waiting
-                    session.state = MissionState.WAITING_FOR_BEHAVIOR
-                    self.logger.info(f"Dog detected, waiting for behavior on stage {session.current_stage + 1}")
 
     def _handle_dog_lost(self, event_data: Dict[str, Any]):
         """Handle dog lost event"""

@@ -102,6 +102,7 @@ class SilentGuardianMode:
         self.current_escalation_level = 1
         self.quiet_periods_achieved = 0  # For Level 3 (need 2 periods)
         self.calming_music_playing = False
+        self.calming_music_index = 0  # Current index in calming music playlist
         self.last_intervention_time = 0.0  # For escalation reset
 
         # Session tracking
@@ -169,7 +170,12 @@ class SilentGuardianMode:
             'audio_paths': {
                 'talks': '/home/morgan/dogbot/VOICEMP3/talks',
                 'songs': '/home/morgan/dogbot/VOICEMP3/songs',
-                'calming_music': 'songs/mozart_piano.mp3'
+                'calming_music_playlist': [
+                    'songs/default/dog_music_01.mp3',
+                    'songs/default/dog_music_02.mp3',
+                    'songs/default/dog_music_03.mp3',
+                    'songs/default/dog_music_04.mp3',
+                ]
             }
         }
 
@@ -674,22 +680,38 @@ class SilentGuardianMode:
                         self.quiet_start_time = now
 
     def _start_calming_music(self):
-        """Start playing calming music"""
+        """Start playing calming music from playlist (memory-efficient: plays one track at a time)"""
         if self.calming_music_playing:
             return
 
         try:
+            import random
             audio_config = self.config.get('audio_paths', {})
-            music_file = audio_config.get('calming_music', 'songs/mozart_piano.mp3')
+            playlist = audio_config.get('calming_music_playlist', [])
+
+            # Fallback to old single-file config if playlist not defined
+            if not playlist:
+                old_file = audio_config.get('calming_music', 'songs/mozart_piano.mp3')
+                playlist = [old_file]
+
+            if not playlist:
+                logger.warning("No calming music configured")
+                return
 
             base = audio_config.get('base', '/home/morgan/dogbot/VOICEMP3')
+
+            # Pick a random track from playlist (variety without loading all into memory)
+            self.calming_music_index = random.randint(0, len(playlist) - 1)
+            music_file = playlist[self.calming_music_index]
             full_path = os.path.join(base, music_file)
 
             if os.path.exists(full_path):
                 if self.audio:
-                    self.audio.play_file(full_path, loop=True)
+                    # Don't loop - intervention timeout is 90s, one track is enough
+                    # This prevents memory issues from looping large files
+                    self.audio.play_file(full_path, loop=False)
                     self.calming_music_playing = True
-                    logger.info(f"Calming music started: {music_file}")
+                    logger.info(f"Calming music started: {music_file} (track {self.calming_music_index + 1}/{len(playlist)})")
             else:
                 logger.warning(f"Calming music file not found: {full_path}")
 
@@ -705,6 +727,7 @@ class SilentGuardianMode:
             if self.audio:
                 self.audio.stop()
             self.calming_music_playing = False
+            self.calming_music_index = 0
             logger.info("Calming music stopped")
         except Exception as e:
             logger.error(f"Failed to stop calming music: {e}")
@@ -721,7 +744,7 @@ class SilentGuardianMode:
         max_treats = self.config.get('session_limits', {}).get('max_treats', 11)
         if self.treats_dispensed >= max_treats:
             logger.info(f"Treat limit reached ({self.treats_dispensed}/{max_treats})")
-            self._play_audio('good_dog.mp3')
+            self._play_audio('good.mp3')
             return
 
         # Check treat eligibility (anti-farming)
@@ -735,7 +758,7 @@ class SilentGuardianMode:
             logger.info(f"Verbal praise only - treat cooldown ({cooldown_remaining/60:.1f} min remaining)")
             if self.led:
                 self.led.set_pattern('success', duration=2.0)
-            self._play_audio('good_dog.mp3')
+            self._play_audio('good.mp3')
 
             # Log intervention without treat
             self.store.log_sg_intervention(
@@ -753,9 +776,9 @@ class SilentGuardianMode:
         if self.led:
             self.led.celebration_sequence(3.0)
 
-        # Play good_dog.mp3
-        logger.info("Playing good_dog.mp3")
-        self._play_audio('good_dog.mp3')
+        # Play good.mp3
+        logger.info("Playing good.mp3")
+        self._play_audio('good.mp3')
         time.sleep(1.0)
 
         # Dispense treat

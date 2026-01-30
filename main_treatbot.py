@@ -799,6 +799,31 @@ class TreatBotMain:
             )
             return
 
+        # Reject stale commands based on timestamp (app sends timestamp with each command)
+        # Commands older than 2 seconds are likely from queue buildup or network delays
+        cmd_timestamp = event.data.get('timestamp')
+        if cmd_timestamp:
+            try:
+                # Timestamp is ISO format or epoch ms
+                if isinstance(cmd_timestamp, (int, float)):
+                    # Epoch milliseconds
+                    cmd_time = cmd_timestamp / 1000.0
+                else:
+                    # ISO format string
+                    from datetime import datetime
+                    cmd_time = datetime.fromisoformat(cmd_timestamp.replace('Z', '+00:00')).timestamp()
+
+                age_seconds = time.time() - cmd_time
+                if age_seconds > 2.0:
+                    command = event.data.get('command', 'unknown')
+                    self.logger.warning(
+                        f"☁️ Rejecting stale command '{command}' - age {age_seconds:.1f}s > 2s threshold"
+                    )
+                    return
+            except Exception as e:
+                # Don't reject if timestamp parsing fails - just log and continue
+                self.logger.debug(f"☁️ Could not parse command timestamp: {e}")
+
         try:
             import httpx
 
@@ -1310,24 +1335,38 @@ class TreatBotMain:
                     self.coaching_engine.start()
                     self.logger.info("🎓 Coach mode started")
 
-            # Bark detection management - only run in modes that need it
-            # Modes that always need bark detection: silent_guardian, coach
-            # MISSION mode: only if mission declares requires_bark_detection: true
-            # Modes that DON'T need it: idle, manual
+            # Bark detection management - only run in modes that NEED it
+            # SILENT_GUARDIAN: always on (core functionality)
+            # COACH: always on (for speak trick - coaching engine filters internally)
+            # MISSION: only if mission has "quiet" or "speak" stages
+            # IDLE/MANUAL: never
             bark_needed = False
-            if new_mode in ['silent_guardian', 'coach']:
+            if new_mode == 'silent_guardian':
                 bark_needed = True
+                self.logger.debug("🎤 Bark detection needed (Silent Guardian mode)")
+            elif new_mode == 'coach':
+                # Coach mode needs bark for speak trick
+                # The coaching engine filters barks internally via listening_for_barks flag
+                bark_needed = True
+                self.logger.debug("🎤 Bark detection enabled (Coach mode - for speak trick)")
             elif new_mode == 'mission':
-                # Check if the current mission requires bark detection
+                # Only enable bark detection for missions with bark/quiet stages
                 try:
                     from orchestrators.mission_engine import get_mission_engine
                     engine = get_mission_engine()
-                    mission = engine.current_mission if hasattr(engine, 'current_mission') else None
-                    if mission and mission.get('requires_bark_detection', False):
-                        bark_needed = True
-                        self.logger.info("🎤 Mission requires bark detection")
+                    if engine.active_session:
+                        mission = engine.active_session.mission
+                        # Check if any stage uses bark or quiet events
+                        bark_keywords = ['AudioEvent.Bark', 'AudioEvent.Quiet', 'Speak']
+                        for stage in mission.stages:
+                            if any(kw.lower() in stage.success_event.lower() for kw in bark_keywords):
+                                bark_needed = True
+                                self.logger.info(f"🎤 Mission '{mission.name}' has bark/quiet stages - enabling detection")
+                                break
+                        if not bark_needed:
+                            self.logger.info(f"🎤 Mission '{mission.name}' doesn't need bark detection - skipping")
                     else:
-                        self.logger.info("🎤 Mission does NOT require bark detection - skipping")
+                        self.logger.debug("🎤 No active mission - bark detection not needed")
                 except Exception as e:
                     self.logger.warning(f"Could not check mission bark requirement: {e}")
 
