@@ -293,6 +293,58 @@ class VoiceManager:
                     "error": str(e)
                 }
 
+    def delete_dog_voices(self, dog_id: str) -> Dict[str, Any]:
+        """
+        Delete all custom voice recordings for a dog.
+        Called when a dog is deleted from the system.
+
+        Args:
+            dog_id: Dog identifier
+
+        Returns:
+            Dict with success status and count of files deleted
+        """
+        import shutil
+
+        with self._lock:
+            try:
+                safe_dog_id = self._sanitize_filename(str(dog_id))
+
+                # Handle dog_id with or without 'dog_' prefix
+                folder_name = safe_dog_id if safe_dog_id.startswith("dog_") else f"dog_{safe_dog_id}"
+                dog_dir = VOICES_BASE_DIR / folder_name
+
+                if not dog_dir.exists():
+                    self.logger.info(f"No voice folder to delete for dog: {dog_id}")
+                    return {
+                        "success": True,
+                        "dog_id": safe_dog_id,
+                        "files_deleted": 0,
+                        "message": "No voice folder found"
+                    }
+
+                # Count files before deletion
+                files = list(dog_dir.glob("*.mp3"))
+                file_count = len(files)
+
+                # Delete the entire directory
+                shutil.rmtree(dog_dir)
+                self.logger.info(f"Deleted voice folder for dog {dog_id}: {dog_dir} ({file_count} files)")
+
+                return {
+                    "success": True,
+                    "dog_id": safe_dog_id,
+                    "folder": str(dog_dir),
+                    "files_deleted": file_count
+                }
+
+            except Exception as e:
+                self.logger.error(f"Failed to delete dog voices: {e}")
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
+
     def get_all_dogs_voices(self) -> Dict[str, Any]:
         """
         Get voice status for all dogs.

@@ -144,7 +144,7 @@ class MissionEngine:
     PRESENCE_RATIO_MIN = 0.66  # Dog must be in 66% of frames
     ATTENTION_DURATION_SEC = 2.0  # Attention check duration
     WATCH_DURATION_SEC = 10.0  # Default watch window
-    STALE_TIMEOUT_SEC = 2.0  # Dog considered gone after this
+    STALE_TIMEOUT_SEC = 6.0  # Dog considered gone after this (must be > detection_event_interval of 5s)
 
     def __init__(self):
         self.bus = get_bus()
@@ -908,6 +908,7 @@ class MissionEngine:
             if relay and relay.connected:
                 session = self.active_session
                 relay.send_event("mission_progress", {
+                    "mission_name": session.mission.name if session and session.mission else None,
                     "status": status,
                     "trick": trick,
                     "stage": session.current_stage + 1 if session else 0,
@@ -989,6 +990,7 @@ class MissionEngine:
                 relay = get_relay_client()
                 if relay and relay.connected:
                     relay.send_event("mission_progress", {
+                        "mission_name": session.mission.name if session.mission else None,
                         "status": "watching",
                         "trick": trick_name,
                         "stage": session.current_stage + 1,
@@ -1021,6 +1023,7 @@ class MissionEngine:
                     relay = get_relay_client()
                     if relay and relay.connected:
                         relay.send_event("mission_progress", {
+                            "mission_name": session.mission.name if session.mission else None,
                             "status": "watching",
                             "trick": trick_name,
                             "stage": session.current_stage + 1,
@@ -1093,6 +1096,7 @@ class MissionEngine:
             relay = get_relay_client()
             if relay and relay.connected:
                 relay.send_event("mission_progress", {
+                    "mission_name": session.mission.name if session.mission else None,
                     "status": "success",
                     "trick": trick_name,
                     "stage": session.current_stage + 1,
@@ -1151,6 +1155,7 @@ class MissionEngine:
                     relay = get_relay_client()
                     if relay and relay.connected:
                         relay.send_event("mission_progress", {
+                            "mission_name": session.mission.name if session.mission else None,
                             "status": "skipped",
                             "trick": trick_name,
                             "stage": session.current_stage + 1,
@@ -1172,6 +1177,7 @@ class MissionEngine:
                 relay = get_relay_client()
                 if relay and relay.connected:
                     relay.send_event("mission_progress", {
+                        "mission_name": session.mission.name if session.mission else None,
                         "status": "failed",
                         "trick": trick_name,
                         "stage": session.current_stage + 1,
@@ -1228,6 +1234,7 @@ class MissionEngine:
             relay = get_relay_client()
             if relay and relay.connected:
                 relay.send_event("mission_complete", {
+                    "mission_name": session.mission.name if session.mission else None,
                     "success": success,
                     "tricks_completed": session.current_stage,
                     "treats_given": session.rewards_given,

@@ -281,7 +281,7 @@ class TreatBotWebSocketServer:
                     self.led.set_pattern(mode)
 
             elif command == "audio":
-                # {"command": "audio", "file": "good_dog.mp3"}
+                # {"command": "audio", "file": "good.mp3"}
                 audio_file = data.get("file")
                 if audio_file and self.sfx:
                     self.sfx.play_sound(audio_file)
@@ -322,6 +322,11 @@ class TreatBotWebSocketServer:
             elif command == "delete_voice":
                 # {"command": "delete_voice", "name": "sit", "dog_id": "1"}
                 await self._handle_delete_voice(websocket, data)
+
+            elif command == "delete_dog":
+                # {"command": "delete_dog", "dog_id": "1"}
+                # Deletes all custom voices for a dog when dog is removed
+                await self._handle_delete_dog(websocket, data)
 
         except Exception as e:
             self.logger.error(f"Contract command error: {e}")
@@ -458,6 +463,46 @@ class TreatBotWebSocketServer:
             self.logger.error(f"Delete voice error: {e}")
             await self.manager.send_to_one(websocket, {
                 "type": "voice_delete_result",
+                "success": False,
+                "error": str(e)
+            })
+
+    async def _handle_delete_dog(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle delete_dog command - remove all custom resources for a dog
+
+        Called when a dog is deleted from the system.
+        Cleans up:
+        - Custom voice recordings (VOICEMP3/talks/dog_{id}/)
+        - Future: could also clean up photos, mission history, etc.
+        """
+        try:
+            voice_manager = get_voice_manager()
+
+            dog_id = data.get("dog_id")
+
+            if not dog_id:
+                await self.manager.send_to_one(websocket, {
+                    "type": "dog_delete_result",
+                    "success": False,
+                    "error": "Missing required field: dog_id"
+                })
+                return
+
+            # Delete all voices for this dog
+            result = voice_manager.delete_dog_voices(dog_id)
+
+            await self.manager.send_to_one(websocket, {
+                "type": "dog_delete_result",
+                **result
+            })
+
+            if result.get("success"):
+                self.logger.info(f"Dog resources deleted: dog_id={dog_id}, files={result.get('files_deleted', 0)}")
+
+        except Exception as e:
+            self.logger.error(f"Delete dog error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "dog_delete_result",
                 "success": False,
                 "error": str(e)
             })

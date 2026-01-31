@@ -2654,6 +2654,29 @@ async def delete_voice(dog_id: str, command: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.delete("/dogs/{dog_id}")
+async def delete_dog_resources(dog_id: str):
+    """Delete all robot-side resources for a dog
+
+    Called when a dog is deleted from the system.
+    Cleans up:
+    - Custom voice recordings (VOICEMP3/talks/dog_{id}/)
+    """
+    try:
+        from services.media.voice_manager import get_voice_manager
+        voice_manager = get_voice_manager()
+        result = voice_manager.delete_dog_voices(dog_id)
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error"))
+        logger.info(f"Dog resources deleted: {dog_id} ({result.get('files_deleted', 0)} files)")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dog delete error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class PlayCommandRequest(BaseModel):
     command: str  # Command name (e.g., "sit", "good_dog")
     dog_id: Optional[str] = None  # Dog ID for custom voice lookup
