@@ -257,8 +257,11 @@ class MissionEngine:
         Returns:
             True if mission started successfully
         """
+        self.logger.info(f"[MISSION] start_mission called: name={mission_name}, dog_id={dog_id}")
+        self.logger.info(f"[MISSION] Available missions: {list(self.missions.keys())}")
+
         if mission_name not in self.missions:
-            self.logger.error(f"Mission not found: {mission_name}")
+            self.logger.error(f"[MISSION] Mission not found: {mission_name}")
             return False
 
         mission = self.missions[mission_name]
@@ -295,12 +298,22 @@ class MissionEngine:
             self.state.set_mode(SystemMode.MISSION, reason=f'Mission: {mission_name}')
             self.state.lock_mode(f'Mission active: {mission_name}')
 
+            self.logger.info(f"[MISSION] Mode set to MISSION, locked={self.state.is_mode_locked()}")
+
             # Start mission thread
             self.running = True
             self.mission_thread = threading.Thread(target=self._mission_loop, daemon=True)
             self.mission_thread.start()
 
-            self.logger.info(f"Started mission: {mission_name} (ID: {mission_id}), mode locked to MISSION")
+            # Verify detector is running
+            try:
+                from services.perception.detector import get_detector_service
+                detector = get_detector_service()
+                self.logger.info(f"[MISSION] Detector status: initialized={detector.ai_initialized}, running={detector.running}")
+            except Exception as e:
+                self.logger.warning(f"[MISSION] Could not check detector status: {e}")
+
+            self.logger.info(f"[MISSION] Started mission: {mission_name} (ID: {mission_id}), thread started")
             publish_system_event("mission.started", {
                 "mission_name": mission_name,
                 "mission_id": mission_id,
@@ -450,7 +463,7 @@ class MissionEngine:
                 # Clean stale dogs (like coaching engine)
                 self._cleanup_stale_dogs()
 
-                # Increment frame counter for presence ratio
+                # Increment frames_total for presence ratio (matches coaching_engine)
                 for dog_id in self.dogs_in_view:
                     self.dogs_in_view[dog_id]['frames_total'] += 1
 
@@ -574,7 +587,7 @@ class MissionEngine:
         self._send_mission_status("waiting_for_dog", stage.name)
 
     def _state_waiting_for_dog(self):
-        """Wait for dog to be visible and meet presence requirements"""
+        """Wait for dog to be visible and meet presence requirements (matches coaching_engine)"""
         session = self.active_session
         stage = session.mission.stages[session.current_stage]
         now = time.time()
@@ -584,26 +597,34 @@ class MissionEngine:
             self._handle_stage_timeout(stage)
             return
 
-        # Find eligible dog (same logic as coaching engine)
+        # Find eligible dog using SAME logic as coaching_engine:
+        # Requirements:
+        # 1. Dog has been tracked for DETECTION_TIME_SEC (3s)
+        # 2. Dog present in >= PRESENCE_RATIO_MIN (66%) of frames since first seen
         eligible_dogs = []
         for dog_id, info in self.dogs_in_view.items():
             time_elapsed = now - info['first_seen']
             presence_ratio = info['frames_seen'] / max(info['frames_total'], 1)
 
+            # Match coaching_engine presence check
             if time_elapsed >= self.DETECTION_TIME_SEC and presence_ratio >= self.PRESENCE_RATIO_MIN:
                 has_aruco_name = info.get('name') is not None
-                eligible_dogs.append((dog_id, info, has_aruco_name, time_elapsed, presence_ratio))
+                eligible_dogs.append((dog_id, info, has_aruco_name, time_elapsed))
 
         if not eligible_dogs:
+            # Log waiting status periodically
+            if int(now * 2) % 10 == 0:  # Every 5 seconds
+                dogs_status = [(d, f"{now - i['first_seen']:.1f}s") for d, i in self.dogs_in_view.items()]
+                self.logger.debug(f"[MISSION] Waiting for dog... tracked: {dogs_status}")
             return
 
         # Prefer ArUco-identified dogs
         eligible_dogs.sort(key=lambda x: (not x[2], -x[3]))
-        dog_id, info, has_aruco_name, time_elapsed, presence_ratio = eligible_dogs[0]
+        dog_id, info, has_aruco_name, time_elapsed = eligible_dogs[0]
         dog_name = self._get_dog_name(dog_id)
 
         self.logger.info(f"🐕 Dog ready for mission: {dog_name} "
-                        f"({time_elapsed:.1f}s, {presence_ratio*100:.0f}% presence)")
+                        f"(visible {time_elapsed:.1f}s, presence={presence_ratio:.0%}, aruco={'yes' if has_aruco_name else 'no'})")
 
         # Update session
         session.dog_id = dog_id

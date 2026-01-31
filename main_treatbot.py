@@ -1119,13 +1119,15 @@ class TreatBotMain:
 
                 elif command == 'upload_song':
                     # Upload a song: {"filename": "my_song.mp3", "data": "<base64>"}
+                    # Use extended timeout (60s) for large file uploads
                     song_filename = params.get('filename')
                     song_data = params.get('data')
                     if song_filename and song_data:
-                        resp = client.post(f'{api_base}/music/upload', json={
-                            'filename': song_filename,
-                            'data': song_data
-                        })
+                        with httpx.Client(timeout=60.0) as upload_client:
+                            resp = upload_client.post(f'{api_base}/music/upload', json={
+                                'filename': song_filename,
+                                'data': song_data
+                            })
                         self.logger.info(f"☁️ Song upload '{song_filename}' -> {resp.status_code}")
                         if self.relay_client and self.relay_client.connected:
                             self.relay_client.send_event('music_update', resp.json() if resp.status_code == 200 else {'success': False})
@@ -1303,14 +1305,18 @@ class TreatBotMain:
             self.logger.info(f"🔄 MODE CHANGE: {previous_mode} → {new_mode} [reason: {reason}] [source: {caller_info[:300]}]")
 
             # Notify app of mode change via relay
+            # BUILD 34: Send 'mode_changed' event (not 'status_update') for proper app sync
             if self.relay_client and self.relay_client.connected:
                 import time
-                self.relay_client.send_event('status_update', {
+                locked = data.get('locked', False)
+                self.relay_client.send_event('mode_changed', {
                     'mode': new_mode,
                     'previous_mode': previous_mode,
+                    'locked': locked,
+                    'reason': reason,
                     'timestamp': time.time()
                 })
-                self.logger.info(f"📱 Mode change notification sent to app: {new_mode}")
+                self.logger.info(f"📱 Mode changed event sent: {previous_mode} -> {new_mode} (locked={locked})")
 
             # Play voice announcement for mode change
             self._announce_mode(new_mode)

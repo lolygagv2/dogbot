@@ -36,10 +36,10 @@ class PanTiltService:
         self.last_detection_time = 0.0
         self.lost_target_time = 3.0  # seconds before starting scan
 
-        # PID parameters - REDUCED for smoother tracking
+        # PID parameters - BUILD 34: Further reduced for smoother tracking
         self.pid_params = {
-            'pan': {'kp': 0.15, 'ki': 0.005, 'kd': 0.08},   # Reduced from 0.5/0.01/0.1
-            'tilt': {'kp': 0.10, 'ki': 0.005, 'kd': 0.04}   # Reduced from 0.3/0.01/0.05
+            'pan': {'kp': 0.08, 'ki': 0.002, 'kd': 0.04},   # Reduced 50% from previous
+            'tilt': {'kp': 0.05, 'ki': 0.002, 'kd': 0.02}   # Reduced 50% from previous
         }
 
         # PID state
@@ -49,25 +49,30 @@ class PanTiltService:
         }
 
         # Smoothing factor for target position (0.0 = no smoothing, 0.95 = very smooth)
-        self.target_smoothing = 0.85
+        self.target_smoothing = 0.92  # Increased from 0.85 for smoother motion
 
         # Camera parameters
         self.frame_width = 640
         self.frame_height = 640
         self.frame_center = (320, 320)
-        self.deadzone = 50  # pixels - INCREASED from 30 for less jitter
+        self.deadzone = 60  # pixels - Increased from 50 for less jitter
 
-        # Servo limits
-        self.pan_limits = (10, 200)   # degrees
-        self.tilt_limits = (20, 160)  # degrees
-        self.current_pan = 90
-        self.current_tilt = 90
+        # Servo limits - Full range for Manual/Xbox control
+        # Coach mode applies its own limits when auto-tracking is enabled
+        self.pan_limits = (10, 200)   # degrees (full range)
+        self.tilt_limits = (20, 160)  # degrees (full range)
+        self.current_pan = 90   # Start at center
+        self.current_tilt = 90  # Start at center
+
+        # Coach-mode specific limits (applied only during auto-tracking)
+        self.COACH_PAN_LIMITS = (55, 145)   # Reduced range to prevent ceiling/floor pointing
+        self.COACH_TILT_LIMITS = (25, 85)   # Reduced range for safety
 
         # Configurable center position (calibrated default viewing angle)
         # These values are the actual servo positions for "looking straight ahead"
-        # pan=100 is physically centered, tilt=55 is level with ground
-        self.center_pan = 100   # Pan center position (internal servo units)
-        self.center_tilt = 55   # Tilt center position (internal servo units)
+        # pan=90 is physically centered, tilt=90 is level with ground
+        self.center_pan = 90    # Pan center position (internal servo units)
+        self.center_tilt = 90   # Tilt center position (internal servo units)
 
         # Servo command rate limiting (debounce)
         self.last_servo_command_time = 0.0
@@ -204,31 +209,40 @@ class PanTiltService:
                 self.logger.error(f"Control loop error: {e}")
 
     def _handle_coach_mode(self, dt: float) -> None:
-        """Handle tracking in coaching mode - active dog tracking for training"""
-        if not self.tracking_enabled:
-            return
+        """Handle tracking in coaching mode - active dog tracking for training
 
-        # Check if we're in manual mode - if so, don't auto-scan
-        current_mode = self.state.get_mode()
-        if current_mode == SystemMode.MANUAL:
-            # Manual mode - stop autonomous scanning
-            return
+        BUILD 34: Auto-tracking DISABLED in Coach mode due to jerky/fast servo issues.
+        Camera stays centered. Re-enable once servo control is properly tuned.
+        """
+        # BUILD 34: Skip auto-tracking until servo control is fixed
+        # This prevents the camera from aiming at ceiling and making jerky movements
+        return
 
-        now = time.time()
-
-        if self.target_position:
-            # Check if target is recent
-            if now - self.last_detection_time < self.lost_target_time:
-                # Track target
-                self._track_target(self.target_position, dt)
-            else:
-                # Target lost, start scanning
-                self.logger.debug("Target lost, starting scan")
-                self.target_position = None
-                self._scan_for_target()
-        else:
-            # No target, scan
-            self._scan_for_target()
+        # Original code preserved for when auto-tracking is re-enabled:
+        # if not self.tracking_enabled:
+        #     return
+        #
+        # # Check if we're in manual mode - if so, don't auto-scan
+        # current_mode = self.state.get_mode()
+        # if current_mode == SystemMode.MANUAL:
+        #     # Manual mode - stop autonomous scanning
+        #     return
+        #
+        # now = time.time()
+        #
+        # if self.target_position:
+        #     # Check if target is recent
+        #     if now - self.last_detection_time < self.lost_target_time:
+        #         # Track target
+        #         self._track_target(self.target_position, dt)
+        #     else:
+        #         # Target lost, start scanning
+        #         self.logger.debug("Target lost, starting scan")
+        #         self.target_position = None
+        #         self._scan_for_target()
+        # else:
+        #     # No target, scan
+        #     self._scan_for_target()
 
     def _handle_silent_guardian_mode(self, dt: float) -> None:
         """Handle camera in Silent Guardian mode - stationary wide shot, no scanning"""
@@ -309,18 +323,21 @@ class PanTiltService:
         # Combine terms
         output = p_term + i_term + d_term
 
-        # Limit output - REDUCED for smoother movement
-        max_output = 3.0  # degrees per iteration (was 10.0)
+        # Limit output - BUILD 34: Further reduced for smoother movement
+        max_output = 1.5  # degrees per iteration (was 3.0)
         return max(-max_output, min(max_output, output))
 
     def _scan_for_target(self) -> None:
-        """Execute smooth sweep scan pattern"""
+        """Execute smooth sweep scan pattern
+
+        BUILD 34: Slower sweep with reduced range to prevent jerky movement.
+        """
         # Smooth continuous scanning instead of jumping between positions
         current_time = time.time()
 
         # Create a smooth sweep pattern
-        # Period of 10 seconds for full sweep
-        sweep_period = 10.0
+        # Period increased from 10 to 20 seconds for slower sweep
+        sweep_period = 20.0
         sweep_phase = (current_time % sweep_period) / sweep_period
 
         # Sweep back and forth
@@ -331,17 +348,17 @@ class PanTiltService:
             # Sweep right to left
             normalized_pos = 2 - (sweep_phase * 2)  # 1 to 0
 
-        # Convert to pan angle (60 to 120 degrees)
-        target_pan = 60 + (normalized_pos * 60)
+        # Convert to pan angle - reduced range from 60-120 to 80-120 (40 degree sweep)
+        target_pan = 80 + (normalized_pos * 40)
 
-        # Keep tilt steady at 75 degrees for scanning
-        target_tilt = 75
+        # Keep tilt steady at center position for scanning
+        target_tilt = self.center_tilt  # Use configured center
 
         # Smooth movement - only update if significant change
         pan_diff = abs(target_pan - self.current_pan)
         if pan_diff > 2:  # Only move if > 2 degrees difference
-            # Limit speed for smooth motion
-            max_step = 3.0  # degrees per update
+            # Limit speed for smooth motion - reduced from 3.0 to 1.5
+            max_step = 1.5  # degrees per update
             if pan_diff > max_step:
                 if target_pan > self.current_pan:
                     target_pan = self.current_pan + max_step
