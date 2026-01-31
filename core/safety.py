@@ -67,7 +67,7 @@ class SafetyThresholds:
 
     # Timing thresholds
     max_no_heartbeat: float = 30.0     # Max time without main loop heartbeat
-    max_continuous_runtime: float = 3600.0  # Max runtime (1 hour)
+    max_continuous_runtime: float = 28800.0  # Max runtime (8 hours)
 
 
 class SafetyMonitor:
@@ -284,6 +284,8 @@ class SafetyMonitor:
             if self.critical_count['memory'] >= self.critical_threshold:
                 self._trigger_alert(SafetyLevel.CRITICAL, 'memory_critical',
                                   f"Memory usage critical: {mem_pct:.1f}%", {'memory_usage': mem_pct})
+                # Force WebRTC cleanup when memory is critical - TURN failures can cause memory leaks
+                self._force_webrtc_cleanup()
         else:
             self.critical_count['memory'] = 0  # Reset on non-critical
             if mem_pct >= self.thresholds.memory_warning:
@@ -318,6 +320,28 @@ class SafetyMonitor:
             self._trigger_alert(SafetyLevel.WARNING, 'runtime_limit',
                               f"Runtime limit reached: {runtime/3600:.1f} hours",
                               {'runtime_hours': runtime/3600})
+
+    def _force_webrtc_cleanup(self) -> None:
+        """Force cleanup of WebRTC connections when memory is critical.
+
+        TURN connection failures can cause memory leaks in aioice/aiortc
+        due to Transaction.__retry() accumulating buffers. This forces
+        cleanup of all connections to recover memory.
+        """
+        try:
+            from services.streaming.webrtc import get_webrtc_service
+            webrtc = get_webrtc_service()
+            if webrtc and webrtc.connections:
+                self.logger.warning(f"🧹 Force-closing {len(webrtc.connections)} WebRTC connections due to memory pressure")
+                # Use asyncio to schedule the cleanup
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(webrtc.cleanup())
+                else:
+                    loop.run_until_complete(webrtc.cleanup())
+        except Exception as e:
+            self.logger.error(f"WebRTC force cleanup error: {e}")
 
     def _trigger_alert(self, level: SafetyLevel, alert_type: str, message: str, data: Dict[str, Any]) -> None:
         """Trigger a safety alert"""
