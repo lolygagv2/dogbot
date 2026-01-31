@@ -165,6 +165,7 @@ class MissionScheduler:
         if self.mission_engine.active_session:
             return
 
+        # Check mission JSON-embedded schedules (legacy)
         for name, mission in self.mission_engine.missions.items():
             if not mission.enabled:
                 continue
@@ -178,7 +179,35 @@ class MissionScheduler:
 
                 if self._should_start_mission(name, schedule, now, current_time, current_day):
                     self._start_scheduled_mission(name)
-                    break  # Only start one mission at a time
+                    return  # Only start one mission at a time
+
+        # BUILD 35: Check user-created schedules from ScheduleManager
+        try:
+            from core.schedule_manager import get_schedule_manager
+            schedule_manager = get_schedule_manager()
+
+            for schedule in schedule_manager.get_active_schedules():
+                mission_name = schedule.get("mission_name")
+                if not mission_name:
+                    continue
+
+                # Check if mission exists
+                if mission_name not in self.mission_engine.missions:
+                    continue
+
+                if self._should_start_mission(mission_name, schedule, now, current_time, current_day):
+                    self._start_scheduled_mission(mission_name)
+
+                    # For "once" type, auto-disable after running
+                    if schedule.get("type") == "once":
+                        schedule_id = schedule.get("schedule_id", schedule.get("id"))
+                        if schedule_id:
+                            schedule_manager.disable_schedule(schedule_id)
+                            self.logger.info(f"Auto-disabled 'once' schedule: {schedule_id}")
+
+                    return  # Only start one mission at a time
+        except Exception as e:
+            self.logger.error(f"Error checking user schedules: {e}")
 
     def _should_start_mission(
         self,
@@ -188,12 +217,28 @@ class MissionScheduler:
         current_time: str,
         current_day: str
     ) -> bool:
-        """Check if mission should be started based on schedule"""
+        """
+        Check if mission should be started based on schedule
 
-        # Check day of week
-        days = schedule.get("days_of_week", [])
-        if days and current_day not in days:
-            return False
+        Type behavior:
+        - "once": Run once in time window, then auto-disable
+        - "daily": Run every day in time window (ignore days_of_week)
+        - "weekly": Run on specified days_of_week in time window
+        """
+        schedule_type = schedule.get("type", "weekly")  # Default to weekly for legacy
+
+        # Check day of week based on type
+        if schedule_type == "weekly":
+            # Weekly: check days_of_week
+            days = schedule.get("days_of_week", [])
+            if days and current_day not in days:
+                return False
+        elif schedule_type == "once":
+            # Once: no day check, just time window (will auto-disable after run)
+            pass
+        elif schedule_type == "daily":
+            # Daily: run every day, ignore days_of_week
+            pass
 
         # Check time window
         start_time = schedule.get("start_time", "00:00")

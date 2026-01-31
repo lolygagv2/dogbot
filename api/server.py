@@ -4107,6 +4107,130 @@ async def force_start_mission(mission_name: str):
 
 # ============== END MISSION SCHEDULER ENDPOINTS ==============
 
+# ============== TRAINING SCHEDULES CRUD ENDPOINTS ==============
+# BUILD 35: Added schedule CRUD for app schedule management
+
+class ScheduleCreateRequest(BaseModel):
+    """Request to create a training schedule"""
+    name: str
+    mission_name: str
+    dog_id: str  # Required: ID of the dog this schedule is for
+    start_time: str  # HH:MM format
+    end_time: str    # HH:MM format
+    type: str = "daily"  # "once", "daily", or "weekly"
+    days_of_week: List[str] = []  # ["monday", "tuesday", ...] - required for "weekly"
+    enabled: bool = True
+    cooldown_hours: int = 24
+
+class ScheduleUpdateRequest(BaseModel):
+    """Request to update a training schedule"""
+    name: Optional[str] = None
+    mission_name: Optional[str] = None
+    dog_id: Optional[str] = None
+    type: Optional[str] = None  # "once", "daily", or "weekly"
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    days_of_week: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+    cooldown_hours: Optional[int] = None
+
+@app.get("/schedules")
+async def list_schedules():
+    """List all training schedules"""
+    try:
+        from core.schedule_manager import get_schedule_manager
+        manager = get_schedule_manager()
+        schedules = manager.list_schedules()
+        return {
+            "success": True,
+            "count": len(schedules),
+            "schedules": schedules
+        }
+    except Exception as e:
+        logger.error(f"List schedules error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/schedules/{schedule_id}")
+async def get_schedule(schedule_id: str):
+    """Get a specific schedule by ID"""
+    try:
+        from core.schedule_manager import get_schedule_manager
+        manager = get_schedule_manager()
+        schedule = manager.get_schedule(schedule_id)
+        if not schedule:
+            raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
+        return {
+            "success": True,
+            "schedule": schedule
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get schedule error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/schedules")
+async def create_schedule(request: ScheduleCreateRequest):
+    """Create a new training schedule"""
+    try:
+        from core.schedule_manager import get_schedule_manager
+        manager = get_schedule_manager()
+        result = manager.create_schedule(request.dict())
+
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to create schedule"))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Create schedule error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/schedules/{schedule_id}")
+async def update_schedule(schedule_id: str, request: ScheduleUpdateRequest):
+    """Update an existing schedule"""
+    try:
+        from core.schedule_manager import get_schedule_manager
+        manager = get_schedule_manager()
+
+        # Only include non-None fields
+        update_data = {k: v for k, v in request.dict().items() if v is not None}
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        result = manager.update_schedule(schedule_id, update_data)
+
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to update schedule"))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update schedule error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: str):
+    """Delete a schedule"""
+    try:
+        from core.schedule_manager import get_schedule_manager
+        manager = get_schedule_manager()
+        result = manager.delete_schedule(schedule_id)
+
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("error", "Failed to delete schedule"))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete schedule error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============== END TRAINING SCHEDULES ENDPOINTS ==============
+
 # ============== TRAINING PROGRAMS ENDPOINTS ==============
 
 class ProgramCreateRequest(BaseModel):

@@ -1,5 +1,206 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-31 - Schedule API Fix (Build 35)
+**Goal:** Update schedule CRUD API to match app format with dog_id, schedule_id, and type fields
+**Status:** ✅ Complete
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Solution | Files Modified |
+|---|---------|----------|----------------|
+| 1 | Schedule API missing dog_id | Added dog_id as required field | `core/schedule_manager.py`, `api/server.py` |
+| 2 | Schedule API missing type field | Added type: "once" / "daily" / "weekly" | `core/schedule_manager.py`, `api/server.py` |
+| 3 | Response uses id instead of schedule_id | Renamed id to schedule_id | `core/schedule_manager.py` |
+| 4 | Scheduler doesn't handle type logic | Updated _should_start_mission() for type behavior | `core/mission_scheduler.py` |
+| 5 | "once" schedules keep running | Added auto-disable after first execution | `core/mission_scheduler.py` |
+
+---
+
+### Key Code Changes Made
+
+#### 1. Schedule Manager Updates
+**File:** `core/schedule_manager.py`
+- Added `dog_id` as required field for schedule creation
+- Added `type` field: `"once"`, `"daily"`, or `"weekly"` (default: `"daily"`)
+- Renamed `id` to `schedule_id` in JSON structure
+- For `"weekly"` type, `days_of_week` is required
+- Added backward compatibility for legacy schedules with `id` field
+- Added `disable_schedule()` method for auto-disabling "once" schedules
+- Added `list_schedules_for_dog()` helper method
+
+#### 2. API Server Updates
+**File:** `api/server.py`
+- Added `dog_id: str` (required) to `ScheduleCreateRequest`
+- Added `type: str = "daily"` to `ScheduleCreateRequest`
+- Changed `days_of_week` default to empty list `[]`
+- Added `dog_id` and `type` as optional fields in `ScheduleUpdateRequest`
+
+#### 3. Mission Scheduler Type Logic
+**File:** `core/mission_scheduler.py`
+- Updated `_should_start_mission()` to handle type field:
+  - `"once"`: Check time window only, no day restriction, auto-disable after run
+  - `"daily"`: Check time window only (ignore days_of_week)
+  - `"weekly"`: Check both time window and days_of_week
+- Added auto-disable logic for "once" type after execution
+
+---
+
+### Updated API Format
+
+**Create Request (POST /schedules):**
+```json
+{
+  "name": "Morning Sit Training",
+  "mission_name": "sit_training",
+  "dog_id": "1769681772789",
+  "type": "weekly",
+  "start_time": "08:00",
+  "end_time": "12:00",
+  "days_of_week": ["monday", "tuesday", "wednesday"],
+  "enabled": true,
+  "cooldown_hours": 24
+}
+```
+
+**Response includes `schedule_id` instead of `id`**
+
+---
+
+### Testing Checklist
+1. Restart robot
+2. Test create with each type via curl
+3. Verify scheduler respects type logic
+4. Test from app - create schedule should succeed
+
+---
+
+## Session: 2026-01-31 - Build 34 Part 2 Fixes
+**Goal:** Fix issues from Build 34 testing - servo limits, mission presence detection, song upload timeout
+**Status:** ✅ Complete
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Solution | Files Modified |
+|---|---------|----------|----------------|
+| 1 | Servo limits too restrictive for Manual/Xbox | Reverted to full range (10-200 pan, 20-160 tilt), stored coach limits as constants | `services/motion/pan_tilt.py` |
+| 2 | Mission presence detection misaligned with coaching | Restored frames_total increment, matched coaching_engine presence ratio logic | `orchestrators/mission_engine.py` |
+| 3 | Song upload timeout (5s too short for large files) | Created dedicated httpx client with 60s timeout for upload_song | `main_treatbot.py` |
+
+---
+
+### Key Code Changes Made
+
+#### 1. Servo Limits Reverted
+**File:** `services/motion/pan_tilt.py`
+- Restored global limits: `pan_limits = (10, 200)`, `tilt_limits = (20, 160)`
+- Restored center position: `current_pan = 90`, `current_tilt = 90`
+- Added coach-specific constants for future use:
+  - `COACH_PAN_LIMITS = (55, 145)`
+  - `COACH_TILT_LIMITS = (25, 85)`
+- Auto-tracking remains disabled in `_handle_coach_mode()`
+
+#### 2. Mission Engine Presence Detection
+**File:** `orchestrators/mission_engine.py`
+- Restored `frames_total` increment in mission loop (line 466-468)
+- Updated `_state_waiting_for_dog()` to match coaching_engine:
+  - Uses `frames_seen / frames_total` for presence ratio
+  - Requires `time_elapsed >= DETECTION_TIME_SEC` (3s) AND `presence_ratio >= PRESENCE_RATIO_MIN` (66%)
+- Added presence ratio to log output for debugging
+
+#### 3. Song Upload Timeout Fix
+**File:** `main_treatbot.py`
+- Created dedicated `httpx.Client(timeout=60.0)` for `upload_song` command
+- Large MP3 uploads now have 60s timeout instead of 5s default
+
+---
+
+### Commit
+`5a9a24b2` - fix: Build 34 Part 2 - servo limits, mission presence, upload timeout
+
+---
+
+### Testing Checklist
+1. Xbox controller should have full pan/tilt range (10-200 pan, 20-160 tilt)
+2. Coach mode camera stays centered (auto-tracking disabled)
+3. Start Sit Training mission → dog detected within 3-5 seconds
+4. Mission progresses to COMMAND state after dog eligible
+5. Upload a 5MB+ MP3 file → completes without timeout
+
+---
+
+## Session: 2026-01-31 - Build 34 Bug Fixes (Robot Claude)
+**Goal:** Fix critical issues from Build 33 testing - mission execution, dog identification, servo control
+**Status:** ✅ Complete
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Solution | Files Modified |
+|---|---------|----------|----------------|
+| 1 | Mission execution pipeline broken | Fixed presence ratio calculation (was 2%, needed 66%) | `orchestrators/mission_engine.py` |
+| 2 | Wrong dog labeled (Elsa for everything) | Made dog ID more conservative, return "Dog" for unknown | `core/dog_tracker.py`, `services/perception/detector.py` |
+| 3 | Video overlay shows ???? | Removed emoji chars (OpenCV font issue) | `services/streaming/video_track.py` |
+| 4 | Mode not syncing with app | Send `mode_changed` event (not `status_update`) | `main_treatbot.py` |
+| 5 | Servo movement too fast/jerky | Reduced PID gains 50%, limited range, disabled auto-track in Coach | `services/motion/pan_tilt.py` |
+
+---
+
+### Key Code Changes Made
+
+#### 1. Mission Execution Pipeline Fix
+**File:** `orchestrators/mission_engine.py`
+- **Root Cause:** `frames_total` incremented at 10Hz but `frames_seen` only on events (every 5s), making presence ratio ~2% instead of 66%
+- **Fix:** Changed to time-based presence detection instead of broken frame ratio
+- Added diagnostic logging for mission start and detector status
+
+#### 2. Dog Identification Regression Fix
+**Files:** `core/dog_tracker.py`, `services/perception/detector.py`
+- **Root Cause:** Persistence rules too aggressive - labeled unidentified dogs as "Elsa"
+- **Fix:** Return `None` for unidentified instead of defaulting to last dog
+- Reduced proximity matching threshold from 200px to 80px
+- Disabled mutual exclusion rule (was labeling wrong dog)
+- Display "Dog" for unknown instead of empty string
+
+#### 3. Video Overlay Emoji Fix
+**File:** `services/streaming/video_track.py`
+- OpenCV FONT_HERSHEY_SIMPLEX doesn't support Unicode emoji
+- Replaced all emoji with bracket notation: `[COACH]`, `[MISSION 1/3]`, etc.
+
+#### 4. Mode Synchronization Fix
+**File:** `main_treatbot.py`
+- Changed event type from `status_update` to `mode_changed`
+- Added `locked` and `reason` fields to event
+
+#### 5. Servo Control Safety
+**File:** `services/motion/pan_tilt.py`
+- Reduced PID gains by 50%
+- Reduced max movement from 3.0° to 1.5° per iteration
+- Reduced pan limits from 10-200 to 55-145 degrees
+- Reduced tilt limits from 20-160 to 25-85 degrees
+- **Disabled auto-tracking in Coach mode** until properly tuned
+- Slowed scan sweep from 10s to 20s period
+
+---
+
+### New Documentation Created
+- `.claude/AI_DETECTION_ANALYSIS.md` - Explains dog detection/identification system, what broke, and fix proposals
+
+---
+
+### Testing Checklist for Build 34
+1. Start Sit Training mission → verify robot enters MISSION mode AND AI activates
+2. Dog detection shows "Dog" for unidentified (not "Elsa")
+3. Mode changes sync between app and robot
+4. Camera stays centered in Coach mode (auto-tracking disabled)
+5. Video overlay shows clean text (no ????)
+
+---
+
 ## Session: 2026-01-31 - API & Mission Integration Implementation
 **Goal:** Implement robot-side improvements from API & Mission Integration plan
 **Status:** ✅ Complete
@@ -123,3 +324,4 @@
 
 ### Commit
 `d260261c` - fix: Build 32 - mission events, dog cleanup, stale timeout fix
+
