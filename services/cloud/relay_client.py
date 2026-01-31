@@ -83,7 +83,12 @@ class RelayClient:
             'profiles': self._handle_profiles,
             'audio_message': self._handle_audio_message,
             'audio_request': self._handle_audio_request,
+            'user_connected': self._handle_user_connected,
+            'user_disconnected': self._handle_user_disconnected,
         }
+
+        # Track connected user
+        self._connected_user_id: Optional[str] = None
 
         # Profile manager reference
         self._profile_manager = None
@@ -686,6 +691,84 @@ class RelayClient:
                 'device_id': self.config.device_id,
                 'error': str(e)
             })
+
+    async def _handle_user_connected(self, data: dict):
+        """Handle user_connected event from relay (Build 32)
+
+        Sent when an app user connects to the robot.
+        Expected format: {"type": "user_connected", "user_id": "user_123"}
+        """
+        user_id = data.get('user_id')
+        self.logger.info(f"📱 User connected: {user_id}")
+        print(f"[RelayClient] 📱 User connected: {user_id}", flush=True)
+
+        self._connected_user_id = user_id
+        self._app_connected = True
+
+        # Publish event for other services
+        self.bus.publish(CloudEvent(
+            subtype='user_connected',
+            data={'user_id': user_id},
+            source='relay_client'
+        ))
+
+        # Request fresh dog profiles when user connects
+        await self.request_profiles()
+
+    async def _handle_user_disconnected(self, data: dict):
+        """Handle user_disconnected event from relay (Build 32)
+
+        Sent after 5-min grace period when app user disconnects.
+        Expected format: {"type": "user_disconnected", "user_id": "user_123"}
+
+        Actions:
+        - Clear user-specific state
+        - Stop any pending operations that require user interaction
+        - Keep Silent Guardian running (autonomous mode)
+        """
+        user_id = data.get('user_id')
+        self.logger.info(f"📱 User disconnected: {user_id}")
+        print(f"[RelayClient] 📱 User disconnected: {user_id}", flush=True)
+
+        self._connected_user_id = None
+        self._app_connected = False
+
+        # Stop any active missions (require user interaction)
+        try:
+            from orchestrators.mission_engine import get_mission_engine
+            mission_engine = get_mission_engine()
+            if mission_engine.active_session:
+                self.logger.info("Stopping active mission due to user disconnect")
+                mission_engine.stop_mission()
+        except Exception as e:
+            self.logger.warning(f"Could not stop mission on disconnect: {e}")
+
+        # Stop any active programs
+        try:
+            from orchestrators.program_engine import get_program_engine
+            program_engine = get_program_engine()
+            if program_engine.active_session:
+                self.logger.info("Stopping active program due to user disconnect")
+                program_engine.stop_program()
+        except Exception as e:
+            self.logger.warning(f"Could not stop program on disconnect: {e}")
+
+        # Close WebRTC sessions if active
+        if self._webrtc_service:
+            try:
+                await self._webrtc_service.cleanup()
+                self.logger.info("Closed WebRTC connections on user disconnect")
+            except Exception as e:
+                self.logger.warning(f"Could not close WebRTC on disconnect: {e}")
+
+        # Publish event for other services
+        self.bus.publish(CloudEvent(
+            subtype='user_disconnected',
+            data={'user_id': user_id},
+            source='relay_client'
+        ))
+
+        # Note: Silent Guardian continues running - it's autonomous
 
     async def _reconnect_loop(self):
         """Reconnection loop with exponential backoff (1s, 2s, 4s, ... max 30s)"""

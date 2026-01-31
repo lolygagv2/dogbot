@@ -41,6 +41,7 @@ from api.server import run_server
 from orchestrators.sequence_engine import get_sequence_engine
 from orchestrators.reward_logic import get_reward_logic
 from orchestrators.mode_fsm import get_mode_fsm
+from core.mission_scheduler import get_mission_scheduler
 
 # Mode handlers
 from modes.silent_guardian import get_silent_guardian_mode
@@ -99,6 +100,7 @@ class TreatBotMain:
         self.sequence_engine = None
         self.reward_logic = None
         self.mode_fsm = None
+        self.mission_scheduler = None
 
         # Mode handlers
         self.silent_guardian_mode = None
@@ -466,6 +468,10 @@ class TreatBotMain:
             # Coaching engine
             self.coaching_engine = get_coaching_engine()
             self.logger.info("✅ Coaching engine ready")
+
+            # Mission scheduler (for auto-starting scheduled missions)
+            self.mission_scheduler = get_mission_scheduler()
+            self.logger.info("✅ Mission scheduler ready")
 
             return True
 

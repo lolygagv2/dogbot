@@ -105,6 +105,7 @@ class WeeklySummary:
             'reward_stats': self._get_reward_stats(week_start, week_end),
             'silent_guardian': self._get_sg_stats(week_start, week_end),
             'coaching': self._get_coaching_stats(week_start, week_end),
+            'missions': self._get_mission_stats(week_start, week_end),
             'dog_summary': self._get_dog_summary(week_start, week_end),
             'daily_breakdown': self._get_daily_breakdown(week_start, week_end),
         }
@@ -367,6 +368,79 @@ class WeeklySummary:
                 'avg_attention_duration': round(totals.get('avg_attention', 0) or 0, 1),
                 'by_trick': by_trick,
                 'by_dog': by_dog
+            }
+        finally:
+            conn.close()
+
+    def _get_mission_stats(self, start: datetime, end: datetime) -> Dict[str, Any]:
+        """Get mission/program statistics for the week"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+
+            # Mission totals
+            cursor.execute('''
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                       SUM(CASE WHEN status = 'stopped' THEN 1 ELSE 0 END) as stopped,
+                       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                       SUM(rewards_given) as total_rewards,
+                       AVG(end_time - start_time) as avg_duration
+                FROM missions
+                WHERE start_time BETWEEN ? AND ?
+            ''', (start.timestamp(), end.timestamp()))
+            totals = dict(cursor.fetchone() or {})
+
+            total = totals.get('total', 0) or 0
+            completed = totals.get('completed', 0) or 0
+            success_rate = (completed / total * 100) if total > 0 else 0
+
+            # By mission name
+            cursor.execute('''
+                SELECT name,
+                       COUNT(*) as attempts,
+                       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                       SUM(rewards_given) as rewards,
+                       AVG(end_time - start_time) as avg_duration
+                FROM missions
+                WHERE start_time BETWEEN ? AND ?
+                GROUP BY name
+                ORDER BY attempts DESC
+            ''', (start.timestamp(), end.timestamp()))
+            by_mission = {}
+            for row in cursor.fetchall():
+                attempts = row['attempts']
+                mission_completed = row['completed'] or 0
+                by_mission[row['name']] = {
+                    'attempts': attempts,
+                    'completed': mission_completed,
+                    'success_rate': round((mission_completed / attempts * 100) if attempts > 0 else 0, 1),
+                    'rewards': row['rewards'] or 0,
+                    'avg_duration_sec': round(row['avg_duration'] or 0, 1)
+                }
+
+            # By day of week
+            cursor.execute('''
+                SELECT strftime('%w', datetime(start_time, 'unixepoch')) as day_num,
+                       COUNT(*) as count
+                FROM missions
+                WHERE start_time BETWEEN ? AND ?
+                GROUP BY day_num
+            ''', (start.timestamp(), end.timestamp()))
+            by_day_raw = {int(row['day_num']): row['count'] for row in cursor.fetchall()}
+            day_names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+            by_day = {day_names[i]: by_day_raw.get(i, 0) for i in range(7)}
+
+            return {
+                'total_missions': total,
+                'completed': completed,
+                'stopped': totals.get('stopped', 0) or 0,
+                'failed': totals.get('failed', 0) or 0,
+                'success_rate': round(success_rate, 1),
+                'total_rewards': totals.get('total_rewards', 0) or 0,
+                'avg_duration_sec': round(totals.get('avg_duration', 0) or 0, 1),
+                'by_mission': by_mission,
+                'by_day': by_day
             }
         finally:
             conn.close()
