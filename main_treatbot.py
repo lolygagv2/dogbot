@@ -1134,6 +1134,50 @@ class TreatBotMain:
                     else:
                         self.logger.warning("☁️ upload_song: missing filename or data")
 
+                elif command == 'download_song':
+                    # BUILD 38: Download song from URL instead of base64 transfer
+                    # {"url": "https://...", "filename": "my_song.mp3"}
+                    song_url = params.get('url')
+                    song_filename = params.get('filename')
+                    if song_url and song_filename:
+                        try:
+                            import re
+                            if not re.match(r'^[\w\-. ]+\.(mp3|wav|ogg)$', song_filename, re.IGNORECASE):
+                                raise ValueError("Invalid filename format")
+
+                            with httpx.Client(timeout=60.0, follow_redirects=True) as dl_client:
+                                dl_resp = dl_client.get(song_url)
+                                dl_resp.raise_for_status()
+                                audio_bytes = dl_resp.content
+
+                            # Save to default songs folder
+                            songs_dir = "/home/morgan/dogbot/VOICEMP3/songs/default"
+                            os.makedirs(songs_dir, exist_ok=True)
+                            filepath = os.path.join(songs_dir, song_filename)
+
+                            with open(filepath, 'wb') as f:
+                                f.write(audio_bytes)
+
+                            self.logger.info(f"☁️ Song downloaded '{song_filename}' ({len(audio_bytes)} bytes) from {song_url}")
+                            if self.relay_client and self.relay_client.connected:
+                                self.relay_client.send_event('music_update', {
+                                    'action': 'download_complete',
+                                    'success': True,
+                                    'filename': song_filename,
+                                    'size_bytes': len(audio_bytes)
+                                })
+                        except Exception as e:
+                            self.logger.error(f"☁️ Song download error: {e}")
+                            if self.relay_client and self.relay_client.connected:
+                                self.relay_client.send_event('music_update', {
+                                    'action': 'download_error',
+                                    'success': False,
+                                    'filename': song_filename,
+                                    'error': str(e)
+                                })
+                    else:
+                        self.logger.warning("☁️ download_song: missing url or filename")
+
                 elif command == 'delete_song':
                     # Delete a user song: {"filename": "my_song.mp3"}
                     song_filename = params.get('filename')

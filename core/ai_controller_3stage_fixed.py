@@ -552,7 +552,7 @@ class AI3StageControllerFixed:
                         conf_raw = np.clip(conf_raw, -500, 500)
                         conf = 1.0 / (1.0 + np.exp(-conf_raw))  # Sigmoid
 
-                        if conf < 0.5:  # Confidence threshold (raised from 0.3 - too many false positives)
+                        if conf < 0.6:  # BUILD 38: Raised from 0.5 to 0.6 to prevent arms/objects being classified as dogs
                             continue
 
                         # Decode bounding box from DFL format (64 channels = 4 sides * 16 bins)

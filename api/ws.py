@@ -315,6 +315,15 @@ class TreatBotWebSocketServer:
                 # {"command": "upload_voice", "name": "sit", "dog_id": "1", "data": "<base64>"}
                 await self._handle_upload_voice(websocket, data)
 
+            elif command == "upload_song":
+                # {"command": "upload_song", "filename": "my_song.mp3", "data": "<base64>"}
+                await self._handle_upload_song(websocket, data)
+
+            elif command == "download_song":
+                # BUILD 38: {"command": "download_song", "url": "https://...", "filename": "my_song.mp3"}
+                # Downloads MP3 via HTTP instead of receiving base64 (avoids 5MB WebSocket crash)
+                await self._handle_download_song(websocket, data)
+
             elif command == "list_voices":
                 # {"command": "list_voices", "dog_id": "1"}
                 await self._handle_list_voices(websocket, data)
@@ -403,6 +412,199 @@ class TreatBotWebSocketServer:
             self.logger.error(f"Upload voice error: {e}")
             await self.manager.send_to_one(websocket, {
                 "type": "voice_upload_result",
+                "success": False,
+                "error": str(e)
+            })
+
+    async def _handle_upload_song(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle upload_song command - save song to default songs folder
+
+        BUILD 35: Added WebSocket handler for song uploads per app team request.
+        Sends back upload_complete or upload_error response.
+        """
+        import base64
+        import re
+
+        filename = data.get("filename", "")
+        audio_data = data.get("data", "")
+
+        try:
+            # Validate filename
+            if not filename or not re.match(r'^[\w\-. ]+\.(mp3|wav|ogg)$', filename, re.IGNORECASE):
+                await self.manager.send_to_one(websocket, {
+                    "type": "upload_error",
+                    "filename": filename,
+                    "success": False,
+                    "error": "Invalid filename. Use alphanumeric characters, hyphens, underscores, spaces. Must end in .mp3, .wav, or .ogg"
+                })
+                return
+
+            if not audio_data:
+                await self.manager.send_to_one(websocket, {
+                    "type": "upload_error",
+                    "filename": filename,
+                    "success": False,
+                    "error": "Missing audio data"
+                })
+                return
+
+            # Decode base64 audio
+            try:
+                audio_bytes = base64.b64decode(audio_data)
+            except Exception as e:
+                await self.manager.send_to_one(websocket, {
+                    "type": "upload_error",
+                    "filename": filename,
+                    "success": False,
+                    "error": f"Invalid base64 data: {e}"
+                })
+                return
+
+            # Save to default songs folder
+            songs_dir = "/home/morgan/dogbot/VOICEMP3/songs/default"
+            os.makedirs(songs_dir, exist_ok=True)
+            filepath = os.path.join(songs_dir, filename)
+
+            with open(filepath, 'wb') as f:
+                f.write(audio_bytes)
+
+            # Refresh playlist
+            usb_audio = get_usb_audio_service()
+            usb_audio.refresh_playlist()
+
+            file_size = len(audio_bytes)
+            self.logger.info(f"Song uploaded via WebSocket: {filename} ({file_size} bytes)")
+
+            await self.manager.send_to_one(websocket, {
+                "type": "upload_complete",
+                "filename": filename,
+                "success": True,
+                "size_bytes": file_size,
+                "path": f"default/{filename}"
+            })
+
+        except IOError as e:
+            error_msg = "Disk full" if "No space" in str(e) else str(e)
+            self.logger.error(f"Song upload IO error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "upload_error",
+                "filename": filename,
+                "success": False,
+                "error": error_msg
+            })
+        except Exception as e:
+            self.logger.error(f"Song upload error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "upload_error",
+                "filename": filename,
+                "success": False,
+                "error": str(e)
+            })
+
+    async def _handle_download_song(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle download_song command - download MP3 from URL instead of base64 transfer
+
+        BUILD 38: Added to fix 5MB WebSocket crash. Downloads file directly on robot side.
+        Command: {"command": "download_song", "url": "https://...", "filename": "my_song.mp3"}
+        Response: {"type": "download_complete", "filename": "...", "success": true, "size_bytes": ...}
+        """
+        import re
+        import httpx
+
+        url = data.get("url", "")
+        filename = data.get("filename", "")
+
+        try:
+            # Validate URL
+            if not url or not url.startswith(('http://', 'https://')):
+                await self.manager.send_to_one(websocket, {
+                    "type": "download_error",
+                    "filename": filename,
+                    "success": False,
+                    "error": "Invalid URL. Must start with http:// or https://"
+                })
+                return
+
+            # Validate filename
+            if not filename or not re.match(r'^[\w\-. ]+\.(mp3|wav|ogg)$', filename, re.IGNORECASE):
+                await self.manager.send_to_one(websocket, {
+                    "type": "download_error",
+                    "filename": filename,
+                    "success": False,
+                    "error": "Invalid filename. Use alphanumeric characters, hyphens, underscores, spaces. Must end in .mp3, .wav, or .ogg"
+                })
+                return
+
+            # Download file with timeout (60 seconds for large files)
+            self.logger.info(f"Downloading song from URL: {url}")
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                audio_bytes = response.content
+
+            # Check file size (max 20MB)
+            file_size = len(audio_bytes)
+            if file_size > 20 * 1024 * 1024:
+                await self.manager.send_to_one(websocket, {
+                    "type": "download_error",
+                    "filename": filename,
+                    "success": False,
+                    "error": f"File too large: {file_size // (1024*1024)}MB. Maximum is 20MB"
+                })
+                return
+
+            # Save to default songs folder
+            songs_dir = "/home/morgan/dogbot/VOICEMP3/songs/default"
+            os.makedirs(songs_dir, exist_ok=True)
+            filepath = os.path.join(songs_dir, filename)
+
+            with open(filepath, 'wb') as f:
+                f.write(audio_bytes)
+
+            # Refresh playlist
+            usb_audio = get_usb_audio_service()
+            usb_audio.refresh_playlist()
+
+            self.logger.info(f"Song downloaded: {filename} ({file_size} bytes) from {url}")
+
+            await self.manager.send_to_one(websocket, {
+                "type": "download_complete",
+                "filename": filename,
+                "success": True,
+                "size_bytes": file_size,
+                "path": f"default/{filename}"
+            })
+
+        except httpx.HTTPStatusError as e:
+            self.logger.error(f"Song download HTTP error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "download_error",
+                "filename": filename,
+                "success": False,
+                "error": f"HTTP error: {e.response.status_code}"
+            })
+        except httpx.TimeoutException:
+            self.logger.error(f"Song download timeout for {url}")
+            await self.manager.send_to_one(websocket, {
+                "type": "download_error",
+                "filename": filename,
+                "success": False,
+                "error": "Download timeout (60 seconds exceeded)"
+            })
+        except IOError as e:
+            error_msg = "Disk full" if "No space" in str(e) else str(e)
+            self.logger.error(f"Song download IO error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "download_error",
+                "filename": filename,
+                "success": False,
+                "error": error_msg
+            })
+        except Exception as e:
+            self.logger.error(f"Song download error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "download_error",
+                "filename": filename,
                 "success": False,
                 "error": str(e)
             })
@@ -765,6 +967,7 @@ class TreatBotWebSocketServer:
                 "idle": "idle",
                 "silent_guardian": "guardian",
                 "coach": "training",
+                "mission": "mission",  # BUILD 35: Add missing mission mode mapping
                 "manual": "manual",
                 "photography": "manual",
                 "emergency": "manual"

@@ -117,6 +117,9 @@ class WIMZVideoTrack(VideoStreamTrack):
                     (width // 3, height // 2), cv2.FONT_HERSHEY_SIMPLEX,
                     1.0, (255, 255, 255), 2
                 )
+            # BUILD 36 Fix 1: Add status overlay to black frames so users see current mode
+            # This fixes Issue 4 - no status shown during camera reconfig
+            self._add_status_overlay(frame)
             frame_rgb = frame  # Already RGB (black frame)
         else:
             # Picamera2 RGB888 outputs BGR despite the name (confirmed by testing)
@@ -283,12 +286,15 @@ class WIMZVideoTrack(VideoStreamTrack):
                 try:
                     from orchestrators.mission_engine import get_mission_engine
                     engine = get_mission_engine()
-                    if engine and engine.active_session:
-                        session = engine.active_session
-                        fsm = session.state.value if hasattr(session.state, 'value') else str(session.state)
-                        trick = session.trick_requested or "behavior"
-                        stage_num = session.current_stage + 1
-                        total = len(session.mission.stages)
+                    # BUILD 38: Use thread-safe get_mission_status() instead of direct active_session access
+                    # This fixes the race condition that caused overlay to show "IDLE" during active missions
+                    status = engine.get_mission_status()
+                    if status.get("active"):
+                        fsm = status.get("state", "unknown")
+                        stage_info = status.get("stage_info") or {}
+                        trick = stage_info.get("name", "behavior")
+                        stage_num = status.get("current_stage", 0) + 1
+                        total = status.get("total_stages", 1)
 
                         if 'waiting_for_dog' in fsm:
                             status_text = f"[MISSION {stage_num}/{total}] Waiting for dog..."
@@ -308,7 +314,8 @@ class WIMZVideoTrack(VideoStreamTrack):
                         else:
                             status_text = f"[MISSION {stage_num}/{total}] {fsm}"
                     else:
-                        status_text = "[MISSION MODE] No active mission"
+                        status_text = "[MISSION MODE] Starting..."
+                        status_color = (255, 255, 0)  # Yellow while initializing
                 except Exception:
                     status_text = "[MISSION MODE]"
 
@@ -357,6 +364,16 @@ class WIMZVideoTrack(VideoStreamTrack):
                     (x, y), font, font_scale,
                     status_color, thickness, cv2.LINE_AA
                 )
+
+            # BUILD 36 Fix 2: Add frame generation timestamp at bottom
+            # This helps users identify stale/delayed video from WebRTC buffering
+            frame_height, frame_width = frame.shape[:2]
+            frame_time = time.strftime("%H:%M:%S")
+            cv2.putText(
+                frame, f"Frame: {frame_time}",
+                (10, frame_height - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, (200, 200, 200), 1, cv2.LINE_AA
+            )
 
         except Exception as e:
             self.logger.debug(f"Status overlay error: {e}")

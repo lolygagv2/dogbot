@@ -181,6 +181,21 @@ class DogTracker:
                         # Clear from unidentified
                         if idx in self.unidentified_dogs:
                             del self.unidentified_dogs[idx]
+                else:
+                    # BUILD 38: Store unidentified dogs with generic name so bounding boxes can be drawn
+                    # Previously, unidentified dogs weren't stored, causing no boxes on WebRTC overlay
+                    generic_id = f"dog_{idx}"
+                    assignments[idx] = generic_id
+                    # Store in tracking with generic marker ID (negative to avoid collision with real ArUco)
+                    self._update_tracking(
+                        -(idx + 1000),  # Negative ID for unidentified dogs
+                        bbox,
+                        current_time,
+                        confidence=0.5,
+                        id_method="unknown"
+                    )
+                    # Store the generic name mapping
+                    self.valid_dog_ids[-(idx + 1000)] = generic_id
 
         # Clean up unidentified dogs that are no longer in view
         expired_unidentified = [idx for idx in self.unidentified_dogs if idx not in current_detections]
@@ -199,9 +214,16 @@ class DogTracker:
 
     def _apply_persistence_rules(self, bbox: List[float], valid_markers: List,
                                   total_detections: int, current_time: float) -> Optional[str]:
-        """Apply persistence rules to identify dog without direct marker detection"""
+        """Apply persistence rules to identify dog without direct marker detection
+
+        BUILD 34 FIX: More conservative identification to prevent wrong dog labels.
+        - Only use proximity if ArUco was seen in same bbox recently
+        - Don't default to specific dog names - return None for unknown
+        - Let caller display "Dog" for unidentified detections
+        """
 
         # Rule 0: Single dog + single marker = same dog (collar might be outside bbox)
+        # This is the most reliable fallback - ArUco visible means we know which dog
         if total_detections == 1 and len(valid_markers) == 1:
             marker_id = valid_markers[0][0]
             dog_name = self.valid_dog_ids.get(marker_id)
@@ -210,39 +232,33 @@ class DogTracker:
                 self._update_tracking(marker_id, bbox, current_time, confidence=0.9)
                 return dog_name
 
-        # Rule 3: Proximity matching with persistence
-        closest_dog = self._find_closest_tracked_dog(bbox, current_time)
+        # Rule 3: Proximity matching - ONLY if very close to recent ArUco detection
+        # Reduced threshold from 200px to 80px to prevent false matches
+        closest_dog = self._find_closest_tracked_dog(bbox, current_time, max_distance=80)
         if closest_dog:
-            return self.valid_dog_ids.get(closest_dog)
+            # Additional check: only if last ID was ArUco (not persistence)
+            tracking = self.last_known_positions.get(closest_dog)
+            if tracking and tracking.get('id_method') == 'aruco':
+                return self.valid_dog_ids.get(closest_dog)
 
-        # Rule 5: Mutual exclusion (if one dog detected, other must be the other)
-        if total_detections == 2 and len(valid_markers) == 1:
-            detected_id = valid_markers[0][0]
-            # Get the other dog ID
-            for dog_id in self.valid_dog_ids:
-                if dog_id != detected_id and dog_id in self.active_dogs:
-                    return self.valid_dog_ids[dog_id]
+        # Rule 5: Mutual exclusion - DISABLED in Build 34
+        # This rule was too aggressive and labeled wrong dogs
+        # if total_detections == 2 and len(valid_markers) == 1:
+        #     ... removed
 
-        # Rule 4: Single dog mode - use last known dog if we have one
-        if total_detections == 1:
-            # If we have exactly one active dog tracked, use that (persistence)
-            if len(self.active_dogs) == 1:
-                last_dog_id = list(self.active_dogs)[0]
-                return self.valid_dog_ids.get(last_dog_id)
-            # If no dogs tracked yet, check last known position for proximity
-            elif len(self.last_known_positions) > 0:
-                # Find closest recent dog
-                closest = self._find_closest_tracked_dog(bbox, current_time)
-                if closest:
-                    return self.valid_dog_ids.get(closest)
-            # Only use default if we've never seen any identified dog
-            elif len(self.active_dogs) == 0:
-                return self.default_dog_name
-
+        # BUILD 34: Don't use default dog name for unknown detections
+        # Return None and let the caller display "Dog" generically
+        # This prevents wrong dog names from appearing
         return None
 
-    def _find_closest_tracked_dog(self, bbox: List[float], current_time: float) -> Optional[int]:
-        """Find closest dog from persistence tracking (Rule 3)"""
+    def _find_closest_tracked_dog(self, bbox: List[float], current_time: float, max_distance: float = 200) -> Optional[int]:
+        """Find closest dog from persistence tracking (Rule 3)
+
+        Args:
+            bbox: Current bounding box
+            current_time: Current timestamp
+            max_distance: Maximum pixel distance to consider a match (default 200, reduced to 80 for stricter matching)
+        """
         best_match = None
         best_distance = float('inf')
 
@@ -259,7 +275,7 @@ class DogTracker:
             time_factor = 1.0 - (current_time - tracking['time']) / self.persistence_time
             weighted_distance = distance / (time_factor + 0.1)
 
-            if weighted_distance < best_distance and weighted_distance < 200:  # Max 200 pixels
+            if weighted_distance < best_distance and weighted_distance < max_distance:
                 best_distance = weighted_distance
                 best_match = dog_id
 
@@ -368,11 +384,17 @@ class DogTracker:
                 continue
 
             dog_name = self.valid_dog_ids.get(marker_id, f"dog_{marker_id}")
+            # BUILD 38: Display "Dog" for unidentified dogs instead of "dog_0", "dog_-1000" etc
+            id_method = tracking.get('id_method', 'persistence')
+            display_name = dog_name
+            if id_method == "unknown" or dog_name.startswith("dog_"):
+                display_name = "Dog"
+
             result[dog_name] = {
                 'bbox': tracking.get('bbox', []),
-                'name': dog_name,
+                'name': display_name,
                 'confidence': tracking.get('confidence', 0.0),
-                'id_method': tracking.get('id_method', 'persistence'),
+                'id_method': id_method,
                 'behavior': tracking.get('behavior', ''),
                 'keypoints': tracking.get('keypoints', [])
             }

@@ -35,6 +35,7 @@ class PanTiltService:
         self.smoothed_target = None  # Smoothed target for less jitter
         self.last_detection_time = 0.0
         self.lost_target_time = 3.0  # seconds before starting scan
+        self._edge_stable_since = None  # BUILD 38: Track when dog first reached frame edge (for nudge tracking)
 
         # PID parameters - BUILD 34: Further reduced for smoother tracking
         self.pid_params = {
@@ -200,6 +201,9 @@ class PanTiltService:
 
                 if current_mode == SystemMode.COACH:
                     self._handle_coach_mode(dt)
+                elif current_mode == SystemMode.MISSION:
+                    # BUILD 38: Mission mode also uses nudge tracking
+                    self._handle_coach_mode(dt)
                 elif current_mode == SystemMode.SILENT_GUARDIAN:
                     self._handle_silent_guardian_mode(dt)
                 elif current_mode == SystemMode.IDLE:
@@ -209,40 +213,89 @@ class PanTiltService:
                 self.logger.error(f"Control loop error: {e}")
 
     def _handle_coach_mode(self, dt: float) -> None:
-        """Handle tracking in coaching mode - active dog tracking for training
+        """Handle tracking in coaching mode - gentle nudge tracking only
 
-        BUILD 34: Auto-tracking DISABLED in Coach mode due to jerky/fast servo issues.
-        Camera stays centered. Re-enable once servo control is properly tuned.
+        BUILD 38: Replaced aggressive PID tracking with gentle "nudge" mode.
+        Only adjusts camera if dog is near frame edge AND has been there for 500ms+.
+        Max movement speed: 2 degrees/second to prevent jerky motion.
+
+        This allows the camera to gently re-center a sitting/lying dog without
+        the oscillation and jerkiness of full PID tracking.
         """
-        # BUILD 34: Skip auto-tracking until servo control is fixed
-        # This prevents the camera from aiming at ceiling and making jerky movements
-        return
+        if not self.tracking_enabled:
+            return
 
-        # Original code preserved for when auto-tracking is re-enabled:
-        # if not self.tracking_enabled:
-        #     return
-        #
-        # # Check if we're in manual mode - if so, don't auto-scan
-        # current_mode = self.state.get_mode()
-        # if current_mode == SystemMode.MANUAL:
-        #     # Manual mode - stop autonomous scanning
-        #     return
-        #
-        # now = time.time()
-        #
-        # if self.target_position:
-        #     # Check if target is recent
-        #     if now - self.last_detection_time < self.lost_target_time:
-        #         # Track target
-        #         self._track_target(self.target_position, dt)
-        #     else:
-        #         # Target lost, start scanning
-        #         self.logger.debug("Target lost, starting scan")
-        #         self.target_position = None
-        #         self._scan_for_target()
-        # else:
-        #     # No target, scan
-        #     self._scan_for_target()
+        now = time.time()
+
+        # No target or stale target - hold position (don't scan)
+        if not self.target_position or (now - self.last_detection_time) > self.lost_target_time:
+            self._edge_stable_since = None  # Reset edge tracking
+            return
+
+        target_x, target_y = self.target_position
+        center_x, center_y = self.frame_center
+
+        # Calculate how far from center the dog is (as fraction of frame)
+        error_x = target_x - center_x
+        error_y = target_y - center_y
+
+        # Edge zone = outer 25% of frame on each side
+        # Dog must be in this zone before we consider nudging
+        edge_threshold_x = self.frame_width * 0.25
+        edge_threshold_y = self.frame_height * 0.25
+
+        dog_at_edge = (abs(error_x) > edge_threshold_x) or (abs(error_y) > edge_threshold_y)
+
+        if not dog_at_edge:
+            # Dog is comfortably centered - reset edge tracking, no nudge needed
+            self._edge_stable_since = None
+            return
+
+        # Dog is at edge - track how long it's been there
+        if not hasattr(self, '_edge_stable_since') or self._edge_stable_since is None:
+            self._edge_stable_since = now
+            return  # Just started being at edge - wait
+
+        time_at_edge = now - self._edge_stable_since
+
+        # Only nudge if dog has been at edge for 500ms+ (not just passing through)
+        if time_at_edge < 0.5:
+            return
+
+        # Calculate nudge direction and amount
+        # Max 2 degrees per second, scaled by dt
+        max_nudge = 2.0 * dt  # degrees this frame
+
+        nudge_pan = 0.0
+        nudge_tilt = 0.0
+
+        # Pan nudge (horizontal)
+        if abs(error_x) > edge_threshold_x:
+            # Nudge toward the dog (reduce error)
+            if error_x > 0:
+                nudge_pan = -min(max_nudge, 0.5)  # Dog is right, pan right (decrease pan)
+            else:
+                nudge_pan = min(max_nudge, 0.5)   # Dog is left, pan left (increase pan)
+
+        # Tilt nudge (vertical)
+        if abs(error_y) > edge_threshold_y:
+            if error_y > 0:
+                nudge_tilt = min(max_nudge, 0.3)  # Dog is low, tilt down
+            else:
+                nudge_tilt = -min(max_nudge, 0.3) # Dog is high, tilt up
+
+        # Apply nudge with COACH mode limits
+        new_pan = self.current_pan + nudge_pan
+        new_tilt = self.current_tilt + nudge_tilt
+
+        # Clamp to coach-safe limits
+        new_pan = max(self.COACH_PAN_LIMITS[0], min(self.COACH_PAN_LIMITS[1], new_pan))
+        new_tilt = max(self.COACH_TILT_LIMITS[0], min(self.COACH_TILT_LIMITS[1], new_tilt))
+
+        # Only send command if actually moving
+        if abs(nudge_pan) > 0.01 or abs(nudge_tilt) > 0.01:
+            self._move_to_position(new_pan, new_tilt, force=True)
+            self.logger.debug(f"Nudge: pan={nudge_pan:+.2f} tilt={nudge_tilt:+.2f} (edge time: {time_at_edge:.1f}s)")
 
     def _handle_silent_guardian_mode(self, dt: float) -> None:
         """Handle camera in Silent Guardian mode - stationary wide shot, no scanning"""
