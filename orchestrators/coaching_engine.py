@@ -164,8 +164,10 @@ class CoachingEngine:
         self.dogs_in_view: Dict[str, dict] = {}
 
         # Detection timing config
-        self.detection_time_sec = 3.0      # Time dog must be visible
-        self.presence_ratio_min = 0.66     # Min percentage in-frame (66%)
+        # BUILD 36: Reduced from 3.0s/66% to 1.5s/50% to speed up dog detection
+        # Issue 5f/5g from Build 35 - detection taking too long vs Xbox controller
+        self.detection_time_sec = 1.5      # Time dog must be visible (was 3.0)
+        self.presence_ratio_min = 0.50     # Min percentage in-frame (was 0.66)
         self.stale_timeout_sec = 5.0       # Remove dog after this long unseen
 
         # Session statistics
@@ -292,6 +294,7 @@ class CoachingEngine:
                 entry = self.dogs_in_view[dog_id]
                 entry['last_seen'] = now
                 entry['frames_seen'] += 1
+                entry['frames_total'] += 1  # BUILD 35: Increment both counters together
 
                 # Update name if ArUco identified (can happen anytime)
                 if dog_name and dog_name not in ['unknown', None] and entry['name'] is None:
@@ -414,10 +417,9 @@ class CoachingEngine:
                 # Clean stale dog visibility
                 self._cleanup_stale_dogs()
 
-                # Increment frame counter for presence ratio calculation
-                # Each loop iteration = 1 frame opportunity
-                for dog_id in self.dogs_in_view:
-                    self.dogs_in_view[dog_id]['frames_total'] += 1
+                # BUILD 35: Removed frames_total increment from main loop
+                # frames_total now increments in event handler alongside frames_seen
+                # This ensures presence ratio works correctly with detection event timing
 
                 # Run state machine
                 self._process_state()
@@ -719,7 +721,7 @@ class CoachingEngine:
             self.led.celebration_sequence(3.0)
 
         # Play celebration audio
-        self._play_audio('good_dog.mp3')
+        self._play_audio('good.mp3')
         time.sleep(1.5)
 
         # Dispense treat

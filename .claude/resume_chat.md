@@ -1,5 +1,72 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-01-31 - Build 36 Bug Fixes
+**Goal:** Fix critical issues from Build 35 testing - mission name mismatch, video lag, slow AI detection
+**Status:** ✅ Complete
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Solution | Files Modified |
+|---|---------|----------|----------------|
+| 1 | Mission name mismatch (stay_training not found) | Added MISSION_ALIASES dict for app->robot name mapping | `orchestrators/mission_engine.py` |
+| 2 | Video lag 10-30 seconds | Added frame freshness check, skip stale frames >500ms | `services/perception/detector.py`, `services/streaming/video_track.py` |
+| 3 | AI detection too slow (3s + 66%) | Reduced to 1.5s + 50% presence requirement | `orchestrators/mission_engine.py`, `orchestrators/coaching_engine.py` |
+| 4 | No "Dog" label when ArUco unavailable | Default to "Dog" instead of raw ID | `services/streaming/video_track.py` |
+
+---
+
+### Key Code Changes Made
+
+#### 1. Mission Name Aliases
+**File:** `orchestrators/mission_engine.py`
+- Added `MISSION_ALIASES` dict after `POSE_TO_TRICK`
+- Maps app names to robot missions: `stay_training`->`sit_training`, `Basic Sit`->`sit_training`, etc.
+- Updated `start_mission()` to check aliases if direct name not found
+- Returns helpful error with available missions list
+
+#### 2. Frame Freshness Check (Video Lag Fix)
+**File:** `services/perception/detector.py`
+- Added `get_last_frame_with_timestamp()` method returning (frame, timestamp) tuple
+
+**File:** `services/streaming/video_track.py`
+- Added `MAX_FRAME_AGE_SEC = 0.5` constant
+- Modified `recv()` to use `get_last_frame_with_timestamp()`
+- Skips frames older than 500ms to prevent video lag
+- Shows "Buffering..." message for stale frames (yellow text)
+
+#### 3. Faster Dog Detection
+**Files:** `orchestrators/mission_engine.py`, `orchestrators/coaching_engine.py`
+- Reduced `DETECTION_TIME_SEC` from 3.0 to 1.5 seconds
+- Reduced `PRESENCE_RATIO_MIN` from 0.66 (66%) to 0.50 (50%)
+
+#### 4. Default Dog Label
+**File:** `services/streaming/video_track.py`
+- Changed `dog_name = dog_data.get('name', dog_id)` to `dog_name = dog_data.get('name') or 'Dog'`
+- Ensures "Dog" appears on bounding box even without ArUco
+
+---
+
+### Issues Documented for APP/RELAY Teams
+
+| Issue | Owner | Notes |
+|-------|-------|-------|
+| MP3 upload never reaches robot | RELAY | No upload logs at 18:14 - request not proxied |
+| Schedule API missing name | APP | App sends `"name": ""` but robot requires non-empty |
+| Mission name "Basic Sit" | APP | Should use `sit_training` or fetch from robot API |
+| Coach mode stops on screen lock | APP | App may be sending mode change command |
+
+---
+
+### Testing Checklist for Build 36
+1. Start mission via app with "stay_training" -> should map to sit_training
+2. Video feed should have <500ms lag (no 10-30s delay)
+3. Dog detection should trigger within ~2 seconds (not 60+ seconds)
+4. Bounding box should show "Dog" if ArUco not visible
+
+---
+
 ## Session: 2026-01-31 - Schedule API Fix (Build 35)
 **Goal:** Update schedule CRUD API to match app format with dog_id, schedule_id, and type fields
 **Status:** ✅ Complete

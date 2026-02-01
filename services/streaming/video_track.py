@@ -63,6 +63,9 @@ class WIMZVideoTrack(VideoStreamTrack):
 
         self.logger.info(f"WIMZVideoTrack initialized at {fps} FPS, overlay={enable_overlay}")
 
+    # BUILD 36: Maximum frame age before considering it stale (500ms)
+    MAX_FRAME_AGE_SEC = 0.5
+
     async def recv(self) -> VideoFrame:
         """Receive next video frame for WebRTC transmission"""
         pts, time_base = await self.next_timestamp()
@@ -74,26 +77,46 @@ class WIMZVideoTrack(VideoStreamTrack):
             await asyncio.sleep(self.frame_interval - elapsed)
         self.last_frame_time = time.time()
 
-        # Get frame from detector service (return black frame if paused during camera reconfig)
-        frame = None if self._paused else self.detector.get_last_frame()
+        # BUILD 36: Get frame WITH timestamp to check freshness
+        # This fixes Issue 7 from Build 35 - video lag of 10-30 seconds
+        frame = None
+        frame_age = float('inf')
+        if not self._paused:
+            frame, frame_timestamp = self.detector.get_last_frame_with_timestamp()
+            if frame is not None and frame_timestamp > 0:
+                frame_age = time.time() - frame_timestamp
+                # Skip stale frames to prevent video lag
+                if frame_age > self.MAX_FRAME_AGE_SEC:
+                    if self.frame_count % 50 == 0:  # Log periodically
+                        self.logger.warning(f"📹 Skipping stale frame (age={frame_age:.2f}s > {self.MAX_FRAME_AGE_SEC}s)")
+                    frame = None  # Force black frame with "Buffering" message
 
         # Log frame status periodically (every 100 frames)
         if self.frame_count % 100 == 0:
             if frame is not None:
-                self.logger.info(f"📹 Video frame {self.frame_count}: {frame.shape}, dtype={frame.dtype}")
+                self.logger.info(f"📹 Video frame {self.frame_count}: {frame.shape}, age={frame_age:.3f}s")
             else:
-                self.logger.warning(f"📹 Video frame {self.frame_count}: None (no camera feed)")
+                self.logger.warning(f"📹 Video frame {self.frame_count}: None (no camera feed or stale)")
 
         if frame is None:
             # Return black frame if no camera data - use detector's current resolution
             resolution = getattr(self.detector, '_current_resolution', (640, 640))
             height, width = resolution[1], resolution[0]  # resolution is (width, height)
             frame = np.zeros((height, width, 3), dtype=np.uint8)
-            cv2.putText(
-                frame, "No Camera Feed",
-                (width // 3, height // 2), cv2.FONT_HERSHEY_SIMPLEX,
-                1.0, (255, 255, 255), 2
-            )
+            # BUILD 36: Show different message for stale frames vs no camera
+            if frame_age < float('inf') and frame_age > self.MAX_FRAME_AGE_SEC:
+                # Frame exists but is stale - show buffering
+                cv2.putText(
+                    frame, "Buffering...",
+                    (width // 3, height // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0, (255, 255, 0), 2  # Yellow for buffering
+                )
+            else:
+                cv2.putText(
+                    frame, "No Camera Feed",
+                    (width // 3, height // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0, (255, 255, 255), 2
+                )
             frame_rgb = frame  # Already RGB (black frame)
         else:
             # Picamera2 RGB888 outputs BGR despite the name (confirmed by testing)
@@ -138,7 +161,9 @@ class WIMZVideoTrack(VideoStreamTrack):
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
                         # Dog name/ID label
-                        dog_name = dog_data.get('name', dog_id)
+                        # BUILD 36: Show "Dog" when ArUco identification unavailable
+                        # Issue 3 from Build 35 - no label shown when name is None
+                        dog_name = dog_data.get('name') or 'Dog'
                         cv2.putText(
                             frame, str(dog_name),
                             (x1, y1 - 25), cv2.FONT_HERSHEY_SIMPLEX,
@@ -179,6 +204,9 @@ class WIMZVideoTrack(VideoStreamTrack):
                     0.5, (255, 255, 255), 1
                 )
 
+            # Add mode and status overlay (large, visible text at top)
+            self._add_status_overlay(frame)
+
         except Exception as e:
             self.logger.debug(f"Overlay error (continuing): {e}")
 
@@ -205,6 +233,133 @@ class WIMZVideoTrack(VideoStreamTrack):
                         x1, y1 = int(kp1[0]), int(kp1[1])
                         x2, y2 = int(kp2[0]), int(kp2[1])
                         cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Yellow
+
+    def _add_status_overlay(self, frame: np.ndarray):
+        """Add mode and status text overlay (large, visible text at top)
+
+        BUILD 34: Removed emoji characters - OpenCV FONT_HERSHEY_SIMPLEX doesn't
+        support Unicode emoji, causing ???? display. Using plain text indicators.
+        """
+        try:
+            from core.state import get_state, SystemMode
+
+            state = get_state()
+            mode = state.get_mode()
+            mode_name = mode.value if hasattr(mode, 'value') else str(mode)
+
+            # Status text based on mode (NO EMOJI - causes ???? in OpenCV fonts)
+            status_text = ""
+            status_color = (255, 255, 255)  # Default white
+
+            if mode == SystemMode.COACH:
+                try:
+                    from orchestrators.coaching_engine import get_coaching_engine
+                    coach = get_coaching_engine()
+                    if coach and hasattr(coach, 'fsm_state'):
+                        fsm = coach.fsm_state.value if hasattr(coach.fsm_state, 'value') else str(coach.fsm_state)
+
+                        if 'waiting_for_dog' in fsm:
+                            status_text = "[COACH] Waiting for dog..."
+                            status_color = (255, 255, 0)  # Yellow
+                        elif 'watching' in fsm:
+                            trick = coach.current_session.trick_requested if coach.current_session else "trick"
+                            status_text = f"[COACH] Watching for {trick.upper()}"
+                            status_color = (0, 255, 255)  # Cyan
+                        elif 'greeting' in fsm or 'command' in fsm:
+                            status_text = "[COACH] Commanding..."
+                            status_color = (255, 165, 0)  # Orange
+                        elif 'success' in fsm:
+                            status_text = "[COACH] SUCCESS!"
+                            status_color = (0, 255, 0)  # Green
+                        elif 'failure' in fsm or 'retry' in fsm:
+                            status_text = "[COACH] Retry..."
+                            status_color = (255, 128, 0)  # Orange
+                        else:
+                            status_text = f"[COACH] {fsm}"
+                except Exception:
+                    status_text = "[COACH MODE]"
+
+            elif mode == SystemMode.MISSION:
+                try:
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    if engine and engine.active_session:
+                        session = engine.active_session
+                        fsm = session.state.value if hasattr(session.state, 'value') else str(session.state)
+                        trick = session.trick_requested or "behavior"
+                        stage_num = session.current_stage + 1
+                        total = len(session.mission.stages)
+
+                        if 'waiting_for_dog' in fsm:
+                            status_text = f"[MISSION {stage_num}/{total}] Waiting for dog..."
+                            status_color = (255, 255, 0)  # Yellow
+                        elif 'watching' in fsm:
+                            status_text = f"[MISSION {stage_num}/{total}] Watching for {trick.upper()}"
+                            status_color = (0, 255, 255)  # Cyan
+                        elif 'greeting' in fsm or 'command' in fsm:
+                            status_text = f"[MISSION {stage_num}/{total}] Commanding {trick}..."
+                            status_color = (255, 165, 0)  # Orange
+                        elif 'success' in fsm:
+                            status_text = f"[MISSION {stage_num}/{total}] SUCCESS!"
+                            status_color = (0, 255, 0)  # Green
+                        elif 'failure' in fsm or 'retry' in fsm:
+                            status_text = f"[MISSION {stage_num}/{total}] Retry {trick}..."
+                            status_color = (255, 128, 0)  # Orange
+                        else:
+                            status_text = f"[MISSION {stage_num}/{total}] {fsm}"
+                    else:
+                        status_text = "[MISSION MODE] No active mission"
+                except Exception:
+                    status_text = "[MISSION MODE]"
+
+            elif mode == SystemMode.SILENT_GUARDIAN:
+                status_text = "[SILENT GUARDIAN] Monitoring..."
+                status_color = (128, 0, 255)  # Purple
+
+            elif mode == SystemMode.MANUAL:
+                status_text = "[MANUAL MODE]"
+                status_color = (0, 165, 255)  # Orange
+
+            elif mode == SystemMode.IDLE:
+                status_text = "[IDLE]"
+                status_color = (128, 128, 128)  # Gray
+
+            # Draw status text at top of frame (large, with background)
+            if status_text:
+                frame_height, frame_width = frame.shape[:2]
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 1.0  # Large text
+                thickness = 2
+
+                # Get text size
+                (text_width, text_height), baseline = cv2.getTextSize(
+                    status_text, font, font_scale, thickness
+                )
+
+                # Position at top center
+                x = (frame_width - text_width) // 2
+                y = text_height + 20  # 20px from top
+
+                # Draw semi-transparent background
+                bg_x1 = x - 10
+                bg_y1 = y - text_height - 5
+                bg_x2 = x + text_width + 10
+                bg_y2 = y + baseline + 5
+
+                # Create overlay for semi-transparent background
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
+                cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+                # Draw text
+                cv2.putText(
+                    frame, status_text,
+                    (x, y), font, font_scale,
+                    status_color, thickness, cv2.LINE_AA
+                )
+
+        except Exception as e:
+            self.logger.debug(f"Status overlay error: {e}")
 
     def pause(self):
         """Pause video track during camera reconfiguration"""

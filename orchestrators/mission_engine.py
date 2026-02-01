@@ -89,6 +89,29 @@ POSE_TO_TRICK = {
     "Stand": "stand",
 }
 
+# BUILD 36: Mission name aliases - maps app/display names to actual mission filenames
+# Resolves Issue 1 from Build 35 - app sends "stay_training" but robot has "sit_training"
+MISSION_ALIASES = {
+    # App name variations -> actual mission name
+    "stay_training": "sit_training",
+    "Stay Training": "sit_training",
+    "Basic Sit": "sit_training",
+    "basic_sit": "sit_training",
+    "Sit Training": "sit_training",
+    # Down training
+    "lie_training": "down_sustained",
+    "Lie Training": "down_sustained",
+    "Down Training": "down_sustained",
+    "down_training": "down_sustained",
+    # Bark prevention
+    "quiet_training": "bark_prevention",
+    "Quiet Training": "bark_prevention",
+    "Stop Barking": "stop_barking",
+    # Come training
+    "come_training": "come_and_sit",
+    "Come Training": "come_and_sit",
+}
+
 
 @dataclass
 class MissionSession:
@@ -140,8 +163,10 @@ class MissionEngine:
     """
 
     # Coach-style timing constants
-    DETECTION_TIME_SEC = 3.0  # Dog must be visible this long
-    PRESENCE_RATIO_MIN = 0.66  # Dog must be in 66% of frames
+    # BUILD 36: Reduced from 3.0s/66% to 1.5s/50% to speed up dog detection
+    # Issue 5f/5g from Build 35 - detection taking too long
+    DETECTION_TIME_SEC = 1.5  # Dog must be visible this long (was 3.0)
+    PRESENCE_RATIO_MIN = 0.50  # Dog must be in 50% of frames (was 0.66)
     ATTENTION_DURATION_SEC = 2.0  # Attention check duration
     WATCH_DURATION_SEC = 10.0  # Default watch window
     STALE_TIMEOUT_SEC = 6.0  # Dog considered gone after this (must be > detection_event_interval of 5s)
@@ -251,7 +276,7 @@ class MissionEngine:
         Start a training mission
 
         Args:
-            mission_name: Name of mission to start
+            mission_name: Name of mission to start (supports aliases)
             dog_id: Optional specific dog ID
 
         Returns:
@@ -260,9 +285,24 @@ class MissionEngine:
         self.logger.info(f"[MISSION] start_mission called: name={mission_name}, dog_id={dog_id}")
         self.logger.info(f"[MISSION] Available missions: {list(self.missions.keys())}")
 
+        # BUILD 36: Check mission aliases if direct name not found
+        actual_mission_name = mission_name
         if mission_name not in self.missions:
-            self.logger.error(f"[MISSION] Mission not found: {mission_name}")
+            # Try alias lookup
+            if mission_name in MISSION_ALIASES:
+                actual_mission_name = MISSION_ALIASES[mission_name]
+                self.logger.info(f"[MISSION] Using alias: {mission_name} -> {actual_mission_name}")
+            else:
+                self.logger.error(f"[MISSION] Mission not found: {mission_name}")
+                self.logger.error(f"[MISSION] Hint: Available missions are: {list(self.missions.keys())}")
+                return False
+
+        if actual_mission_name not in self.missions:
+            self.logger.error(f"[MISSION] Aliased mission not found: {actual_mission_name}")
             return False
+
+        # Use the resolved mission name
+        mission_name = actual_mission_name
 
         mission = self.missions[mission_name]
 
@@ -463,9 +503,9 @@ class MissionEngine:
                 # Clean stale dogs (like coaching engine)
                 self._cleanup_stale_dogs()
 
-                # Increment frames_total for presence ratio (matches coaching_engine)
-                for dog_id in self.dogs_in_view:
-                    self.dogs_in_view[dog_id]['frames_total'] += 1
+                # BUILD 35: Removed frames_total increment from main loop
+                # frames_total now increments in event handler alongside frames_seen
+                # This ensures presence ratio works correctly with detection event timing
 
                 # Process current state (coach-style state machine)
                 self._process_state()
@@ -1367,6 +1407,7 @@ class MissionEngine:
             entry = self.dogs_in_view[dog_id]
             entry['last_seen'] = now
             entry['frames_seen'] += 1
+            entry['frames_total'] += 1  # BUILD 35: Increment both counters together
 
             # Update name if ArUco identified
             if dog_name and dog_name not in ['unknown', None] and entry['name'] is None:

@@ -40,9 +40,10 @@ except ImportError:
 
 # ArUco detection
 ARUCO_DICT = cv2.aruco.DICT_4X4_1000
+# BUILD 35: Removed hardcoded dog names - use dog profiles from app instead
 DOG_MARKERS = {
-    315: 'elsa',
-    832: 'bezik'
+    # Dog markers are now loaded dynamically from dog profiles
+    # ArUco ID -> dog name mappings come from DogProfileManager
 }
 
 
@@ -88,8 +89,10 @@ class DetectorService:
         self.current_fps = 0.0
 
         # Rate limiting for detection events (prevent log spam)
+        # BUILD 35: Reduced from 5.0s to 0.2s to fix presence ratio calculation
+        # Mission/coaching engines need frequent events to calculate 66% presence correctly
         self._last_detection_event_time = 0
-        self._detection_event_interval = 5.0  # Minimum seconds between detection events
+        self._detection_event_interval = 0.2  # Minimum seconds between detection events
 
         # Camera retry logic
         self._camera_error_reason = None
@@ -432,6 +435,18 @@ class DetectorService:
                 return self._last_frame.copy()
         return None
 
+    def get_last_frame_with_timestamp(self) -> Tuple[Optional[np.ndarray], float]:
+        """
+        Get last captured frame with its timestamp (thread-safe)
+
+        BUILD 36: Added to support frame freshness check in video_track.py
+        Returns (frame, timestamp) tuple. If no frame, returns (None, 0)
+        """
+        with self._frame_lock:
+            if self._last_frame is not None:
+                return self._last_frame.copy(), self._last_frame_time
+        return None, 0
+
     def get_last_frame_age(self) -> float:
         """Get age of last frame in seconds"""
         with self._frame_lock:
@@ -657,13 +672,15 @@ class DetectorService:
         # Update state
         num_dogs = len(dogs)
         # Get primary dog name and id method (first detection)
+        # BUILD 34: Use "Dog" for unidentified dogs instead of empty string
         primary_dog_name = dog_assignments.get(0, "")
         primary_id_method = dog_id_methods.get(0, "")
+        display_name = primary_dog_name.capitalize() if primary_dog_name else "Dog"
         self.state.update_detection(
             dogs_detected=num_dogs,
             last_detection_time=time.time(),
-            dog_name=primary_dog_name.capitalize() if primary_dog_name else "",
-            id_method=primary_id_method
+            dog_name=display_name,
+            id_method=primary_id_method if primary_dog_name else "unknown"
         )
 
         # Rate limit detection events to prevent log spam
