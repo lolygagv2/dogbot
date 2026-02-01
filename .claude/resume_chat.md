@@ -1,5 +1,85 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-02-01 - Build 38 Critical Fixes
+**Goal:** Fix critical Build 37 failures (video overlay, bounding boxes, dog ID, servo tracking, MP3 upload)
+**Status:** COMPLETE
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Solution | Files Modified |
+|---|---------|----------|----------------|
+| 1 | Video overlay shows "IDLE" during missions | Use thread-safe `get_mission_status()` | `services/streaming/video_track.py:285-316` |
+| 2 | AI bounding boxes not showing on WebRTC | Store unidentified dogs with generic IDs | `core/dog_tracker.py:185-198` |
+| 3 | "Everything is Elsa" dog ID bug | Raised YOLO conf 0.5→0.6, display "Dog" for unknown | `core/ai_controller_3stage_fixed.py:555`, `core/dog_tracker.py:387-391` |
+| 4 | Servo tracking disabled | Implemented gentle nudge tracking mode | `services/motion/pan_tilt.py:38,211-261` |
+| 5 | MP3 upload crashes WebSocket (5MB) | New `download_song` command via HTTP URL | `api/ws.py:318-603`, `main_treatbot.py:1137-1191` |
+
+---
+
+### Key Code Changes Made
+
+#### 1. Video Overlay Race Condition Fix
+**File:** `services/streaming/video_track.py:285-316`
+- Changed from direct `active_session` access to thread-safe `get_mission_status()` call
+- Now correctly shows mission state instead of "IDLE"
+
+#### 2. Bounding Box Fix
+**File:** `core/dog_tracker.py:185-198`
+- Unidentified dogs now stored with generic IDs (`dog_0`, `dog_1`, etc.)
+- Allows bounding boxes to be drawn even without ArUco identification
+
+#### 3. Dog Identification Fix
+**Files:** `core/ai_controller_3stage_fixed.py:555`, `core/dog_tracker.py:387-391`
+- Raised YOLO confidence threshold from 0.5 to 0.6
+- Display "Dog" instead of wrong specific names for unidentified detections
+
+#### 4. Nudge Servo Tracking
+**File:** `services/motion/pan_tilt.py`
+- Added `_edge_stable_since` initialization (line 38)
+- Replaced disabled `_handle_coach_mode()` with nudge tracking (lines 211-261)
+- Edge zone: outer 25% of frame
+- Stability delay: 500ms before moving
+- Max speed: 2 degrees/second
+- Safe limits: pan 55-145°, tilt 25-85°
+- Works in COACH and MISSION modes
+
+#### 5. MP3 Download via HTTP
+**Files:** `api/ws.py`, `main_treatbot.py`
+- New `download_song` command: `{"command": "download_song", "url": "https://...", "filename": "my_song.mp3"}`
+- Robot downloads file directly via HTTP (60s timeout, 20MB max)
+- Avoids WebSocket message size crash
+
+---
+
+### New API Command
+```json
+{"command": "download_song", "url": "https://example.com/song.mp3", "filename": "my_song.mp3"}
+```
+Response: `{"type": "download_complete", "filename": "...", "success": true, "size_bytes": ...}`
+
+---
+
+### Commit
+`31199624` - fix: Build 38 - video overlay, bounding boxes, nudge tracking, MP3 download
+
+---
+
+### Testing Checklist for Build 38
+1. Start mission → video overlay should show mission state (not "IDLE")
+2. Dogs without ArUco should have bounding boxes with "Dog" label
+3. Wrong dog names should no longer appear (no more "Everything is Elsa")
+4. Camera should gently nudge when dog at frame edge for 500ms+
+5. Test `download_song` command with real URL
+
+---
+
+### Unresolved Issues
+- P1-R6 (Schedule persistence) - Not addressed, existing code needs verification
+
+---
+
 ## Session: 2026-01-31 - Build 36 Bug Fixes
 **Goal:** Fix critical issues from Build 35 testing - mission name mismatch, video lag, slow AI detection
 **Status:** ✅ Complete
