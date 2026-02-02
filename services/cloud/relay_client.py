@@ -65,6 +65,7 @@ class RelayClient:
         self._running = False
         self._reconnect_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._telemetry_task: Optional[asyncio.Task] = None
 
         # WebRTC service reference (set during integration)
         self._webrtc_service = None
@@ -288,6 +289,57 @@ class RelayClient:
                 break
             except Exception as e:
                 self.logger.debug(f"Heartbeat error: {e}")
+
+    async def _telemetry_loop(self):
+        """Send telemetry (battery, temperature, mode) every 5 seconds while connected"""
+        from datetime import datetime
+
+        # Mode mapping (same as api/ws.py)
+        mode_map = {
+            "idle": "idle",
+            "silent_guardian": "guardian",
+            "coach": "training",
+            "mission": "mission",
+            "manual": "manual",
+            "photography": "manual",
+            "emergency": "manual"
+        }
+
+        while self._running and self._connected:
+            try:
+                await asyncio.sleep(5.0)  # Send every 5 seconds
+                if self._connected and self._app_connected:
+                    # Get state
+                    state_dict = self.state.get_full_state()
+                    hardware = state_dict.get("hardware", {})
+
+                    # Calculate battery percentage
+                    battery_voltage = hardware.get("battery_voltage", 0)
+                    battery_pct = (battery_voltage / 16.8 * 100) if battery_voltage else 0
+                    battery_pct = min(100, max(0, battery_pct))
+
+                    # Get mode
+                    internal_mode = state_dict.get("mode", "idle")
+                    contract_mode = mode_map.get(internal_mode, "idle")
+
+                    # Send telemetry event
+                    await self._send({
+                        'event': 'status',
+                        'device_id': self.config.device_id,
+                        'data': {
+                            'battery': round(battery_pct, 1),
+                            'temperature': hardware.get("cpu_temp", 0),
+                            'mode': contract_mode,
+                            'is_charging': hardware.get("is_charging", False),
+                            'treats_remaining': 15  # TODO: Get from dispenser
+                        },
+                        'timestamp': datetime.utcnow().isoformat() + "Z"
+                    })
+                    self.logger.debug(f"📊 Telemetry sent: {battery_pct:.0f}%, {hardware.get('cpu_temp', 0)}°C")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.debug(f"Telemetry error: {e}")
 
     async def _handle_message(self, data: dict):
         """Route incoming message to appropriate handler"""
@@ -783,13 +835,16 @@ class RelayClient:
                     backoff = 1.0  # Reset to 1 second on success
                     # Flush queued messages
                     await self._flush_queue()
-                    # Start heartbeat in background
+                    # Start heartbeat and telemetry in background
                     self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+                    self._telemetry_task = asyncio.create_task(self._telemetry_loop())
                     # Start receive loop
                     await self._receive_loop()
-                    # Cancel heartbeat when receive loop ends
+                    # Cancel background tasks when receive loop ends
                     if self._heartbeat_task:
                         self._heartbeat_task.cancel()
+                    if self._telemetry_task:
+                        self._telemetry_task.cancel()
                 else:
                     backoff = min(backoff * 2, 30.0)  # Double each time, cap at 30s
             else:
@@ -818,12 +873,15 @@ class RelayClient:
         self._running = True
 
         if await self._connect():
-            # Start heartbeat in background
+            # Start heartbeat and telemetry in background
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            self._telemetry_task = asyncio.create_task(self._telemetry_loop())
             await self._receive_loop()
-            # Cancel heartbeat when receive loop ends
+            # Cancel background tasks when receive loop ends
             if self._heartbeat_task:
                 self._heartbeat_task.cancel()
+            if self._telemetry_task:
+                self._telemetry_task.cancel()
 
         # Start reconnection loop if still running
         if self._running:
@@ -863,9 +921,11 @@ class RelayClient:
         self.logger.info("Stopping relay client...")
         self._running = False
 
-        # Cancel heartbeat task
+        # Cancel background tasks
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self._telemetry_task:
+            self._telemetry_task.cancel()
 
         # Schedule disconnect in the event loop and wait for it (with goodbye message)
         if self._loop and self._connected:
