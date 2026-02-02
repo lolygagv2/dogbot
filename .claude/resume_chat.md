@@ -1,5 +1,83 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-02-02 - Build 40 Implementation
+**Goal:** Fix Build 39 test failures - mission field names, AI display, servo tracking, coach events
+**Status:** COMPLETE
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Root Cause | Solution | Files Modified |
+|---|---------|------------|----------|----------------|
+| 1 | Mission stuck on "Initializing" | Field name mismatch | Changed `mission_name`→`mission_id`, `stage`→`stage_number` | `orchestrators/mission_engine.py`, `main_treatbot.py` |
+| 2 | AI confidence not showing ("sit 34%") | `update_dog_behavior()` never called | Added bridge call in detector | `services/perception/detector.py:778` |
+| 3 | Servo tracking checkbox broken | `tracking_enabled=False` by default | Auto-enable in COACH mode | `services/motion/pan_tilt.py:228` |
+| 4 | MP3 upload 413 error | Relay sends relative URL | Construct full URL, save to dog folder | `main_treatbot.py:1137-1190` |
+| 5 | No coach progress events | Events not implemented | Added coach_progress/coach_reward | `orchestrators/coaching_engine.py` |
+| 6 | /missions 404 | Endpoint missing | Added GET /missions endpoint | `api/server.py:955-972` |
+
+---
+
+### Key Code Changes Made
+
+#### 1. Mission Progress Field Names (P0-R1)
+**Files:** `orchestrators/mission_engine.py`, `main_treatbot.py`
+- Fixed 7 `mission_progress` events + 1 `mission_complete` event
+- `mission_name` → `mission_id`
+- `stage` → `stage_number`
+- Added `action` field to all events
+
+#### 2. AI Confidence Display (P0-R2)
+**File:** `services/perception/detector.py:778`
+- Added call to `update_dog_behavior()` after behavior detection
+- Bridges behavior data to dog_tracker for video overlay display
+
+#### 3. Servo Tracking Auto-Enable (P0-R3)
+**File:** `services/motion/pan_tilt.py:228`
+- Auto-enables tracking when entering COACH mode
+- Added debug logging to `set_tracking_enabled` handler in main_treatbot.py
+
+#### 4. Download Song URL Fix (P1-R4)
+**File:** `main_treatbot.py:1137-1190`
+- Constructs full URL from relay's relative path (`https://api.wimzai.com{url}`)
+- Saves to dog-specific folder (`VOICEMP3/songs/{dog_id}/`)
+- Extracts params from `data` field
+
+#### 5. Coach Progress Events (P1-R5)
+**File:** `orchestrators/coaching_engine.py`
+- Added `get_relay_client` import
+- `coach_progress` events: greeting, command, watching (periodic ~500ms)
+- `coach_reward` event on success
+
+#### 6. Missions REST Endpoint (P2-R6)
+**File:** `api/server.py:955-972`
+- Added `GET /missions` endpoint
+- Returns mission catalog for app browser
+
+---
+
+### Commit
+`79dc7b8c` - fix: Build 40 - mission field names, AI display, tracking, coach events
+
+---
+
+### Testing Checklist for Build 40
+1. [ ] Start mission → Relay logs show `status=` and `stage_number=` (not old field names)
+2. [ ] Enter coach mode → Log shows "Auto-enabling tracking for COACH mode"
+3. [ ] Video overlay → Shows "sit 34%" confidence labels
+4. [ ] MP3 upload → Robot receives `download_song` and fetches file
+5. [ ] `GET /missions` → Returns mission catalog
+
+---
+
+### Documentation Created
+- `.claude/POST39ROBO.md` - Build 39 test analysis
+- `.claude/BUILD40_ROBOT_CLAUDE.md` - Build 40 instructions (from user)
+- `.claude/BUILD40_CURRENT_STATE.md` - Implementation status
+
+---
+
 ## Session: 2026-02-01 - Build 38 Critical Fixes
 **Goal:** Fix critical Build 37 failures (video overlay, bounding boxes, dog ID, servo tracking, MP3 upload)
 **Status:** COMPLETE
