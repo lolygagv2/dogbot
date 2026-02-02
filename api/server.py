@@ -2562,6 +2562,51 @@ async def delete_user_song(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.delete("/music/song/{filename}")
+async def delete_song(filename: str, dog_id: Optional[str] = None):
+    """BUILD 41: Delete a song from default or dog-specific folder
+
+    Args:
+        filename: The song filename to delete
+        dog_id: Optional dog ID - if provided, looks in /songs/{dog_id}/ first
+    """
+    try:
+        songs_base = "/home/morgan/dogbot/VOICEMP3/songs"
+        filepath = None
+
+        # Try dog-specific folder first
+        if dog_id:
+            dog_path = os.path.join(songs_base, dog_id, filename)
+            if os.path.exists(dog_path):
+                filepath = dog_path
+
+        # Fall back to default folder
+        if not filepath:
+            default_path = os.path.join(songs_base, "default", filename)
+            if os.path.exists(default_path):
+                filepath = default_path
+
+        if not filepath:
+            raise HTTPException(status_code=404, detail=f"Song not found: {filename}")
+
+        os.remove(filepath)
+
+        # Refresh playlist to remove from rotation
+        usb_audio = get_usb_audio_service()
+        usb_audio.refresh_playlist()
+
+        return {
+            "success": True,
+            "filename": filename,
+            "message": f"Song '{filename}' deleted"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Song delete error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Legacy relay endpoints - USB audio only now (no relay switching needed)
 @app.post("/audio/relay/pi")
 async def switch_to_pi_audio():
@@ -4130,12 +4175,15 @@ async def force_start_mission(mission_name: str):
 # BUILD 35: Added schedule CRUD for app schedule management
 
 class ScheduleCreateRequest(BaseModel):
-    """Request to create a training schedule"""
-    name: str
+    """Request to create a training schedule
+
+    BUILD 41: Made name and end_time optional with auto-generated defaults
+    """
     mission_name: str
     dog_id: str  # Required: ID of the dog this schedule is for
     start_time: str  # HH:MM format
-    end_time: str    # HH:MM format
+    name: Optional[str] = None  # Auto-generated if not provided
+    end_time: Optional[str] = None  # Defaults to start_time + 1 hour
     type: str = "daily"  # "once", "daily", or "weekly"
     days_of_week: List[str] = []  # ["monday", "tuesday", ...] - required for "weekly"
     enabled: bool = True
@@ -5075,6 +5123,99 @@ async def telemetry_contract():
         "wifi_strength": -45,  # TODO: Get actual wifi strength
         "uptime_seconds": int(state.get_mode_duration())
     }
+
+# ============== NOTIFICATION ENDPOINTS ==============
+
+from services.cloud.notification_service import get_notification_service
+
+class NotificationSubscriberRequest(BaseModel):
+    user_id: str
+    phone_number: str
+    notification_types: Optional[List[str]] = None  # mission_complete, bark_alert, low_battery, weekly_summary
+
+class NotificationPreferencesRequest(BaseModel):
+    notification_types: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+
+class SendSMSRequest(BaseModel):
+    phone_number: str
+    message: str
+
+@app.get("/notifications/health")
+async def notification_health():
+    """Check notification service health"""
+    notifier = get_notification_service()
+    return notifier.health_check()
+
+@app.get("/notifications/subscribers")
+async def list_notification_subscribers():
+    """List all notification subscribers"""
+    notifier = get_notification_service()
+    return notifier.list_subscribers()
+
+@app.post("/notifications/subscribers")
+async def add_notification_subscriber(request: NotificationSubscriberRequest):
+    """Add or update a notification subscriber"""
+    notifier = get_notification_service()
+    return notifier.add_subscriber(
+        request.user_id,
+        request.phone_number,
+        request.notification_types
+    )
+
+@app.get("/notifications/subscribers/{user_id}")
+async def get_notification_subscriber(user_id: str):
+    """Get a specific subscriber's info"""
+    notifier = get_notification_service()
+    subscriber = notifier.get_subscriber(user_id)
+    if subscriber:
+        return {'user_id': user_id, **subscriber}
+    raise HTTPException(status_code=404, detail=f"Subscriber {user_id} not found")
+
+@app.put("/notifications/subscribers/{user_id}")
+async def update_notification_preferences(user_id: str, request: NotificationPreferencesRequest):
+    """Update subscriber notification preferences"""
+    notifier = get_notification_service()
+    result = notifier.update_subscriber_preferences(
+        user_id,
+        request.notification_types,
+        request.enabled
+    )
+    if result.get('status') == 'error':
+        raise HTTPException(status_code=404, detail=result.get('message'))
+    return result
+
+@app.delete("/notifications/subscribers/{user_id}")
+async def remove_notification_subscriber(user_id: str):
+    """Remove a notification subscriber"""
+    notifier = get_notification_service()
+    result = notifier.remove_subscriber(user_id)
+    if result.get('status') == 'error':
+        raise HTTPException(status_code=404, detail=result.get('message'))
+    return result
+
+@app.post("/notifications/send")
+async def send_notification(request: SendSMSRequest):
+    """Send a direct SMS notification (admin/testing)"""
+    notifier = get_notification_service()
+    result = await notifier.send_sms(request.phone_number, request.message)
+    if result.get('status') == 'error':
+        raise HTTPException(status_code=500, detail=result.get('message'))
+    return result
+
+@app.post("/notifications/test")
+async def test_notification(user_id: str):
+    """Send a test notification to a subscriber"""
+    notifier = get_notification_service()
+    subscriber = notifier.get_subscriber(user_id)
+    if not subscriber:
+        raise HTTPException(status_code=404, detail=f"Subscriber {user_id} not found")
+
+    result = await notifier.send_sms(
+        subscriber['phone_number'],
+        "🐕 WIM-Z Test: Notifications are working!"
+    )
+    return result
 
 # ============== END API CONTRACT ENDPOINTS ==============
 

@@ -1,19 +1,28 @@
 # WIM-Z (Watchful Intelligent Mobile Zen) Product Roadmap
-*Last Updated: January 11, 2026*
+*Last Updated: February 2, 2026*
 
 ## Mission Statement
 Build the world's first autonomous AI-powered pet training robot - the WIM-Z (Watchful Intelligent Mobile Zen) - that combines mobility, edge AI inference, and behavioral learning to create a premium pet care experience.
 
 ---
 
-## Current Status: Live Testing & Bug Fixes
+## Current Status: Build 40 Complete - Validation Phase
 
 ### Build Phase: **COMPLETE**
-All core hardware and software systems are operational. Currently in live testing phase with real dogs, focusing on stability and accuracy improvements.
+All core hardware and software systems are operational. Build 40 implemented critical fixes for app integration (mission events, AI display, tracking). Awaiting live testing validation.
+
+### Recent Build History
+| Build | Date | Focus | Status |
+|-------|------|-------|--------|
+| 40 | Feb 2 | Mission fields, AI display, coach events | ✅ Code complete |
+| 38 | Feb 1 | Video overlay, bounding boxes, nudge tracking | ✅ Reviewed |
+| 36 | Jan 31 | Mission aliases, frame freshness, faster detection | ✅ Reviewed |
+| 35 | Jan 31 | Schedule API (dog_id, type fields) | ✅ Reviewed |
+| 34 | Jan 31 | Mission pipeline, dog ID, servo safety | ✅ Reviewed |
 
 ---
 
-## Completed Systems
+## ✅ Completed Systems (Reviewed)
 
 ### Hardware (100% Complete)
 - [x] Devastator chassis with DFRobot DC motors + encoders (6V 210RPM 10Kg.cm)
@@ -39,25 +48,95 @@ All core hardware and software systems are operational. Currently in live testin
 
 ### Service Layer (100% Complete)
 - [x] Perception: `detector.py` (YOLOv8), `bark_detector.py` (TFLite + bandpass filter)
-- [x] Motion: `motor.py` (PID control), `pan_tilt.py` (servo tracking)
+- [x] Motion: `motor.py` (PID control), `pan_tilt.py` (servo tracking with nudge mode)
 - [x] Reward: `dispenser.py` (treat carousel)
 - [x] Media: `led.py` (165 NeoPixels), `usb_audio.py` (pygame playback)
 - [x] Control: `xbox_controller.py`, `bluetooth_esc.py`
 - [x] Power: `battery_monitor.py` (charging detection)
+- [x] Cloud: `relay_client.py` (WebSocket to relay server)
+- [x] Streaming: `webrtc.py`, `video_track.py` (with overlay)
 
 ### Orchestration Layer (100% Complete)
 - [x] Mode FSM (`mode_fsm.py`) - IDLE, COACH, SILENT_GUARDIAN, MANUAL, MISSION
-- [x] Coaching Engine (`coaching_engine.py`) - Trick training with retry logic
+- [x] Coaching Engine (`coaching_engine.py`) - Trick training + coach_progress events
 - [x] Silent Guardian (`silent_guardian.py`) - Bark detection + quiet training
 - [x] Reward Logic (`reward_logic.py`) - Rules-based reward decisions
 - [x] Sequence Engine (`sequence_engine.py`) - Celebration sequences
-- [x] Mission Engine (`mission_engine.py`) - Formal mission execution
+- [x] Mission Engine (`mission_engine.py`) - Formal mission execution with proper events
+- [x] Program Engine (`program_engine.py`) - Training programs
 
-### API & Dashboard (100% Complete)
-- [x] REST API (`api/server.py`) - All endpoints functional
-- [x] Web Dashboard - Working frontend for monitoring/control
+### API Layer (100% Complete)
+- [x] REST API (`api/server.py`) - All endpoints including GET /missions
+- [x] WebSocket (`api/ws.py`) - Commands including download_song
+- [x] Schedule API - CRUD with dog_id, schedule_id, type fields
 
-### Xbox Controller (100% Complete)
+---
+
+## ❓ Unknown Status (Need User Input)
+
+### App/Relay Integration
+- [x] ❓ Is relay forwarding mission_progress events correctly?
+- [x] ❓ Is app displaying video overlay with AI confidence?
+- [ ] ❓ Is servo tracking checkbox working in app?
+- [x] ❓ Is MP3 upload/download flow working?
+
+### Coach Mode Live Testing
+- [x] ❓ Bark filter rejecting claps/voice?
+- [x] ❓ Pose thresholds accurate (sitting ≠ down)?
+- [x] ❓ Full coaching session working end-to-end?
+
+### Silent Guardian Live Testing
+- [x] ❓ Bark → intervention → reward flow working?
+- [x] ❓ Escalation and cooldown working?
+
+### Hardware Status
+- [ ] ❓ Servo calibration still accurate?
+- [x] ❓ Treat dispenser reliable?
+- [x] ❓ Audio playback consistent?
+
+---
+
+## ✅ Build 40 Code Changes (Reviewed)
+
+### Mission Events (P0-R1)
+- [x] Changed `mission_name` → `mission_id` in all events
+- [x] Changed `stage` → `stage_number` in all events
+- [x] Added `action` field to all mission_progress events
+
+### AI Display (P0-R2)
+- [x] Added `update_dog_behavior()` call in detector.py:778
+- [x] Bridges behavior data to dog_tracker for video overlay
+
+### Servo Tracking (P0-R3)
+- [x] Auto-enable tracking when entering COACH mode
+- [x] Debug logging for tracking state changes
+
+### MP3 Download (P1-R4)
+- [x] Constructs full URL from relay's relative path
+- [x] Saves to dog-specific folder (VOICEMP3/songs/{dog_id}/)
+
+### Coach Events (P1-R5)
+- [x] coach_progress events: greeting, command, watching
+- [x] coach_reward event on success
+
+### Missions Endpoint (P2-R6)
+- [x] GET /missions returns mission catalog
+
+---
+
+## 🔄 Needs Testing/Rework
+
+### Weekly Summary (`core/weekly_summary.py`)
+- [ ] ❓ Has this ever been tested with real data?
+- [ ] Mission stats added in Build 38
+
+### Mission Scheduler (`core/mission_scheduler.py`)
+- [x] ❓ Has auto-scheduling been tested?
+- [x] Type logic (once/daily/weekly) added in Build 35
+
+---
+
+## Xbox Controller (Complete)
 | Button | Function |
 |--------|----------|
 | Left Stick | Drive (forward/back/turn) |
@@ -77,70 +156,7 @@ All core hardware and software systems are operational. Currently in live testin
 
 ---
 
-## In Progress: Live Testing
-
-### Coach Mode Testing
-- [x] Dog detection triggers coaching session (presence-based, 3s + 66%)
-- [x] ArUco identification (optional - just provides name)
-- [x] Trick rotation: sit, down, crosses, spin, speak
-- [x] Retry on first failure (2 attempts per session)
-- [x] Threading race condition fix (timestamp validation)
-- [ ] **TESTING:** Verify bark filter rejects claps/voice
-- [ ] **TESTING:** Verify pose thresholds (0.75 for lie/cross)
-- [ ] **TESTING:** Full coaching session end-to-end
-
-### Silent Guardian Testing
-- [x] Bark detection with 400-4000Hz bandpass filter
-- [x] Escalating quiet protocol (10 commands over 90s)
-- [x] Give-up timeout with 2-min cooldown
-- [ ] **TESTING:** Full bark → quiet → reward flow
-- [ ] **TESTING:** Non-bark sound rejection
-
----
-
-## Needs Rework
-
-### Weekly Summary & Mission Scheduler
-**Status:** Implemented but needs rework
-
-Files:
-- `core/weekly_summary.py` - Report generation
-- `core/mission_scheduler.py` - Auto-start missions
-
-Issues to address:
-- [ ] Verify report data accuracy
-- [ ] Test mission scheduler time windows
-- [ ] Integration with current Coach/SG modes
-
----
-
-## Next Priority: Bug Fixes
-
-Focus on stabilizing Coach and Silent Guardian modes:
-
-1. **Bark Detection Accuracy**
-   - Verify bandpass filter effectiveness
-   - Test with various non-bark sounds (claps, voice, HVAC)
-   - Tune confidence threshold if needed
-
-2. **Pose Detection Reliability**
-   - Verify 0.75 threshold for lie/cross poses
-   - Test with sitting dogs (should NOT trigger lie/cross)
-   - Monitor false positive rate
-
-3. **Coaching Session Flow**
-   - Verify timestamp validation prevents race conditions
-   - Test retry logic (2 attempts per session)
-   - Verify audio plays correctly for each trick
-
-4. **System Stability**
-   - Monitor CPU/temperature during extended operation
-   - Verify motor safety auto-stop
-   - Test Xbox controller reconnection
-
----
-
-## Future Enhancements (Post-Stabilization)
+## Future Enhancements
 
 ### Analytics System
 - [ ] Daily summary endpoints
@@ -151,34 +167,34 @@ Focus on stabilizing Coach and Silent Guardian modes:
 ### Session Management
 - [ ] 8-hour session tracking
 - [ ] Session reset at midnight
-- [ ] Max 11 treats per session enforcement
+- [x] Max 11 treats enforcement
 
 ### Photography Mode
-- [ ] High-res capture on demand
 - [ ] Burst mode with quality scoring
 - [ ] Auto-select best photos
 
-### Social Features
-- [ ] Auto photo capture of good moments
-- [ ] LLM captioning (GPT-4 Vision)
-- [ ] SMS/app notifications
+### Push Notifications (BUILD 41)
+- [x] AWS SNS notification service created
+- [x] API endpoints: `/notifications/*`
+- [ ] AWS credentials configuration
+- [ ] Event integrations (mission complete, bark alerts, low battery)
 
 ---
 
 ## Dropped Features
 
 ### IR Navigation/Docking
-**Status:** DROPPED
+**Status:** DROPPED - Hardware caused Pi startup failures
 
-Originally planned Roomba-style IR beacon navigation with:
-- 3x rear IR sensors (Left, Center, Right)
-- Dead reckoning with encoder feedback
-- Automatic return-to-base
+### Direct LAN WebSocket Server
+**Status:** Deferred - Not needed since all clients connect via relay
 
-**Reason:** Hardware caused Pi startup failures. Charging pads work manually.
+**Note:** WebSocket IS used in production:
+- Robot ↔ AWS Lightsail Relay (WebSocket connection)
+- App ↔ AWS Lightsail Relay (WebSocket connection)
+- WebRTC signaling via TURN server through CloudFlare
 
-### WebSocket Real-time Server
-**Status:** Deferred (REST API sufficient for current needs)
+What was deferred: A direct WebSocket server on the robot for local LAN clients (bypassing relay)
 
 ---
 
@@ -187,44 +203,21 @@ Originally planned Roomba-style IR beacon navigation with:
 ### AI Pipeline
 - **Detection:** YOLOv8s on Hailo-8 (26 TOPS)
 - **Pose Estimation:** Custom dog pose model
-- **Bark Detection:** TFLite classifier with scipy bandpass filter
-- **Dog ID:** ArUco markers (DICT_4X4_1000, 4cm markers)
-  - Elsa: ID 315 (Green)
-  - Bezik: ID 832 (Magenta)
+- **Bark Detection:** TFLite classifier with 400-4000Hz bandpass filter
+- **Dog ID:** ArUco markers (DICT_4X4_1000)
 
 ### Performance Targets
-- Pose detection accuracy: >90%
-- False positive rate: <5%
-- Battery life: >4 hours continuous
-- Detection confidence: 0.5 (dog), 0.75 (lie/cross poses)
+- Detection: 2s + 55% presence
+- Pose thresholds: 0.75 for lie/cross
+- Servo nudge: 2°/sec max, 500ms stability delay
 
-### Operating Temperatures
-- Normal range: 65-75C under AI load
-- Warning threshold: 76C
-- Critical threshold: 85C
-
----
-
-## File Reference
-
-### Entry Points
-- `main_treatbot.py` - Main WIM-Z system
-- `xbox_hybrid_controller.py` - Xbox controller subprocess
-
-### Mode Handlers
-- `modes/silent_guardian.py` - Bark quiet training
-- `orchestrators/coaching_engine.py` - Trick coaching
-
-### Configuration
-- `config/robot_config.yaml` - Robot settings (PROTECTED)
-- `configs/trick_rules.yaml` - Trick definitions + thresholds
-- `configs/rules/silent_guardian_rules.yaml` - SG config
-
-### Audio Files
-- `VOICEMP3/talks/` - Voice commands (sit, down, quiet, etc.)
-- `VOICEMP3/songs/` - Music files
-- `VOICEMP3/wimz/` - System sounds (mode announcements, alerts)
+### Audio Organization (Updated Build 40)
+- `VOICEMP3/talks/default/` - Default voice commands
+- `VOICEMP3/talks/dog_{id}/` - Per-dog custom voices
+- `VOICEMP3/songs/default/` - Default songs
+- `VOICEMP3/songs/dog_{id}/` - Per-dog uploaded songs
+- `VOICEMP3/wimz/` - System sounds
 
 ---
 
-*This roadmap reflects actual implementation status as of January 11, 2026*
+*Updated: February 2, 2026 - Build 40 review*

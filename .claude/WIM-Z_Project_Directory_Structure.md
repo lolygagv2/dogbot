@@ -1,8 +1,8 @@
 # WIM-Z Project Directory Structure
-*Last Updated: January 27, 2026*
+*Last Updated: February 2, 2026*
 
 ## Project Status
-**Build Phase:** COMPLETE - All systems operational, in live testing phase
+**Build Phase:** COMPLETE - Build 40 implemented, awaiting validation
 
 ---
 
@@ -24,40 +24,34 @@
           session_end.md            # Session cleanup
 
    VOICEMP3/                        # Audio files for playback
-      talks/                        # Voice commands (19 files)
-         sit.mp3                    # "Sit" command
-         lie_down.mp3               # "Lie down" command
-         stay.mp3                   # "Stay" command
-         speak.mp3                  # "Speak" command
-         spin.mp3                   # "Spin" command
-         crosses.mp3                # "Cross paws" command
-         quiet.mp3                  # "Quiet" command
-         no.mp3                     # "No" correction
-         good_dog.mp3               # Praise audio
-         treat.mp3                  # Treat announcement
-         dogs_come.mp3              # "Come" command (generic)
-         elsa_come.mp3              # "Come" command (Elsa)
-         bezik_come.mp3             # "Come" command (Bezik)
-         elsa.mp3                   # Elsa greeting
-         bezik.mp3                  # Bezik greeting
-         dog_0.mp3                  # Unknown dog greeting
-         kahnshik.mp3               # Korean command
-         kokoma.mp3                 # Korean command
-         scooby_intro.mp3           # Fun intro audio
-      songs/                        # Music files (12 system + user uploads)
-         Wimz_theme.mp3             # WIM-Z theme song
-         who_let_dogs_out.mp3       # Fun song
-         hungry_like_wolf.mp3       # Fun song
-         scooby_snacks.mp3          # Fun song
-         cake_by_ocean.mp3          # Fun song
-         milkshake.mp3              # Fun song
-         yummy.mp3                  # Fun song
-         mozart_piano.mp3           # Calming music
-         mozart_concerto.mp3        # Calming music
-         Ocean Eyes (Astronomyy Remix).mp3
-         3LAU - Tokyo feat. XIRA.mp3
-         BEST EDM REMIXES OF 2023.mp3
-         user/                      # User-uploaded songs (via app)
+      talks/                        # Voice commands
+         default/                   # Default voice commands (shared)
+            sit.mp3                 # "Sit" command
+            lie_down.mp3            # "Lie down" command
+            stay.mp3                # "Stay" command
+            speak.mp3               # "Speak" command
+            spin.mp3                # "Spin" command
+            crosses.mp3             # "Cross paws" command
+            quiet.mp3               # "Quiet" command
+            no.mp3                  # "No" correction
+            good.mp3                # Praise audio
+            treat.mp3               # Treat announcement
+            come.mp3                # "Come" command (generic)
+            good_dog.mp3            # Good dog praise
+         dog_{id}/                  # Per-dog custom voices (uploaded via app)
+            name.mp3                # Custom name recording
+            come.mp3                # Custom "come" command
+            ...                     # Other custom commands
+      songs/                        # Music files
+         default/                   # Default songs (shared)
+            Wimz_theme.mp3          # WIM-Z theme song
+            who_let_dogs_out.mp3    # Fun song
+            hungry_like_wolf.mp3    # Fun song
+            scooby_snacks.mp3       # Fun song
+            cake_by_ocean.mp3       # Fun song
+            ...                     # Other default songs
+         dog_{id}/                  # Per-dog uploaded songs (via app)
+            custom_song.mp3         # User-uploaded songs
       wimz/                         # System sounds (21 files)
          WimZOnline.mp3             # Startup announcement
          CoachMode.mp3              # Coach mode announcement
@@ -133,6 +127,7 @@
          video_recorder.py          # Video recording service
       cloud/
          relay_client.py            # Cloud relay WebSocket client
+         notification_service.py    # AWS SNS SMS/push notifications (BUILD 41)
       streaming/
          webrtc.py                  # WebRTC video streaming
          video_track.py             # Video track for WebRTC
@@ -320,7 +315,7 @@ Play audio via REST API:
 # Play voice command
 curl -X POST http://localhost:8000/audio/play/file \
   -H "Content-Type: application/json" \
-  -d '{"filepath": "/talks/good_dog.mp3"}'
+  -d '{"filepath": "/talks/good.mp3"}'
 
 # Play system sound
 curl -X POST http://localhost:8000/audio/play/file \

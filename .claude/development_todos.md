@@ -1,161 +1,197 @@
 # WIM-Z Development TODO List
-*Last Updated: January 11, 2026*
+*Last Updated: February 2, 2026*
 
-## Current Status: Live Testing & Bug Fixes
+## Current Status: Build 40 Complete - Awaiting Testing
 
-**Build Phase:** COMPLETE - All hardware and software systems operational
-**Current Focus:** Stabilizing Coach and Silent Guardian modes through real-world testing
-
----
-
-## PRIORITY 1: Immediate Testing (This Session)
-
-### Coach Mode Verification
-After last session's fixes (bark filter + pose thresholds), verify:
-
-- [ ] **Test bark detection filtering**
-  - Clap near mic → should NOT trigger speak success
-  - Say words loudly → should NOT trigger speak success
-  - Actual dog bark → SHOULD trigger speak success
-
-- [ ] **Test pose detection thresholds**
-  - Dog sitting → should NOT trigger "down" or "crosses"
-  - Dog lying (0.75+ confidence) → SHOULD trigger "down"
-  - Dog crossing paws (0.75+ confidence) → SHOULD trigger "crosses"
-
-- [ ] **Test full coaching session**
-  - Dog enters frame → greeting plays within 3s
-  - Trick command plays correctly
-  - Success/failure detected accurately
-  - Retry on first failure works
-  - Treat dispenses on success
-
-### Silent Guardian Verification
-- [ ] **Test bark → intervention flow**
-  - 2+ barks in 60s → "quiet" audio plays
-  - 10s quiet → reward sequence plays
-  - Treat dispenses
-
-- [ ] **Test escalation**
-  - Continued barking → escalating commands
-  - 90-second timeout → give up
-  - 2-minute cooldown before next intervention
-
-### Quick Test Commands
-```bash
-# Restart service with changes
-sudo systemctl restart treatbot
-
-# Monitor in real-time
-journalctl -u treatbot -f | grep -i "bark\|coach\|trick\|pose\|speak"
-
-# Check mode
-curl http://localhost:8000/mode
-
-# Force coach mode
-curl -X POST http://localhost:8000/mode/set -d '{"mode": "COACH"}'
-```
+**Build Phase:** COMPLETE - All core systems operational
+**Current Focus:** Validating Build 40 fixes (mission fields, AI display, tracking, coach events)
 
 ---
 
-## PRIORITY 2: Known Issues to Fix
+## BUILD 40 VALIDATION CHECKLIST
 
-### Threading & Race Conditions
-- [x] ~~Tricks completing instantly~~ - Fixed with timestamp validation
-- [x] ~~Stale events executing after state changes~~ - Fixed in coaching_engine.py
-- [ ] Monitor for any new race condition symptoms
+### ✅ Code Changes Reviewed (Implemented in Build 40)
+- [x] Mission field names fixed (`mission_name`→`mission_id`, `stage`→`stage_number`)
+- [x] AI confidence display bridge added (`update_dog_behavior()` call)
+- [x] Servo tracking auto-enable in COACH mode
+- [x] MP3 download URL construction (relay relative path fix)
+- [x] Coach progress/reward events added
+- [x] GET /missions endpoint added
 
-### Audio Issues
-- [x] ~~Trick audio not playing~~ - Fixed init order in behavior_interpreter.py
-- [x] ~~Error audio spam~~ - Fixed temp thresholds in safety.py
-- [ ] Verify all audio files play at correct times
-
-### Detection Accuracy
-- [x] ~~Bark triggers on claps/voice~~ - Added 400-4000Hz bandpass filter
-- [x] ~~Lie/cross false positives~~ - Raised thresholds to 0.75
-- [ ] Verify fixes work in real-world testing
+### ❓ UNKNOWN - Needs Live Testing
+- [x] Mission progress events reaching relay with correct field names
+- [ ] Video overlay showing "sit 34%" confidence labels
+- [ ] Servo tracking checkbox working in app
+- [x] MP3 upload flow working end-to-end (app → relay → robot)
+- [x] Coach mode events visible in app
 
 ---
 
-## PRIORITY 3: Needs Rework
+## PRIORITY 1: Unknowns (Need User Input)
+
+### ❓ Coach Mode Status
+- [x] Is bark detection filtering working? (claps/voice rejected?)
+- [x] Are pose thresholds accurate? (sitting ≠ down/crosses?)
+- [x] Full coaching session end-to-end tested?
+
+### ❓ Silent Guardian Status
+- [x] Bark → intervention flow working?
+- [x] Escalation and cooldown working?
+
+### ❓ App/Relay Integration
+- [x] Is relay forwarding events correctly?
+- [x] Is app displaying mission progress?
+- [x] Are WebRTC video streams stable?
+
+### ❓ Hardware Status
+- [ ] Servo calibration still accurate?
+- [x] Treat dispenser working reliably?
+- [x] Audio playback consistent?
+
+---
+
+## PRIORITY 2: Verified Working (From Recent Builds)
+
+### ✅ Build 40 (Feb 2, 2026)
+- [x] Mission field names standardized
+- [x] AI detection bridge to video overlay
+- [x] Servo tracking auto-enable
+- [x] Download song URL construction
+- [x] Coach progress events
+- [x] GET /missions REST endpoint
+
+### ✅ Build 38 (Feb 1, 2026)
+- [x] Video overlay race condition fix
+- [x] Bounding boxes for unidentified dogs
+- [x] Dog identification conservative defaults ("Dog" label)
+- [x] Nudge servo tracking (gentle, 2°/sec max)
+- [x] MP3 download via HTTP (not WebSocket)
+
+### ✅ Build 36 (Jan 31, 2026)
+- [x] Mission name aliases (stay_training → sit_training)
+- [x] Frame freshness check (<500ms)
+- [x] Faster detection (1.5s + 50% presence)
+- [x] Default "Dog" label when ArUco unavailable
+
+### ✅ Build 35 (Jan 31, 2026)
+- [x] Schedule API with dog_id, schedule_id, type fields
+- [x] Schedule types: once/daily/weekly
+- [x] Auto-disable "once" schedules after execution
+
+### ✅ Build 34 (Jan 31, 2026)
+- [x] Mission presence detection fixed
+- [x] Dog identification regression fixed
+- [x] Video overlay emoji removal
+- [x] Mode sync events (mode_changed)
+- [x] Servo safety limits
+
+### ✅ Earlier Fixes (Jan 2026)
+- [x] Threading race conditions (timestamp validation)
+- [x] Bark bandpass filter (400-4000Hz)
+- [x] Pose thresholds (0.75 for lie/cross)
+- [x] Presence-based detection (3s + 66%)
+- [x] Retry on first failure
+- [x] WIM-Z audio feedback system
+
+---
+
+## PRIORITY 3: Needs Rework/Testing
 
 ### Weekly Summary System (`core/weekly_summary.py`)
-**Status:** Implemented but untested with live data
-
+**Status:** Implemented, untested with live data
+- [ ] ❓ Has this been tested?
 - [ ] Verify `generate_weekly_report()` returns accurate data
-- [ ] Test `get_behavior_trends(weeks=8)` function
-- [ ] Verify `export_report()` creates valid markdown/CSV
 - [ ] Test API endpoints: `GET /reports/weekly`, `GET /reports/trends`
 
 ### Mission Scheduler (`core/mission_scheduler.py`)
-**Status:** Implemented but needs integration testing
-
-- [ ] Test time window enforcement
-- [ ] Test day-of-week filtering
+**Status:** Implemented, type logic added in Build 35
+- [x] ❓ Has auto-scheduling been tested?
+- [x] Test time window enforcement
 - [ ] Verify missions auto-start correctly
-- [ ] Test API endpoints: `GET /scheduler/status`, `POST /scheduler/enable`
 
 ---
 
 ## PRIORITY 4: Future Enhancements
 
-### Analytics System (After Stabilization)
-- [ ] `GET /analytics/daily` - Daily summary endpoint
-- [ ] `GET /analytics/bark-stats` - Bark frequency trends
-- [ ] `GET /analytics/treat-usage` - Treat dispensing stats
-- [ ] Bone score rating system (1-5 bones based on behavior)
+### Analytics System
+- [ ] Daily summary endpoint
+- [ ] Bark frequency trends
+- [ ] Treat usage stats
+- [ ] Bone score rating (1-5)
 
 ### Session Management
-- [ ] Proper 8-hour session tracking
-- [ ] Automatic session reset at midnight
-- [ ] Max 11 treats per session enforcement
-- [ ] Session history persistence
+- [ ] 8-hour session tracking
+- [ ] Session reset at midnight
+- [ ] Max 11 treats enforcement
 
-### Photography Enhancements
-- [ ] Burst mode (10 photos in 2 seconds)
-- [ ] Quality scoring algorithm
-- [ ] Auto-select best 3 photos
-- [ ] Optional LLM captioning
+### Photography
+- [ ] Burst mode
+- [ ] Quality scoring
+- [ ] Best photo selection
 
----
-
-## Recently Completed
-
-### Session 2026-01-10
-- [x] Fixed threading race condition with timestamp validation
-- [x] Added 400-4000Hz bandpass filter for bark detection
-- [x] Raised lie/cross confidence thresholds to 0.75
-
-### Session 2026-01-08
-- [x] Implemented presence-based dog detection (3s + 66% ratio)
-- [x] Added retry on first failure (2 attempts per session)
-- [x] ArUco identification now optional (sessions start on presence)
-- [x] Reduced ArUco grace period from 10s to 0s
-
-### Session 2026-01-08 (Earlier)
-- [x] Fixed constant error audio spam (temp threshold 70→76C)
-- [x] Added speak trick confidence filter (50% minimum)
-- [x] Fixed charging detection threshold (0.3V→0.05V)
-- [x] Lowered dog detection confidence (0.7→0.5)
-- [x] Replaced stillness with time-based detection (3.5s)
-- [x] Added Xbox Guide button trick cycling
-
-### Session 2026-01-07
-- [x] Fixed BehaviorInterpreter init order bug
-- [x] Added WIM-Z audio feedback system (charging, low power, error, etc.)
-- [x] Fixed RB photo button issues
-- [x] Fixed mode cycling sync
-- [x] Motor safety auto-stop on controller freeze
+### Push Notifications (BUILD 41)
+- [x] AWS SNS notification service created (`services/cloud/notification_service.py`)
+- [x] API endpoints added (`/notifications/*`)
+- [ ] Install boto3: `pip install boto3`
+- [ ] Configure AWS credentials (see setup below)
+- [ ] Test SMS sending
+- [ ] Integrate with mission_complete events
+- [ ] Integrate with bark_alert events
+- [ ] Integrate with low_battery events
 
 ---
 
-## System Health Checklist
+## AWS SNS Setup (Push Notifications)
+```bash
+# 1. Install boto3
+pip install boto3
 
-Before testing, verify:
-- [ ] `sudo systemctl status treatbot` - Service running
-- [ ] Camera feed active (check logs for "Frame" messages)
-- [ ] Audio working: `curl -X POST http://localhost:8000/audio/play/file -d '{"filepath": "/talks/good_dog.mp3"}'`
-- [ ] Temperature normal: `vcgencmd measure_temp` (should be <76C)
+# 2. Configure AWS credentials (choose one method)
+# Method A: AWS CLI
+aws configure
+# Enter: Access Key ID, Secret Key, Region (us-east-1 recommended for SMS)
+
+# Method B: Environment variables
+export AWS_ACCESS_KEY_ID="your-access-key"
+export AWS_SECRET_ACCESS_KEY="your-secret-key"
+export AWS_DEFAULT_REGION="us-east-1"
+
+# 3. Test the service
+curl http://localhost:8000/notifications/health
+
+# 4. Add a subscriber
+curl -X POST http://localhost:8000/notifications/subscribers \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "morgan", "phone_number": "+15551234567"}'
+
+# 5. Send test notification
+curl -X POST "http://localhost:8000/notifications/test?user_id=morgan"
+```
+
+**AWS SMS Sandbox Note:**
+New AWS accounts are in SMS sandbox mode. To send SMS:
+- Option A: Verify destination phone numbers in AWS Console → SNS → Text messaging
+- Option B: Request production access (takes 1-2 days approval)
+
+---
+
+## Quick Test Commands
+```bash
+# Restart service
+sudo systemctl restart treatbot
+
+# Monitor logs
+journalctl -u treatbot -f | grep -i "mission\|coach\|bark\|pose"
+
+# Check mode
+curl http://localhost:8000/mode
+
+# Test missions endpoint
+curl http://localhost:8000/missions
+
+# Force coach mode
+curl -X POST http://localhost:8000/mode/set -H "Content-Type: application/json" -d '{"mode": "COACH"}'
+```
 
 ---
 
@@ -164,20 +200,21 @@ Before testing, verify:
 | Purpose | File |
 |---------|------|
 | Main entry | `main_treatbot.py` |
+| Mission engine | `orchestrators/mission_engine.py` |
 | Coach mode | `orchestrators/coaching_engine.py` |
 | Silent Guardian | `modes/silent_guardian.py` |
-| Bark detection | `services/perception/bark_detector.py` |
-| Pose detection | `core/behavior_interpreter.py` |
-| Trick rules | `configs/trick_rules.yaml` |
-| Xbox controller | `xbox_hybrid_controller.py` |
+| Detector | `services/perception/detector.py` |
+| Video overlay | `services/streaming/video_track.py` |
+| Pan/tilt | `services/motion/pan_tilt.py` |
+| Relay client | `services/cloud/relay_client.py` |
 
 ---
 
 ## Dropped Features
 
 - **IR Navigation/Docking** - Hardware caused Pi startup failures
-- **WebSocket Server** - REST API sufficient for current needs
+- **WebSocket Server** - REST API sufficient
 
 ---
 
-*Updated after session start on January 11, 2026*
+*Updated: February 2, 2026 - Build 40 session start*

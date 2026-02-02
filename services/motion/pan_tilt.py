@@ -62,7 +62,7 @@ class PanTiltService:
         # Coach mode applies its own limits when auto-tracking is enabled
         self.pan_limits = (10, 200)   # degrees (full range)
         self.tilt_limits = (20, 160)  # degrees (full range)
-        self.current_pan = 90   # Start at center
+        self.current_pan = 110  # Start at calibrated center (20° left of mechanical center)
         self.current_tilt = 90  # Start at center
 
         # Coach-mode specific limits (applied only during auto-tracking)
@@ -71,8 +71,8 @@ class PanTiltService:
 
         # Configurable center position (calibrated default viewing angle)
         # These values are the actual servo positions for "looking straight ahead"
-        # pan=90 is physically centered, tilt=90 is level with ground
-        self.center_pan = 90    # Pan center position (internal servo units)
+        # BUILD 41: Adjusted pan center 20° left to compensate for physical mount offset
+        self.center_pan = 110   # Pan center position (calibrated for this robot)
         self.center_tilt = 90   # Tilt center position (internal servo units)
 
         # Servo command rate limiting (debounce)
@@ -84,13 +84,13 @@ class PanTiltService:
         self.pending_pan = None  # Target pan from API (smoothed towards)
         self.pending_tilt = None  # Target tilt from API (smoothed towards)
 
-        # Scan pattern
+        # Scan pattern (relative to calibrated center of 110)
         self.scan_positions = [
-            (50, 90),   # left
-            (90, 90),   # center
-            (130, 90),  # right
-            (90, 60),   # up
-            (90, 120)   # down
+            (70, 90),   # right (lower pan = right)
+            (110, 90),  # center
+            (150, 90),  # left (higher pan = left)
+            (110, 60),  # up
+            (110, 120)  # down
         ]
         self.scan_index = 0
         self.scan_delay = 2.0  # seconds per position

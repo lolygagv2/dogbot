@@ -182,8 +182,8 @@ Pin # | Assignment
 #### VOICEMP3 File Organization
 **Training Commands (`/VOICEMP3/talks/`):**
 - `elsa.mp3`, `bezik.mp3` - Individual dog names
-- `good_dog.mp3`, `treat.mp3` - Reward sounds
-- `sit.mp3`, `lie_down.mp3`, `stay.mp3` - Training commands
+- `good.mp3`, `treat.mp3` - Reward sounds
+- `sit.mp3`, ` down.mp3`, `stay.mp3` - Training commands
 - `quiet.mp3`, `no.mp3` - Correction commands
 - `scooby_intro.mp3` - Fun character sounds
 
@@ -192,6 +192,7 @@ Pin # | Assignment
 - `who_let_dogs_out.mp3`, `scooby_snacks.mp3` - Dog-themed songs
 - `*_scan.mp3` files - System/robot status sounds
 - `milkshake.mp3`, `cake_by_ocean.mp3` - Celebration music
+- `trancewimz.mp3`, `Wimz_theme.mp3` - Wimz Theme Songs
 
 #### Removed Components
 - ❌ **DFPlayer Pro MP3 Module** - Replaced by USB solution
@@ -274,10 +275,10 @@ Pin # | Assignment
 ### Battery
 - **Type:** 4S2P 21700 Li-ion pack
 - **Nominal Voltage:** 14.8V (4x 3.6V cells in series)
-- **Capacity:** 8000mAh (2x 4000mAh in parallel)
+- **Capacity:** 8900mAh (2x 4400mAh in parallel)
 - **Max Voltage:** 16.8V (fully charged)
 - **Min Voltage:** 12.0V (cutoff)
-- **BMS:** HX-4S-F30A or Daly Smart BMS
+- **BMS:** HX-4S-F30A or 4 Cell standard BMS (two packs of 4 batteries)
   - Over-discharge protection
   - Over-charge protection
   - Cell balancing
@@ -310,12 +311,12 @@ Pin # | Assignment
 
 ### Charging System
 **Method 1: Manual (Current)**
-- **Connector:** XT60
+- **Connector:** XT30
 - **Charger:** External balance charger
-- **Time:** ~2 hours (8000mAh @ 4A)
+- **Time:** ~2 hours (8500mAh @ 4A)
 
 **Method 2: Docking (Current)**
-- **Connector:** Pogo pins (magnetic)
+- **Connector:** Roomba Style Tabs (magnetic)
 - **Charger:** Onboard CC/CV module (16.8V @ 1-2A)
 - **Docking:** IR-guided autonomous return-to-base optional but disabled
 
@@ -335,7 +336,7 @@ Pin # | Assignment
 
 - [x] **Charging Pads** (Roomba-style charging)
   - **Design:** Bare metal plates wired directly to P+/P-
-  - **STATUS:** Hardware installed and working, may not supply full power to run and charge at the same time but supplies adequate power.
+  - **STATUS:** Hardware installed and working
   
 - [ ] **Bumper Sensors** (collision detection)
   - **Type:** Mechanical switches (Roomba-style)
@@ -358,7 +359,7 @@ Pin # | Assignment
 ## 🎮 Control Interfaces
 
 ### Primary: WiFi (Web Dashboard)
-- **Protocol:** HTTP/WebSocket
+- **Protocol:** HTTP/WebSocket/WebRTC
 - **Port:** 8000 (API), 8080 (dashboard)
 - **Range:** ~30m indoor
 - **Features:**
@@ -411,7 +412,7 @@ Pin # | Assignment
 ## 🌡️ Operating Conditions
 
 ### Temperature
-- **Operating:** 0°C to 40°C
+- **Operating:** 0°C to 80°C
 - **Storage:** -10°C to 50°C
 - **Critical:** Pi 5 thermal throttle at 80°C (active cooling enabled)
 
@@ -420,8 +421,8 @@ Pin # | Assignment
 - **Storage:** 10% to 90% RH
 
 ### Terrain
-- **Suitable:** Hardwood, tile, short carpet (<2cm pile)
-- **Unsuitable:** Thick carpet, outdoor (no waterproofing)
+- **Suitable:** All terrain except thick carpet
+- **Unsuitable:** Thick carpet, extensive outdoors (limited waterproofing)
 
 ---
 
@@ -500,5 +501,5 @@ Pin # | Assignment
 ---
 
 **Last Hardware Update:** Audio system revised - Ugreen USB adapter with conference microphone
-**Software Status:** Draft implementations exist for SQLite store, mission engine, and WebSocket server - need integration testing and refinement
-**Next Phase:** Integration testing and iterative debugging of software components
+**Software Status:** Build 41 complete (Feb 3, 2026) - Mission events, AI display, coach events, servo tracking all implemented
+**Next Phase:** Live testing 
