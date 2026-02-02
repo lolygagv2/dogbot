@@ -1,5 +1,87 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-02-02 - Build 41 Documentation & Features
+**Goal:** Update documentation, add servo calibration, implement AWS SNS push notifications
+**Status:** COMPLETE
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Solution | Files Modified |
+|---|---------|----------|----------------|
+| 1 | Servo camera offset (20° right of center) | Adjusted center_pan from 90° to 110° | `services/motion/pan_tilt.py:65-76,88-94` |
+| 2 | No push notification system | Created AWS SNS notification service | `services/cloud/notification_service.py` (NEW) |
+| 3 | WebSocket "dropped" note confusing | Clarified: Direct LAN WebSocket deferred, relay-based WS working | `.claude/product_roadmap.md` |
+| 4 | Documentation outdated | Updated all docs with Build 40 review, unknowns marked | Multiple .claude/*.md files |
+
+---
+
+### Key Code Changes Made
+
+#### 1. Servo Camera Calibration
+**File:** `services/motion/pan_tilt.py`
+- Changed `center_pan` from 90° to 110° (20° left offset for physical mount)
+- Changed `current_pan` startup from 90° to 110°
+- Updated scan pattern: 70°, 110°, 150° (instead of 50°, 90°, 130°)
+
+#### 2. AWS SNS Push Notifications
+**File:** `services/cloud/notification_service.py` (NEW - 318 lines)
+- SMS sending via AWS SNS
+- Subscriber management (add/remove/update)
+- Event types: mission_complete, bark_alert, low_battery, weekly_summary
+- Async broadcast to all subscribers
+
+**API Endpoints Added:** `api/server.py`
+- `GET /notifications/health` - Service health check
+- `GET/POST /notifications/subscribers` - List/add subscribers
+- `GET/PUT/DELETE /notifications/subscribers/{id}` - Manage subscriber
+- `POST /notifications/send` - Direct SMS
+- `POST /notifications/test` - Test notification
+
+#### 3. Documentation Updates
+- `.claude/development_todos.md` - Build 40 review, unknowns, AWS setup guide
+- `.claude/product_roadmap.md` - Build history, clarified WebSocket
+- `.claude/WIM-Z_Project_Directory_Structure.md` - Added notification_service.py
+- `.claude/hardware_specs.md` - Updated software status
+
+---
+
+### User-Confirmed Status (from unknowns)
+
+| Item | Status |
+|------|--------|
+| Relay forwarding events | ✅ Working |
+| Video overlay AI confidence | ✅ Working |
+| MP3 upload/download | ✅ Working |
+| Bark filter | ✅ Working |
+| Pose thresholds | ✅ Working |
+| Coach mode end-to-end | ✅ Working |
+| Silent Guardian flow | ✅ Working |
+| Treat dispenser | ✅ Working |
+| Audio playback | ✅ Working |
+| Mission scheduler | ✅ Tested |
+| Servo tracking checkbox | ❓ Unknown |
+| Servo calibration | ❓ Unknown (just adjusted) |
+| Weekly summary | ❌ Not tested |
+
+---
+
+### Commit
+`391cb00e` - feat: Build 41 - servo calibration, AWS SNS notifications, doc updates
+
+---
+
+### Next Steps
+1. Install boto3: `pip install boto3`
+2. Configure AWS credentials: `aws configure`
+3. Test notification health: `curl http://localhost:8000/notifications/health`
+4. Add subscriber and test SMS
+5. Test weekly summary system
+6. Verify servo calibration (20° left adjustment)
+
+---
+
 ## Session: 2026-02-02 - Build 40 Implementation
 **Goal:** Fix Build 39 test failures - mission field names, AI display, servo tracking, coach events
 **Status:** COMPLETE
