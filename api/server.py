@@ -952,6 +952,25 @@ async def get_behavior_tricks():
     }
 
 # Mission endpoints
+@app.get("/missions")
+async def list_available_missions():
+    """Get list of available mission definitions for app catalog
+    BUILD 40: Added endpoint for app mission browser
+    """
+    mission_engine = get_mission_engine()
+    missions = mission_engine.get_available_missions()
+    # Format for app: id, name, stages
+    return [
+        {
+            "id": m["name"],
+            "name": m.get("description") or m["name"],
+            "stages": m.get("stages", 0),
+            "enabled": m.get("enabled", True),
+            "duration_minutes": m.get("duration_minutes", 30)
+        }
+        for m in missions
+    ]
+
 @app.get("/missions/status")
 async def get_mission_status():
     """Get current mission status"""

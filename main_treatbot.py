@@ -1136,41 +1136,52 @@ class TreatBotMain:
 
                 elif command == 'download_song':
                     # BUILD 38: Download song from URL instead of base64 transfer
-                    # {"url": "https://...", "filename": "my_song.mp3"}
-                    song_url = params.get('url')
-                    song_filename = params.get('filename')
+                    # BUILD 40: Fixed URL construction - relay sends relative path
+                    # Relay sends: {"url": "/api/music/file/{file_id}", "filename": "song.mp3", "dog_id": "..."}
+                    song_url = params.get('url') or params.get('data', {}).get('url')
+                    song_filename = params.get('filename') or params.get('data', {}).get('filename')
+                    dog_id = params.get('dog_id') or params.get('data', {}).get('dog_id')
                     if song_url and song_filename:
                         try:
                             import re
                             if not re.match(r'^[\w\-. ]+\.(mp3|wav|ogg)$', song_filename, re.IGNORECASE):
                                 raise ValueError("Invalid filename format")
 
+                            # BUILD 40: Construct full URL if relative path provided
+                            if song_url.startswith('/'):
+                                full_url = f"https://api.wimzai.com{song_url}"
+                            else:
+                                full_url = song_url
+
+                            self.logger.info(f"☁️ Downloading song from {full_url}")
                             with httpx.Client(timeout=60.0, follow_redirects=True) as dl_client:
-                                dl_resp = dl_client.get(song_url)
+                                dl_resp = dl_client.get(full_url)
                                 dl_resp.raise_for_status()
                                 audio_bytes = dl_resp.content
 
-                            # Save to default songs folder
-                            songs_dir = "/home/morgan/dogbot/VOICEMP3/songs/default"
+                            # BUILD 40: Save to dog-specific folder if dog_id provided
+                            if dog_id:
+                                songs_dir = f"/home/morgan/dogbot/VOICEMP3/songs/{dog_id}"
+                            else:
+                                songs_dir = "/home/morgan/dogbot/VOICEMP3/songs/default"
                             os.makedirs(songs_dir, exist_ok=True)
                             filepath = os.path.join(songs_dir, song_filename)
 
                             with open(filepath, 'wb') as f:
                                 f.write(audio_bytes)
 
-                            self.logger.info(f"☁️ Song downloaded '{song_filename}' ({len(audio_bytes)} bytes) from {song_url}")
+                            self.logger.info(f"☁️ Song downloaded '{song_filename}' ({len(audio_bytes)} bytes) to {filepath}")
                             if self.relay_client and self.relay_client.connected:
-                                self.relay_client.send_event('music_update', {
-                                    'action': 'download_complete',
+                                self.relay_client.send_event('upload_complete', {
                                     'success': True,
                                     'filename': song_filename,
-                                    'size_bytes': len(audio_bytes)
+                                    'size_bytes': len(audio_bytes),
+                                    'dog_id': dog_id
                                 })
                         except Exception as e:
                             self.logger.error(f"☁️ Song download error: {e}")
                             if self.relay_client and self.relay_client.connected:
-                                self.relay_client.send_event('music_update', {
-                                    'action': 'download_error',
+                                self.relay_client.send_event('upload_complete', {
                                     'success': False,
                                     'filename': song_filename,
                                     'error': str(e)
@@ -1221,11 +1232,14 @@ class TreatBotMain:
 
                         if self.relay_client and self.relay_client.connected:
                             status = engine.get_mission_status()
+                            # BUILD 40: Fixed field names to match app contract
                             response = {
                                 'action': 'started' if started else 'failed',
-                                'mission': mission_name,
-                                'mission_name': mission_name,
-                                **status
+                                'mission_id': mission_name,
+                                'status': status.get('state', 'starting'),
+                                'stage_number': status.get('current_stage', 0) + 1,
+                                'total_stages': status.get('total_stages', 0),
+                                'dog_id': dog_id,
                             }
                             # BUILD 38: Add failure_reason for app to handle properly
                             if not started:
@@ -1431,17 +1445,19 @@ class TreatBotMain:
                             self.relay_client.send_event('trick_forced', {'success': False, 'error': 'Coach not running or no trick specified'})
 
                 # ==================== BUILD 38 FIX: TRACKING COMMAND ====================
+                # BUILD 40: Added debug logging for tracking command
                 elif command == 'set_tracking_enabled':
+                    self.logger.info(f"[TRACKING] set_tracking_enabled received, params={params}")
                     enabled = params.get('enabled', False) or params.get('data', {}).get('enabled', False)
                     from services.motion.pan_tilt import get_pantilt_service
                     pantilt = get_pantilt_service()
                     if pantilt:
                         pantilt.set_tracking_enabled(enabled)
-                        self.logger.info(f"☁️ set_tracking_enabled -> {enabled}")
+                        self.logger.info(f"[TRACKING] set_tracking_enabled -> {enabled}")
                         if self.relay_client and self.relay_client.connected:
                             self.relay_client.send_event('tracking_enabled', {'success': True, 'enabled': enabled})
                     else:
-                        self.logger.warning("☁️ set_tracking_enabled: pan/tilt service not available")
+                        self.logger.warning("[TRACKING] set_tracking_enabled: pan/tilt service not available")
 
                 # ==================== BUILD 38 FIX: MISSION STATUS COMMAND ====================
                 elif command == 'get_mission_status':

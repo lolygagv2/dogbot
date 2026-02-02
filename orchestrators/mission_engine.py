@@ -361,15 +361,15 @@ class MissionEngine:
 
             # BUILD 36: Send mission_progress with action: 'started' for app
             # This tells the app the mission has actually started (not just requested)
+            # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
             try:
                 relay = get_relay_client()
                 if relay and relay.connected:
                     relay.send_event("mission_progress", {
                         "action": "started",
-                        "mission_name": mission_name,
-                        "mission_id": mission_id,
+                        "mission_id": mission_name,
                         "dog_id": dog_id,
-                        "stage": 1,
+                        "stage_number": 1,
                         "total_stages": len(mission.stages),
                         "status": "starting",
                     })
@@ -979,16 +979,18 @@ class MissionEngine:
         self._advance_stage()
 
     def _send_mission_status(self, status: str, trick: str = None):
-        """Send mission status to app via relay"""
+        """Send mission status to app via relay
+        BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
+        """
         try:
             relay = get_relay_client()
             if relay and relay.connected:
                 session = self.active_session
                 relay.send_event("mission_progress", {
-                    "mission_name": session.mission.name if session and session.mission else None,
+                    "mission_id": session.mission.name if session and session.mission else None,
                     "status": status,
                     "trick": trick,
-                    "stage": session.current_stage + 1 if session else 0,
+                    "stage_number": session.current_stage + 1 if session else 0,
                     "total_stages": len(session.mission.stages) if session else 0,
                     "dog_name": session.dog_name if session else None,
                     "rewards": session.rewards_given if session else 0,
@@ -1062,15 +1064,16 @@ class MissionEngine:
             self.logger.info(f"Mission pose stage: watching for '{trick_name}' (reset tracking)")
 
             # Send initial watching event to app
+            # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
             hold_required = stage.min_duration if stage.min_duration > 0 else 0
             try:
                 relay = get_relay_client()
                 if relay and relay.connected:
                     relay.send_event("mission_progress", {
-                        "mission_name": session.mission.name if session.mission else None,
+                        "mission_id": session.mission.name if session.mission else None,
                         "status": "watching",
                         "trick": trick_name,
-                        "stage": session.current_stage + 1,
+                        "stage_number": session.current_stage + 1,
                         "total_stages": len(session.mission.stages),
                         "dog_name": session.dog_name,
                         "rewards": session.rewards_given,
@@ -1092,6 +1095,7 @@ class MissionEngine:
         trick_hold = trick_rules.get('hold_duration_sec', 1.0) if trick_rules else 1.0
 
         # Send progress updates (throttled to ~1Hz via stage_start_time check)
+        # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
         if result.behavior_detected and result.hold_duration > 0:
             stage_elapsed = time.time() - session.stage_start_time
             # Send progress every ~1 second
@@ -1100,10 +1104,10 @@ class MissionEngine:
                     relay = get_relay_client()
                     if relay and relay.connected:
                         relay.send_event("mission_progress", {
-                            "mission_name": session.mission.name if session.mission else None,
+                            "mission_id": session.mission.name if session.mission else None,
                             "status": "watching",
                             "trick": trick_name,
-                            "stage": session.current_stage + 1,
+                            "stage_number": session.current_stage + 1,
                             "total_stages": len(session.mission.stages),
                             "dog_name": session.dog_name,
                             "rewards": session.rewards_given,
@@ -1169,14 +1173,16 @@ class MissionEngine:
         })
 
         # Send success event to app
+        # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
         try:
             relay = get_relay_client()
             if relay and relay.connected:
                 relay.send_event("mission_progress", {
-                    "mission_name": session.mission.name if session.mission else None,
+                    "action": "stage_complete",
+                    "mission_id": session.mission.name if session.mission else None,
                     "status": "success",
                     "trick": trick_name,
-                    "stage": session.current_stage + 1,
+                    "stage_number": session.current_stage + 1,
                     "total_stages": len(session.mission.stages),
                     "dog_name": session.dog_name,
                     "rewards": session.rewards_given,
@@ -1226,16 +1232,18 @@ class MissionEngine:
         if stage.conditions.get("optional", False):
             self.logger.info(f"Optional stage '{stage.name}' timed out - skipping")
             # Send skip event to app for this stage
+            # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
             trick_name = self._get_trick_name(stage)
             if trick_name:
                 try:
                     relay = get_relay_client()
                     if relay and relay.connected:
                         relay.send_event("mission_progress", {
-                            "mission_name": session.mission.name if session.mission else None,
+                            "action": "stage_complete",
+                            "mission_id": session.mission.name if session.mission else None,
                             "status": "skipped",
                             "trick": trick_name,
-                            "stage": session.current_stage + 1,
+                            "stage_number": session.current_stage + 1,
                             "total_stages": len(session.mission.stages),
                             "dog_name": session.dog_name,
                             "rewards": session.rewards_given,
@@ -1248,16 +1256,18 @@ class MissionEngine:
         session.attempts += 1
 
         # Send failure event to app
+        # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
         trick_name = self._get_trick_name(stage)
         if trick_name:
             try:
                 relay = get_relay_client()
                 if relay and relay.connected:
                     relay.send_event("mission_progress", {
-                        "mission_name": session.mission.name if session.mission else None,
+                        "action": "failed",
+                        "mission_id": session.mission.name if session.mission else None,
                         "status": "failed",
                         "trick": trick_name,
-                        "stage": session.current_stage + 1,
+                        "stage_number": session.current_stage + 1,
                         "total_stages": len(session.mission.stages),
                         "dog_name": session.dog_name,
                         "rewards": session.rewards_given,
@@ -1307,11 +1317,13 @@ class MissionEngine:
         })
 
         # Send mission_complete event to app via relay
+        # BUILD 40: Fixed field names to match app contract (mission_id)
         try:
             relay = get_relay_client()
             if relay and relay.connected:
                 relay.send_event("mission_complete", {
-                    "mission_name": session.mission.name if session.mission else None,
+                    "action": "completed",
+                    "mission_id": session.mission.name if session.mission else None,
                     "success": success,
                     "tricks_completed": session.current_stage,
                     "treats_given": session.rewards_given,

@@ -37,6 +37,7 @@ from services.media.usb_audio import get_usb_audio_service, set_agc
 from services.reward.dispenser import get_dispenser_service
 from services.media.led import get_led_service
 from services.media.video_recorder import get_video_recorder
+from services.cloud.relay_client import get_relay_client
 
 logger = logging.getLogger(__name__)
 
@@ -565,6 +566,18 @@ class CoachingEngine:
         dog_name = self.current_session.dog_name or 'dog'
         trick = self.current_session.trick_requested or "trick"
 
+        # BUILD 40: Send coach_progress event for greeting stage
+        try:
+            relay = get_relay_client()
+            if relay and relay.connected:
+                relay.send_event('coach_progress', {
+                    'stage': 'greeting',
+                    'dog_name': dog_name,
+                    'trick': trick
+                })
+        except Exception:
+            pass
+
         # Start video recording for this coaching session
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -613,6 +626,18 @@ class CoachingEngine:
             return
 
         trick = self.current_session.trick_requested
+
+        # BUILD 40: Send coach_progress event for command stage
+        try:
+            relay = get_relay_client()
+            if relay and relay.connected:
+                relay.send_event('coach_progress', {
+                    'stage': 'command',
+                    'trick': trick,
+                    'dog_name': self.current_session.dog_name
+                })
+        except Exception:
+            pass
 
         # Say the trick command using audio file from config (Layer 2)
         trick_rules = self.interpreter.get_trick_rules(trick)
@@ -692,6 +717,23 @@ class CoachingEngine:
         # Standard pose-based tricks - use BehaviorInterpreter (Layer 1)
         result = self.interpreter.check_trick(expected_trick, dog_id=dog_name)
 
+        # BUILD 40: Send periodic coach_progress during watching (~every 500ms)
+        # Throttle by checking if half-second boundary crossed
+        if int(watch_elapsed * 2) != int((watch_elapsed - 0.1) * 2):
+            try:
+                relay = get_relay_client()
+                if relay and relay.connected:
+                    relay.send_event('coach_progress', {
+                        'stage': 'watching',
+                        'trick': expected_trick,
+                        'dog_name': dog_name,
+                        'confidence': result.confidence if result else 0.0,
+                        'hold_duration': result.hold_duration if result else 0.0,
+                        'elapsed': round(watch_elapsed, 1)
+                    })
+            except Exception:
+                pass
+
         if result.completed:
             self.current_session.success = True
             self.current_session.behavior_detected = result.behavior_detected
@@ -721,6 +763,22 @@ class CoachingEngine:
         if not self.current_session:
             self.fsm_state = CoachState.WAITING_FOR_DOG
             return
+
+        trick = self.current_session.trick_requested
+        dog_name = self.current_session.dog_name
+        behavior = self.current_session.behavior_detected
+
+        # BUILD 40: Send coach_reward event for success
+        try:
+            relay = get_relay_client()
+            if relay and relay.connected:
+                relay.send_event('coach_reward', {
+                    'behavior': trick,
+                    'dog_name': dog_name,
+                    'success': True
+                })
+        except Exception:
+            pass
 
         # LED celebration
         if self.led:

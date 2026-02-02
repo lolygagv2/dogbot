@@ -221,9 +221,12 @@ class PanTiltService:
 
         This allows the camera to gently re-center a sitting/lying dog without
         the oscillation and jerkiness of full PID tracking.
+
+        BUILD 40: Auto-enable tracking in COACH mode (user can still disable via settings)
         """
         if not self.tracking_enabled:
-            return
+            self.logger.info("Auto-enabling tracking for COACH mode")
+            self.tracking_enabled = True
 
         now = time.time()
 

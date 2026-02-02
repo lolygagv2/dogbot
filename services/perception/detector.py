@@ -17,9 +17,11 @@ from core.store import get_store
 
 # Mode-based resolution configuration
 # AI modes need 640x640 for Hailo inference
-# Non-AI modes can use higher resolution for better video quality
+# BUILD 36: IDLE changed to 640x640 to eliminate camera reconfig delay when
+# switching to AI modes (mission, coach, silent_guardian). This fixes the
+# 10-20 second black screen when starting a mission from IDLE mode.
 MODE_RESOLUTIONS = {
-    SystemMode.IDLE: (1920, 1080),           # No AI, full HD video
+    SystemMode.IDLE: (640, 640),             # BUILD 36: AI-ready, instant mode switch
     SystemMode.MANUAL: (1920, 1080),          # No AI, full HD video
     SystemMode.SILENT_GUARDIAN: (640, 640),  # AI active
     SystemMode.COACH: (640, 640),            # AI active
@@ -769,6 +771,11 @@ class DetectorService:
                     'duration': getattr(behavior, 'duration', 0.0),
                     'timestamp': time.time()
                 }, 'detector_service')
+
+                # BUILD 40: Update dog tracker with behavior for video overlay display
+                # This bridges behavior data to video_track.py so it can show "sit 34%"
+                if hasattr(self.ai, 'dog_tracker') and self.ai.dog_tracker and dog_name:
+                    self.ai.dog_tracker.update_dog_behavior(dog_name, behavior_name, confidence)
 
                 # Log behavior to store
                 self.store.log_event('vision', 'behavior_detected', 'detector_service', {
