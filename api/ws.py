@@ -23,6 +23,7 @@ from services.media.led import get_led_service
 from services.media.photo_capture import get_photo_capture_service
 from services.media.voice_manager import get_voice_manager
 from services.media.push_to_talk import get_push_to_talk_service
+from services.media.usb_audio import get_usb_audio_service
 
 
 class ConnectionManager:

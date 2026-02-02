@@ -1203,7 +1203,6 @@ class TreatBotMain:
                                 'error': 'Missing filename'
                             })
                     else:
-                        import os
                         songs_base = "/home/morgan/dogbot/VOICEMP3/songs"
 
                         # Try dog-specific folder first, then default
