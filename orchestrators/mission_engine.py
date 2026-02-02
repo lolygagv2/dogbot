@@ -123,7 +123,7 @@ class MissionSession:
     start_time: float = field(default_factory=time.time)
     current_stage: int = 0
     stage_start_time: float = field(default_factory=time.time)
-    state: MissionState = MissionState.IDLE
+    state: MissionState = MissionState.STARTING  # BUILD 38: Default to STARTING, not IDLE (fixes overlay bug)
     rewards_given: int = 0
     attempts: int = 0  # Attempts for current stage (max 2)
     events_log: List[Dict[str, Any]] = field(default_factory=list)
@@ -163,10 +163,9 @@ class MissionEngine:
     """
 
     # Coach-style timing constants
-    # BUILD 36: Reduced from 3.0s/66% to 1.5s/50% to speed up dog detection
-    # Issue 5f/5g from Build 35 - detection taking too long
-    DETECTION_TIME_SEC = 1.5  # Dog must be visible this long (was 3.0)
-    PRESENCE_RATIO_MIN = 0.50  # Dog must be in 50% of frames (was 0.66)
+    # BUILD 38: Adjusted to 2.0s/55% per user feedback (1.5s/50% felt too fast)
+    DETECTION_TIME_SEC = 2.0  # Dog must be visible this long
+    PRESENCE_RATIO_MIN = 0.55  # Dog must be in 55% of frames
     ATTENTION_DURATION_SEC = 2.0  # Attention check duration
     WATCH_DURATION_SEC = 10.0  # Default watch window
     STALE_TIMEOUT_SEC = 6.0  # Dog considered gone after this (must be > detection_event_interval of 5s)
@@ -359,6 +358,23 @@ class MissionEngine:
                 "mission_id": mission_id,
                 "dog_id": dog_id
             })
+
+            # BUILD 36: Send mission_progress with action: 'started' for app
+            # This tells the app the mission has actually started (not just requested)
+            try:
+                relay = get_relay_client()
+                if relay and relay.connected:
+                    relay.send_event("mission_progress", {
+                        "action": "started",
+                        "mission_name": mission_name,
+                        "mission_id": mission_id,
+                        "dog_id": dog_id,
+                        "stage": 1,
+                        "total_stages": len(mission.stages),
+                        "status": "starting",
+                    })
+            except Exception as e:
+                self.logger.warning(f"Failed to send mission_progress started: {e}")
 
             return True
 
@@ -639,8 +655,8 @@ class MissionEngine:
 
         # Find eligible dog using SAME logic as coaching_engine:
         # Requirements:
-        # 1. Dog has been tracked for DETECTION_TIME_SEC (3s)
-        # 2. Dog present in >= PRESENCE_RATIO_MIN (66%) of frames since first seen
+        # 1. Dog has been tracked for DETECTION_TIME_SEC (2.0s)
+        # 2. Dog present in >= PRESENCE_RATIO_MIN (55%) of frames since first seen
         eligible_dogs = []
         for dog_id, info in self.dogs_in_view.items():
             time_elapsed = now - info['first_seen']

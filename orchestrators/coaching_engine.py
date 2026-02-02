@@ -164,10 +164,9 @@ class CoachingEngine:
         self.dogs_in_view: Dict[str, dict] = {}
 
         # Detection timing config
-        # BUILD 36: Reduced from 3.0s/66% to 1.5s/50% to speed up dog detection
-        # Issue 5f/5g from Build 35 - detection taking too long vs Xbox controller
-        self.detection_time_sec = 1.5      # Time dog must be visible (was 3.0)
-        self.presence_ratio_min = 0.50     # Min percentage in-frame (was 0.66)
+        # BUILD 38: Adjusted to 2.0s/55% per user feedback (1.5s/50% felt too fast)
+        self.detection_time_sec = 2.0      # Time dog must be visible
+        self.presence_ratio_min = 0.55     # Min percentage in-frame
         self.stale_timeout_sec = 5.0       # Remove dog after this long unseen
 
         # Session statistics
@@ -623,7 +622,11 @@ class CoachingEngine:
         # CRITICAL: Reset behavior tracking AFTER audio finishes
         # If we reset before audio, the dog's pose gets tracked during the 3s audio playback
         # and by the time we enter WATCHING, hold time has already accumulated
+        # BUILD 38 DEBUG: Log before/after reset
+        pre_status = self.interpreter.get_status()
+        logger.info(f"📍 PRE-RESET state: behavior={pre_status['current_behavior']}, hold={pre_status['hold_duration']:.1f}s")
         self.interpreter.reset_tracking()
+        logger.info(f"📍 POST-RESET: now watching for {trick}")
 
         # Start listening for barks if speak trick
         if trick == 'speak':
@@ -693,9 +696,12 @@ class CoachingEngine:
             self.current_session.success = True
             self.current_session.behavior_detected = result.behavior_detected
             self.fsm_state = CoachState.SUCCESS
-            logger.info(f"Success! {dog_name} performed {expected_trick} "
-                       f"(detected: {result.behavior_detected}, "
-                       f"held: {result.hold_duration:.1f}s, conf: {result.confidence:.2f})")
+            watch_elapsed = time.time() - self.current_session.command_time
+            # BUILD 38 DEBUG: Detailed success logging
+            logger.info(f"🎉 SUCCESS! {dog_name} → {expected_trick} "
+                       f"(behavior={result.behavior_detected}, "
+                       f"held={result.hold_duration:.1f}s, conf={result.confidence:.2f}, "
+                       f"watch_time={watch_elapsed:.1f}s)")
             return
 
         # Log progress for debugging
@@ -974,11 +980,15 @@ class CoachingEngine:
         try:
             if self.dispenser:
                 dog_id = self.current_session.dog_id if self.current_session else None
+                trick = self.current_session.trick_requested if self.current_session else 'unknown'
+                behavior = self.current_session.behavior_detected if self.current_session else 'unknown'
+                # BUILD 38 DEBUG: Log exactly what triggered the treat
+                logger.info(f"🍖 DISPENSING TREAT: dog={dog_id}, trick={trick}, behavior={behavior}")
                 self.dispenser.dispense_treat(
                     dog_id=dog_id,
                     reason='coaching_reward'
                 )
-                logger.info("Treat dispensed for successful trick")
+                logger.info("✅ Treat dispensed successfully")
 
         except Exception as e:
             logger.error(f"Treat dispense error: {e}")

@@ -146,6 +146,7 @@ class BehaviorInterpreter:
             # This prevents race conditions where threaded callbacks from old events
             # execute after reset_tracking() was called
             if event_timestamp is not None and event_timestamp < self._reset_timestamp:
+                logger.debug(f"Ignoring stale event: {behavior} @ {event_timestamp:.3f} < reset @ {self._reset_timestamp:.3f}")
                 return  # Ignore stale event - it was published before reset
 
             threshold = self.confidence_thresholds.get(behavior, 0.7)
@@ -162,9 +163,12 @@ class BehaviorInterpreter:
 
                 if behavior != self._last_behavior:
                     # New behavior - reset timer
+                    prev = self._last_behavior
                     self._last_behavior = behavior
                     self._behavior_start_time = now
                     self._last_confidence = confidence
+                    # BUILD 38 DEBUG: Log behavior change
+                    logger.info(f"🎯 Behavior: {prev} → {behavior} (conf={confidence:.2f}) @ {now:.3f}")
                 else:
                     # Same behavior - update confidence (keep max)
                     self._last_confidence = max(self._last_confidence, confidence)
@@ -180,12 +184,15 @@ class BehaviorInterpreter:
         Also records timestamp to filter out stale threaded events.
         """
         with self._lock:
+            old_behavior = self._last_behavior
+            old_hold = time.time() - self._behavior_start_time if self._behavior_start_time > 0 else 0
             self._last_behavior = None
             self._behavior_start_time = 0.0
             self._last_confidence = 0.0
             self._last_update_time = 0.0
             self._reset_timestamp = time.time()  # Events before this are stale
-            logger.debug(f"BehaviorInterpreter tracking reset at {self._reset_timestamp:.3f}")
+            # BUILD 38 DEBUG: Log reset with previous state
+            logger.info(f"🔄 RESET tracking (was: {old_behavior}, held: {old_hold:.1f}s) @ {self._reset_timestamp:.3f}")
 
     def check_trick(self, trick_name: str, dog_id: str = None) -> TrickCheckResult:
         """
@@ -246,6 +253,9 @@ class BehaviorInterpreter:
                 )
 
             # Success!
+            # BUILD 38 DEBUG: Log the exact moment trick is completed
+            logger.info(f"✅ TRICK COMPLETED: {trick_name} → {self._last_behavior} "
+                       f"(hold={hold_duration:.2f}s >= {hold_required}s, conf={self._last_confidence:.2f})")
             return TrickCheckResult(
                 completed=True,
                 behavior_detected=self._last_behavior,

@@ -1210,15 +1210,31 @@ class TreatBotMain:
                     if mission_name:
                         from orchestrators.mission_engine import get_mission_engine
                         engine = get_mission_engine()
+
+                        # BUILD 38: Check if mission already active before starting
+                        pre_status = engine.get_mission_status()
+                        was_already_active = pre_status.get('active', False)
+                        existing_mission = pre_status.get('mission_name', '')
+
                         started = engine.start_mission(mission_name, dog_id=dog_id)
-                        self.logger.info(f"☁️ Start mission '{mission_name}' -> {started}")
+                        self.logger.info(f"☁️ Start mission '{mission_name}' -> {started} (was_active={was_already_active})")
+
                         if self.relay_client and self.relay_client.connected:
                             status = engine.get_mission_status()
-                            self.relay_client.send_event('mission_progress', {
+                            response = {
                                 'action': 'started' if started else 'failed',
                                 'mission': mission_name,
+                                'mission_name': mission_name,
                                 **status
-                            })
+                            }
+                            # BUILD 38: Add failure_reason for app to handle properly
+                            if not started:
+                                if was_already_active:
+                                    response['failure_reason'] = 'mission_already_active'
+                                    response['existing_mission'] = existing_mission
+                                else:
+                                    response['failure_reason'] = 'start_failed'
+                            self.relay_client.send_event('mission_progress', response)
                     else:
                         self.logger.warning("☁️ start_mission: no mission name provided")
 
@@ -1325,6 +1341,116 @@ class TreatBotMain:
                                     self.logger.error(f"☁️ call_dog fallback error: {e}", exc_info=True)
                             else:
                                 self.logger.error(f"☁️ {command}: voice file not found for type={voice_type}, dog={dog_id}")
+
+                # ==================== BUILD 38 FIX: SCHEDULER COMMANDS ====================
+                elif command == 'get_schedules':
+                    from core.schedule_manager import get_schedule_manager
+                    manager = get_schedule_manager()
+                    schedules = manager.list_schedules()
+                    self.logger.info(f"☁️ get_schedules -> {len(schedules)} schedules")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('schedules_list', {
+                            'success': True,
+                            'schedules': schedules,
+                            'count': len(schedules)
+                        })
+
+                elif command == 'create_schedule':
+                    from core.schedule_manager import get_schedule_manager
+                    manager = get_schedule_manager()
+                    result = manager.create_schedule(params)
+                    success = result.get('success', False)
+                    self.logger.info(f"☁️ create_schedule -> success={success}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('schedule_created', result)
+
+                elif command == 'update_schedule':
+                    from core.schedule_manager import get_schedule_manager
+                    manager = get_schedule_manager()
+                    schedule_id = params.get('schedule_id') or params.get('id')
+                    result = manager.update_schedule(schedule_id, params)
+                    success = result.get('success', False)
+                    self.logger.info(f"☁️ update_schedule {schedule_id} -> success={success}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('schedule_updated', result)
+
+                elif command == 'delete_schedule':
+                    from core.schedule_manager import get_schedule_manager
+                    manager = get_schedule_manager()
+                    schedule_id = params.get('schedule_id') or params.get('id')
+                    result = manager.delete_schedule(schedule_id)
+                    success = result.get('success', False)
+                    self.logger.info(f"☁️ delete_schedule {schedule_id} -> success={success}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('schedule_deleted', result)
+
+                elif command == 'get_scheduler_status':
+                    from core.mission_scheduler import get_mission_scheduler
+                    scheduler = get_mission_scheduler()
+                    status = scheduler.get_status() if scheduler else {'enabled': False, 'error': 'Scheduler not initialized'}
+                    self.logger.info(f"☁️ get_scheduler_status -> enabled={status.get('enabled', False)}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('scheduler_status', status)
+
+                # ==================== BUILD 38 FIX: COACH COMMANDS ====================
+                elif command == 'start_coach':
+                    # App sends this after set_mode - coaching engine already started via _on_mode_change
+                    # Just acknowledge and send current state
+                    from orchestrators.coaching_engine import get_coaching_engine
+                    engine = get_coaching_engine()
+                    running = engine.running if engine else False
+                    self.logger.info(f"☁️ start_coach -> already running={running}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('coach_started', {'success': True, 'running': running})
+
+                elif command == 'stop_coach':
+                    # App sends this before set_mode - coaching engine stopped via _on_mode_change
+                    # Just acknowledge
+                    from orchestrators.coaching_engine import get_coaching_engine
+                    engine = get_coaching_engine()
+                    was_running = engine.running if engine else False
+                    self.logger.info(f"☁️ stop_coach -> was_running={was_running}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('coach_stopped', {'success': True})
+
+                elif command == 'force_trick':
+                    # Force a specific trick in coach mode (like Xbox Guide button)
+                    trick = params.get('trick') or params.get('data', {}).get('trick')
+                    from orchestrators.coaching_engine import get_coaching_engine
+                    engine = get_coaching_engine()
+                    if engine and engine.running and trick:
+                        engine._forced_trick = trick
+                        # Reset cooldown to allow immediate session
+                        engine._last_session_end = 0.0
+                        self.logger.info(f"☁️ force_trick -> {trick}")
+                        if self.relay_client and self.relay_client.connected:
+                            self.relay_client.send_event('trick_forced', {'success': True, 'trick': trick})
+                    else:
+                        self.logger.warning(f"☁️ force_trick failed: engine={engine is not None}, running={engine.running if engine else False}, trick={trick}")
+                        if self.relay_client and self.relay_client.connected:
+                            self.relay_client.send_event('trick_forced', {'success': False, 'error': 'Coach not running or no trick specified'})
+
+                # ==================== BUILD 38 FIX: TRACKING COMMAND ====================
+                elif command == 'set_tracking_enabled':
+                    enabled = params.get('enabled', False) or params.get('data', {}).get('enabled', False)
+                    from services.motion.pan_tilt import get_pantilt_service
+                    pantilt = get_pantilt_service()
+                    if pantilt:
+                        pantilt.set_tracking_enabled(enabled)
+                        self.logger.info(f"☁️ set_tracking_enabled -> {enabled}")
+                        if self.relay_client and self.relay_client.connected:
+                            self.relay_client.send_event('tracking_enabled', {'success': True, 'enabled': enabled})
+                    else:
+                        self.logger.warning("☁️ set_tracking_enabled: pan/tilt service not available")
+
+                # ==================== BUILD 38 FIX: MISSION STATUS COMMAND ====================
+                elif command == 'get_mission_status':
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    status = engine.get_mission_status() if engine else {'active': False}
+                    self.logger.info(f"☁️ get_mission_status -> active={status.get('active', False)}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('mission_status', status)
 
                 else:
                     self.logger.warning(f"☁️ Unknown cloud command: {command}")

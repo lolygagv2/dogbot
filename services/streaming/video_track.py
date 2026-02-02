@@ -311,6 +311,10 @@ class WIMZVideoTrack(VideoStreamTrack):
                         elif 'failure' in fsm or 'retry' in fsm:
                             status_text = f"[MISSION {stage_num}/{total}] Retry {trick}..."
                             status_color = (255, 128, 0)  # Orange
+                        elif 'idle' in fsm or 'starting' in fsm:
+                            # BUILD 38: Handle idle/starting states that shouldn't normally appear
+                            status_text = f"[MISSION {stage_num}/{total}] Initializing..."
+                            status_color = (255, 255, 0)  # Yellow
                         else:
                             status_text = f"[MISSION {stage_num}/{total}] {fsm}"
                     else:
