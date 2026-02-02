@@ -7,6 +7,7 @@ Provides telemetry streaming, event notifications, and bidirectional control
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Set, Dict, Any
 from fastapi import WebSocket, WebSocketDisconnect
