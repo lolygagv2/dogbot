@@ -497,7 +497,7 @@ def simple_sit_mission(duration: float = 3.0) -> MissionController:
         "timeout_minutes": 5,
         "reward": {
             "treat": True,
-            "audio": "good_dog.mp3",
+            "audio": "good.mp3",
             "lights": "celebration"
         }
     }

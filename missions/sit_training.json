@@ -35,7 +35,7 @@
     "max_rewards": "Daily treat limit reached - great training session!"
   },
   "config": {
-    "treat_sound": "good_dog.mp3",
+    "treat_sound": "good.mp3",
     "celebration_lights": "green_flash",
     "daily_limit": 5,
     "cooldown_minutes": 15,

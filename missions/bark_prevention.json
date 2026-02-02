@@ -39,7 +39,7 @@
   },
   "config": {
     "quiet_sound": "quiet.mp3",
-    "reward_sound": "good_dog.mp3",
+    "reward_sound": "good.mp3",
     "correction_lights": "orange_flash",
     "reward_lights": "green_steady",
     "bark_threshold_db": 70,

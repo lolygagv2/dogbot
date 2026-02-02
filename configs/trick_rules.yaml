@@ -108,7 +108,7 @@ coaching:
 # Paths are relative to /home/morgan/dogbot/VOICEMP3/talks/
 
 audio:
-  success: "good_dog.mp3"
+  success: "good.mp3"
   failure: "no.mp3"
   greeting_elsa: "elsa.mp3"
   greeting_bezik: "bezik.mp3"

@@ -114,27 +114,14 @@ class DogProfileManager:
         self.logger.info("DogProfileManager initialized")
 
     def _load_default_profiles(self):
-        """Load default dog profiles from config"""
-        # Default profiles for WIM-Z household
-        defaults = [
-            DogProfile(
-                name="bezik",
-                aruco_id=832,
-                color=DogColor.BLACK,
-                household_id="default"
-            ),
-            DogProfile(
-                name="elsa",
-                aruco_id=1,
-                color=DogColor.YELLOW,
-                household_id="default"
-            ),
-        ]
+        """Load default dog profiles from config
 
-        for profile in defaults:
-            self.add_profile(profile)
-
-        self.logger.info(f"Loaded {len(defaults)} default profiles")
+        BUILD 35: Removed hardcoded bezik/elsa defaults.
+        Dog profiles should come from the app via sync_from_cloud() or add_profile().
+        Only create profiles when a real dog with ArUco marker is registered.
+        """
+        # No hardcoded profiles - profiles come from app/cloud
+        self.logger.info("DogProfileManager ready (no hardcoded profiles)")
 
     def add_profile(self, profile: DogProfile):
         """Add or update a dog profile"""

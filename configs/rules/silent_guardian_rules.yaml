@@ -141,7 +141,7 @@ audio_paths:
   come: "talks/dogs_come.mp3"
   sit: "talks/sit.mp3"
   treat: "talks/treat.mp3"
-  good_dog: "talks/good_dog.mp3"
+  good_dog: "talks/good.mp3"
   elsa: "talks/elsa.mp3"
   bezik: "talks/bezik.mp3"
   calming_music: "songs/mozart_piano.mp3"

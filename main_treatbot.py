@@ -1190,15 +1190,65 @@ class TreatBotMain:
                         self.logger.warning("☁️ download_song: missing url or filename")
 
                 elif command == 'delete_song':
-                    # Delete a user song: {"filename": "my_song.mp3"}
+                    # BUILD 41: Delete a song file and refresh playlist
+                    # Payload: {"filename": "song.mp3", "dog_id": "optional"}
                     song_filename = params.get('filename')
-                    if song_filename:
-                        resp = client.delete(f'{api_base}/music/user/{song_filename}')
-                        self.logger.info(f"☁️ Song delete '{song_filename}' -> {resp.status_code}")
-                        if self.relay_client and self.relay_client.connected:
-                            self.relay_client.send_event('music_update', resp.json() if resp.status_code == 200 else {'success': False})
-                    else:
+                    dog_id = params.get('dog_id')
+
+                    if not song_filename:
                         self.logger.warning("☁️ delete_song: missing filename")
+                        if self.relay_client and self.relay_client.connected:
+                            self.relay_client.send_event('song_deleted', {
+                                'success': False,
+                                'error': 'Missing filename'
+                            })
+                    else:
+                        import os
+                        songs_base = "/home/morgan/dogbot/VOICEMP3/songs"
+
+                        # Try dog-specific folder first, then default
+                        filepath = None
+                        if dog_id:
+                            dog_path = os.path.join(songs_base, dog_id, song_filename)
+                            if os.path.exists(dog_path):
+                                filepath = dog_path
+                        if not filepath:
+                            # Try default folder
+                            default_path = os.path.join(songs_base, "default", song_filename)
+                            if os.path.exists(default_path):
+                                filepath = default_path
+
+                        if filepath and os.path.exists(filepath):
+                            try:
+                                os.remove(filepath)
+                                self.logger.info(f"☁️ delete_song: deleted {filepath}")
+
+                                # Refresh playlist to remove from rotation
+                                from services.media.usb_audio import get_usb_audio_service
+                                usb_audio = get_usb_audio_service()
+                                usb_audio.refresh_playlist()
+
+                                if self.relay_client and self.relay_client.connected:
+                                    self.relay_client.send_event('song_deleted', {
+                                        'success': True,
+                                        'filename': song_filename
+                                    })
+                            except Exception as e:
+                                self.logger.error(f"☁️ delete_song error: {e}")
+                                if self.relay_client and self.relay_client.connected:
+                                    self.relay_client.send_event('song_deleted', {
+                                        'success': False,
+                                        'filename': song_filename,
+                                        'error': str(e)
+                                    })
+                        else:
+                            self.logger.warning(f"☁️ delete_song: file not found: {song_filename}")
+                            if self.relay_client and self.relay_client.connected:
+                                self.relay_client.send_event('song_deleted', {
+                                    'success': False,
+                                    'filename': song_filename,
+                                    'error': 'File not found'
+                                })
 
                 elif command == 'list_songs':
                     # List all songs (system + user)
@@ -1374,7 +1424,10 @@ class TreatBotMain:
                     manager = get_schedule_manager()
                     result = manager.create_schedule(params)
                     success = result.get('success', False)
-                    self.logger.info(f"☁️ create_schedule -> success={success}")
+                    if success:
+                        self.logger.info(f"☁️ create_schedule -> success=True, id={result.get('schedule_id')}")
+                    else:
+                        self.logger.warning(f"☁️ create_schedule -> FAILED: {result.get('error', 'Unknown error')}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('schedule_created', result)
 

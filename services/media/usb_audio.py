@@ -76,37 +76,42 @@ class USBAudioService:
             self.initialized = False
 
     def _build_playlist(self, dog_id: str = None):
-        """Build playlist from songs folder, using dog-specific or default songs"""
+        """Build playlist from songs folder, combining default and all dog-specific songs
+
+        BUILD 41: Changed from exclusive (dog OR default) to inclusive (default + all dogs)
+        This ensures uploaded songs are always available in rotation.
+        """
         songs_base = os.path.join(self.base_path, "songs")
         default_path = os.path.join(songs_base, "default")
 
         playlist = []
 
-        # Check for dog-specific songs first
-        if dog_id:
-            dog_path = os.path.join(songs_base, dog_id)
-            if os.path.isdir(dog_path):
-                dog_songs = sorted([
-                    f for f in os.listdir(dog_path)
-                    if f.lower().endswith(('.mp3', '.wav', '.ogg'))
-                    and os.path.isfile(os.path.join(dog_path, f))
-                ])
-                if dog_songs:
-                    playlist.extend([f"{dog_id}/{f}" for f in dog_songs])
-                    self._playlist = playlist
-                    self.logger.info(f"Built playlist with {len(playlist)} tracks for {dog_id}")
-                    return
-
-        # Fall back to default songs
+        # Always include default songs first
         if os.path.isdir(default_path):
-            playlist.extend(sorted([
+            default_songs = sorted([
                 f"default/{f}" for f in os.listdir(default_path)
                 if f.lower().endswith(('.mp3', '.wav', '.ogg'))
                 and os.path.isfile(os.path.join(default_path, f))
-            ]))
+            ])
+            playlist.extend(default_songs)
+
+        # Add songs from ALL dog folders (not just the specified dog_id)
+        # This ensures uploaded songs are always available
+        if os.path.isdir(songs_base):
+            for folder in sorted(os.listdir(songs_base)):
+                if folder == 'default':
+                    continue  # Already added above
+                folder_path = os.path.join(songs_base, folder)
+                if os.path.isdir(folder_path):
+                    dog_songs = sorted([
+                        f"{folder}/{f}" for f in os.listdir(folder_path)
+                        if f.lower().endswith(('.mp3', '.wav', '.ogg'))
+                        and os.path.isfile(os.path.join(folder_path, f))
+                    ])
+                    playlist.extend(dog_songs)
 
         self._playlist = playlist
-        self.logger.info(f"Built playlist with {len(self._playlist)} tracks (default)")
+        self.logger.info(f"Built playlist with {len(self._playlist)} tracks (default + {len(playlist) - len([p for p in playlist if p.startswith('default/')])} uploaded)")
 
     def play_file(self, filepath: str, loop: bool = False) -> Dict[str, Any]:
         """Play an audio file

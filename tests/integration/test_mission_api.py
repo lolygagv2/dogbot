@@ -36,7 +36,7 @@ def test_basic_mission():
 
     # Test reward system
     print("🎁 Testing reward system...")
-    success = mission.reward(treat=True, audio="good_dog.mp3", lights="celebration")
+    success = mission.reward(treat=True, audio="good.mp3", lights="celebration")
     print(f"Reward result: {'✅ Success' if success else '❌ Failed'}")
 
     # Test condition waiting (will timeout quickly for demo)
@@ -63,7 +63,7 @@ def test_sit_mission():
 
     # Simulate detection and reward
     mission.set_current_pose("sit", 0.9)
-    mission.reward(treat=True, audio="good_dog.mp3")
+    mission.reward(treat=True, audio="good.mp3")
 
     # Get status
     status = mission.get_status()

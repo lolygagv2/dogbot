@@ -11,7 +11,7 @@ import json
 import uuid
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 
 # Singleton
@@ -91,14 +91,28 @@ class ScheduleManager:
         - enabled: Whether schedule is active (default: True)
         - cooldown_hours: Hours between runs (default: 24)
         """
-        # Validate required fields
-        required = ['name', 'mission_name', 'dog_id', 'start_time', 'end_time']
+        # Validate required fields (name and end_time are optional with defaults)
+        required = ['mission_name', 'dog_id', 'start_time']
         missing = [f for f in required if f not in data or not data[f]]
         if missing:
             return {
                 "success": False,
                 "error": f"Missing required fields: {', '.join(missing)}"
             }
+
+        # Auto-generate name if not provided
+        if not data.get('name'):
+            data['name'] = f"{data['mission_name']} Schedule"
+
+        # Auto-generate end_time if not provided (start_time + 1 hour)
+        if not data.get('end_time'):
+            try:
+                start = datetime.strptime(data['start_time'], "%H:%M")
+                end = start + timedelta(hours=1)
+                data['end_time'] = end.strftime("%H:%M")
+            except ValueError:
+                # Let the time format validation below catch this
+                pass
 
         # Validate type field
         schedule_type = data.get('type', 'daily')

@@ -337,7 +337,7 @@ class MissionEngine:
             self.state.set_mode(SystemMode.MISSION, reason=f'Mission: {mission_name}')
             self.state.lock_mode(f'Mission active: {mission_name}')
 
-            self.logger.info(f"[MISSION] Mode set to MISSION, locked={self.state.is_mode_locked()}")
+            self.logger.info(f"[MISSION] Mode set to MISSION, locked={self.state.is_mode_locked}")
 
             # Start mission thread
             self.running = True

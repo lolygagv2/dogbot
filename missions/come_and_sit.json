@@ -56,7 +56,7 @@
     "max_rewards": "All treats earned - well done!"
   },
   "config": {
-    "treat_sound": "good_dog.mp3",
+    "treat_sound": "good.mp3",
     "celebration_lights": "green_flash",
     "daily_limit": 10
   }

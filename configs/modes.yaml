@@ -25,6 +25,19 @@ modes:
     detection_threshold: 0.7
     pose_threshold: 0.6
     behavior_threshold: 0.8
+  
+  mission:
+    description: "Determined training mode for specific trick executions"
+    resolution: [640, 640]    # Square format for AI models
+    fps: 30
+    ai_enabled: true
+    aruco_enabled: true
+    single_frame: true
+    auto_exposure: true
+    gain_control: "auto"
+    detection_threshold: 0.7
+    pose_threshold: 0.6
+    behavior_threshold: 0.8
 
   photography:
     description: "High-quality photography mode with manual controls"

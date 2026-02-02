@@ -131,7 +131,25 @@ class XboxControllerService:
         self.is_connected = True
         logger.info("Xbox controller connected")
 
-        # Start controller process
+        # CRITICAL: Release motor GPIO in main process before Xbox subprocess claims it
+        # This prevents GPIO conflict when Xbox connects after service start
+        try:
+            from core.motor_command_bus import get_motor_bus
+            motor_bus = get_motor_bus()
+            if motor_bus and motor_bus.running:
+                logger.info("🔄 Releasing motor GPIO for Xbox controller...")
+                motor_bus.stop()
+                # Also cleanup the motor controller to fully release GPIO
+                if motor_bus.motor_controller:
+                    motor_bus.motor_controller.cleanup()
+                logger.info("✅ Motor GPIO released - Xbox subprocess will claim it")
+                # Give kernel time to fully release GPIO resources
+                import time
+                time.sleep(0.5)
+        except Exception as e:
+            logger.debug(f"Motor bus release (may not have been running): {e}")
+
+        # Start controller process (will claim motor GPIO)
         self._start_controller_process()
 
         # Publish connection event
@@ -145,8 +163,21 @@ class XboxControllerService:
         self.is_connected = False
         logger.info("Xbox controller disconnected")
 
-        # Stop controller process
+        # Stop controller process (releases motor GPIO)
         self._stop_controller_process()
+
+        # Reclaim motor GPIO for WebRTC direct control
+        try:
+            from core.motor_command_bus import get_motor_bus
+            motor_bus = get_motor_bus()
+            if motor_bus and not motor_bus.running:
+                logger.info("🔄 Reclaiming motor GPIO for WebRTC...")
+                if motor_bus.start():
+                    logger.info("✅ Motor bus restarted - WebRTC has direct control")
+                else:
+                    logger.warning("⚠️ Motor bus restart failed")
+        except Exception as e:
+            logger.error(f"Motor bus reclaim failed: {e}")
 
         # Publish disconnection event
         publish_system_event('controller_disconnected', {
