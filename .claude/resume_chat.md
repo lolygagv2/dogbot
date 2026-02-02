@@ -1,5 +1,36 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-02-02 (Part 2) - Build 41 Finalization
+**Goal:** Commit remaining Build 40 fixes, investigate schedule delete issue
+**Status:** COMPLETE
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Root Cause | Solution |
+|---|---------|------------|----------|
+| 1 | Can't delete schedule in app | App showed "ghost" schedule that was never created (mission validation failed) | Not a robot bug - app needs to check `success` field on create_schedule response |
+
+### Investigation: Schedule Delete Issue
+- User tried to delete a schedule that showed in app
+- Logs revealed: `stay_training` mission doesn't exist, so `create_schedule` failed
+- App didn't handle error and showed schedule anyway
+- Delete correctly returned `success: false` for non-existent schedule
+- **Action needed:** App relay team should handle failed create responses
+
+### Available Missions for App Scheduling
+Provided full list of 21 missions with descriptions for app integration.
+
+### Commits Made
+1. `6812254c` - fix: Build 40 fixes - Xbox GPIO handoff, mission mode, schedule manager
+   - 15 files, +165/-62 lines
+   - Xbox controller GPIO release/reclaim for motor control handoff
+   - Added 'mission' mode to modes.yaml
+   - Schedule manager improvements
+
+---
+
 ## Session: 2026-02-02 - Build 41 Documentation & Features
 **Goal:** Update documentation, add servo calibration, implement AWS SNS push notifications
 **Status:** COMPLETE
