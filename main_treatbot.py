@@ -1171,6 +1171,12 @@ class TreatBotMain:
                                 f.write(audio_bytes)
 
                             self.logger.info(f"☁️ Song downloaded '{song_filename}' ({len(audio_bytes)} bytes) to {filepath}")
+
+                            # Refresh playlist to include new song
+                            from services.media.usb_audio import get_usb_audio_service
+                            usb_audio = get_usb_audio_service()
+                            usb_audio.refresh_playlist()
+
                             if self.relay_client and self.relay_client.connected:
                                 self.relay_client.send_event('upload_complete', {
                                     'success': True,
