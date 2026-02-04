@@ -91,33 +91,43 @@ class CaptivePortal:
                 raise HTTPException(status_code=400, detail="SSID is required")
 
             try:
-                # Save credentials (this stops the hotspot)
-                success = self.wifi_manager.save_credentials(
+                # Save credentials (this stops the hotspot and tries to connect)
+                result = self.wifi_manager.save_credentials(
                     credentials.ssid,
                     credentials.password
                 )
 
-                if success:
+                if result["success"]:
                     self._credentials_saved = True
                     if self.on_credentials_saved:
-                        # Schedule callback
+                        # Schedule callback (will trigger reboot)
                         asyncio.create_task(self._trigger_callback(credentials.ssid))
 
                     return JSONResponse(content={
                         "success": True,
-                        "message": f"Connected to {credentials.ssid}! Rebooting..."
+                        "has_internet": result["has_internet"],
+                        "message": result["message"]
                     })
                 else:
+                    # Connection failed - restart AP mode so user can try again
+                    if result["should_restart_ap"]:
+                        logger.info("Connection failed, restarting AP mode...")
+                        asyncio.create_task(self._restart_ap_mode(credentials.ssid))
+
                     return JSONResponse(content={
                         "success": False,
-                        "message": "Could not connect. Please check password and try again."
+                        "message": result["message"],
+                        "restarting_ap": result["should_restart_ap"]
                     })
 
             except Exception as e:
                 logger.error(f"Connection error: {e}")
+                # Try to restart AP mode on any error
+                asyncio.create_task(self._restart_ap_mode("error"))
                 return JSONResponse(content={
                     "success": False,
-                    "message": str(e)
+                    "message": f"Error: {str(e)}. Restarting setup...",
+                    "restarting_ap": True
                 })
 
         @app.get("/status")
@@ -180,6 +190,23 @@ class CaptivePortal:
         await asyncio.sleep(2)
         if self.on_credentials_saved:
             self.on_credentials_saved(ssid)
+
+    async def _restart_ap_mode(self, failed_ssid: str):
+        """Restart AP mode after a failed connection attempt"""
+        await asyncio.sleep(2)  # Give the response time to reach the client
+        logger.info(f"Restarting AP mode after failed connection to {failed_ssid}")
+
+        # Get the SSID we should use (from device serial)
+        serial = self.wifi_manager.get_device_serial()
+        ap_ssid = f"WIMZ-{serial}"
+        ap_password = "wimzsetup"
+
+        # Restart the hotspot
+        success = self.wifi_manager.start_hotspot(ap_ssid, ap_password)
+        if success:
+            logger.info(f"AP mode restarted: {ap_ssid}")
+        else:
+            logger.error("Failed to restart AP mode!")
 
     async def _do_reboot(self):
         """Perform system reboot after delay"""

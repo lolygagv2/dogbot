@@ -21,6 +21,17 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Install required packages
+echo "Installing hostapd and dnsmasq..."
+apt-get update -qq
+apt-get install -y hostapd dnsmasq-base
+
+# Disable hostapd system service (we manage it manually)
+echo "Disabling hostapd system service..."
+systemctl stop hostapd 2>/dev/null || true
+systemctl disable hostapd 2>/dev/null || true
+systemctl mask hostapd 2>/dev/null || true
+
 # Create logs directory if needed
 mkdir -p "$PROJECT_DIR/logs"
 chown morgan:morgan "$PROJECT_DIR/logs"

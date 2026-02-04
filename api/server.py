@@ -3543,12 +3543,13 @@ async def enter_local_mode():
     """Switch to AP mode for direct local control.
 
     This disconnects from WiFi and creates a hotspot for direct phone→robot control.
-    After calling this, connect to the WIMZ-XXXX hotspot and use the API at 192.168.4.1:8000
+    After calling this, connect to the WIMZ-XXXX hotspot and use the API at the hotspot IP
     """
     try:
         from services.network.wifi_manager import WiFiManager
 
         wifi = WiFiManager()
+        hotspot_ip = wifi.HOTSPOT_IP
 
         # Generate SSID
         serial = wifi.get_device_serial()
@@ -3565,9 +3566,9 @@ async def enter_local_mode():
                 "status": "switching",
                 "ssid": ssid,
                 "password": password,
-                "ip": "192.168.4.1",
-                "api": "http://192.168.4.1:8000",
-                "ws": "ws://192.168.4.1:8000/ws/local",
+                "ip": hotspot_ip,
+                "api": f"http://{hotspot_ip}:8000",
+                "ws": f"ws://{hotspot_ip}:8000/ws/local",
                 "message": f"Connect to {ssid} hotspot, then use app in Local Mode"
             }
         else:

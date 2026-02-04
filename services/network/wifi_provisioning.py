@@ -31,7 +31,7 @@ class WiFiProvisioningService:
     """WiFi provisioning orchestrator"""
 
     HOTSPOT_PASSWORD = "wimzsetup"
-    CONNECTION_TIMEOUT = 30  # seconds to wait for known WiFi
+    CONNECTION_TIMEOUT = 15  # seconds to wait for known WiFi
 
     def __init__(self):
         self.wifi_manager = WiFiManager()
@@ -187,9 +187,10 @@ class WiFiProvisioningService:
         ssid = self._generate_hotspot_ssid()
         password = self.HOTSPOT_PASSWORD
 
+        portal_ip = self.wifi_manager.HOTSPOT_IP
         logger.info(f"Starting hotspot: {ssid}")
         logger.info(f"Hotspot password: {password}")
-        logger.info(f"Portal address: http://192.168.4.1")
+        logger.info(f"Portal address: http://{portal_ip}")
 
         # Set LED to AP mode pattern
         self._set_led_ap_mode()
@@ -210,7 +211,7 @@ class WiFiProvisioningService:
         logger.info("=" * 50)
         logger.info(f"Connect to WiFi: {ssid}")
         logger.info(f"Password: {password}")
-        logger.info(f"Then open: http://192.168.4.1")
+        logger.info(f"Then open: http://{portal_ip}")
         logger.info("=" * 50)
 
         # Run captive portal (blocking)
@@ -288,6 +289,7 @@ class WiFiProvisioningService:
         # Generate SSID
         ssid = self._generate_hotspot_ssid()
         password = self.HOTSPOT_PASSWORD
+        portal_ip = self.wifi_manager.HOTSPOT_IP
 
         logger.info(f"Starting hotspot: {ssid}")
 
@@ -318,7 +320,7 @@ class WiFiProvisioningService:
         logger.info("=" * 50)
         logger.info(f"Connect to WiFi: {ssid}")
         logger.info(f"Password: {password}")
-        logger.info(f"Then open: http://192.168.4.1")
+        logger.info(f"Then open: http://{portal_ip}")
         logger.info("=" * 50)
 
         try:

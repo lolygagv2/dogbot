@@ -363,7 +363,11 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    showStatus(data.message, 'success');
+                    if (data.has_internet) {
+                        showStatus(data.message, 'success');
+                    } else {
+                        showStatus(data.message + ' (No internet detected)', 'success');
+                    }
                     // Trigger reboot after successful connection
                     setTimeout(async () => {
                         showStatus('Rebooting WIM-Z...', 'loading');
@@ -372,11 +376,20 @@
                         } catch (e) {
                             // Expected - connection will drop during reboot
                         }
-                    }, 2000);
+                    }, 3000);
                 } else {
                     showStatus(data.message, 'error');
                     connectBtn.disabled = false;
                     connectBtn.textContent = 'Connect';
+
+                    // If AP is restarting, wait and rescan
+                    if (data.restarting_ap) {
+                        showStatus(data.message + ' Restarting setup...', 'error');
+                        setTimeout(() => {
+                            showStatus('Setup restored. Please try again.', 'loading');
+                            scanNetworks();
+                        }, 5000);
+                    }
                 }
             } catch (error) {
                 console.error('Connection error:', error);
