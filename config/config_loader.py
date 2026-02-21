@@ -71,7 +71,7 @@ class RobotConfig:
         hostname = socket.gethostname().lower()
         hostname_map = {
             'treatbot': 'treatbot',
-            'treatbot1': 'treatbot',
+            'treatbot1': 'treatbot1',
             'treatbot2': 'treatbot2',
             'wimz-alpha': 'treatbot',
             'wimz-beta': 'treatbot2',

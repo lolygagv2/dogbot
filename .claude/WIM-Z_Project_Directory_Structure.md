@@ -198,6 +198,7 @@
       robot_config.yaml             # DO NOT MODIFY without permission
       robot_profiles/
          treatbot.yaml              # Treatbot profile
+         treatbot1.yaml             # Treatbot1 profile (robot_id: treatbot1)
          treatbot2.yaml             # Treatbot2 profile
       config_loader.py              # Config loading utilities
       settings.py                   # Settings management

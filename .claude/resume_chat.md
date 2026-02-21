@@ -1,5 +1,51 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-02-21 - Device Identity & Claude Config Setup
+**Goal:** Configure device as treatbot1, update .claude skills/hooks configuration
+**Status:** COMPLETE
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Solution | Files Modified |
+|---|---------|----------|----------------|
+| 1 | Device cloned from treatbot2, needed treatbot1 identity | Created `treatbot1.yaml` profile with `robot_id: "treatbot1"` | `config/robot_profiles/treatbot1.yaml` (NEW) |
+| 2 | Hostname mapping pointed treatbot1 → treatbot profile | Updated mapping: `treatbot1` → `treatbot1` | `config/config_loader.py:74` |
+| 3 | `<PI_IP>` placeholder in pi-deploy skill | Replaced with `treatbot1` | `.claude/skills/pi-deploy/SKILL.md` |
+| 4 | `<LIGHTSAIL_IP>` placeholder in lightsail-server skill | Replaced with `api.wimzai.com` | `.claude/skills/lightsail-server/SKILL.md` |
+| 5 | session-start.sh had wrong paths for TODO files | Fixed to `.claude/development_todos.md` | `.claude/hooks/session-start.sh` |
+
+---
+
+### Key Code Changes Made
+
+#### 1. Device Identity Configuration
+- **Created** `config/robot_profiles/treatbot1.yaml` with `robot_id: "treatbot1"`
+- **Updated** `config/config_loader.py` hostname mapping
+- **Verified** config loads correctly: `[Config] Loaded profile: treatbot1`
+
+#### 2. Claude Skills & Hooks Configuration
+- **pi-deploy**: All `<PI_IP>` → `treatbot1`
+- **lightsail-server**: All `<LIGHTSAIL_IP>` → `api.wimzai.com`
+- **flutter-app**: Clarified state management is in separate repo
+- **session-start.sh**: Fixed paths to `.claude/` directory
+- **README.md**: Marked all placeholders as configured
+
+---
+
+### Commits Made
+*(Pending - see commit below)*
+
+---
+
+### Next Steps
+1. Commit these configuration changes
+2. Test robot with new treatbot1 identity
+3. Verify skills load correctly in future sessions
+
+---
+
 ## Session: 2026-02-02 (Part 2) - Build 41 Finalization
 **Goal:** Commit remaining Build 40 fixes, investigate schedule delete issue
 **Status:** COMPLETE
