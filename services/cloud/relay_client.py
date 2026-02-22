@@ -504,13 +504,26 @@ class RelayClient:
             return
 
         # Handle set_mode command directly here (app sends this on connect)
+        # API Contract v1.3: Accept source and timestamp fields for diagnostics
         if command == 'set_mode':
             mode_name = params.get('mode', '').lower()
+            source = params.get('source', 'unknown')  # v1.3: dropdown, drive_enter, etc.
+            app_timestamp = params.get('timestamp', '')  # v1.3: ISO8601 from app
+
             if mode_name:
                 try:
+                    from datetime import datetime
                     new_mode = SystemMode(mode_name)
-                    self.state.set_mode(new_mode, f"App command: {mode_name}")
-                    self.logger.info(f"📱 Mode changed to {mode_name} via app command")
+                    prev_mode = self.state.get_mode()
+                    server_ts = datetime.utcnow().isoformat() + 'Z'
+
+                    # API Contract v1.3: Log with full context for debugging mode issues
+                    self.logger.info(
+                        f"MODE_CHANGE: {prev_mode.value} -> {mode_name} | "
+                        f"source={source} | app_ts={app_timestamp} | server_ts={server_ts}"
+                    )
+
+                    self.state.set_mode(new_mode, f"App command: {mode_name} (source={source})")
                     await self._send({
                         'type': 'command_ack',
                         'command': command,

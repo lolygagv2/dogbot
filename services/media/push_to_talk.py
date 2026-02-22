@@ -136,6 +136,16 @@ class PushToTalkService:
             # Start playback in background thread - return immediately
             self._playing = True
 
+            # API Contract v1.3: Mute WebRTC audio track during PTT playback (echo suppression)
+            # Estimate playback duration - use 5 seconds as default buffer
+            try:
+                from services.streaming.audio_track import mute_audio_for_ptt
+                # Mute for estimated duration + 1 second buffer
+                estimated_duration = len(audio_data) / 16000  # Rough estimate based on typical bitrate
+                mute_audio_for_ptt(max(estimated_duration, 3.0) + 1.0)
+            except Exception as e:
+                self.logger.debug(f"Could not mute audio track for PTT: {e}")
+
             def _play_background():
                 try:
                     # Determine playable file path

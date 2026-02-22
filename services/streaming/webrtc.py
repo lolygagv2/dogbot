@@ -19,6 +19,7 @@ from aiortc.contrib.media import MediaRelay
 from core.bus import get_bus, publish_system_event
 from core.state import get_state
 from services.streaming.video_track import WIMZVideoTrack
+from services.streaming.audio_track import WIMZAudioTrack, set_audio_track
 
 # Motor control imports - direct hardware access like Xbox controller
 try:
@@ -66,6 +67,9 @@ class WebRTCService:
         # Video track (shared via MediaRelay for multiple clients)
         self.video_track: Optional[WIMZVideoTrack] = None
         self.media_relay = MediaRelay()
+
+        # Audio track (API Contract v1.3: always-on mic streaming)
+        self.audio_track: Optional[WIMZAudioTrack] = None
 
         # ICE candidate callbacks (session_id -> callback)
         self.ice_callbacks: Dict[str, Callable] = {}
@@ -281,6 +285,16 @@ class WebRTCService:
         # Add video track via media relay (allows multiple subscribers)
         relay_track = self.media_relay.subscribe(self.video_track)
         pc.addTrack(relay_track)
+
+        # API Contract v1.3: Add audio track for always-on mic streaming
+        if self.audio_track is None:
+            self.audio_track = WIMZAudioTrack()
+            set_audio_track(self.audio_track)  # Register globally for PTT echo suppression
+            self.logger.info("Created new WIMZAudioTrack for WebRTC")
+
+        # Add audio track via media relay
+        audio_relay_track = self.media_relay.subscribe(self.audio_track)
+        pc.addTrack(audio_relay_track)
 
         # Create data channel for motor control (low-latency, unreliable)
         data_channel = pc.createDataChannel(
@@ -509,6 +523,16 @@ class WebRTCService:
         relay_track = self.media_relay.subscribe(self.video_track)
         pc.addTrack(relay_track)
 
+        # API Contract v1.3: Add audio track for always-on mic streaming
+        if self.audio_track is None:
+            self.audio_track = WIMZAudioTrack()
+            set_audio_track(self.audio_track)  # Register globally for PTT echo suppression
+            self.logger.info("Created new WIMZAudioTrack for offer")
+
+        # Add audio track via media relay
+        audio_relay_track = self.media_relay.subscribe(self.audio_track)
+        pc.addTrack(audio_relay_track)
+
         # Create data channel for motor control (low-latency, unreliable)
         data_channel = pc.createDataChannel(
             "control",
@@ -622,15 +646,25 @@ class WebRTCService:
             self.logger.info(f"[WEBRTC] Cleaned up connection: {session_id}")
             self.logger.info(f"[WEBRTC] Active connections: {list(self.connections.keys())}")
 
-        # Stop video track if no connections remain
+        # Stop video and audio tracks if no connections remain
         with self._lock:
-            if not self.connections and self.video_track:
-                try:
-                    self.video_track.stop()
-                except Exception as e:
-                    self.logger.warning(f"Error stopping video track: {e}")
-                self.video_track = None
-                self.logger.info("Stopped video track (no active connections)")
+            if not self.connections:
+                if self.video_track:
+                    try:
+                        self.video_track.stop()
+                    except Exception as e:
+                        self.logger.warning(f"Error stopping video track: {e}")
+                    self.video_track = None
+                    self.logger.info("Stopped video track (no active connections)")
+
+                if self.audio_track:
+                    try:
+                        self.audio_track.stop()
+                        set_audio_track(None)  # Clear global reference
+                    except Exception as e:
+                        self.logger.warning(f"Error stopping audio track: {e}")
+                    self.audio_track = None
+                    self.logger.info("Stopped audio track (no active connections)")
 
     async def close_connection(self, session_id: str):
         """Explicitly close a connection"""
@@ -651,6 +685,10 @@ class WebRTCService:
             if self.video_track:
                 video_stats = self.video_track.get_stats()
 
+            audio_stats = None
+            if self.audio_track:
+                audio_stats = self.audio_track.get_stats()
+
         return {
             'enabled': True,
             'active_connections': len(connections_info),
@@ -658,6 +696,8 @@ class WebRTCService:
             'connections': connections_info,
             'video_track_active': self.video_track is not None,
             'video_stats': video_stats,
+            'audio_track_active': self.audio_track is not None,
+            'audio_stats': audio_stats,
             'config': {
                 'target_fps': self.config.target_fps,
                 'max_bitrate': self.config.max_bitrate,
