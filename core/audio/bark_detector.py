@@ -87,6 +87,11 @@ class BarkDetector:
     def start(self):
         """Start the detector"""
         self.is_running = True
+        # Pre-load classifier at startup (not on first bark) to avoid
+        # blocking the detection loop for ~10s while tensorflow initializes
+        if self.enable_emotion and not self._classifier_loaded:
+            logger.info("Pre-loading emotion classifier...")
+            self._load_classifier()
         logger.info("BarkDetector started")
 
     def stop(self):
@@ -172,12 +177,20 @@ class BarkDetector:
             duration_ms=gate_result['duration_ms']
         )
 
-        # Stage 2: Emotion classification (optional)
-        if self.enable_emotion and self._audio_buffer:
+        # Stage 2: Emotion classification (optional, non-blocking)
+        # Run in-line but with timing guard — if inference is too slow on Pi,
+        # skip it and let the bark through without emotion data.
+        if self.enable_emotion and self._classifier_loaded and self._audio_buffer:
+            t0 = time.time()
             emotion_result = self._classify_emotion()
+            elapsed_ms = (time.time() - t0) * 1000
             if emotion_result:
                 event.emotion = emotion_result['emotion']
                 event.emotion_confidence = emotion_result['confidence']
+                logger.debug(f"Emotion: {event.emotion} ({event.emotion_confidence:.2f}) in {elapsed_ms:.0f}ms")
+            if elapsed_ms > 500:
+                logger.warning(f"Emotion classification too slow ({elapsed_ms:.0f}ms) — disabling")
+                self.enable_emotion = False
 
         # Stage 3: Record analytics
         if dog_id:
