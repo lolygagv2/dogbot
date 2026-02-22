@@ -73,14 +73,20 @@ class WIMZAudioTrack(MediaStreamTrack):
         self._stream: Optional[sd.InputStream] = None
         self._capture_thread: Optional[threading.Thread] = None
 
-        # Start audio capture
-        self._start_capture()
-
         # Subscribe to mode changes for auto-mute
         self.state.subscribe('mode_change', self._on_mode_change)
 
         # Set initial mute state based on current mode
-        self._update_mute_for_mode(self.state.get_mode())
+        current_mode = self.state.get_mode()
+        self._update_mute_for_mode(current_mode)
+
+        # Only start capture if current mode doesn't need the mic for bark detection.
+        # In bark-detection modes (silent_guardian, coach, mission), arecord owns the
+        # USB mic — starting capture here would cause "Device or resource busy" errors.
+        if current_mode in MUTED_MODES:
+            self.logger.info(f"Skipping audio capture — mode {current_mode.value} needs mic for bark detection")
+        else:
+            self._start_capture()
 
         self.logger.info(f"WIMZAudioTrack initialized (device={self._device_index}, muted={self._muted})")
 
