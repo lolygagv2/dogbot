@@ -150,6 +150,18 @@ class BarkDetector:
         if not gate_result['is_bark']:
             return None
 
+        # Stage 1b: Spectral filter — reject non-bark sounds
+        # Dog barks have dominant energy in 400-1800Hz band.
+        # Speech/clapping/ambient noise has more energy outside that band.
+        # Use buffered audio (includes the bark itself, not just current chunk).
+        if self._audio_buffer:
+            buffered = np.concatenate(self._audio_buffer[-3:])  # Last ~1s of audio
+            bark_score = self._spectral_bark_score(buffered)
+            if bark_score < 0.3:
+                logger.debug(f"Spectral reject: bark_score={bark_score:.2f} (need >=0.3)")
+                return None
+            logger.debug(f"Spectral pass: bark_score={bark_score:.2f}")
+
         # Bark detected! Build event
         event = BarkEvent(
             timestamp=time.time(),
@@ -183,6 +195,40 @@ class BarkDetector:
                    f"dog={event.dog_name or event.dog_id or 'unknown'}")
 
         return event
+
+    def _spectral_bark_score(self, audio_data: np.ndarray) -> float:
+        """
+        Compute how bark-like a sound is using spectral analysis.
+
+        Dog barks concentrate energy in 400-1800Hz. Returns ratio of energy
+        in the bark band vs total energy. Barks typically score 0.4-0.8,
+        speech/clapping/ambient score 0.1-0.3.
+
+        Args:
+            audio_data: Raw audio samples (expected 22050Hz sample rate)
+
+        Returns:
+            Score 0.0-1.0 (higher = more bark-like)
+        """
+        try:
+            # FFT on the audio chunk
+            fft = np.fft.rfft(audio_data)
+            magnitudes = np.abs(fft)
+            freqs = np.fft.rfftfreq(len(audio_data), d=1.0 / self._sample_rate)
+
+            # Bark frequency band: 400-1800Hz (fundamental + first harmonics)
+            bark_mask = (freqs >= 400) & (freqs <= 1800)
+            total_energy = np.sum(magnitudes ** 2)
+
+            if total_energy < 1e-10:
+                return 0.0
+
+            bark_energy = np.sum(magnitudes[bark_mask] ** 2)
+            return float(bark_energy / total_energy)
+
+        except Exception as e:
+            logger.debug(f"Spectral analysis error: {e}")
+            return 1.0  # Pass through on error
 
     def _classify_emotion(self) -> Optional[Dict[str, Any]]:
         """
