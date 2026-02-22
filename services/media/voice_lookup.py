@@ -13,6 +13,12 @@ VOICEMP3_BASE = "/home/morgan/dogbot/VOICEMP3"
 # Valid voice commands (matches app buttons)
 VOICE_TYPES = ['sit', 'down', 'come', 'stay', 'no', 'good', 'treat', 'quiet', 'speak', 'spin', 'crosses']
 
+# Alias map: voice_type -> actual default filename when {voice_type}.mp3 doesn't exist
+VOICE_FILE_MAP = {
+    'good': 'good_dog.mp3',
+    'down': 'lie_down.mp3',
+}
+
 
 def get_voice_path(voice_type: str, dog_id: str = None) -> str | None:
     """
@@ -46,6 +52,14 @@ def get_voice_path(voice_type: str, dog_id: str = None) -> str | None:
     if os.path.exists(default_path):
         logger.info(f"[VOICE] Using default: {default_path}")
         return default_path
+
+    # 2b. Try filename alias (good -> good_dog.mp3, down -> lie_down.mp3)
+    alias = VOICE_FILE_MAP.get(voice_type)
+    if alias:
+        alias_path = f"{talks_base}/default/{alias}"
+        if os.path.exists(alias_path):
+            logger.info(f"[VOICE] Using alias: {voice_type} -> {alias}")
+            return alias_path
 
     # 3. Not found
     logger.error(f"[VOICE] File NOT FOUND: {voice_type} (dog={dog_id}), tried: {default_path}")

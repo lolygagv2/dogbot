@@ -17,6 +17,8 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+from services.media.voice_lookup import VOICE_FILE_MAP
+
 logger = logging.getLogger(__name__)
 
 # Voice storage configuration - ALL voices in VOICEMP3/talks/
@@ -201,6 +203,14 @@ class VoiceManager:
         if default_path.exists():
             self.logger.debug(f"Using default voice: {default_path}")
             return str(default_path)
+
+        # Try filename alias (good -> good_dog.mp3, down -> lie_down.mp3)
+        alias = VOICE_FILE_MAP.get(command)
+        if alias:
+            alias_path = DEFAULT_VOICES_DIR / alias
+            if alias_path.exists():
+                self.logger.info(f"Using alias: {command} -> {alias}")
+                return str(alias_path)
 
         # Try with underscore variations
         command_underscore = command.replace(" ", "_")

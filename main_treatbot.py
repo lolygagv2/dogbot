@@ -35,6 +35,7 @@ from services.control.bluetooth_esc import BluetoothESCController
 from services.control.xbox_controller import get_xbox_service
 from services.cloud.relay_client import get_relay_client, configure_relay_from_yaml
 from services.streaming.webrtc import get_webrtc_service, configure_webrtc_from_yaml
+from services.streaming.audio_track import get_audio_track
 from api.server import run_server
 
 # Orchestrators
@@ -1633,10 +1634,20 @@ class TreatBotMain:
                 if self.bark_detector and self.bark_detector.enabled and self.bark_detector.is_running:
                     self.bark_detector.stop()
                     self.logger.info("🎤 Bark detection stopped (not needed in current mode)")
+                    # Resume WebRTC mic after bark detection releases it
+                    time.sleep(0.3)  # Wait for arecord cleanup
+                    audio_track = get_audio_track()
+                    if audio_track:
+                        audio_track.resume_capture()
 
             elif bark_needed and not (self.bark_detector and self.bark_detector.is_running):
                 # Need bark detection but it's not running - start it
                 if self.bark_detector and self.bark_detector.enabled:
+                    # Pause WebRTC mic to release USB device for bark detection (arecord)
+                    audio_track = get_audio_track()
+                    if audio_track:
+                        audio_track.pause_capture()
+                        time.sleep(0.5)  # Wait for ALSA device release
                     self.bark_detector.start()
                     self.logger.info("🎤 Bark detection started (needed for current mode)")
 

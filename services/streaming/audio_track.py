@@ -182,6 +182,42 @@ class WIMZAudioTrack(MediaStreamTrack):
         self._muted = muted
         self.logger.info(f"Audio track manually {'muted' if muted else 'unmuted'}")
 
+    def pause_capture(self):
+        """
+        Pause audio capture to release USB mic for bark detection.
+        Track continues sending silence via recv() (self._stream is None path).
+        """
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                self.logger.warning(f"Error stopping audio stream for pause: {e}")
+            self._stream = None
+            # Drain the queue so stale audio isn't sent on resume
+            while not self._audio_queue.empty():
+                try:
+                    self._audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self.logger.info("Audio capture paused (mic released for bark detection)")
+        else:
+            self.logger.debug("Audio capture already paused")
+
+    def resume_capture(self):
+        """
+        Resume audio capture after bark detection releases the mic.
+        Re-opens the USB mic via sounddevice.
+        """
+        if self._stream is None and self._running:
+            self._start_capture()
+            if self._stream is not None:
+                self.logger.info("Audio capture resumed (mic reclaimed from bark detection)")
+            else:
+                self.logger.warning("Audio capture resume failed - stream could not start")
+        else:
+            self.logger.debug("Audio capture already running")
+
     async def recv(self) -> AudioFrame:
         """
         Receive next audio frame for WebRTC transmission.
