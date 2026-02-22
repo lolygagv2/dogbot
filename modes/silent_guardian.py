@@ -384,9 +384,11 @@ class SilentGuardianMode:
             logger.debug(f"Ignoring quiet bark: {loudness_db:.1f}dB < {loudness_threshold}dB")
             return
 
-        if confidence < confidence_minimum:
-            logger.debug(f"Ignoring low-confidence: {confidence:.2f} < {confidence_minimum}")
-            return
+        # Emotion classifier enriches bark events for logging/analytics only.
+        # It must NOT gate Silent Guardian responses — all barks passing the
+        # loudness threshold should trigger intervention regardless of emotion confidence.
+        if confidence > 0:
+            logger.info(f"Bark emotion: conf={confidence:.2f} (logged, not gating)")
 
         logger.info(f"Bark detected: {dog_name or dog_id or 'unknown'} (conf: {confidence:.2f}, loud: {loudness_db:.1f}dB)")
         self.last_bark_time = time.time()

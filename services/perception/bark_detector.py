@@ -351,7 +351,10 @@ class BarkDetectorService:
 
                     if bark_event:
                         # Bark detected! Build result dict for handler
-                        loudness_db = 20 * np.log10(max(audio_energy, 1e-10))
+                        # Use peak energy from bark gate (not current chunk energy,
+                        # which has already dropped to ambient by grace period end)
+                        peak = bark_event.peak_energy or audio_energy
+                        loudness_db = 20 * np.log10(max(peak, 1e-10))
 
                         result = {
                             'emotion': bark_event.emotion or 'unknown',

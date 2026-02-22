@@ -681,10 +681,16 @@ class TreatBotMain:
 
             elif event.type == EventType.AUDIO:
                 if event.subtype == 'bark_detected':
+                    # Only forward barks that meet minimum loudness threshold
+                    # Prevents speech/ambient noise from showing as bark in app
+                    loudness_db = event.data.get('loudness_db', -30)
+                    if loudness_db < -20:
+                        return  # Too quiet — likely speech or ambient noise
                     event_type = 'bark'
                     event_data = {
                         'emotion': event.data.get('emotion'),
                         'confidence': event.data.get('confidence', 0),
+                        'loudness_db': loudness_db,
                     }
                     should_throttle = True
 
@@ -1553,15 +1559,24 @@ class TreatBotMain:
             # BUILD 34: Send 'mode_changed' event (not 'status_update') for proper app sync
             if self.relay_client and self.relay_client.connected:
                 import time
+                # Use contract mode names (must match telemetry mode_map)
+                _mode_map = {
+                    "idle": "idle", "silent_guardian": "guardian",
+                    "coach": "training", "mission": "mission",
+                    "manual": "manual", "photography": "manual",
+                    "emergency": "manual"
+                }
                 locked = data.get('locked', False)
+                contract_new = _mode_map.get(new_mode, new_mode)
+                contract_prev = _mode_map.get(previous_mode, previous_mode)
                 self.relay_client.send_event('mode_changed', {
-                    'mode': new_mode,
-                    'previous_mode': previous_mode,
+                    'mode': contract_new,
+                    'previous_mode': contract_prev,
                     'locked': locked,
                     'reason': reason,
                     'timestamp': time.time()
                 })
-                self.logger.info(f"📱 Mode changed event sent: {previous_mode} -> {new_mode} (locked={locked})")
+                self.logger.info(f"📱 Mode changed event sent: {contract_prev} -> {contract_new} (locked={locked})")
 
             # Play voice announcement for mode change
             self._announce_mode(new_mode)
