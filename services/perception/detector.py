@@ -585,9 +585,12 @@ class DetectorService:
                     self.logger.info(f"Frame captured: {frame.shape}")
 
                 # Determine if AI processing should run
-                # AI runs in SILENT_GUARDIAN, COACH, and MISSION modes
-                ai_modes = [SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION]
-                run_ai = current_mode in ai_modes
+                # Full AI: COACH, MISSION (detection + pose + behavior)
+                # Lightweight AI: SILENT_GUARDIAN (detection only, no behavior classification)
+                # No AI: IDLE, MANUAL (just frame capture for WebRTC)
+                full_ai_modes = [SystemMode.COACH, SystemMode.MISSION]
+                lightweight_ai_mode = (current_mode == SystemMode.SILENT_GUARDIAN)
+                run_full_ai = current_mode in full_ai_modes
 
                 dogs = []
                 poses = []
@@ -595,8 +598,7 @@ class DetectorService:
                 dog_assignments = {}
                 aruco_markers = []
 
-                if run_ai:
-                    # Full AI processing for guardian/coach modes
+                if run_full_ai or lightweight_ai_mode:
                     # Detect ArUco markers for dog identification
                     aruco_markers = self._detect_aruco_markers(frame)
 
@@ -608,7 +610,11 @@ class DetectorService:
                         }, 'detector_service')
 
                     # Process frame with dog identification
-                    result = self.ai.process_frame_with_dogs(frame, aruco_markers)
+                    # Silent Guardian: skip_behavior=True (no pose analysis, no geometric
+                    # classifier, no temporal voting — frees CPU for emotion classifier)
+                    result = self.ai.process_frame_with_dogs(
+                        frame, aruco_markers, skip_behavior=lightweight_ai_mode
+                    )
                     dogs = result.get('detections', [])
                     poses = result.get('poses', [])
                     behaviors = result.get('behaviors', [])
@@ -630,8 +636,13 @@ class DetectorService:
 
                 # CRITICAL: Minimum loop interval to prevent Hailo driver exhaustion
                 # Primary rate limiting is in AI controller, this is a safety backstop
-                # Target ~10 FPS max to leave headroom for Hailo DMA operations
-                time.sleep(0.050)  # 50ms minimum between frames (20 FPS cap)
+                if lightweight_ai_mode:
+                    # Silent Guardian: ~3 FPS — enough for dog presence/ArUco tracking,
+                    # frees CPU cores for emotion classifier inference
+                    time.sleep(0.300)
+                else:
+                    # Full AI modes: ~20 FPS cap, leaves headroom for Hailo DMA
+                    time.sleep(0.050)
 
                 # Process results
                 if dogs:

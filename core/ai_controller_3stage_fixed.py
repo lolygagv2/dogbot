@@ -305,19 +305,22 @@ class AI3StageControllerFixed:
             return False
 
 
-    def process_frame_with_dogs(self, frame_4k: np.ndarray, aruco_markers: List[Tuple[int, float, float]] = None) -> Dict:
+    def process_frame_with_dogs(self, frame_4k: np.ndarray, aruco_markers: List[Tuple[int, float, float]] = None,
+                                skip_behavior: bool = False) -> Dict:
         """
         Process frame with dog identification using ArUco markers
 
         Args:
             frame_4k: Input frame
             aruco_markers: List of (marker_id, cx, cy) tuples from ArUco detection
+            skip_behavior: If True, skip Stage 2-3 (pose analysis + behavior classification).
+                          Used by Silent Guardian which only needs dog detection for bark attribution.
 
         Returns:
             Dict with detections, poses, behaviors, and dog assignments
         """
         # Get basic detections
-        detections, poses, behaviors = self.process_frame(frame_4k)
+        detections, poses, behaviors = self.process_frame(frame_4k, skip_behavior=skip_behavior)
 
         result = {
             'detections': detections,
@@ -372,10 +375,15 @@ class AI3StageControllerFixed:
         """Generate progress report for a specific dog"""
         return self.dog_database.generate_progress_report(marker_id)
 
-    def process_frame(self, frame_4k: np.ndarray) -> Tuple[List[Detection], List[PoseKeypoints], List[BehaviorResult]]:
+    def process_frame(self, frame_4k: np.ndarray, skip_behavior: bool = False) -> Tuple[List[Detection], List[PoseKeypoints], List[BehaviorResult]]:
         """
         Process full pipeline on 4K frame using single-model inference
         Returns: (detections, poses, behaviors)
+
+        Args:
+            frame_4k: Input frame
+            skip_behavior: If True, skip Stage 3 behavior analysis (geometric classifier,
+                          temporal voting, LSTM). Used by Silent Guardian to save CPU.
 
         CRITICAL: Rate-limited to prevent Hailo driver crashes.
         The Hailo DMA buffer allocation fails if inference is called too frequently.
@@ -407,6 +415,11 @@ class AI3StageControllerFixed:
                 return self._cached_result
 
             # Stage 3: Analyze behaviors from pose history (pass frame for validation)
+            # Skip in lightweight mode (Silent Guardian) to free CPU for emotion classifier
+            if skip_behavior:
+                self._cached_result = (detections, poses, [])
+                return self._cached_result
+
             behaviors = self._stage3_analyze_behavior(poses, frame_4k)
 
             # Cache the result

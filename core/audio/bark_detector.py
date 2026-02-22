@@ -11,6 +11,8 @@ This is the main interface used by all modes/missions.
 
 import time
 import logging
+import threading
+import queue
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
@@ -71,6 +73,14 @@ class BarkDetector:
         self._classifier = None
         self._classifier_loaded = False
 
+        # Background emotion classification thread
+        self._emotion_queue: queue.Queue = queue.Queue(maxsize=2)
+        self._emotion_thread: Optional[threading.Thread] = None
+        self._emotion_stop = threading.Event()
+        # Auto-disable timeout: raised from 500ms to 2000ms because with
+        # SG lightweight pipeline freeing CPU, inference should be ~200-500ms
+        self._emotion_timeout_ms = 2000
+
         # Stage 3: Analytics
         self.analytics = BarkAnalytics()
 
@@ -92,11 +102,27 @@ class BarkDetector:
         if self.enable_emotion and not self._classifier_loaded:
             logger.info("Pre-loading emotion classifier...")
             self._load_classifier()
-        logger.info("BarkDetector started")
+
+        # Start background emotion classification thread
+        if self.enable_emotion and self._classifier:
+            self._emotion_stop.clear()
+            self._emotion_thread = threading.Thread(
+                target=self._emotion_worker,
+                daemon=True,
+                name="EmotionClassifier"
+            )
+            self._emotion_thread.start()
+            logger.info("Emotion classifier background thread started")
+
+        logger.info(f"BarkDetector started (emotion={self.enable_emotion}, classifier={'loaded' if self._classifier else 'FAILED'})")
 
     def stop(self):
         """Stop the detector"""
         self.is_running = False
+        # Stop emotion thread
+        self._emotion_stop.set()
+        if self._emotion_thread and self._emotion_thread.is_alive():
+            self._emotion_thread.join(timeout=3.0)
         logger.info("BarkDetector stopped")
 
     def _load_classifier(self):
@@ -177,20 +203,30 @@ class BarkDetector:
             duration_ms=gate_result['duration_ms']
         )
 
-        # Stage 2: Emotion classification (optional, non-blocking)
-        # Run in-line but with timing guard — if inference is too slow on Pi,
-        # skip it and let the bark through without emotion data.
+        # Stage 2: Emotion classification (async, non-blocking)
+        # Submit audio to background thread — BarkEvent fires immediately without
+        # emotion data. Follow-up bark_emotion event published when classification
+        # completes (typically 200-500ms with SG lightweight pipeline freeing CPU).
         if self.enable_emotion and self._classifier_loaded and self._audio_buffer:
-            t0 = time.time()
-            emotion_result = self._classify_emotion()
-            elapsed_ms = (time.time() - t0) * 1000
-            if emotion_result:
-                event.emotion = emotion_result['emotion']
-                event.emotion_confidence = emotion_result['confidence']
-                logger.debug(f"Emotion: {event.emotion} ({event.emotion_confidence:.2f}) in {elapsed_ms:.0f}ms")
-            if elapsed_ms > 500:
-                logger.warning(f"Emotion classification too slow ({elapsed_ms:.0f}ms) — disabling")
-                self.enable_emotion = False
+            audio_snapshot = [chunk.copy() for chunk in self._audio_buffer]
+            emotion_job = {
+                'audio_chunks': audio_snapshot,
+                'bark_event': event,
+                'dog_id': dog_id,
+                'dog_name': dog_name
+            }
+            try:
+                # Non-blocking put — drop if queue full (previous job still running)
+                self._emotion_queue.put_nowait(emotion_job)
+                logger.info("Emotion: submitted to background thread")
+            except queue.Full:
+                logger.info("Emotion: skipped (background thread busy)")
+        elif not self.enable_emotion:
+            logger.info("Emotion: skipped (disabled)")
+        elif not self._classifier_loaded:
+            logger.info("Emotion: skipped (not loaded)")
+        elif not self._audio_buffer:
+            logger.info("Emotion: skipped (no audio buffer)")
 
         # Stage 3: Record analytics
         if dog_id:
@@ -276,15 +312,18 @@ class BarkDetector:
 
             # Run classifier
             result = self._classifier.predict(audio, confidence_threshold=0.3)
+            logger.info(f"Classifier raw result: {result}")
 
             # Filter out 'notbark' - we already know it's a bark from Stage 1
             probs = result['all_probabilities']
             bark_emotions = {k: v for k, v in probs.items() if k != 'notbark'}
 
             if not bark_emotions:
+                logger.info("Classifier returned only 'notbark' — no bark emotions")
                 return None
 
             top_emotion = max(bark_emotions, key=bark_emotions.get)
+            logger.info(f"Bark emotions: {bark_emotions}, top={top_emotion}")
             return {
                 'emotion': top_emotion,
                 'confidence': bark_emotions[top_emotion],
@@ -293,6 +332,122 @@ class BarkDetector:
 
         except Exception as e:
             logger.error(f"Emotion classification error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    def _emotion_worker(self):
+        """Background thread that processes emotion classification jobs.
+
+        Picks up audio snapshots from the queue, runs TF inference, and publishes
+        a follow-up 'bark_emotion' event on the bus when classification completes.
+        Auto-disables if inference consistently exceeds the timeout threshold.
+        """
+        logger.info("Emotion worker thread started")
+        slow_count = 0  # Track consecutive slow inferences
+
+        while not self._emotion_stop.is_set():
+            try:
+                # Block for up to 1s waiting for a job
+                try:
+                    job = self._emotion_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+
+                audio_chunks = job['audio_chunks']
+                bark_event = job['bark_event']
+                dog_id = job.get('dog_id')
+                dog_name = job.get('dog_name')
+
+                # Reconstruct audio from snapshot
+                if not audio_chunks:
+                    continue
+
+                t0 = time.time()
+                emotion_result = self._classify_emotion_from_chunks(audio_chunks)
+                elapsed_ms = (time.time() - t0) * 1000
+
+                if emotion_result:
+                    logger.info(f"Emotion (bg): {emotion_result['emotion']} "
+                               f"({emotion_result['confidence']:.2f}) in {elapsed_ms:.0f}ms")
+
+                    # Publish follow-up event on the bus
+                    try:
+                        from core.bus import publish_audio_event
+                        publish_audio_event('bark_emotion', {
+                            'emotion': emotion_result['emotion'],
+                            'confidence': emotion_result['confidence'],
+                            'all_emotions': emotion_result.get('all_emotions', {}),
+                            'dog_id': dog_id,
+                            'dog_name': dog_name,
+                            'classification_ms': elapsed_ms,
+                            'bark_timestamp': bark_event.timestamp
+                        })
+                    except Exception as e:
+                        logger.warning(f"Failed to publish bark_emotion event: {e}")
+                else:
+                    logger.info(f"Emotion (bg): None in {elapsed_ms:.0f}ms")
+
+                # Auto-disable guard: if consistently too slow, disable
+                if elapsed_ms > self._emotion_timeout_ms:
+                    slow_count += 1
+                    logger.warning(f"Emotion classification slow ({elapsed_ms:.0f}ms > "
+                                  f"{self._emotion_timeout_ms}ms) [{slow_count}/3]")
+                    if slow_count >= 3:
+                        logger.warning("Emotion classification consistently too slow — disabling")
+                        self.enable_emotion = False
+                        break
+                else:
+                    slow_count = 0  # Reset on successful fast inference
+
+            except Exception as e:
+                logger.error(f"Emotion worker error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+        logger.info("Emotion worker thread stopped")
+
+    def _classify_emotion_from_chunks(self, audio_chunks: List[np.ndarray]) -> Optional[Dict[str, Any]]:
+        """Run emotion classification on a snapshot of audio chunks.
+
+        Like _classify_emotion but takes explicit audio chunks instead of
+        reading from the shared buffer (thread-safe).
+        """
+        if self._classifier is None:
+            return None
+
+        try:
+            audio = np.concatenate(audio_chunks)
+
+            # Ensure correct length for model (3 seconds at 22050 Hz)
+            expected_len = int(3.0 * self._sample_rate)
+            if len(audio) > expected_len:
+                audio = audio[-expected_len:]
+            elif len(audio) < expected_len:
+                audio = np.pad(audio, (0, expected_len - len(audio)))
+
+            result = self._classifier.predict(audio, confidence_threshold=0.3)
+            logger.info(f"Classifier raw result: {result}")
+
+            probs = result['all_probabilities']
+            bark_emotions = {k: v for k, v in probs.items() if k != 'notbark'}
+
+            if not bark_emotions:
+                logger.info("Classifier returned only 'notbark'")
+                return None
+
+            top_emotion = max(bark_emotions, key=bark_emotions.get)
+            logger.info(f"Bark emotions: {bark_emotions}, top={top_emotion}")
+            return {
+                'emotion': top_emotion,
+                'confidence': bark_emotions[top_emotion],
+                'all_emotions': bark_emotions
+            }
+
+        except Exception as e:
+            logger.error(f"Emotion classification error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
     def process_energy_only(self, energy: float, dog_id: str = None,
