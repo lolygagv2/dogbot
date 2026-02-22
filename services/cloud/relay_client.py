@@ -503,6 +503,17 @@ class RelayClient:
             })
             return
 
+        # HOTFIX: Reset manual timeout on ANY app command while in MANUAL mode
+        # This prevents 5-minute timeout when app is actively controlling
+        if self.state.get_mode() == SystemMode.MANUAL:
+            try:
+                from orchestrators.mode_fsm import get_mode_fsm
+                fsm = get_mode_fsm()
+                if fsm:
+                    fsm.last_manual_input_time = time.time()
+            except Exception:
+                pass
+
         # Handle set_mode command directly here (app sends this on connect)
         # API Contract v1.3: Accept source and timestamp fields for diagnostics
         if command == 'set_mode':
@@ -514,7 +525,7 @@ class RelayClient:
                 try:
                     from datetime import datetime
                     new_mode = SystemMode(mode_name)
-                    prev_mode = self.state.get_mode()
+                    prev_mode = self.state.get_mode()  # HOTFIX: Capture BEFORE changing
                     server_ts = datetime.utcnow().isoformat() + 'Z'
 
                     # API Contract v1.3: Log with full context for debugging mode issues
@@ -523,7 +534,20 @@ class RelayClient:
                         f"source={source} | app_ts={app_timestamp} | server_ts={server_ts}"
                     )
 
-                    self.state.set_mode(new_mode, f"App command: {mode_name} (source={source})")
+                    success = self.state.set_mode(new_mode, f"App command: {mode_name} (source={source})")
+
+                    # HOTFIX: Update ModeFSM context when entering MANUAL via app
+                    if success and mode_name == 'manual':
+                        try:
+                            from orchestrators.mode_fsm import get_mode_fsm
+                            fsm = get_mode_fsm()
+                            if fsm:
+                                fsm.pre_manual_mode = prev_mode
+                                fsm.last_manual_input_time = time.time()
+                                self.logger.info(f"☁️ ModeFSM updated: pre_manual_mode={prev_mode.value}, timeout reset (source={source})")
+                        except Exception as e:
+                            self.logger.warning(f"Could not update ModeFSM: {e}")
+
                     await self._send({
                         'type': 'command_ack',
                         'command': command,

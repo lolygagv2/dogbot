@@ -1647,11 +1647,21 @@ class TreatBotMain:
         """Handle system events (controller connect/disconnect, etc.)"""
         try:
             if event.subtype == 'controller_disconnected':
-                # Controller disconnected - return to IDLE mode
                 current_mode = self.state.get_mode()
                 if current_mode == SystemMode.MANUAL:
-                    self.logger.info("🎮 Xbox controller disconnected - returning to IDLE")
-                    self.state.set_mode(SystemMode.IDLE, "Controller disconnected")
+                    # HOTFIX: Only revert if no app user is connected — app owns mode control when connected
+                    app_connected = False
+                    try:
+                        if self.relay_client and hasattr(self.relay_client, '_app_connected'):
+                            app_connected = self.relay_client._app_connected
+                    except Exception:
+                        pass
+
+                    if app_connected:
+                        self.logger.info("🎮 Xbox controller disconnected - app is connected, keeping MANUAL mode")
+                    else:
+                        self.logger.info("🎮 Xbox controller disconnected - no app connected, returning to IDLE")
+                        self.state.set_mode(SystemMode.IDLE, "Controller disconnected, no app")
 
             elif event.subtype == 'controller_connected':
                 # Controller connected - switch to Manual mode
