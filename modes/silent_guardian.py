@@ -541,15 +541,14 @@ class SilentGuardianMode:
             )
             return
 
-        # Check for bark during intervention - restart sequence
+        # Bark during intervention — reset quiet timer but DON'T replay commands.
+        # The "quiet" command was already given; replaying it on every bark creates
+        # a spam loop. Just reset the quiet countdown so the dog must be quiet again.
         if self.bark_during_intervention:
-            logger.info(f"Restarting Level {self.current_escalation_level} sequence due to bark")
-            self.intervention_step = 0
-            self.last_step_time = 0.0
+            logger.info(f"Bark during Level {self.current_escalation_level} — resetting quiet timer (not restarting sequence)")
             self.bark_during_intervention = False
-            self.quiet_start_time = 0.0
+            self.quiet_start_time = time.time()
             self.quiet_periods_achieved = 0
-            # Fall through to execute step 0
 
         # Route to level-specific handler
         if self.current_escalation_level == 1:
