@@ -1,5 +1,5 @@
-# Celebration sequence for down/lie behavior
-name: celebrate_down
+# Celebration sequence for laydown/lie behavior
+name: celebrate_laydown
 description: "Celebration sequence when dog lies down successfully"
 version: "1.0"
 
@@ -31,7 +31,7 @@ steps:
     params:
       count: 1
       dog_id: "$dog_id"
-      reason: "down_reward"
+      reason: "laydown_reward"
 
   - type: wait
     duration: 2.0
@@ -41,4 +41,4 @@ metadata:
   interrupt_safe: false
   priority: high
   category: "reward"
-  behavior: "down"
+  behavior: "laydown"

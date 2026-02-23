@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 import queue
+from fractions import Fraction
 from typing import Optional
 
 import numpy as np
@@ -155,11 +156,17 @@ class WIMZAudioTrack(MediaStreamTrack):
             pass
 
     def _update_mute_for_mode(self, mode: SystemMode):
-        """Update mute state based on current mode"""
+        """Update mute state and manage capture lifecycle based on current mode"""
         should_mute = mode in MUTED_MODES
         if should_mute != self._muted:
             self._muted = should_mute
-            self.logger.info(f"Audio track {'muted' if should_mute else 'unmuted'} for mode {mode.value}")
+            if should_mute:
+                # AI modes need the mic for bark detection — release it
+                self.pause_capture()
+            else:
+                # Non-AI mode — reclaim the mic for streaming
+                self.resume_capture()
+            self.logger.info(f"Audio track {'muted + paused' if should_mute else 'unmuted + resumed'} for mode {mode.value}")
 
     def mute_for_ptt(self, duration_seconds: float):
         """
@@ -254,7 +261,7 @@ class WIMZAudioTrack(MediaStreamTrack):
         frame = AudioFrame.from_ndarray(audio_data.T, format='s16', layout='mono')
         frame.pts = pts
         frame.sample_rate = SAMPLE_RATE
-        frame.time_base = f'1/{SAMPLE_RATE}'
+        frame.time_base = Fraction(1, SAMPLE_RATE)
 
         # Yield to event loop periodically to maintain timing
         await asyncio.sleep(FRAME_DURATION_MS / 1000.0)

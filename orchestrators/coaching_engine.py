@@ -99,7 +99,7 @@ class CoachingEngine:
     # Default tricks for rotation (loaded from config at runtime)
     # These are fallbacks if config not loaded
     # NOTE: 'crosses' removed - unreliable detection
-    DEFAULT_TRICKS = ['sit', 'down', 'spin', 'speak']
+    DEFAULT_TRICKS = ['sit', 'laydown', 'come', 'spin', 'speak']
 
     # Speak trick settings (loaded from config)
     SPEAK_TIMEOUT = 5.0      # Seconds to wait for barks
@@ -126,8 +126,7 @@ class CoachingEngine:
         self.TRICKS = self.interpreter.get_all_tricks()
         if not self.TRICKS:
             self.TRICKS = self.DEFAULT_TRICKS
-        # Filter to only coachable tricks (exclude 'stand' for now)
-        self.TRICKS = [t for t in self.TRICKS if t not in ['stand']]
+        # All tricks from config are now coachable (stand renamed to come)
         logger.info(f"Available tricks for coaching: {self.TRICKS}")
 
         # Configuration - load from interpreter's trick_rules.yaml

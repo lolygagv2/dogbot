@@ -11,12 +11,13 @@ logger = logging.getLogger(__name__)
 VOICEMP3_BASE = "/home/morgan/dogbot/VOICEMP3"
 
 # Valid voice commands (matches app buttons)
-VOICE_TYPES = ['sit', 'down', 'come', 'stay', 'no', 'good', 'treat', 'quiet', 'speak', 'spin', 'crosses']
+VOICE_TYPES = ['sit', 'laydown', 'come', 'stay', 'no', 'good', 'treat', 'quiet', 'speak', 'spin']
 
 # Alias map: voice_type -> actual default filename when {voice_type}.mp3 doesn't exist
 VOICE_FILE_MAP = {
     'good': 'good_dog.mp3',
-    'down': 'lie_down.mp3',
+    'laydown': 'lie_down.mp3',
+    'down': 'lie_down.mp3',  # Legacy alias
 }
 
 

@@ -19,7 +19,7 @@ tricks:
     difficulty: 1
     audio_command: "sit.mp3"
 
-  down:
+  laydown:
     description: "Dog lies down (any position)"
     required_behavior: "lie"
     hold_duration_sec: 1.5
@@ -29,15 +29,15 @@ tricks:
     difficulty: 2
     audio_command: "lie_down.mp3"
 
-  stand:
-    description: "Dog stands on all fours"
+  come:
+    description: "Dog comes to robot (stands facing)"
     required_behavior: "stand"
-    hold_duration_sec: 2.0        # Longer hold - standing is natural
+    hold_duration_sec: 1.5        # Shorter than old stand - just needs to arrive
     detection_window_sec: 10
     alternative_behaviors: []
-    confidence_threshold: 0.70
+    confidence_threshold: 0.65
     difficulty: 1
-    audio_command: "stand.mp3"
+    audio_command: "come.mp3"
 
   # ===== ADVANCED TRICKS =====
   # NOTE: "crosses" trick REMOVED - unreliable detection, dogs don't cross paws on command

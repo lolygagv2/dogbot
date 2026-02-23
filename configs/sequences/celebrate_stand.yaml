@@ -1,6 +1,6 @@
-# Celebration sequence for stand behavior
-name: celebrate_stand
-description: "Celebration sequence when dog stands successfully"
+# Celebration sequence for come behavior
+name: celebrate_come
+description: "Celebration sequence when dog comes successfully"
 version: "1.0"
 
 steps:
@@ -31,7 +31,7 @@ steps:
     params:
       count: 1
       dog_id: "$dog_id"
-      reason: "stand_reward"
+      reason: "come_reward"
 
   - type: wait
     duration: 2.0
@@ -41,4 +41,4 @@ metadata:
   interrupt_safe: false
   priority: high
   category: "reward"
-  behavior: "stand"
+  behavior: "come"

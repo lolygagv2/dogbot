@@ -1727,6 +1727,16 @@ class TreatBotMain:
                         self.logger.debug(f"Skipping mode announcement - audio still playing after 3s")
                         return
 
+                    # Suppress bark detection BEFORE playing to prevent speaker echo
+                    # triggering false bark events (especially entering SG/Coach modes)
+                    try:
+                        from services.perception.bark_detector import get_bark_detector_service
+                        bark_svc = get_bark_detector_service()
+                        if bark_svc:
+                            bark_svc.suppress_detection(7.0)  # Audio + echo buffer
+                    except Exception:
+                        pass
+
                     result = self.usb_audio.play_file(audio_file)
                     if result.get('success'):
                         self.logger.info(f"🔊 Mode announcement: {mode}")

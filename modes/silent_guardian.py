@@ -42,6 +42,7 @@ from core.bark_frequency_tracker import get_bark_frequency_tracker
 from services.media.usb_audio import get_usb_audio_service, set_agc
 from services.reward.dispenser import get_dispenser_service
 from services.media.led import get_led_service
+from services.perception.bark_detector import get_bark_detector_service
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +369,16 @@ class SilentGuardianMode:
 
         if event.subtype != 'bark_detected':
             return
+
+        # Double-check speaker suppression: ignore bark events that slip through
+        # during speaker playback (belt-and-suspenders with detection-loop suppression)
+        try:
+            bark_svc = get_bark_detector_service()
+            if bark_svc.is_suppressed():
+                logger.debug("Ignoring bark event during speaker suppression")
+                return
+        except Exception:
+            pass
 
         # Extract bark info
         dog_id = event.data.get('dog_id')
@@ -846,7 +857,10 @@ class SilentGuardianMode:
             logger.info("Gave-up cooldown complete, returning to LISTENING state")
 
     def _play_audio(self, filename: str, wait: bool = True):
-        """Play audio file from talks directory
+        """Play audio file from talks directory with speaker echo suppression.
+
+        Suppresses bark detection during playback + 2s buffer to prevent
+        the robot's own speaker output from being classified as a bark.
 
         Args:
             filename: Audio filename (relative to talks dir or absolute)
@@ -863,11 +877,26 @@ class SilentGuardianMode:
 
             if os.path.exists(full_path):
                 if self.audio:
+                    # Suppress bark detection during playback + buffer
+                    # This prevents the mic from picking up the speaker output
+                    try:
+                        bark_svc = get_bark_detector_service()
+                        bark_svc.suppress_detection(7.0)  # Max 5s audio + 2s echo buffer
+                    except Exception:
+                        pass  # Don't let suppression failure block audio
+
                     self.audio.play_file(full_path)
                     logger.debug(f"Playing: {full_path}")
                     if wait:
                         # Wait for audio to finish (max 5s timeout)
                         self.audio.wait_for_completion(timeout=5.0)
+                        # Extend suppression for 2s after audio completes
+                        # to catch any mic echo/reverb
+                        try:
+                            bark_svc = get_bark_detector_service()
+                            bark_svc.suppress_detection(2.0)
+                        except Exception:
+                            pass
             else:
                 logger.warning(f"Audio file not found: {full_path}")
 

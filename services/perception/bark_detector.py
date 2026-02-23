@@ -97,6 +97,10 @@ class BarkDetectorService:
         self._last_known_dog_name = None
         self._last_known_dog_time = 0
 
+        # Speaker echo suppression: ignore audio while robot speaker is playing
+        # This prevents the robot's own voice commands from being detected as barks
+        self._speaker_suppress_until = 0.0
+
         # Statistics
         self.stats = {
             'total_barks': 0,
@@ -136,6 +140,26 @@ class BarkDetectorService:
         high = min(high_freq / nyquist, 0.99)  # Can't exceed Nyquist
         sos = butter(4, [low, high], btype='band', output='sos')
         return sosfilt(sos, audio)
+
+    def suppress_detection(self, duration_seconds: float):
+        """
+        Suppress bark detection for a duration (speaker echo suppression).
+
+        Called when the robot plays audio through its speaker to prevent
+        the mic from picking up the speaker output and classifying it as a bark.
+
+        Args:
+            duration_seconds: How long to suppress detection
+        """
+        suppress_until = time.time() + duration_seconds
+        # Only extend suppression, never shorten it
+        if suppress_until > self._speaker_suppress_until:
+            self._speaker_suppress_until = suppress_until
+            logger.info(f"Bark detection suppressed for {duration_seconds:.1f}s (speaker echo)")
+
+    def is_suppressed(self) -> bool:
+        """Check if detection is currently suppressed for speaker echo."""
+        return time.time() < self._speaker_suppress_until
 
     def initialize(self) -> bool:
         """
@@ -303,6 +327,10 @@ class BarkDetectorService:
 
                 if audio_chunk is not None:
                     detection_count += 1
+
+                    # Speaker echo suppression: skip processing while robot speaker is active
+                    if self.is_suppressed():
+                        continue
 
                     # Mode-aware bark detection: only process in active modes
                     current_mode = self.state.get_mode()

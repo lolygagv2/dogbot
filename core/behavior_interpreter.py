@@ -105,11 +105,10 @@ class BehaviorInterpreter:
 
         return {
             'sit': {'required_behavior': 'sit', 'hold_duration_sec': 1.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.65, 'audio_command': 'sit.mp3'},
-            'down': {'required_behavior': 'lie', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'lie_down.mp3'},
+            'laydown': {'required_behavior': 'lie', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'lie_down.mp3'},
+            'come': {'required_behavior': 'stand', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.65, 'audio_command': 'come.mp3'},
             'spin': {'required_behavior': 'spin', 'hold_duration_sec': 0.3, 'detection_window_sec': 15, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'spin.mp3'},
-            'stand': {'required_behavior': 'stand', 'hold_duration_sec': 2.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.60, 'audio_command': 'stand.mp3'},
             'speak': {'required_behavior': 'bark', 'hold_duration_sec': 0, 'detection_window_sec': 5, 'alternative_behaviors': [], 'confidence_threshold': 0.60, 'audio_command': 'speak.mp3', 'min_barks': 1, 'max_barks': 2},
-            # 'crosses' removed - unreliable detection
         }
 
     def _setup_event_subscription(self):
@@ -199,7 +198,7 @@ class BehaviorInterpreter:
         Check if current detection meets trick requirements.
 
         Args:
-            trick_name: Name of trick ('sit', 'down', etc.)
+            trick_name: Name of trick ('sit', 'laydown', 'come', etc.)
             dog_id: Ignored (kept for API compatibility)
 
         Returns:

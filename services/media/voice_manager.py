@@ -28,7 +28,7 @@ DEFAULT_VOICES_DIR = VOICES_BASE_DIR / "default"
 # Standard commands that can have custom voices
 STANDARD_COMMANDS = [
     "sit",
-    "down",
+    "laydown",
     "stay",
     "come",
     "good_dog",

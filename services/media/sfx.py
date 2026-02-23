@@ -241,7 +241,7 @@ class SfxService:
         """Play celebration sound for specific behavior"""
         celebration_sounds = {
             'sit': 'sit_reward',
-            'down': 'down_reward',
+            'laydown': 'laydown_reward',
             'stay': 'stay_reward',
             'good': 'good_dog',
             'excellent': 'excellent'

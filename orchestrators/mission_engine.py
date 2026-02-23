@@ -81,12 +81,13 @@ class Mission:
 
 
 # Maps mission JSON success_event pose names to trick_rules.yaml trick names
-# "Down" -> trick "down" -> behavior "lie" (interpreter handles internally)
+# "Down" -> trick "laydown" -> behavior "lie" (interpreter handles internally)
 POSE_TO_TRICK = {
     "Sit": "sit",
-    "Down": "down",
+    "Down": "laydown",
     "Spin": "spin",
-    "Stand": "stand",
+    "Stand": "come",
+    "Come": "come",
 }
 
 # BUILD 36: Mission name aliases - maps app/display names to actual mission filenames

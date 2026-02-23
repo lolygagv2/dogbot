@@ -69,8 +69,8 @@ class RewardLogic:
                 led_pattern='celebration',
                 sequence_name='celebrate'
             ),
-            'down': RewardPolicy(
-                behavior='down',
+            'laydown': RewardPolicy(
+                behavior='laydown',
                 min_duration=15.0,
                 require_quiet=False,  # Made flexible - check mission context
                 cooldown=30.0,
@@ -433,7 +433,7 @@ class RewardLogic:
         # Map common behavior names
         behavior_map = {
             'sitting': 'sit',
-            'lying_down': 'down',
+            'lying_down': 'laydown',
             'standing': 'stay'
         }
         behavior = behavior_map.get(behavior, behavior)
