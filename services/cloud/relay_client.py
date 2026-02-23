@@ -524,6 +524,7 @@ class RelayClient:
             if mode_name:
                 try:
                     from datetime import datetime
+                    from orchestrators.mode_fsm import get_mode_fsm
                     new_mode = SystemMode(mode_name)
                     prev_mode = self.state.get_mode()  # HOTFIX: Capture BEFORE changing
                     server_ts = datetime.utcnow().isoformat() + 'Z'
@@ -534,19 +535,17 @@ class RelayClient:
                         f"source={source} | app_ts={app_timestamp} | server_ts={server_ts}"
                     )
 
-                    success = self.state.set_mode(new_mode, f"App command: {mode_name} (source={source})")
-
-                    # HOTFIX: Update ModeFSM context when entering MANUAL via app
-                    if success and mode_name == 'manual':
-                        try:
-                            from orchestrators.mode_fsm import get_mode_fsm
-                            fsm = get_mode_fsm()
-                            if fsm:
-                                fsm.pre_manual_mode = prev_mode
-                                fsm.last_manual_input_time = time.time()
-                                self.logger.info(f"☁️ ModeFSM updated: pre_manual_mode={prev_mode.value}, timeout reset (source={source})")
-                        except Exception as e:
-                            self.logger.warning(f"Could not update ModeFSM: {e}")
+                    # Use mode_fsm.set_mode_override() to protect from FSM auto-transitions.
+                    # Without override, the FSM loop can revert SG/Coach back to IDLE
+                    # within seconds (e.g. coach_timeout with no dog detection).
+                    fsm = get_mode_fsm()
+                    if fsm:
+                        if mode_name == 'manual':
+                            fsm.pre_manual_mode = prev_mode
+                        success = fsm.set_mode_override(new_mode)
+                        self.logger.info(f"☁️ Mode override set via FSM: {mode_name} (source={source})")
+                    else:
+                        success = self.state.set_mode(new_mode, f"App command: {mode_name} (source={source})")
 
                     await self._send({
                         'type': 'command_ack',
