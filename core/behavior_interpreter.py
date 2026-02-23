@@ -55,6 +55,14 @@ class BehaviorInterpreter:
         self._last_update_time: float = 0.0
         self._reset_timestamp: float = 0.0  # Track when reset was called (for stale event filtering)
 
+        # Behavior debouncing: require multiple consecutive different-behavior
+        # detections before switching. Prevents single-frame flickers (e.g., one
+        # "stand" frame during sustained "lie") from resetting the hold timer.
+        self._pending_behavior: Optional[str] = None
+        self._pending_confidence: float = 0.0
+        self._pending_count: int = 0
+        self._debounce_threshold: int = 3  # Need 3 consecutive frames to switch
+
         # Default confidence thresholds (MUST be defined before _load_trick_rules)
         self.confidence_thresholds = {
             'stand': 0.60,
@@ -161,16 +169,46 @@ class BehaviorInterpreter:
                         return
 
                 if behavior != self._last_behavior:
-                    # New behavior - reset timer
-                    prev = self._last_behavior
-                    self._last_behavior = behavior
-                    self._behavior_start_time = now
-                    self._last_confidence = confidence
-                    # BUILD 38 DEBUG: Log behavior change
-                    logger.info(f"🎯 Behavior: {prev} → {behavior} (conf={confidence:.2f}) @ {now:.3f}")
+                    if self._last_behavior is None:
+                        # First detection after reset — accept immediately
+                        self._last_behavior = behavior
+                        self._behavior_start_time = now
+                        self._last_confidence = confidence
+                        self._pending_behavior = None
+                        self._pending_count = 0
+                        logger.info(f"🎯 Behavior: None → {behavior} (conf={confidence:.2f}) @ {now:.3f}")
+                    else:
+                        # DEBOUNCE: Require multiple consecutive different-behavior
+                        # detections before switching. Prevents single-frame flickers
+                        # (e.g., one "stand" during sustained "lie") from resetting
+                        # the hold timer.
+                        if behavior == self._pending_behavior:
+                            self._pending_count += 1
+                            self._pending_confidence = max(self._pending_confidence, confidence)
+                        else:
+                            self._pending_behavior = behavior
+                            self._pending_confidence = confidence
+                            self._pending_count = 1
+
+                        if self._pending_count >= self._debounce_threshold:
+                            # Confirmed behavior change
+                            prev = self._last_behavior
+                            self._last_behavior = behavior
+                            self._behavior_start_time = now
+                            self._last_confidence = self._pending_confidence
+                            self._pending_behavior = None
+                            self._pending_count = 0
+                            logger.info(f"🎯 Behavior: {prev} → {behavior} (conf={confidence:.2f}) @ {now:.3f}")
+                        else:
+                            # Not enough consecutive frames yet — keep current behavior
+                            # but still update the timestamp so detection isn't stale
+                            self._last_update_time = now
+                            return
                 else:
-                    # Same behavior - update confidence (keep max)
+                    # Same behavior - update confidence (keep max) and clear pending
                     self._last_confidence = max(self._last_confidence, confidence)
+                    self._pending_behavior = None
+                    self._pending_count = 0
 
                 self._last_update_time = now
 
@@ -189,8 +227,10 @@ class BehaviorInterpreter:
             self._behavior_start_time = 0.0
             self._last_confidence = 0.0
             self._last_update_time = 0.0
+            self._pending_behavior = None
+            self._pending_count = 0
+            self._pending_confidence = 0.0
             self._reset_timestamp = time.time()  # Events before this are stale
-            # BUILD 38 DEBUG: Log reset with previous state
             logger.info(f"🔄 RESET tracking (was: {old_behavior}, held: {old_hold:.1f}s) @ {self._reset_timestamp:.3f}")
 
     def check_trick(self, trick_name: str, dog_id: str = None) -> TrickCheckResult:

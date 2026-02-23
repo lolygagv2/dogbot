@@ -783,10 +783,13 @@ class DetectorService:
                     'timestamp': time.time()
                 }, 'detector_service')
 
-                # BUILD 40: Update dog tracker with behavior for video overlay display
+                # Update dog tracker with behavior for video overlay display
                 # This bridges behavior data to video_track.py so it can show "sit 34%"
-                if hasattr(self.ai, 'dog_tracker') and self.ai.dog_tracker and dog_name:
-                    self.ai.dog_tracker.update_dog_behavior(dog_name, behavior_name, confidence)
+                # Works for both ArUco-identified dogs (by name) and unidentified (by index)
+                if hasattr(self.ai, 'dog_tracker') and self.ai.dog_tracker:
+                    self.ai.dog_tracker.update_dog_behavior(
+                        dog_name, behavior_name, confidence, detection_idx=i
+                    )
 
                 # Log behavior to store
                 self.store.log_event('vision', 'behavior_detected', 'detector_service', {

@@ -282,12 +282,18 @@ class DogTracker:
         return best_match
 
     def _update_tracking(self, dog_id: int, bbox: List[float], timestamp: float, confidence: float, id_method: str = "persistence"):
-        """Update persistence tracking for a dog (Rule 2)"""
+        """Update persistence tracking for a dog (Rule 2).
+        Preserves behavior data set by update_dog_behavior()."""
+        existing = self.last_known_positions.get(dog_id, {})
         self.last_known_positions[dog_id] = {
             'time': timestamp,
             'bbox': bbox,
             'confidence': confidence,
-            'id_method': id_method
+            'id_method': id_method,
+            # Preserve behavior data from update_dog_behavior()
+            'behavior': existing.get('behavior', ''),
+            'behavior_confidence': existing.get('behavior_confidence', 0.0),
+            'keypoints': existing.get('keypoints', []),
         }
         self.active_dogs.add(dog_id)
 
@@ -393,7 +399,7 @@ class DogTracker:
             result[dog_name] = {
                 'bbox': tracking.get('bbox', []),
                 'name': display_name,
-                'confidence': tracking.get('confidence', 0.0),
+                'confidence': tracking.get('behavior_confidence', 0.0),
                 'id_method': id_method,
                 'behavior': tracking.get('behavior', ''),
                 'keypoints': tracking.get('keypoints', [])
@@ -401,11 +407,31 @@ class DogTracker:
 
         return result
 
-    def update_dog_behavior(self, dog_name: str, behavior: str, confidence: float, keypoints: list = None):
-        """Update behavior and keypoints for a tracked dog (called by behavior interpreter)"""
-        marker_id = self.dog_names.get(dog_name)
-        if marker_id and marker_id in self.last_known_positions:
+    def update_dog_behavior(self, dog_name: str, behavior: str, confidence: float,
+                            keypoints: list = None, detection_idx: int = None):
+        """Update behavior and keypoints for a tracked dog.
+
+        Handles both ArUco-identified dogs (by name) and unidentified dogs (by index).
+
+        Args:
+            dog_name: Dog name (e.g., "elsa") or None for unidentified
+            behavior: Detected behavior (sit, lie, stand, spin)
+            confidence: Behavior confidence
+            keypoints: Optional pose keypoints
+            detection_idx: Detection index for unidentified dogs
+        """
+        marker_id = None
+
+        # Try lookup by name first (ArUco-identified dogs)
+        if dog_name:
+            marker_id = self.dog_names.get(dog_name)
+
+        # Fallback: try unidentified dog marker_id convention
+        if marker_id is None and detection_idx is not None:
+            marker_id = -(detection_idx + 1000)
+
+        if marker_id is not None and marker_id in self.last_known_positions:
             self.last_known_positions[marker_id]['behavior'] = behavior
-            self.last_known_positions[marker_id]['confidence'] = confidence
+            self.last_known_positions[marker_id]['behavior_confidence'] = confidence
             if keypoints:
                 self.last_known_positions[marker_id]['keypoints'] = keypoints
