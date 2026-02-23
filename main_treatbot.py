@@ -705,12 +705,10 @@ class TreatBotMain:
 
             elif event.type == EventType.SYSTEM:
                 if event.subtype == 'mode_changed':
-                    event_type = 'mode'
-                    event_data = {
-                        'mode': event.data.get('mode'),
-                        'previous': event.data.get('previous'),
-                    }
-                    # Mode changes are not throttled
+                    # Mode changes are already sent via _on_mode_change() with proper
+                    # contract names (guardian, training, etc). Skip duplicate here to
+                    # avoid sending a second event with wrong/None mode values.
+                    pass
 
                 elif event.subtype == 'mission.started':
                     event_type = 'mission_progress'
@@ -755,8 +753,16 @@ class TreatBotMain:
                             pass
 
                     event_type = 'battery'
-                    # Get current mode for telemetry
-                    current_mode = self.state.get_mode().value if self.state else 'idle'
+                    # Get current mode for telemetry — use contract names
+                    # so the app recognizes them (guardian, training, etc.)
+                    _battery_mode_map = {
+                        "idle": "idle", "silent_guardian": "guardian",
+                        "coach": "training", "mission": "mission",
+                        "manual": "manual", "photography": "manual",
+                        "emergency": "manual"
+                    }
+                    internal_mode = self.state.get_mode().value if self.state else 'idle'
+                    current_mode = _battery_mode_map.get(internal_mode, internal_mode)
                     event_data = {
                         'level': event.data.get('percentage', 0),
                         'charging': event.data.get('charging', False) or event.subtype == 'battery_charging',
