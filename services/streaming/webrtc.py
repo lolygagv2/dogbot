@@ -78,6 +78,10 @@ class WebRTCService:
         self._lock = threading.Lock()
         self._detector = None  # Lazy loaded
 
+        # ICE connection type: "LAN", "WAN", or None (unknown/disconnected)
+        # Updated when ICE connects, cleared on disconnect. Used by telemetry.
+        self.connection_type: Optional[str] = None
+
         # Subscribe to camera reconfig pause/resume events
         self.bus.subscribe('vision', self._on_vision_event)
 
@@ -663,42 +667,68 @@ class WebRTCService:
         self.logger.info(f"Set remote description (answer) for session {session_id}")
 
     async def _log_ice_candidate_pair(self, pc: RTCPeerConnection, session_id: str):
-        """Log the selected ICE candidate pair type for latency diagnosis.
+        """Detect and log the selected ICE candidate pair type.
 
-        This tells us whether the connection is:
-        - host: direct LAN (fastest, ~1ms)
-        - srflx: STUN-assisted P2P (fast, ~10-50ms)
-        - relay: TURN relay (slow, adds 50-200ms+ RTT)
+        Sets self.connection_type to "LAN" or "WAN" and publishes a
+        webrtc_connection_type event so the relay can inform the app.
+
+        Connection types:
+        - host: direct LAN (fastest, ~1ms) -> "LAN"
+        - srflx: STUN-assisted P2P (fast, ~10-50ms) -> "LAN"
+        - relay: TURN relay (slow, adds 50-200ms+ RTT) -> "WAN"
         """
+        local_type = None
+        remote_type = None
+        local_addr = None
+        remote_addr = None
+
         try:
-            stats = await pc.getStats()
-            for report in stats.values():
-                if hasattr(report, 'type') and report.type == 'candidate-pair' and getattr(report, 'state', '') == 'succeeded':
-                    local_id = getattr(report, 'localCandidateId', None)
-                    remote_id = getattr(report, 'remoteCandidateId', None)
-                    local_type = "?"
-                    remote_type = "?"
-                    for s in stats.values():
-                        if hasattr(s, 'type') and s.type == 'local-candidate' and getattr(s, 'id', None) == local_id:
-                            local_type = getattr(s, 'candidateType', '?')
-                        if hasattr(s, 'type') and s.type == 'remote-candidate' and getattr(s, 'id', None) == remote_id:
-                            remote_type = getattr(s, 'candidateType', '?')
-                    rtt = getattr(report, 'currentRoundTripTime', None)
-                    rtt_str = f", RTT={rtt*1000:.0f}ms" if rtt else ""
-                    self.logger.info(
-                        f"[WEBRTC] ICE PAIR SELECTED for {session_id}: "
-                        f"local={local_type}, remote={remote_type}{rtt_str}"
-                    )
-                    if local_type == "relay" or remote_type == "relay":
-                        self.logger.warning(
-                            f"[WEBRTC] TURN RELAY in use — expect higher latency. "
-                            f"Consider checking NAT/firewall for P2P connectivity."
-                        )
-                    return
-            # Fallback: aiortc stats format may differ
-            self.logger.info(f"[WEBRTC] ICE connected for {session_id} (candidate pair details unavailable)")
+            # Dig into aiortc internals to get the nominated candidate pair
+            # Path: pc.__iceTransports -> transport._connection._nominated
+            ice_transports = getattr(pc, '_RTCPeerConnection__iceTransports', [])
+            for transport in ice_transports:
+                connection = getattr(transport, '_connection', None)
+                if connection is None:
+                    continue
+                nominated = getattr(connection, '_nominated', {})
+                for component, pair in nominated.items():
+                    local_type = getattr(pair.local_candidate, 'type', '?')
+                    remote_type = getattr(pair.remote_candidate, 'type', '?')
+                    local_addr = f"{pair.local_candidate.host}:{pair.local_candidate.port}"
+                    remote_addr = f"{pair.remote_candidate.host}:{pair.remote_candidate.port}"
+                    break  # Only need the first nominated pair
+                if local_type:
+                    break
         except Exception as e:
-            self.logger.debug(f"[WEBRTC] Could not log ICE pair for {session_id}: {e}")
+            self.logger.debug(f"[WEBRTC] Could not read ICE pair internals: {e}")
+
+        # Determine connection type
+        if local_type == "relay" or remote_type == "relay":
+            conn_type = "WAN"
+            self.logger.warning(
+                f"[WEBRTC] ICE PAIR for {session_id}: "
+                f"local={local_type}({local_addr}), remote={remote_type}({remote_addr}) -> TURN RELAY (WAN)"
+            )
+        elif local_type and local_type != "?":
+            conn_type = "LAN"
+            self.logger.info(
+                f"[WEBRTC] ICE PAIR for {session_id}: "
+                f"local={local_type}({local_addr}), remote={remote_type}({remote_addr}) -> {conn_type}"
+            )
+        else:
+            conn_type = "LAN"  # Default to LAN if we can't determine (likely local)
+            self.logger.info(f"[WEBRTC] ICE connected for {session_id} (pair details unavailable, assuming LAN)")
+
+        # Store and broadcast the connection type
+        self.connection_type = conn_type
+        publish_system_event('webrtc_connection_type', {
+            'session_id': session_id,
+            'connection_type': conn_type,
+            'local_type': local_type or '?',
+            'remote_type': remote_type or '?',
+            'local_addr': local_addr,
+            'remote_addr': remote_addr,
+        }, 'webrtc_service')
 
     async def _safe_cleanup_connection(self, session_id: str):
         """Safe cleanup wrapper that catches all exceptions to prevent crashes"""
@@ -725,9 +755,10 @@ class WebRTCService:
             self.logger.info(f"[WEBRTC] Cleaned up connection: {session_id}")
             self.logger.info(f"[WEBRTC] Active connections: {list(self.connections.keys())}")
 
-        # Stop video and audio tracks if no connections remain
+        # Clear connection type and stop tracks if no connections remain
         with self._lock:
             if not self.connections:
+                self.connection_type = None
                 if self.video_track:
                     try:
                         self.video_track.stop()
@@ -771,6 +802,7 @@ class WebRTCService:
         return {
             'enabled': True,
             'active_connections': len(connections_info),
+            'connection_type': self.connection_type,  # "LAN", "WAN", or None
             'max_connections': self.config.max_connections,
             'connections': connections_info,
             'video_track_active': self.video_track is not None,

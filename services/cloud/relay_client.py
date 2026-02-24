@@ -321,6 +321,11 @@ class RelayClient:
                     internal_mode = state_dict.get("mode", "idle")
                     contract_mode = mode_map.get(internal_mode, "idle")
 
+                    # Get WebRTC connection type (LAN/WAN) for app badge
+                    connection_type = None
+                    if self._webrtc_service:
+                        connection_type = self._webrtc_service.connection_type
+
                     # Send telemetry event
                     await self._send({
                         'event': 'status',
@@ -330,7 +335,8 @@ class RelayClient:
                             'temperature': hardware.get("cpu_temp", 0),
                             'mode': contract_mode,
                             'is_charging': hardware.get("is_charging", False),
-                            'treats_remaining': 15  # TODO: Get from dispenser
+                            'treats_remaining': 15,  # TODO: Get from dispenser
+                            'connection_type': connection_type,  # "LAN", "WAN", or null
                         },
                         'timestamp': datetime.utcnow().isoformat() + "Z"
                     })
