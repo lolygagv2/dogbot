@@ -21,6 +21,7 @@ import threading
 import cv2
 import io
 import time
+import socket
 
 # TreatBot imports
 from config.settings import SystemSettings
@@ -2138,6 +2139,20 @@ async def webrtc_status():
             "enabled": False,
             "error": str(e)
         }
+
+
+@app.get("/debug/latency")
+async def debug_latency():
+    """Ping-pong latency measurement endpoint.
+
+    The relay server and app can hit this to measure their RTT to the robot.
+    Returns server timestamp for round-trip calculation.
+    """
+    return {
+        "pong": True,
+        "timestamp": time.time(),
+        "device_id": socket.gethostname()
+    }
 
 
 @app.post("/webrtc/offer")

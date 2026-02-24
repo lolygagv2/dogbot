@@ -223,6 +223,23 @@ class WebRTCService:
             self._detector = get_detector_service()
         return self._detector
 
+    def _add_sdp_bandwidth(self, sdp: str) -> str:
+        """Add bandwidth constraint to SDP video section.
+
+        aiortc doesn't apply max_bitrate to the encoder automatically.
+        We inject b=AS:<kbps> into the video m-line section so the encoder
+        respects our configured bitrate limit.
+        """
+        bitrate_kbps = self.config.max_bitrate // 1000  # Convert bps to kbps
+        lines = sdp.split('\r\n')
+        result = []
+        for line in lines:
+            result.append(line)
+            # Add bandwidth constraint right after video m-line
+            if line.startswith('m=video'):
+                result.append(f'b=AS:{bitrate_kbps}')
+        return '\r\n'.join(result)
+
     def _create_rtc_configuration(self) -> RTCConfiguration:
         """Create RTC configuration with ICE servers"""
         ice_servers = []
@@ -326,12 +343,21 @@ class WebRTCService:
                 self.logger.info(f"[WEBRTC] Session {session_id} {state} - cleaning up (mode unchanged)")
                 await self._cleanup_connection(session_id)
 
-        # ICE candidate handler
+        # ICE candidate handler — log candidate types for latency diagnosis
         @pc.on("icecandidate")
         async def on_icecandidate(candidate):
             try:
-                if candidate and session_id in self.ice_callbacks:
-                    await self.ice_callbacks[session_id](candidate)
+                if candidate:
+                    # Parse candidate type from SDP string (host/srflx/prflx/relay)
+                    cand_str = candidate.candidate if hasattr(candidate, 'candidate') else str(candidate)
+                    cand_type = "unknown"
+                    for part in cand_str.split():
+                        if part in ("host", "srflx", "prflx", "relay"):
+                            cand_type = part
+                            break
+                    self.logger.info(f"[WEBRTC] ICE candidate: type={cand_type} | {cand_str[:80]}")
+                    if session_id in self.ice_callbacks:
+                        await self.ice_callbacks[session_id](candidate)
             except Exception as e:
                 self.logger.warning(f"[WEBRTC] ICE candidate callback error for {session_id}: {e}")
 
@@ -341,6 +367,9 @@ class WebRTCService:
             try:
                 state = pc.iceConnectionState
                 self.logger.info(f"[WEBRTC] ICE state {session_id}: {state}")
+                # Log selected candidate pair when connected
+                if state == "completed" or state == "connected":
+                    await self._log_ice_candidate_pair(pc, session_id)
                 # Proactively clean up on ICE failure to prevent crashes
                 if state in ["failed", "disconnected", "closed"]:
                     self.logger.warning(f"[WEBRTC] ICE {state} for {session_id}, scheduling cleanup...")
@@ -563,12 +592,20 @@ class WebRTCService:
                 self.logger.info(f"[WEBRTC] Session {session_id} {state} - cleaning up (mode unchanged)")
                 await self._cleanup_connection(session_id)
 
-        # ICE candidate handler
+        # ICE candidate handler — log candidate types for latency diagnosis
         @pc.on("icecandidate")
         async def on_icecandidate(candidate):
             try:
-                if candidate and session_id in self.ice_callbacks:
-                    await self.ice_callbacks[session_id](candidate)
+                if candidate:
+                    cand_str = candidate.candidate if hasattr(candidate, 'candidate') else str(candidate)
+                    cand_type = "unknown"
+                    for part in cand_str.split():
+                        if part in ("host", "srflx", "prflx", "relay"):
+                            cand_type = part
+                            break
+                    self.logger.info(f"[WEBRTC] ICE candidate: type={cand_type} | {cand_str[:80]}")
+                    if session_id in self.ice_callbacks:
+                        await self.ice_callbacks[session_id](candidate)
             except Exception as e:
                 self.logger.warning(f"[WEBRTC] ICE candidate callback error for {session_id}: {e}")
 
@@ -578,6 +615,8 @@ class WebRTCService:
             try:
                 state = pc.iceConnectionState
                 self.logger.info(f"[WEBRTC] ICE state {session_id}: {state}")
+                if state == "completed" or state == "connected":
+                    await self._log_ice_candidate_pair(pc, session_id)
                 if state in ["failed", "disconnected", "closed"]:
                     self.logger.warning(f"[WEBRTC] ICE {state} for {session_id}, scheduling cleanup...")
                     asyncio.create_task(self._safe_cleanup_connection(session_id))
@@ -589,15 +628,18 @@ class WebRTCService:
 
         self.logger.info(f"[WEBRTC] Active connections: {list(self.connections.keys())}")
 
-        # Create offer
+        # Create offer with bitrate enforcement
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
 
-        self.logger.info(f"[WEBRTC] Created offer for session {session_id}")
+        # Apply bandwidth constraint to SDP (aiortc doesn't do this automatically)
+        sdp = self._add_sdp_bandwidth(pc.localDescription.sdp)
+        bitrate_kbps = self.config.max_bitrate // 1000
+        self.logger.info(f"[WEBRTC] Created offer for {session_id} (b=AS:{bitrate_kbps} kbps)")
 
         return {
             "type": "offer",
-            "sdp": pc.localDescription.sdp
+            "sdp": sdp
         }
 
     async def handle_answer(self, session_id: str, sdp: dict):
@@ -620,6 +662,44 @@ class WebRTCService:
         )
         await pc.setRemoteDescription(answer)
         self.logger.info(f"Set remote description (answer) for session {session_id}")
+
+    async def _log_ice_candidate_pair(self, pc: RTCPeerConnection, session_id: str):
+        """Log the selected ICE candidate pair type for latency diagnosis.
+
+        This tells us whether the connection is:
+        - host: direct LAN (fastest, ~1ms)
+        - srflx: STUN-assisted P2P (fast, ~10-50ms)
+        - relay: TURN relay (slow, adds 50-200ms+ RTT)
+        """
+        try:
+            stats = await pc.getStats()
+            for report in stats.values():
+                if hasattr(report, 'type') and report.type == 'candidate-pair' and getattr(report, 'state', '') == 'succeeded':
+                    local_id = getattr(report, 'localCandidateId', None)
+                    remote_id = getattr(report, 'remoteCandidateId', None)
+                    local_type = "?"
+                    remote_type = "?"
+                    for s in stats.values():
+                        if hasattr(s, 'type') and s.type == 'local-candidate' and getattr(s, 'id', None) == local_id:
+                            local_type = getattr(s, 'candidateType', '?')
+                        if hasattr(s, 'type') and s.type == 'remote-candidate' and getattr(s, 'id', None) == remote_id:
+                            remote_type = getattr(s, 'candidateType', '?')
+                    rtt = getattr(report, 'currentRoundTripTime', None)
+                    rtt_str = f", RTT={rtt*1000:.0f}ms" if rtt else ""
+                    self.logger.info(
+                        f"[WEBRTC] ICE PAIR SELECTED for {session_id}: "
+                        f"local={local_type}, remote={remote_type}{rtt_str}"
+                    )
+                    if local_type == "relay" or remote_type == "relay":
+                        self.logger.warning(
+                            f"[WEBRTC] ⚠️ TURN RELAY in use — expect higher latency! "
+                            f"Consider checking NAT/firewall for P2P connectivity."
+                        )
+                    return
+            # Fallback: aiortc stats format may differ
+            self.logger.info(f"[WEBRTC] ICE connected for {session_id} (candidate pair details unavailable)")
+        except Exception as e:
+            self.logger.debug(f"[WEBRTC] Could not log ICE pair for {session_id}: {e}")
 
     async def _safe_cleanup_connection(self, session_id: str):
         """Safe cleanup wrapper that catches all exceptions to prevent crashes"""
