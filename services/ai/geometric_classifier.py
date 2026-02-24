@@ -194,18 +194,24 @@ class GeometricClassifier:
 
         # --- STAND detection ---
         # Wide aspect, legs below body
+        # Require STRONG keypoint evidence for stand — aspect alone is ambiguous
         if cfg.stand_min_aspect <= aspect_ratio <= cfg.stand_max_aspect:
-            scores["stand"] += 0.4
+            scores["stand"] += 0.3  # Reduced from 0.4 — stand is the "maybe" zone
         if head_y is not None and head_y < cfg.stand_head_max_y:
             scores["stand"] += 0.2
-        # Standing dogs have paws at bottom of bbox
+        # Standing dogs MUST have paws at bottom of bbox — this is the key differentiator
         if back_paw_y is not None and back_paw_y > 0.7:
-            scores["stand"] += 0.3
+            scores["stand"] += 0.35  # Increased — paw position is strong evidence
 
         # --- LIE detection ---
         # Very wide/flat aspect, body spread out
+        # EXTENDED range: front-facing sphinx pose can have aspect up to 1.05
         if aspect_ratio < cfg.lie_max_aspect:
             scores["lie"] += 0.5
+        elif aspect_ratio < 1.05:
+            # Borderline zone (0.95-1.05): give partial lie credit
+            # Front-facing lying dogs often land here
+            scores["lie"] += 0.3
         if head_y is not None and head_y > cfg.lie_head_min_y:
             scores["lie"] += 0.2
         # Lying dogs have body low in frame
@@ -228,26 +234,26 @@ class GeometricClassifier:
         Simple classification by aspect ratio only (height/width).
 
         Typical ranges for FRONT-FACING dogs (crowding robot for treats):
-        - Lying (sphinx pose): aspect < 0.95 (wider than tall, but not as flat as side-view)
-        - Standing: aspect 0.95 - 1.15 (roughly square)
+        - Lying (sphinx pose): aspect < 1.05 (wider than tall, front-facing can be nearly square)
+        - Standing: aspect 1.05 - 1.15 (very narrow range — stand is ambiguous)
         - Sitting: aspect > 1.15 (taller than wide)
         """
         cfg = self.config
 
-        # Log aspect ratio for tuning
-        logger.info(f"📐 Aspect ratio: {aspect_ratio:.2f} (lie<{cfg.lie_max_aspect:.2f}, stand<{cfg.stand_max_aspect:.2f}, sit>{cfg.sit_min_aspect:.2f})")
-
         if aspect_ratio < cfg.lie_max_aspect:
-            # Lower aspect = more confident it's lying
+            # Clearly lying — low aspect
             conf = 0.80 if aspect_ratio < 0.75 else 0.70
             return "lie", conf
+        elif aspect_ratio < 1.05:
+            # Borderline lie/stand zone — favor lie (front-facing sphinx)
+            return "lie", 0.60
         elif aspect_ratio >= cfg.sit_min_aspect:
             # Higher aspect = more confident it's sitting
             conf = 0.80 if aspect_ratio > 1.3 else 0.70
             return "sit", conf
         else:
-            # Middle range = standing (lower confidence)
-            return "stand", 0.60
+            # Narrow middle range = standing (lower confidence)
+            return "stand", 0.55
 
     def _get_average_y(self, norm_kpts: np.ndarray, indices: List[int],
                        confident_mask: np.ndarray) -> Optional[float]:
@@ -339,27 +345,28 @@ class GeometricClassifier:
             spin_score = 0.0
 
             # Large aspect ratio swings (side-to-front rotation)
-            if total_aspect_change > 0.25:
+            # RAISED thresholds — previous values triggered on lying dogs shifting
+            if total_aspect_change > 0.35:
                 spin_score += 0.25
-            if total_aspect_change > 0.45:
+            if total_aspect_change > 0.55:
                 spin_score += 0.2
-            if max_aspect_delta > 0.12:  # Single big change
+            if max_aspect_delta > 0.18:  # Single big change (was 0.12)
                 spin_score += 0.15
 
-            # Center movement (LOWERED from 50/100)
-            if total_center_movement > 25:
+            # Center movement (RAISED from 25/50)
+            if total_center_movement > 40:
                 spin_score += 0.2
-            if total_center_movement > 50:
+            if total_center_movement > 80:
                 spin_score += 0.15
 
             # Aspect range (spinning shows different profiles)
-            if aspect_range > 0.18:
+            if aspect_range > 0.25:
                 spin_score += 0.2
-            if aspect_range > 0.35:
+            if aspect_range > 0.40:
                 spin_score += 0.15
 
             # Width variation (spinning dog width changes)
-            if width_range > 25:
+            if width_range > 35:
                 spin_score += 0.15
 
             # Log for debugging
@@ -368,8 +375,18 @@ class GeometricClassifier:
                             f"center_move={total_center_movement:.0f}, "
                             f"aspect_range={aspect_range:.2f}, score={spin_score:.2f}")
 
-            # Detect spin with lower threshold (fast spins need sensitivity)
-            if spin_score >= 0.40:
+            # Suppress spin if aspect ratio is consistently low (dog is lying down)
+            # A spinning dog should have large aspect swings, not stable low aspect
+            mean_aspect = np.mean(aspects) if aspects else 1.0
+            if mean_aspect < 0.90 and aspect_range < 0.30:
+                # Dog is lying flat — bbox changes are from shifting, not spinning
+                if spin_score > 0.25:
+                    logger.debug(f"Spin suppressed (lying dog): mean_aspect={mean_aspect:.2f}, "
+                                f"aspect_range={aspect_range:.2f}, score={spin_score:.2f}")
+                return False, 0.0
+
+            # Require higher threshold to reduce false positives from natural movement
+            if spin_score >= 0.55:
                 confidence = min(0.80, 0.55 + spin_score * 0.3)
                 # Clear history after detection
                 history.clear()

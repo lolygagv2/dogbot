@@ -164,8 +164,8 @@ class CoachingEngine:
         self.dogs_in_view: Dict[str, dict] = {}
 
         # Detection timing config
-        # BUILD 38: Adjusted to 2.0s/55% per user feedback (1.5s/50% felt too fast)
-        self.detection_time_sec = 2.0      # Time dog must be visible
+        # Reduced from 2.0s to 1.5s — at 4-10 FPS, 2s felt unresponsive
+        self.detection_time_sec = 1.5      # Time dog must be visible
         self.presence_ratio_min = 0.55     # Min percentage in-frame
         self.stale_timeout_sec = 5.0       # Remove dog after this long unseen
 
@@ -182,10 +182,10 @@ class CoachingEngine:
         self.listening_for_barks = False
         self._listening_started_at: float = 0.0  # When bark listening started (for stale event filtering)
 
-        # Global session cooldown - only one automatic session per 3 minutes
+        # Global session cooldown - prevents rapid-fire automatic sessions
         # Guide button can reset this to allow manual triggering
         self._last_session_end: float = 0.0
-        self.global_session_cooldown_sec = 180.0  # 3 minutes between automatic sessions
+        self.global_session_cooldown_sec = 30.0  # 30 seconds between automatic sessions (was 180s — too long)
 
         logger.info("Coaching Engine initialized")
 
@@ -486,10 +486,14 @@ class CoachingEngine:
         """Wait for a dog to be visible and eligible"""
         now = time.time()
 
-        # Check global cooldown - only one session per 3 minutes unless reset by Guide button
+        # Check global cooldown
         time_since_last = now - self._last_session_end
         if self._last_session_end > 0 and time_since_last < self.global_session_cooldown_sec:
-            # Still in cooldown - don't start new sessions automatically
+            # Log every ~5 seconds so user/developer knows WHY it's waiting
+            if not hasattr(self, '_last_cooldown_log') or (now - self._last_cooldown_log) > 5.0:
+                remaining = self.global_session_cooldown_sec - time_since_last
+                logger.info(f"⏳ Session cooldown: {remaining:.0f}s remaining (dog visible but waiting)")
+                self._last_cooldown_log = now
             return
 
         # Collect all eligible dogs that meet presence requirements

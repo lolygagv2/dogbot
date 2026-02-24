@@ -658,8 +658,8 @@ class DetectorService:
                         behavior_confidence=0.0
                     )
 
-                # Small delay to prevent CPU overload
-                time.sleep(0.01)
+                # Removed extra 10ms sleep — the 50ms sleep above is sufficient
+                # and this was adding unnecessary latency to every detection cycle
 
             except Exception as e:
                 self.logger.error(f"Detection loop error: {e}")

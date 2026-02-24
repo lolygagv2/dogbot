@@ -55,13 +55,14 @@ class BehaviorInterpreter:
         self._last_update_time: float = 0.0
         self._reset_timestamp: float = 0.0  # Track when reset was called (for stale event filtering)
 
-        # Behavior debouncing: require multiple consecutive different-behavior
-        # detections before switching. Prevents single-frame flickers (e.g., one
-        # "stand" frame during sustained "lie") from resetting the hold timer.
+        # Behavior debouncing: require consecutive different-behavior detections
+        # before switching. Prevents single-frame flickers from resetting hold timer.
+        # Reduced from 3 to 2 — at 4-10 FPS with 0.5s cooldown, 3 frames took too
+        # long and prevented trick confirmation when aspect ratio flickered.
         self._pending_behavior: Optional[str] = None
         self._pending_confidence: float = 0.0
         self._pending_count: int = 0
-        self._debounce_threshold: int = 3  # Need 3 consecutive frames to switch
+        self._debounce_threshold: int = 2  # Need 2 consecutive frames to switch (was 3)
 
         # Default confidence thresholds (MUST be defined before _load_trick_rules)
         self.confidence_thresholds = {

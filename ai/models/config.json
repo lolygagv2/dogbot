@@ -3,7 +3,7 @@
   "T": 16,
   "behaviors": ["stand","sit","lie","spin"],
   "prob_th": 0.7,
-  "cooldown_s": {"stand":0.5,"sit":0.5,"lie":0.5,"spin":3},
+  "cooldown_s": {"stand":0.3,"sit":0.3,"lie":0.3,"spin":3},
   "aruco_dict": "DICT_4X4_1000",
   "dogs": [{"id":"elsa","marker_id":315},{"id":"bezik","marker_id":832}],
   "assume_other_if_two_boxes_one_marker": true,

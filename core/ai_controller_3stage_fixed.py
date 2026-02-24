@@ -163,9 +163,9 @@ class AI3StageControllerFixed:
         geo_config = GeometricConfig(
             sit_min_aspect=1.15,       # Sitting dogs are tall (raised from 1.05)
             sit_max_aspect=3.0,        # Very tall when sitting upright
-            stand_min_aspect=0.95,     # Narrowed range
+            stand_min_aspect=1.05,     # RAISED from 0.95 — narrows stand range, reduces lie/stand confusion
             stand_max_aspect=1.15,     # Up to sit threshold
-            lie_max_aspect=0.95,       # RAISED from 0.75 - front-facing sphinx ~0.9
+            lie_max_aspect=1.05,       # RAISED from 0.95 — front-facing sphinx can be nearly square
             cross_paw_max_distance=0.18,  # Kept but cross detection disabled
             min_keypoint_conf=0.25,
             high_conf_keypoints=8,
@@ -764,94 +764,99 @@ class AI3StageControllerFixed:
                         valid_dog_mask[dog_idx] = False
                         logger.debug(f"Dog {dog_idx} pose rejected: {validation.reason}")
 
-            tensor_data = []
+            # Skip LSTM inference entirely when geometric is forced — saves significant CPU
+            # LSTM result would just be overridden by geometric anyway
+            if self._force_geometric:
+                pass  # Skip straight to shared geometric classification loop below
+            else:
+                # Full LSTM path (currently disabled via _force_geometric=True)
+                tensor_data = []
 
-            for frame_idx, frame_poses in enumerate(sequence):
-                frame_data = []
-                for i in range(max_dogs):
-                    if i < len(frame_poses):
-                        pose = frame_poses[i]
-                        kpts = pose.keypoints
-                        if kpts.shape[0] >= 24 and kpts.shape[1] >= 2:
-                            pose_data = kpts[:24, :2].copy()
+                for frame_idx, frame_poses in enumerate(sequence):
+                    frame_data = []
+                    for i in range(max_dogs):
+                        if i < len(frame_poses):
+                            pose = frame_poses[i]
+                            kpts = pose.keypoints
+                            if kpts.shape[0] >= 24 and kpts.shape[1] >= 2:
+                                pose_data = kpts[:24, :2].copy()
 
-                            # Normalize keypoints RELATIVE TO BOUNDING BOX (as model was trained)
-                            det = pose.detection
-                            x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
-                            w = max(x2 - x1, 1e-6)
-                            h = max(y2 - y1, 1e-6)
+                                det = pose.detection
+                                x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
+                                w = max(x2 - x1, 1e-6)
+                                h = max(y2 - y1, 1e-6)
 
-                            pose_data[:, 0] = np.clip((pose_data[:, 0] - x1) / w, 0, 1)
-                            pose_data[:, 1] = np.clip((pose_data[:, 1] - y1) / h, 0, 1)
+                                pose_data[:, 0] = np.clip((pose_data[:, 0] - x1) / w, 0, 1)
+                                pose_data[:, 1] = np.clip((pose_data[:, 1] - y1) / h, 0, 1)
+                            else:
+                                pose_data = np.zeros((24, 2))
+                            frame_data.append(pose_data)
                         else:
-                            pose_data = np.zeros((24, 2))
-                        frame_data.append(pose_data)
-                    else:
-                        frame_data.append(np.zeros((24, 2)))
-                tensor_data.append(frame_data)
+                            frame_data.append(np.zeros((24, 2)))
+                    tensor_data.append(frame_data)
 
-            # Convert to tensor: (T, num_dogs, 24, 2)
-            tensor_input = torch.tensor(np.array(tensor_data), dtype=torch.float32)
+                tensor_input = torch.tensor(np.array(tensor_data), dtype=torch.float32)
+                tensor_input = tensor_input - 0.5
 
-            # Center the input around 0 (training data was mean-centered)
-            # Shift from [0, 1] to [-0.5, 0.5]
-            tensor_input = tensor_input - 0.5
+                T_len = len(tensor_data)
+                num_dogs = tensor_input.shape[1]
 
-            # Reshape for model: (num_dogs, T, 48)
-            # From (T, num_dogs, 24, 2) to (num_dogs, T, 24*2)
-            T_len = len(tensor_data)
-            num_dogs = tensor_input.shape[1]
+                tensor_input = tensor_input.transpose(0, 1)
+                tensor_input = tensor_input.reshape(num_dogs, T_len, -1)
 
-            tensor_input = tensor_input.transpose(0, 1)  # (num_dogs, T, 24, 2)
-            tensor_input = tensor_input.reshape(num_dogs, T_len, -1)  # (num_dogs, T, 48)
+                with torch.no_grad():
+                    output = self.behavior_model(tensor_input)
 
-            # Run TorchScript model
-            with torch.no_grad():
-                output = self.behavior_model(tensor_input)
+                probs = torch.softmax(output, dim=-1).numpy()
+                probs = np.clip(probs, 0.0, 0.98)
 
-            # Apply softmax to get probabilities
-            probs = torch.softmax(output, dim=-1).numpy()
+                if probs.ndim == 1:
+                    probs = probs.reshape(1, -1)
 
-            # Clamp probabilities to prevent unrealistic 1.0 outputs
-            # Real-world ML should never be 100% confident
-            probs = np.clip(probs, 0.0, 0.98)
+            # Get behaviors for each dog (shared path for both geometric-only and LSTM)
+            if not self._force_geometric:
+                dog_range = range(min(max_dogs, len(probs)))
+            else:
+                dog_range = range(max_dogs)
 
-            # Handle different output shapes
-            if probs.ndim == 1:
-                probs = probs.reshape(1, -1)
-
-            # Get behaviors for each dog
-            for dog_idx in range(min(max_dogs, len(probs))):
-                # Skip dogs with invalid poses (from validation)
+            for dog_idx in dog_range:
+                # Skip dogs with invalid poses (from validation) — applies to both paths
                 if dog_idx < len(valid_dog_mask) and not valid_dog_mask[dog_idx]:
                     logger.debug(f"Skipping dog {dog_idx} due to invalid pose")
                     continue
 
-                dog_probs = probs[dog_idx]
-                max_idx = np.argmax(dog_probs)
-                max_prob = float(dog_probs[max_idx])
+                if not self._force_geometric:
+                    dog_probs = probs[dog_idx]
+                    max_idx = np.argmax(dog_probs)
+                    max_prob = float(dog_probs[max_idx])
+                else:
+                    max_idx = 0
+                    max_prob = 0.0
 
-                # Debug: log all probabilities and keypoint stats periodically
+                # Debug: log keypoint stats periodically (reduced frequency to save CPU)
                 if dog_idx == 0:
                     if not hasattr(self, '_behavior_log_counter'):
                         self._behavior_log_counter = 0
                     self._behavior_log_counter += 1
-                    if self._behavior_log_counter % 10 == 0:  # Every 10 frames (~1 sec)
-                        prob_str = ", ".join([f"{b}:{p:.2f}" for b, p in zip(self.behaviors, dog_probs)])
-                        # Safe indexing for max_behavior
-                        max_behavior_idx = int(np.argmax(dog_probs))
-                        max_behavior = self.behaviors[max_behavior_idx] if max_behavior_idx < len(self.behaviors) else "unknown"
+                    if self._behavior_log_counter % 30 == 0:  # Every 30 frames (~3 sec) to reduce log spam
+                        if not self._force_geometric:
+                            dog_probs_local = probs[dog_idx]
+                            prob_str = ", ".join([f"{b}:{p:.2f}" for b, p in zip(self.behaviors, dog_probs_local)])
+                            max_behavior_idx = int(np.argmax(dog_probs_local))
+                            max_behavior = self.behaviors[max_behavior_idx] if max_behavior_idx < len(self.behaviors) else "unknown"
+                        else:
+                            prob_str = "geometric-only"
+                            max_behavior = "geometric"
 
-                        # Log keypoint confidence stats for current pose (with bounds check)
                         if dog_idx < len(current_poses) and current_poses[dog_idx] is not None:
                             kpts = current_poses[dog_idx].keypoints
                             if kpts is not None and len(kpts) > 0:
                                 kpt_confs = kpts[:, 2] if kpts.shape[1] > 2 else np.zeros(len(kpts))
                                 visible_kpts = np.sum(kpt_confs > 0.3)
-                                leg_confs = kpts[5:17, 2] if len(kpts) > 17 and kpts.shape[1] > 2 else np.zeros(12)
-                                visible_legs = np.sum(leg_confs > 0.2)
-                                logger.info(f"Behavior probs: [{prob_str}] -> {max_behavior} | "
-                                           f"keypoints: {visible_kpts}/24 visible, {visible_legs}/12 legs")
+                                det = current_poses[dog_idx].detection
+                                aspect = (det.y2 - det.y1) / max(det.x2 - det.x1, 1)
+                                logger.info(f"Behavior [{prob_str}] -> {max_behavior} | "
+                                           f"kpts={visible_kpts}/24, aspect={aspect:.2f}")
 
                 # Determine behavior - try geometric fallback first if conditions met
                 behavior_name = None
@@ -896,9 +901,9 @@ class AI3StageControllerFixed:
                             behavior_name = geo_behavior
                             max_prob = geo_conf
                             classification_method = f"geometric_{geo_method}"
-                            logger.info(f"📐 GEOMETRIC: {geo_behavior} (conf={geo_conf:.2f}, method={geo_method}, "
-                                       f"bbox={bbox_width}x{bbox_height}, aspect={aspect_ratio:.2f}, "
-                                       f"kpts={visible_kpts}/24)")
+                            # Log at debug level to reduce spam (was info every frame)
+                            logger.debug(f"GEOMETRIC: {geo_behavior} (conf={geo_conf:.2f}, method={geo_method}, "
+                                        f"aspect={aspect_ratio:.2f}, kpts={visible_kpts}/24)")
 
                 # Fall back to LSTM if geometric didn't produce result
                 # NOTE: LSTM is mostly disabled (_force_geometric=True) due to poor keypoint quality
