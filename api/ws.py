@@ -322,8 +322,6 @@ class TreatBotWebSocketServer:
                 await self._handle_upload_song(websocket, data)
 
             elif command == "download_song":
-                # BUILD 38: {"command": "download_song", "url": "https://...", "filename": "my_song.mp3"}
-                # Downloads MP3 via HTTP instead of receiving base64 (avoids 5MB WebSocket crash)
                 await self._handle_download_song(websocket, data)
 
             elif command == "list_voices":
@@ -419,11 +417,7 @@ class TreatBotWebSocketServer:
             })
 
     async def _handle_upload_song(self, websocket: WebSocket, data: Dict[str, Any]):
-        """Handle upload_song command - save song to default songs folder
-
-        BUILD 35: Added WebSocket handler for song uploads per app team request.
-        Sends back upload_complete or upload_error response.
-        """
+        """Handle upload_song command - save song to default songs folder"""
         import base64
         import re
 
@@ -506,7 +500,7 @@ class TreatBotWebSocketServer:
     async def _handle_download_song(self, websocket: WebSocket, data: Dict[str, Any]):
         """Handle download_song command - download MP3 from URL instead of base64 transfer
 
-        BUILD 38: Added to fix 5MB WebSocket crash. Downloads file directly on robot side.
+        Downloads file directly on robot side to avoid large WebSocket payloads.
         Command: {"command": "download_song", "url": "https://...", "filename": "my_song.mp3"}
         Response: {"type": "download_complete", "filename": "...", "success": true, "size_bytes": ...}
         """
@@ -969,7 +963,7 @@ class TreatBotWebSocketServer:
                 "idle": "idle",
                 "silent_guardian": "guardian",
                 "coach": "training",
-                "mission": "mission",  # BUILD 35: Add missing mission mode mapping
+                "mission": "mission",
                 "manual": "manual",
                 "photography": "manual",
                 "emergency": "manual"

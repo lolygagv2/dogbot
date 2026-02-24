@@ -274,7 +274,7 @@ class TreatDispenserRobot:
     def _on_reward_given(self, event_data):
         """Handle reward dispensed event"""
         behavior = event_data.get('behavior')
-        self.logger.info(f"🎉 Treat dispensed for behavior: {behavior}")
+        self.logger.info(f"Treat dispensed for behavior: {behavior}")
 
     def _on_emergency_stop(self, event_data):
         """Handle emergency stop event"""

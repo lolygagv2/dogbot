@@ -47,7 +47,7 @@ class MotorCommandBus:
         try:
             from core.hardware.proper_pid_motor_controller import ProperPIDMotorController
             self.motor_controller = ProperPIDMotorController()
-            self.logger.info("🎯 Proper PID motor controller initialized (closed-loop control)")
+            self.logger.info("Proper PID motor controller initialized (closed-loop control)")
         except ImportError:
             try:
                 from core.hardware.motor_controller_robust import MotorControllerRobust
@@ -80,7 +80,7 @@ class MotorCommandBus:
                     return False
 
             self.running = True
-            self.logger.info("✅ Motor command bus started with PID control")
+            self.logger.info("Motor command bus started with PID control")
             return True
 
         except Exception as e:

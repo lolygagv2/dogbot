@@ -390,9 +390,9 @@ class GeometricClassifier:
                 confidence = min(0.80, 0.55 + spin_score * 0.3)
                 # Clear history after detection
                 history.clear()
-                logger.info(f"🔄 SPIN detected! aspect_change={total_aspect_change:.2f}, "
-                           f"center_move={total_center_movement:.0f}, aspect_range={aspect_range:.2f}, "
-                           f"width_range={width_range:.0f}, score={spin_score:.2f}")
+                logger.debug(f"SPIN detected: aspect_change={total_aspect_change:.2f}, "
+                            f"center_move={total_center_movement:.0f}, aspect_range={aspect_range:.2f}, "
+                            f"width_range={width_range:.0f}, score={spin_score:.2f}")
                 return True, confidence
 
         return False, 0.0

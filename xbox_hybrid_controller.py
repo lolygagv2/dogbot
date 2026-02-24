@@ -407,7 +407,7 @@ class XboxHybridControllerFixed:
                     MOTOR_DIRECT = True
                     # CRITICAL FIX: Set motor controller reference
                     self.motor_controller = self.motor_bus.motor_controller
-                    logger.info("✅ Motor command bus with polling encoders initialized")
+                    logger.info("Motor command bus with polling encoders initialized")
                     return
                 else:
                     logger.warning("Motor command bus failed to start")
@@ -422,7 +422,7 @@ class XboxHybridControllerFixed:
             self.motor_direct = True
             motor_controller = self.motor_controller  # Update global reference
             MOTOR_DIRECT = True
-            logger.info("✅ Using motor controller from motor bus for PID control")
+            logger.info("Using motor controller from motor bus for PID control")
             return
 
         if MOTOR_CONTROLLER_AVAILABLE:
@@ -432,7 +432,7 @@ class XboxHybridControllerFixed:
                     self.motor_direct = True
                     motor_controller = self.motor_controller  # Update global reference
                     MOTOR_DIRECT = True
-                    logger.info("✅ DFRobot polling motor control initialized (fallback)")
+                    logger.info("DFRobot polling motor control initialized (fallback)")
                     return
                 else:
                     logger.warning("DFRobot motor controller failed to initialize")
@@ -441,7 +441,7 @@ class XboxHybridControllerFixed:
                 logger.error(f"Motor controller initialization error: {e}")
                 self.motor_controller = None
 
-        logger.warning("❌ No motor control available, will use API")
+        logger.warning("No motor control available, will use API")
         self.motor_direct = False
         MOTOR_DIRECT = False
 
@@ -466,10 +466,10 @@ class XboxHybridControllerFixed:
             self.MIN_PWM_THRESHOLD = controller_config.min_pwm_threshold
 
             logger.info(f"[Config] Robot profile loaded: {config.robot_id}")
-            logger.info(f"[Config] MAX_SPEED={self.MAX_SPEED}, MAX_RPM={self.MAX_RPM}")
-            logger.info(f"[Config] LEFT_MULT={self.LEFT_MOTOR_MULTIPLIER}, RIGHT_MULT={self.RIGHT_MOTOR_MULTIPLIER}")
-            logger.info(f"[Config] DEADZONE={self.DEADZONE}, MIN_PWM_THRESHOLD={self.MIN_PWM_THRESHOLD}")
-            logger.info(f"[Config] USE_PID_CONTROL={self.USE_PID_CONTROL}")
+            logger.debug(f"[Config] MAX_SPEED={self.MAX_SPEED}, MAX_RPM={self.MAX_RPM}")
+            logger.debug(f"[Config] LEFT_MULT={self.LEFT_MOTOR_MULTIPLIER}, RIGHT_MULT={self.RIGHT_MOTOR_MULTIPLIER}")
+            logger.debug(f"[Config] DEADZONE={self.DEADZONE}, MIN_PWM_THRESHOLD={self.MIN_PWM_THRESHOLD}")
+            logger.debug(f"[Config] USE_PID_CONTROL={self.USE_PID_CONTROL}")
 
         except Exception as e:
             logger.error(f"Failed to load robot config: {e}")
@@ -524,10 +524,10 @@ class XboxHybridControllerFixed:
     def _preload_audio_system(self):
         """Preload audio system and dynamically discover sound tracks"""
         try:
-            logger.info("Preloading audio system...")
+            logger.debug("Preloading audio system...")
             result = self.api_request('GET', '/audio/status')
             if result:
-                logger.info("Audio system preloaded successfully")
+                logger.debug("Audio system preloaded successfully")
         except Exception as e:
             logger.warning(f"Audio preload error: {e}")
 
@@ -535,8 +535,8 @@ class XboxHybridControllerFixed:
         self._scan_audio_folders()
 
         logger.info(f"Audio tracks discovered: {len(self.TALK_TRACKS)} talks, {len(self.SONG_TRACKS)} songs")
-        logger.info(f"Talks: {[t[1] for t in self.TALK_TRACKS]}")
-        logger.info(f"Songs: {[s[1] for s in self.SONG_TRACKS]}")
+        logger.debug(f"Talks: {[t[1] for t in self.TALK_TRACKS]}")
+        logger.debug(f"Songs: {[s[1] for s in self.SONG_TRACKS]}")
 
     def _start_api_worker(self):
         """Start the async API worker thread"""
@@ -545,7 +545,7 @@ class XboxHybridControllerFixed:
         self.api_worker_running = True
         self.api_worker_thread = Thread(target=self._api_worker_loop, daemon=True)
         self.api_worker_thread.start()
-        logger.info("Async API worker started")
+        logger.debug("Async API worker started")
 
     def _api_worker_loop(self):
         """Worker thread that processes API commands from queue - NEVER blocks main loop"""
@@ -662,7 +662,7 @@ class XboxHybridControllerFixed:
                 # Check if API is available
                 health = self.api_request('GET', '/health')
                 if health:
-                    logger.info(f"API health check: {health}")
+                    logger.debug(f"API health check: {health}")
                 else:
                     logger.warning("API server not responding - only motor control will work")
 
@@ -895,7 +895,7 @@ class XboxHybridControllerFixed:
             if normalized_trigger > 0.8 and not self.lt_was_pressed:
                 self.cycle_led_mode()
                 self.lt_was_pressed = True
-                logger.info(f"LT TRIGGERED! Value: {normalized_trigger:.2f}")
+                logger.debug(f"LT triggered, value: {normalized_trigger:.2f}")
             elif normalized_trigger < 0.2:
                 self.lt_was_pressed = False
 
@@ -919,7 +919,7 @@ class XboxHybridControllerFixed:
                 if not hasattr(self, '_last_rt_time'):
                     self._last_rt_time = 0
                 if current_time - self._last_rt_time > 1.0:  # 1 second cooldown
-                    logger.info("RT: Playing good.mp3")
+                    logger.debug("RT: Playing good.mp3")
                     self.api_request('POST', '/audio/play/file', {"filepath": "/talks/default/good.mp3"})
                     self._last_rt_time = current_time
             else:
@@ -948,7 +948,7 @@ class XboxHybridControllerFixed:
             right_speed = int(forward + turn)
 
             # DEBUG: Log raw joystick to motor conversion (always log when moving)
-            logger.warning(f"🎮 JOY Y={self.state.left_y:.2f} → L={left_speed} R={right_speed}")
+            logger.debug(f"JOY Y={self.state.left_y:.2f} -> L={left_speed} R={right_speed}")
 
             # Clamp to valid range
             left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
@@ -1011,13 +1011,13 @@ class XboxHybridControllerFixed:
             left_pwm = speed_to_pwm(left, self.LEFT_MOTOR_MULTIPLIER)
             right_pwm = speed_to_pwm(right, self.RIGHT_MOTOR_MULTIPLIER)
 
-            logger.warning(f"🔧 OPEN-LOOP: Speed L={left} R={right} → PWM L={left_pwm:.1f}% R={right_pwm:.1f}%")
+            logger.debug(f"OPEN-LOOP: Speed L={left} R={right} -> PWM L={left_pwm:.1f}% R={right_pwm:.1f}%")
 
             # Send to motor controller
             if self.motor_controller and hasattr(self.motor_controller, 'set_motor_pwm_direct'):
                 try:
                     self.motor_controller.set_motor_pwm_direct(left_pwm, right_pwm)
-                    logger.warning(f"✅ Sent to motor controller")
+                    logger.debug("Sent to motor controller")
                     return
                 except Exception as e:
                     logger.error(f"Direct PWM error: {e}")
@@ -1027,7 +1027,7 @@ class XboxHybridControllerFixed:
                     return
                 except Exception as e:
                     logger.error(f"Motor bus PWM error: {e}")
-            logger.warning("⚠️ No motor control available!")
+            logger.warning("No motor control available!")
             return
 
         # PID MODE (legacy path - not used when USE_PID_CONTROL=false)
@@ -1053,7 +1053,7 @@ class XboxHybridControllerFixed:
             if self.motor_controller and hasattr(self.motor_controller, 'set_motor_pwm_direct'):
                 try:
                     self.motor_controller.set_motor_pwm_direct(float(left), float(right))
-                    logger.info(f"🔧 PWM: L={left} R={right}")
+                    logger.debug(f"PWM: L={left} R={right}")
                     return
                 except Exception as e:
                     logger.error(f"Direct PWM error: {e}")
@@ -1061,12 +1061,12 @@ class XboxHybridControllerFixed:
             elif self.motor_bus and hasattr(self.motor_bus, 'motor_controller'):
                 try:
                     self.motor_bus.motor_controller.set_motor_pwm_direct(float(left), float(right))
-                    logger.debug(f"🔧 Open-loop PWM (via bus): L={left}%, R={right}%")
+                    logger.debug(f"Open-loop PWM (via bus): L={left}%, R={right}%")
                     return
                 except Exception as e:
                     logger.error(f"Motor bus PWM error: {e}")
             # Last resort - log error
-            logger.warning(f"⚠️ No open-loop motor control available! motor_controller={self.motor_controller}, motor_bus={self.motor_bus}")
+            logger.warning(f"No open-loop motor control available! motor_controller={self.motor_controller}, motor_bus={self.motor_bus}")
             return
 
         # PID MODE: Use closed-loop RPM control
@@ -1247,7 +1247,7 @@ class XboxHybridControllerFixed:
     def process_button(self, number: int, pressed: bool):
         """Process button press with proper cooldowns"""
         if pressed:
-            logger.info(f"🔘 Button {number} pressed")
+            logger.debug(f"Button {number} pressed")
             # NOTE: notify_manual_input() removed here - buttons should NOT auto-switch to MANUAL
             # Joystick movement and triggers already call notify_manual_input() in process_axis()
 
@@ -1316,29 +1316,29 @@ class XboxHybridControllerFixed:
         Second press within 10s: Save to VOICEMP3/talks
         """
         current_time = time.time()
-        logger.warning(f"🎙️ handle_record_button CALLED at {current_time:.2f}")
+        logger.debug(f"handle_record_button called at {current_time:.2f}")
 
         if not hasattr(self, '_last_record_button'):
             self._last_record_button = 0
 
         # Check recording status FIRST (BLOCKING - needs response)
         status = self.api_request_blocking('GET', '/audio/record/status')
-        logger.warning(f"🎙️ Recording status: {status}")
+        logger.debug(f"Recording status: {status}")
 
         # If recording in progress, ignore (server will also reject)
         if status and status.get('in_progress'):
-            logger.warning("🎙️ Recording in progress - IGNORING button press")
+            logger.debug("Recording in progress - ignoring button press")
             return
 
         if status and status.get('has_pending'):
             # Second press - confirm and save (BLOCKING - needs response)
-            logger.info("🎙️ START BUTTON: Confirming recording save")
+            logger.info("START BUTTON: Confirming recording save")
             result = self.api_request_blocking('POST', '/audio/record/confirm')
             if result and result.get('success'):
-                logger.info(f"✅ Recording saved: {result.get('filename')}")
+                logger.info(f"Recording saved: {result.get('filename')}")
                 # Rescan folders to include the new recording in D-pad list
                 self._scan_audio_folders()
-                logger.info(f"🔄 Audio list refreshed: {len(self.TALK_TRACKS)} talks available")
+                logger.debug(f"Audio list refreshed: {len(self.TALK_TRACKS)} talks available")
             else:
                 logger.warning(f"Recording save failed: {result}")
         else:
@@ -1348,10 +1348,10 @@ class XboxHybridControllerFixed:
                 return
 
             self._last_record_button = current_time
-            logger.info("🎙️ START BUTTON: Starting new recording (2 seconds)")
+            logger.info("START BUTTON: Starting new recording (2 seconds)")
             result = self.api_request_blocking('POST', '/audio/record/start')
             if result and result.get('success'):
-                logger.info("🎙️ Recording complete - press START again within 10s to save")
+                logger.info("Recording complete - press START again within 10s to save")
             else:
                 logger.warning(f"Recording failed: {result}")
 
@@ -1363,7 +1363,7 @@ class XboxHybridControllerFixed:
         Toggle video recording on/off via long-press of Start button.
         Records MP4 at 640x640 with AI overlays (bounding boxes, poses, behaviors).
         """
-        logger.info("📹 LONG PRESS: Toggling video recording")
+        logger.info("LONG PRESS: Toggling video recording")
 
         try:
             # Call toggle API endpoint
@@ -1372,18 +1372,18 @@ class XboxHybridControllerFixed:
             if result:
                 if result.get('recording', False):
                     # Started recording
-                    logger.info(f"📹 VIDEO RECORDING STARTED: {result.get('filename')}")
+                    logger.info(f"VIDEO RECORDING STARTED: {result.get('filename')}")
                     # Play audio feedback
                     self.api_request_async('POST', '/audio/play/file', {'filepath': '/wimz/Wimz_recording.mp3'})
                 else:
                     # Stopped recording
-                    logger.info(f"📹 VIDEO RECORDING STOPPED: {result.get('filename')} ({result.get('frames', 0)} frames, {result.get('duration', 0):.1f}s)")
+                    logger.info(f"VIDEO RECORDING STOPPED: {result.get('filename')} ({result.get('frames', 0)} frames, {result.get('duration', 0):.1f}s)")
                     # Play save audio feedback
                     self.api_request_async('POST', '/audio/play/file', {'filepath': '/wimz/Wimz_saved.mp3'})
             else:
-                logger.warning("📹 Video toggle failed - no response")
+                logger.warning("Video toggle failed - no response")
         except Exception as e:
-            logger.error(f"📹 Video toggle error: {e}")
+            logger.error(f"Video toggle error: {e}")
 
     # ============== END VIDEO RECORDING ==============
 
@@ -1441,30 +1441,30 @@ class XboxHybridControllerFixed:
 
         # Check current mode FIRST to decide which photo method to use
         current_mode = self._get_current_mode()
-        logger.info(f"📸 RB pressed: Taking photo (mode: {current_mode})...")
+        logger.info(f"RB pressed: Taking photo (mode: {current_mode})...")
 
         if current_mode == 'manual':
             # MANUAL mode: Camera is released, use 4K photo
             try:
                 result = self.api_request_blocking('POST', '/camera/photo', timeout=8)
                 if result and result.get('success'):
-                    logger.info(f"✅ 4K Photo saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
+                    logger.info(f"4K Photo saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
                     return
                 else:
-                    logger.warning(f"⚠️ 4K photo failed: {result.get('detail', 'unknown error')}")
+                    logger.warning(f"4K photo failed: {result.get('detail', 'unknown error')}")
             except Exception as e:
-                logger.error(f"❌ 4K photo error: {e}")
+                logger.error(f"4K photo error: {e}")
         else:
             # Other modes: AI is running, grab snapshot from stream
             try:
                 result = self.api_request_blocking('POST', '/camera/snapshot', timeout=3)
                 if result and result.get('success'):
-                    logger.info(f"✅ Snapshot saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
+                    logger.info(f"Snapshot saved: {result.get('filename', 'unknown')} ({result.get('resolution', '?')})")
                     return
                 else:
-                    logger.warning(f"⚠️ Snapshot failed: {result.get('detail', 'unknown error')}")
+                    logger.warning(f"Snapshot failed: {result.get('detail', 'unknown error')}")
             except Exception as e:
-                logger.error(f"❌ Snapshot error: {e}")
+                logger.error(f"Snapshot error: {e}")
 
     def center_camera(self):
         """Center the camera to default position"""
@@ -1502,18 +1502,18 @@ class XboxHybridControllerFixed:
         self.current_mode_index = (self.current_mode_index + 1) % len(self.cycle_modes)
         new_mode = self.cycle_modes[self.current_mode_index]
 
-        logger.info(f"🔄 SELECT button: Cycling from {actual_mode} to {new_mode.upper()} mode")
+        logger.info(f"SELECT button: Cycling from {actual_mode} to {new_mode.upper()} mode")
 
         # Call API to change mode (use blocking request to ensure it completes)
         result = self.api_request_blocking('POST', '/mode/set', {"mode": new_mode}, timeout=2)
         if result and result.get('success'):
-            logger.info(f"✅ Mode changed to: {new_mode}")
+            logger.info(f"Mode changed to: {new_mode}")
             # Play mode announcement audio
             audio_file = self.mode_audio.get(new_mode)
             if audio_file:
                 self.api_request('POST', '/audio/play/file', {"filepath": audio_file})
         else:
-            logger.warning(f"⚠️ Mode change may have failed: {result}")
+            logger.warning(f"Mode change may have failed: {result}")
 
     def cycle_trick(self):
         """Cycle through tricks and set forced trick (coach mode only)"""
@@ -1529,7 +1529,7 @@ class XboxHybridControllerFixed:
         # Only works in coach mode
         actual_mode = self._get_current_mode()
         if actual_mode != 'coach':
-            logger.info(f"🎯 Guide button: Not in coach mode ({actual_mode}), ignoring")
+            logger.debug(f"Guide button: Not in coach mode ({actual_mode}), ignoring")
             return
 
         # Cycle to next trick
@@ -1542,9 +1542,9 @@ class XboxHybridControllerFixed:
         # Set forced trick via API (uses path parameter)
         result = self.api_request_blocking('POST', f'/coaching/force_trick/{trick}', timeout=2)
         if result and not result.get('error'):
-            logger.info(f"🎯 Trick set to: {trick} (cooldown reset)")
+            logger.info(f"Trick set to: {trick} (cooldown reset)")
         else:
-            logger.warning(f"⚠️ Failed to set trick: {result}")
+            logger.warning(f"Failed to set trick: {result}")
 
         # Play trick audio as feedback so user knows what's queued
         audio_file = self._trick_audio.get(trick, f'{trick}.mp3')
@@ -1590,13 +1590,13 @@ class XboxHybridControllerFixed:
     def play_selected_talk(self):
         """Play selected talk track (D-pad right)"""
         file_path, track_name = self.TALK_TRACKS[self.current_talk_index]
-        logger.info(f"Playing Talk: {track_name} ({file_path})")
+        logger.debug(f"Playing talk: {track_name} ({file_path})")
         self.api_request('POST', '/audio/play/file', {"filepath": file_path})
 
     def play_selected_song(self):
         """Play selected song track (D-pad left)"""
         file_path, track_name = self.SONG_TRACKS[self.current_song_index]
-        logger.info(f"Playing Song: {track_name} ({file_path})")
+        logger.debug(f"Playing song: {track_name} ({file_path})")
         self.api_request('POST', '/audio/play/file', {"filepath": file_path})
 
     def process_dpad(self, number: int, value: int):
@@ -1618,14 +1618,14 @@ class XboxHybridControllerFixed:
                 self.queued_track = self.SONG_TRACKS[self.current_song_index]
                 self.queued_type = "song"
                 file_path, track_name = self.queued_track
-                logger.info(f"🎵 QUEUED Song: {track_name} - Press DOWN to play")
+                logger.debug(f"Queued song: {track_name} - press DOWN to play")
                 self.last_dpad_time = current_time
             elif value > 0:  # Right - Queue next TALK for playing
                 self.current_talk_index = (self.current_talk_index + 1) % len(self.TALK_TRACKS)
                 self.queued_track = self.TALK_TRACKS[self.current_talk_index]
                 self.queued_type = "talk"
                 file_path, track_name = self.queued_track
-                logger.info(f"🗣️ QUEUED Talk: {track_name} - Press DOWN to play")
+                logger.debug(f"Queued talk: {track_name} - press DOWN to play")
                 self.last_dpad_time = current_time
 
         elif number == 7:  # D-pad Y axis
@@ -1644,7 +1644,7 @@ class XboxHybridControllerFixed:
             elif value > 0:  # Down - Play the QUEUED track
                 if self.queued_track is not None:
                     file_path, track_name = self.queued_track
-                    logger.info(f"▶️ PLAYING {self.queued_type.upper()}: {track_name} ({file_path})")
+                    logger.info(f"Playing {self.queued_type.upper()}: {track_name} ({file_path})")
                     self.api_request('POST', '/audio/play/file', {"filepath": file_path})
                 else:
                     logger.info("No track queued - use LEFT/RIGHT D-pad first")
@@ -1670,9 +1670,9 @@ class XboxHybridControllerFixed:
         logger.info("SELECT = Cycle modes (MANUAL→IDLE→COACH→SILENT_GUARDIAN)")
         logger.info("START = Record audio")
         logger.info("=== ASYNC API QUEUE ===")
-        logger.info("✅ Non-blocking button presses")
-        logger.info("✅ 50ms command debouncing")
-        logger.info("✅ No more system freezes from rapid inputs")
+        logger.info("Non-blocking button presses")
+        logger.info("50ms command debouncing")
+        logger.info("No more system freezes from rapid inputs")
 
         try:
             while self.running and not self.stop_event.is_set():

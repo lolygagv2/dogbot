@@ -165,7 +165,7 @@ class PoseDetector:
             self.input_name = input_vstreams_info[0].name
 
             self.initialized = True
-            logger.info("✅ Pose Detector initialization successful!")
+            logger.info("Pose Detector initialization successful!")
             return True
 
         except Exception as e:

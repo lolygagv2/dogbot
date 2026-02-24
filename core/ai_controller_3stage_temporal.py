@@ -169,15 +169,15 @@ class AI3StageControllerTemporal:
                     logger.error(f"Pose model not found: {self.pose_model_path}")
                     return False
             else:
-                logger.warning("⚠️ Hailo not available - running in CPU-only mode")
+                logger.warning("Hailo not available - running in CPU-only mode")
                 # In CPU mode, we'll use simplified detection/pose
 
             # Load TorchScript behavior model (CPU)
             if self.behavior_model_path.exists():
                 self.behavior_model = torch.jit.load(str(self.behavior_model_path), map_location="cpu").eval()
-                logger.info(f"✅ Loaded temporal behavior model: {self.behavior_model_path}")
+                logger.info(f"Loaded temporal behavior model: {self.behavior_model_path}")
             else:
-                logger.error(f"❌ Behavior model not found: {self.behavior_model_path}")
+                logger.error(f"Behavior model not found: {self.behavior_model_path}")
                 return False
 
             logger.info("All models initialized successfully")
@@ -409,7 +409,7 @@ class AI3StageControllerTemporal:
                         # Update cooldown
                         self._update_cooldown(behavior_name, dog_idx)
 
-                        logger.info(f"🎯 TEMPORAL BEHAVIOR: {behavior_name} (conf={max_prob:.2f})")
+                        logger.info(f"TEMPORAL BEHAVIOR: {behavior_name} (conf={max_prob:.2f})")
 
             return behaviors
 

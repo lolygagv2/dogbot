@@ -62,7 +62,7 @@ class TreatBotMain:
     def __init__(self):
         self.logger = self._setup_logging()
         self.logger.info("=" * 60)
-        self.logger.info("🤖 TREATBOT MAIN ORCHESTRATOR STARTING")
+        self.logger.info("TREATBOT MAIN ORCHESTRATOR STARTING")
         self.logger.info("=" * 60)
 
         # Core systems
@@ -174,31 +174,31 @@ class TreatBotMain:
     def initialize(self) -> bool:
         """Initialize all subsystems in correct order"""
         try:
-            self.logger.info("🔧 Initializing core infrastructure...")
+            self.logger.info("Initializing core infrastructure...")
             if not self._initialize_core():
                 return False
 
-            self.logger.info("🔧 Initializing hardware services...")
+            self.logger.info("Initializing hardware services...")
             if not self._initialize_services():
                 return False
 
-            self.logger.info("🔧 Initializing orchestrators...")
+            self.logger.info("Initializing orchestrators...")
             if not self._initialize_orchestrators():
                 return False
 
-            self.logger.info("🔧 Starting subsystems...")
+            self.logger.info("Starting subsystems...")
             if not self._start_subsystems():
                 return False
 
-            self.logger.info("🔧 Running startup sequence...")
+            self.logger.info("Running startup sequence...")
             self._run_startup_sequence()
 
             self.initialization_successful = True
-            self.logger.info("✅ TreatBot initialization complete!")
+            self.logger.info("TreatBot initialization complete!")
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Initialization failed: {e}")
+            self.logger.error(f"Initialization failed: {e}")
             return False
 
     def _initialize_core(self) -> bool:
@@ -207,21 +207,21 @@ class TreatBotMain:
             # Event bus
             self.bus = get_bus()
             self.bus.clear_history()  # Clear stale events from previous session
-            self.logger.info("✅ Event bus ready (history cleared)")
+            self.logger.info("Event bus ready (history cleared)")
 
             # State manager
             self.state = get_state()
             self.state.set_mode(SystemMode.IDLE, "System starting")
-            self.logger.info("✅ State manager ready")
+            self.logger.info("State manager ready")
 
             # Data store
             self.store = get_store()
-            self.logger.info("✅ Data store ready")
+            self.logger.info("Data store ready")
 
             # Safety monitor
             self.safety = get_safety_monitor()
             self.safety.add_emergency_callback(self._emergency_shutdown)
-            self.logger.info("✅ Safety monitor ready")
+            self.logger.info("Safety monitor ready")
 
             return True
 
@@ -269,7 +269,7 @@ class TreatBotMain:
             # Xbox controller will spawn subprocess that owns motor GPIO
             self.motor_bus = None
             services_status['motor'] = False
-            self.logger.info("🎮 Xbox controller detected - motor GPIO reserved for Xbox subprocess")
+            self.logger.info("Xbox controller detected - motor GPIO reserved for Xbox subprocess")
         else:
             # No Xbox - main process can own motor_bus for WebRTC low-latency control
             try:
@@ -277,10 +277,10 @@ class TreatBotMain:
                 self.motor_bus = get_motor_bus()
                 if self.motor_bus.start():
                     services_status['motor'] = True
-                    self.logger.info("✅ Motor bus initialized (WebRTC direct control - no Xbox)")
+                    self.logger.info("Motor bus initialized (WebRTC direct control - no Xbox)")
                 else:
                     services_status['motor'] = False
-                    self.logger.warning("⚠️ Motor bus failed to start")
+                    self.logger.warning("Motor bus failed to start")
             except Exception as e:
                 self.logger.error(f"Motor bus failed: {e}")
                 services_status['motor'] = False
@@ -300,9 +300,9 @@ class TreatBotMain:
             if self.sfx:
                 services_status['sfx'] = self.sfx.initialize()
                 if services_status['sfx']:
-                    self.logger.info("✅ SFX service initialized successfully")
+                    self.logger.info("SFX service initialized successfully")
                 else:
-                    self.logger.warning("⚠️ SFX service failed to initialize")
+                    self.logger.warning("SFX service failed to initialize")
             else:
                 services_status['sfx'] = False
                 self.logger.error("Failed to get SFX service instance")
@@ -316,9 +316,9 @@ class TreatBotMain:
             if self.led:
                 services_status['led'] = self.led.initialize()
                 if services_status['led']:
-                    self.logger.info("✅ LED service initialized successfully")
+                    self.logger.info("LED service initialized successfully")
                 else:
-                    self.logger.warning("⚠️ LED service failed to initialize")
+                    self.logger.warning("LED service failed to initialize")
             else:
                 services_status['led'] = False
                 self.logger.error("Failed to get LED service instance")
@@ -331,9 +331,9 @@ class TreatBotMain:
             self.usb_audio = get_usb_audio_service()
             services_status['usb_audio'] = self.usb_audio.initialized
             if services_status['usb_audio']:
-                self.logger.info("✅ USB Audio service initialized (voice announcements ready)")
+                self.logger.info("USB Audio service initialized (voice announcements ready)")
             else:
-                self.logger.warning("⚠️ USB Audio service failed to initialize")
+                self.logger.warning("USB Audio service failed to initialize")
         except Exception as e:
             self.logger.error(f"USB Audio service failed: {e}")
             services_status['usb_audio'] = False
@@ -345,9 +345,9 @@ class TreatBotMain:
             if services_status['battery']:
                 self.battery_monitor.start_monitoring()
                 status = self.battery_monitor.get_status()
-                self.logger.info(f"✅ Battery monitor: {status['voltage']:.1f}V ({status['percentage']}%)")
+                self.logger.info(f"Battery monitor: {status['voltage']:.1f}V ({status['percentage']}%)")
             else:
-                self.logger.warning("⚠️ Battery monitor failed to initialize")
+                self.logger.warning("Battery monitor failed to initialize")
         except Exception as e:
             self.logger.error(f"Battery monitor failed: {e}")
             services_status['battery'] = False
@@ -357,7 +357,7 @@ class TreatBotMain:
             # self.bluetooth_controller = BluetoothESCController()
             # services_status['bluetooth'] = self.bluetooth_controller.initialize()
             services_status['bluetooth'] = False  # Disabled
-            self.logger.info("🎮 Bluetooth ESC controller disabled (Xbox controller active)")
+            self.logger.info("Bluetooth ESC controller disabled (Xbox controller active)")
         except Exception as e:
             self.logger.error(f"Bluetooth controller failed: {e}")
             services_status['bluetooth'] = False
@@ -367,7 +367,7 @@ class TreatBotMain:
             self.xbox_controller = get_xbox_service()
             services_status['xbox_controller'] = self.xbox_controller.start()
             if services_status['xbox_controller']:
-                self.logger.info("🎮 Xbox controller service started")
+                self.logger.info("Xbox controller service started")
         except Exception as e:
             self.logger.error(f"Xbox controller service failed: {e}")
             services_status['xbox_controller'] = False
@@ -376,7 +376,7 @@ class TreatBotMain:
         try:
             self.api_server = self._start_api_server()
             services_status['api_server'] = True
-            self.logger.info("🌐 API server started on port 8000")
+            self.logger.info("API server started on port 8000")
         except Exception as e:
             self.logger.error(f"API server failed: {e}")
             services_status['api_server'] = False
@@ -402,8 +402,7 @@ class TreatBotMain:
 
         # Log service status
         for service, status in services_status.items():
-            status_msg = "✅" if status else "⚠️"
-            self.logger.info(f"{status_msg} {service}: {'Ready' if status else 'Failed'}")
+            self.logger.info(f"{service}: {'Ready' if status else 'Failed'}")
 
         return True
 
@@ -435,7 +434,7 @@ class TreatBotMain:
         # Initialize WebRTC service
         webrtc_config = configure_webrtc_from_yaml(config_dict)
         self.webrtc_service = get_webrtc_service(webrtc_config)
-        self.logger.info("✅ WebRTC service initialized")
+        self.logger.info("WebRTC service initialized")
 
         # Initialize cloud relay
         relay_config = configure_relay_from_yaml(config_dict)
@@ -443,36 +442,36 @@ class TreatBotMain:
             self.relay_client = get_relay_client(relay_config)
             # Wire up WebRTC service to relay client
             self.relay_client.set_webrtc_service(self.webrtc_service)
-            self.logger.info(f"✅ Cloud relay configured (url={relay_config.relay_url})")
+            self.logger.info(f"Cloud relay configured (url={relay_config.relay_url})")
         else:
-            self.logger.info("☁️ Cloud relay disabled in config")
+            self.logger.info("Cloud relay disabled in config")
 
     def _initialize_orchestrators(self) -> bool:
         """Initialize orchestration layer"""
         try:
             # Sequence engine
             self.sequence_engine = get_sequence_engine()
-            self.logger.info("✅ Sequence engine ready")
+            self.logger.info("Sequence engine ready")
 
             # Reward logic
             self.reward_logic = get_reward_logic()
-            self.logger.info("✅ Reward logic ready")
+            self.logger.info("Reward logic ready")
 
             # Mode FSM
             self.mode_fsm = get_mode_fsm()
-            self.logger.info("✅ Mode FSM ready")
+            self.logger.info("Mode FSM ready")
 
             # Silent Guardian mode handler
             self.silent_guardian_mode = get_silent_guardian_mode()
-            self.logger.info("✅ Silent Guardian mode handler ready")
+            self.logger.info("Silent Guardian mode handler ready")
 
             # Coaching engine
             self.coaching_engine = get_coaching_engine()
-            self.logger.info("✅ Coaching engine ready")
+            self.logger.info("Coaching engine ready")
 
             # Mission scheduler (for auto-starting scheduled missions)
             self.mission_scheduler = get_mission_scheduler()
-            self.logger.info("✅ Mission scheduler ready")
+            self.logger.info("Mission scheduler ready")
 
             return True
 
@@ -500,9 +499,9 @@ class TreatBotMain:
             if self.detector.camera_initialized:
                 self.detector.start_detection()
                 if self.detector.ai_initialized:
-                    self.logger.info("🧠 AI detection started (full AI pipeline)")
+                    self.logger.info("AI detection started (full AI pipeline)")
                 else:
-                    self.logger.info("📹 Camera capture started (WebRTC only, no AI)")
+                    self.logger.info("Camera capture started (WebRTC only, no AI)")
                 # Subscribe to detection events for LED feedback
                 self.bus.subscribe('vision', self._on_detection_for_feedback)
 
@@ -516,9 +515,9 @@ class TreatBotMain:
                 self.bus.subscribe('audio', self._on_bark_for_feedback)
                 if initial_mode in bark_start_modes:
                     self.bark_detector.start()
-                    self.logger.info(f"🎤 Bark detection started (mode: {initial_mode})")
+                    self.logger.info(f"Bark detection started (mode: {initial_mode})")
                 else:
-                    self.logger.info(f"🎤 Bark detection NOT started (mode: {initial_mode} - will start on mode change)")
+                    self.logger.debug(f"Bark detection not started (mode: {initial_mode} - will start on mode change)")
 
             # Subscribe to mode changes to manage mode handlers
             self.state.subscribe('mode_change', self._on_mode_change)
@@ -529,7 +528,7 @@ class TreatBotMain:
             # Start Bluetooth controller if available
             if self.bluetooth_controller and self.bluetooth_controller.is_connected:
                 self.bluetooth_controller.start()
-                self.logger.info("🎮 Bluetooth controller active - Press START to enter MANUAL mode")
+                self.logger.info("Bluetooth controller active - Press START to enter MANUAL mode")
                 self.state.set_mode(SystemMode.MANUAL, "Bluetooth controller ready")
 
             # Start cloud relay client if enabled
@@ -537,19 +536,19 @@ class TreatBotMain:
                 # Clear any stale outgoing messages from previous session
                 if hasattr(self.relay_client, '_message_queue'):
                     self.relay_client._message_queue.clear()
-                    self.logger.info("☁️ Cleared stale relay message queue")
+                    self.logger.debug("Cleared stale relay message queue")
                 self.relay_client.start()
-                self.logger.info("☁️ Cloud relay client started")
+                self.logger.info("Cloud relay client started")
                 # Subscribe to events for relay forwarding
                 self.bus.subscribe('vision', self._forward_event_to_relay)
                 self.bus.subscribe('audio', self._forward_event_to_relay)
                 self.bus.subscribe('safety', self._forward_event_to_relay)
                 self.bus.subscribe('system', self._forward_event_to_relay)
                 self.bus.subscribe('cloud', self._handle_cloud_command)
-                self.logger.info("☁️ Event forwarding to relay enabled")
-                self.logger.info("☁️ Cloud command handler enabled")
+                self.logger.debug("Event forwarding to relay enabled")
+                self.logger.debug("Cloud command handler enabled")
 
-            self.logger.info("✅ All subsystems started")
+            self.logger.info("All subsystems started")
             return True
 
         except Exception as e:
@@ -581,17 +580,17 @@ class TreatBotMain:
                 if event.subtype == 'dog_detected':
                     if self.led:
                         self.led.set_pattern('dog_detected')
-                    self.logger.info(f"🐕 Dog detected: {event.data.get('dog_id', 'unknown')}")
+                    self.logger.debug(f"Dog detected: {event.data.get('dog_id', 'unknown')}")
 
                 elif event.subtype == 'dog_lost':
                     if self.led:
                         self.led.set_pattern('searching')
-                    self.logger.info("👀 Dog lost, searching...")
+                    self.logger.debug("Dog lost, searching...")
 
                 elif event.subtype == 'pose':
                     behavior = event.data.get('behavior')
                     if behavior:
-                        self.logger.info(f"🎯 Behavior detected: {behavior}")
+                        self.logger.debug(f"Behavior detected: {behavior}")
                         if self.led:
                             self.led.pulse_color('yellow')
 
@@ -620,11 +619,11 @@ class TreatBotMain:
             if event.subtype == 'bark_detected':
                 emotion = event.data.get('emotion', 'unknown')
                 confidence = event.data.get('confidence', 0)
-                self.logger.info(f"🐕 Bark detected: {emotion} (conf: {confidence:.2f})")
+                self.logger.debug(f"Bark detected: {emotion} (conf: {confidence:.2f})")
 
             elif event.subtype == 'bark_rewarded':
                 emotion = event.data.get('emotion', 'unknown')
-                self.logger.info(f"🎁 Bark reward triggered for: {emotion}")
+                self.logger.debug(f"Bark reward triggered for: {emotion}")
 
                 # Celebration feedback - only for rewards in COACH mode
                 if self.led and self.led.led_initialized:
@@ -785,7 +784,7 @@ class TreatBotMain:
                     self._relay_event_times[event_type] = current_time
 
                 self.relay_client.send_event(event_type, event_data)
-                self.logger.debug(f"☁️ Forwarded {event_type} to relay: {event_data}")
+                self.logger.debug(f"Forwarded {event_type} to relay: {event_data}")
 
         except Exception as e:
             self.logger.error(f"Relay forward error: {e}")
@@ -813,7 +812,7 @@ class TreatBotMain:
         if elapsed_since_startup < self._startup_grace_period:
             command = event.data.get('command', 'unknown')
             self.logger.warning(
-                f"☁️ Ignoring stale command '{command}' during startup grace period "
+                f"Ignoring stale command '{command}' during startup grace period "
                 f"({elapsed_since_startup:.1f}s < {self._startup_grace_period}s)"
             )
             return
@@ -836,12 +835,12 @@ class TreatBotMain:
                 if age_seconds > 2.0:
                     command = event.data.get('command', 'unknown')
                     self.logger.warning(
-                        f"☁️ Rejecting stale command '{command}' - age {age_seconds:.1f}s > 2s threshold"
+                        f"Rejecting stale command '{command}' - age {age_seconds:.1f}s > 2s threshold"
                     )
                     return
             except Exception as e:
                 # Don't reject if timestamp parsing fails - just log and continue
-                self.logger.debug(f"☁️ Could not parse command timestamp: {e}")
+                self.logger.debug(f"Could not parse command timestamp: {e}")
 
         try:
             import httpx
@@ -851,7 +850,7 @@ class TreatBotMain:
             mem_check = get_safety_monitor().check_memory_before_command()
             if not mem_check['allowed']:
                 command = event.data.get('command', 'unknown')
-                self.logger.error(f"☁️ REJECTED command '{command}' - memory at {mem_check['memory_pct']:.1f}%")
+                self.logger.error(f"REJECTED command '{command}' - memory at {mem_check['memory_pct']:.1f}%")
                 return
 
             # CRITICAL: Reset manual mode timeout when receiving app commands
@@ -863,22 +862,22 @@ class TreatBotMain:
                     'source': 'cloud_command',
                     'command': event.data.get('command')
                 }, 'treatbot')
-                self.logger.debug("☁️ Reset manual mode timeout (cloud activity)")
+                self.logger.debug("Reset manual mode timeout (cloud activity)")
 
             # Log full event data for debugging
-            self.logger.info(f"☁️ Event data: {event.data}")
+            self.logger.debug(f"Cloud event data: {event.data}")
 
             command = event.data.get('command')
             params = event.data.get('params', {})
             api_base = 'http://localhost:8000'
 
-            self.logger.info(f"☁️ Processing command={command} params={params}")
+            self.logger.debug(f"Processing cloud command={command} params={params}")
 
             # Handle long-running commands in background thread (avoids blocking event bus)
             if command == 'audio_request':
                 duration = params.get('duration', 5)
                 duration = max(1, min(10, int(duration)))
-                self.logger.info(f"☁️ Audio request: capture {duration}s from mic")
+                self.logger.debug(f"Audio request: capture {duration}s from mic")
 
                 def _capture_and_send():
                     try:
@@ -895,13 +894,13 @@ class TreatBotMain:
                                         'format': result['format'],
                                         'duration_ms': result['duration_ms']
                                     })
-                                    self.logger.info(f"☁️ Audio capture sent to app: {result['duration_ms']}ms")
+                                    self.logger.debug(f"Audio capture sent to app: {result['duration_ms']}ms")
                                 else:
-                                    self.logger.warning("☁️ Audio captured but relay not connected")
+                                    self.logger.warning("Audio captured but relay not connected")
                             else:
-                                self.logger.error(f"☁️ Audio capture failed: {resp.status_code}")
+                                self.logger.error(f"Audio capture failed: {resp.status_code}")
                     except Exception as e:
-                        self.logger.error(f"☁️ Audio capture error: {e}")
+                        self.logger.error(f"Audio capture error: {e}")
 
                 threading.Thread(target=_capture_and_send, daemon=True, name="AudioCapture").start()
                 return
@@ -915,42 +914,42 @@ class TreatBotMain:
                         'dog_id': params.get('dog_id'),
                         'count': params.get('count', 1)
                     })
-                    self.logger.info(f"☁️ Treat dispensed -> {resp.status_code}")
+                    self.logger.debug(f"Treat dispensed -> {resp.status_code}")
 
                 elif command == 'led':
                     # LED control per API contract
                     if params.get('off'):
                         resp = client.post(f'{api_base}/led/off')
-                        self.logger.info(f"☁️ LED off -> {resp.status_code}")
+                        self.logger.debug(f"LED off -> {resp.status_code}")
                     elif 'pattern' in params:
                         resp = client.post(f'{api_base}/led/pattern', json={
                             'pattern': params['pattern']
                         })
-                        self.logger.info(f"☁️ LED pattern={params['pattern']} -> {resp.status_code}")
+                        self.logger.debug(f"LED pattern={params['pattern']} -> {resp.status_code}")
                     elif 'color' in params:
                         color = params['color']
                         if isinstance(color, list) and len(color) == 3:
                             resp = client.post(f'{api_base}/led/color', json={
                                 'r': color[0], 'g': color[1], 'b': color[2]
                             })
-                            self.logger.info(f"☁️ LED color={color} -> {resp.status_code}")
+                            self.logger.debug(f"LED color={color} -> {resp.status_code}")
                     elif 'r' in params and 'g' in params and 'b' in params:
                         resp = client.post(f'{api_base}/led/color', json={
                             'r': params['r'], 'g': params['g'], 'b': params['b']
                         })
-                        self.logger.info(f"☁️ LED RGB -> {resp.status_code}")
+                        self.logger.debug(f"LED RGB -> {resp.status_code}")
 
                 elif command == 'mood_led':
                     # Mood LED (blue tube) control: {"action": "on/off/toggle"}
                     action = params.get('action', 'toggle')
                     resp = client.post(f'{api_base}/mood_led', json={'action': action})
-                    self.logger.info(f"☁️ Mood LED {action} -> {resp.status_code}")
+                    self.logger.debug(f"Mood LED {action} -> {resp.status_code}")
 
                 elif command == 'servo':
                     # Servo control: {"pan": x} or {"tilt": y} or {"center": true}
                     if params.get('center'):
                         resp = client.post(f'{api_base}/servo/center')
-                        self.logger.info(f"☁️ Servo centered -> {resp.status_code}")
+                        self.logger.debug(f"Servo centered -> {resp.status_code}")
                     else:
                         pan_val = params.get('pan', 0)
                         tilt_val = params.get('tilt', 0)
@@ -958,56 +957,56 @@ class TreatBotMain:
                         # This prevents camera from snapping back when joystick is released
                         # Only servo_center command should recenter (matches Xbox controller behavior)
                         if abs(pan_val) <= 0.5 and abs(tilt_val) <= 0.5:
-                            self.logger.info("☁️ Servo ignoring near-zero (joystick released - camera holds position)")
+                            self.logger.debug("Servo ignoring near-zero (joystick released - camera holds position)")
                         else:
                             if 'pan' in params and abs(pan_val) > 0.5:
                                 resp = client.post(f'{api_base}/servo/pan', json={
                                     'angle': float(pan_val)
                                 })
-                                self.logger.info(f"☁️ Servo pan={pan_val} -> {resp.status_code}")
+                                self.logger.debug(f"Servo pan={pan_val} -> {resp.status_code}")
                             if 'tilt' in params and abs(tilt_val) > 0.5:
                                 resp = client.post(f'{api_base}/servo/tilt', json={
                                     'angle': float(tilt_val)
                                 })
-                                self.logger.info(f"☁️ Servo tilt={tilt_val} -> {resp.status_code}")
+                                self.logger.debug(f"Servo tilt={tilt_val} -> {resp.status_code}")
 
                 elif command == 'servo_center':
                     # Dedicated servo center command
                     resp = client.post(f'{api_base}/servo/center')
-                    self.logger.info(f"☁️ Servo centered -> {resp.status_code}")
+                    self.logger.debug(f"Servo centered -> {resp.status_code}")
 
                 elif command == 'audio':
                     # Audio: {"file": "good.mp3"} or {"stop": true}
                     if params.get('stop'):
                         resp = client.post(f'{api_base}/audio/stop')
-                        self.logger.info(f"☁️ Audio stopped -> {resp.status_code}")
+                        self.logger.debug(f"Audio stopped -> {resp.status_code}")
                     elif 'file' in params:
                         filename = params['file']
                         # Send just the filename to /audio/play endpoint
                         resp = client.post(f'{api_base}/audio/play', json={
                             'file': filename
                         })
-                        self.logger.info(f"☁️ Audio play={filename} -> {resp.status_code}")
+                        self.logger.debug(f"Audio play={filename} -> {resp.status_code}")
 
                 elif command == 'audio_toggle':
                     # Toggle audio: play if stopped, stop if playing
                     resp = client.post(f'{api_base}/audio/toggle')
-                    self.logger.info(f"☁️ Audio toggle -> {resp.status_code}")
+                    self.logger.debug(f"Audio toggle -> {resp.status_code}")
 
                 elif command == 'audio_next':
                     # Play next song in playlist
                     resp = client.post(f'{api_base}/audio/next')
-                    self.logger.info(f"☁️ Audio next -> {resp.status_code}")
+                    self.logger.debug(f"Audio next -> {resp.status_code}")
 
                 elif command == 'audio_prev':
                     # Play previous song in playlist
                     resp = client.post(f'{api_base}/audio/previous')
-                    self.logger.info(f"☁️ Audio prev -> {resp.status_code}")
+                    self.logger.debug(f"Audio prev -> {resp.status_code}")
 
                 elif command == 'audio_stop':
                     # Stop audio playback
                     resp = client.post(f'{api_base}/audio/stop')
-                    self.logger.info(f"☁️ Audio stop -> {resp.status_code}")
+                    self.logger.debug(f"Audio stop -> {resp.status_code}")
 
                 elif command == 'set_volume':
                     # Set audio volume: {"level": 0.5} (0.0-1.0)
@@ -1017,7 +1016,7 @@ class TreatBotMain:
                     resp = client.post(f'{api_base}/audio/volume', json={
                         'volume': volume
                     })
-                    self.logger.info(f"☁️ Volume set={volume}% (level={level}) -> {resp.status_code}")
+                    self.logger.debug(f"Volume set={volume}% (level={level}) -> {resp.status_code}")
 
                 elif command == 'audio_volume':
                     # Set audio volume: {"level": 50} (0-100 from app)
@@ -1026,7 +1025,7 @@ class TreatBotMain:
                     resp = client.post(f'{api_base}/audio/volume', json={
                         'volume': volume
                     })
-                    self.logger.info(f"☁️ Volume set={volume}% -> {resp.status_code}")
+                    self.logger.debug(f"Volume set={volume}% -> {resp.status_code}")
 
                 elif command == 'take_photo':
                     # Photo capture with HUD overlay (bboxes, names, timestamps)
@@ -1035,7 +1034,7 @@ class TreatBotMain:
                     resp = client.post(f'{api_base}/camera/photo_hud', json={
                         'with_hud': with_hud
                     })
-                    self.logger.info(f"☁️ Photo captured (hud={with_hud}) -> {resp.status_code}")
+                    self.logger.debug(f"Photo captured (hud={with_hud}) -> {resp.status_code}")
 
                     # Send photo back to app via relay
                     if resp.status_code == 200:
@@ -1052,11 +1051,11 @@ class TreatBotMain:
                                     'size_bytes': resp_data.get('size_bytes', 0),
                                     'with_hud': with_hud
                                 })
-                                self.logger.info(f"📸 Photo sent to app: {len(image_data)} chars base64")
+                                self.logger.debug(f"Photo sent to app: {len(image_data)} chars base64")
                             else:
-                                self.logger.warning("📸 Photo captured but relay not connected")
+                                self.logger.warning("Photo captured but relay not connected")
                         else:
-                            self.logger.error("📸 Photo HUD returned no image data")
+                            self.logger.error("Photo HUD returned no image data")
 
                 elif command == 'mode':
                     # Mode: {"mode": "coach"} or {"mode": "idle"}
@@ -1064,16 +1063,16 @@ class TreatBotMain:
                     resp = client.post(f'{api_base}/mode/set', json={
                         'mode': mode_name
                     })
-                    self.logger.info(f"☁️ Mode set={mode_name} -> {resp.status_code}")
+                    self.logger.debug(f"Mode set={mode_name} -> {resp.status_code}")
 
                 elif command == 'motor':
                     # Motor commands should go via WebRTC data channel for low latency
-                    self.logger.debug(f"☁️ Motor command ignored (use WebRTC data channel)")
+                    self.logger.debug(f"Motor command ignored (use WebRTC data channel)")
 
                 elif command == 'stop':
                     # Emergency stop - stop motors
                     resp = client.post(f'{api_base}/motor/stop')
-                    self.logger.info(f"☁️ Emergency stop -> {resp.status_code}")
+                    self.logger.debug(f"Emergency stop -> {resp.status_code}")
 
                 elif command == 'upload_voice':
                     # Voice upload: {"name": "sit", "dog_id": "dog_123", "data": "<base64>"}
@@ -1081,13 +1080,13 @@ class TreatBotMain:
                     upload_name = params.get('name') or event.data.get('name')
                     upload_dog_id = params.get('dog_id') or event.data.get('dog_id') or 'default'
                     upload_data = params.get('data') or event.data.get('data')
-                    self.logger.info(f"☁️ Voice upload: name={upload_name}, dog_id={upload_dog_id}, data_len={len(upload_data) if upload_data else 0}")
+                    self.logger.debug(f"Voice upload: name={upload_name}, dog_id={upload_dog_id}, data_len={len(upload_data) if upload_data else 0}")
                     resp = client.post(f'{api_base}/voices/upload', json={
                         'name': upload_name,
                         'dog_id': upload_dog_id,
                         'data': upload_data
                     })
-                    self.logger.info(f"☁️ Voice upload -> {resp.status_code}: {resp.text[:200] if resp.text else 'no body'}")
+                    self.logger.debug(f"Voice upload -> {resp.status_code}: {resp.text[:200] if resp.text else 'no body'}")
 
                 elif command == 'list_voices':
                     # List voices: {"dog_id": "dog_123"} (optional)
@@ -1096,7 +1095,7 @@ class TreatBotMain:
                         resp = client.get(f'{api_base}/voices/{dog_id}')
                     else:
                         resp = client.get(f'{api_base}/voices')
-                    self.logger.info(f"☁️ List voices -> {resp.status_code}")
+                    self.logger.debug(f"List voices -> {resp.status_code}")
 
                 elif command == 'delete_voice':
                     # Delete voice: {"name": "sit", "dog_id": "1"}
@@ -1104,7 +1103,7 @@ class TreatBotMain:
                     name = params.get('name')
                     if dog_id and name:
                         resp = client.delete(f'{api_base}/ VOICEMP3/{dog_id}/{name}')
-                        self.logger.info(f"☁️ Delete voice -> {resp.status_code}")
+                        self.logger.debug(f"Delete voice -> {resp.status_code}")
 
                 elif command == 'play_command':
                     # Play voice command with custom voice support
@@ -1112,7 +1111,7 @@ class TreatBotMain:
                         'command': params.get('command'),
                         'dog_id': params.get('dog_id')
                     })
-                    self.logger.info(f"☁️ Play command -> {resp.status_code}")
+                    self.logger.debug(f"Play command -> {resp.status_code}")
 
                 elif command == 'ptt_play':
                     # Push-to-talk: play audio from app
@@ -1120,7 +1119,7 @@ class TreatBotMain:
                         'data': params.get('data'),
                         'format': params.get('format', 'aac')
                     })
-                    self.logger.info(f"☁️ PTT play -> {resp.status_code}")
+                    self.logger.debug(f"PTT play -> {resp.status_code}")
 
                 elif command == 'ptt_record':
                     # Push-to-talk: record from microphone
@@ -1128,7 +1127,7 @@ class TreatBotMain:
                         'duration': params.get('duration', 5),
                         'format': params.get('format', 'aac')
                     })
-                    self.logger.info(f"☁️ PTT record -> {resp.status_code}")
+                    self.logger.debug(f"PTT record -> {resp.status_code}")
 
                 elif command == 'upload_song':
                     # Upload a song: {"filename": "my_song.mp3", "data": "<base64>"}
@@ -1141,15 +1140,14 @@ class TreatBotMain:
                                 'filename': song_filename,
                                 'data': song_data
                             })
-                        self.logger.info(f"☁️ Song upload '{song_filename}' -> {resp.status_code}")
+                        self.logger.debug(f"Song upload '{song_filename}' -> {resp.status_code}")
                         if self.relay_client and self.relay_client.connected:
                             self.relay_client.send_event('music_update', resp.json() if resp.status_code == 200 else {'success': False})
                     else:
-                        self.logger.warning("☁️ upload_song: missing filename or data")
+                        self.logger.warning("upload_song: missing filename or data")
 
                 elif command == 'download_song':
-                    # BUILD 38: Download song from URL instead of base64 transfer
-                    # BUILD 40: Fixed URL construction - relay sends relative path
+                    # Download song from URL
                     # Relay sends: {"url": "/api/music/file/{file_id}", "filename": "song.mp3", "dog_id": "..."}
                     song_url = params.get('url') or params.get('data', {}).get('url')
                     song_filename = params.get('filename') or params.get('data', {}).get('filename')
@@ -1160,19 +1158,19 @@ class TreatBotMain:
                             if not re.match(r'^[\w\-. ]+\.(mp3|wav|ogg)$', song_filename, re.IGNORECASE):
                                 raise ValueError("Invalid filename format")
 
-                            # BUILD 40: Construct full URL if relative path provided
+                            # Construct full URL if relative path provided
                             if song_url.startswith('/'):
                                 full_url = f"https://api.wimzai.com{song_url}"
                             else:
                                 full_url = song_url
 
-                            self.logger.info(f"☁️ Downloading song from {full_url}")
+                            self.logger.debug(f"Downloading song from {full_url}")
                             with httpx.Client(timeout=60.0, follow_redirects=True) as dl_client:
                                 dl_resp = dl_client.get(full_url)
                                 dl_resp.raise_for_status()
                                 audio_bytes = dl_resp.content
 
-                            # BUILD 40: Save to dog-specific folder if dog_id provided
+                            # Save to dog-specific folder if dog_id provided
                             if dog_id:
                                 songs_dir = f"/home/morgan/dogbot/VOICEMP3/songs/{dog_id}"
                             else:
@@ -1183,7 +1181,7 @@ class TreatBotMain:
                             with open(filepath, 'wb') as f:
                                 f.write(audio_bytes)
 
-                            self.logger.info(f"☁️ Song downloaded '{song_filename}' ({len(audio_bytes)} bytes) to {filepath}")
+                            self.logger.debug(f"Song downloaded '{song_filename}' ({len(audio_bytes)} bytes) to {filepath}")
 
                             # Refresh playlist to include new song
                             from services.media.usb_audio import get_usb_audio_service
@@ -1198,7 +1196,7 @@ class TreatBotMain:
                                     'dog_id': dog_id
                                 })
                         except Exception as e:
-                            self.logger.error(f"☁️ Song download error: {e}")
+                            self.logger.error(f"Song download error: {e}")
                             if self.relay_client and self.relay_client.connected:
                                 self.relay_client.send_event('upload_complete', {
                                     'success': False,
@@ -1206,16 +1204,16 @@ class TreatBotMain:
                                     'error': str(e)
                                 })
                     else:
-                        self.logger.warning("☁️ download_song: missing url or filename")
+                        self.logger.warning("download_song: missing url or filename")
 
                 elif command == 'delete_song':
-                    # BUILD 41: Delete a song file and refresh playlist
+                    # Delete a song file and refresh playlist
                     # Payload: {"filename": "song.mp3", "dog_id": "optional"}
                     song_filename = params.get('filename')
                     dog_id = params.get('dog_id')
 
                     if not song_filename:
-                        self.logger.warning("☁️ delete_song: missing filename")
+                        self.logger.warning("delete_song: missing filename")
                         if self.relay_client and self.relay_client.connected:
                             self.relay_client.send_event('song_deleted', {
                                 'success': False,
@@ -1239,7 +1237,7 @@ class TreatBotMain:
                         if filepath and os.path.exists(filepath):
                             try:
                                 os.remove(filepath)
-                                self.logger.info(f"☁️ delete_song: deleted {filepath}")
+                                self.logger.debug(f"delete_song: deleted {filepath}")
 
                                 # Refresh playlist to remove from rotation
                                 from services.media.usb_audio import get_usb_audio_service
@@ -1252,7 +1250,7 @@ class TreatBotMain:
                                         'filename': song_filename
                                     })
                             except Exception as e:
-                                self.logger.error(f"☁️ delete_song error: {e}")
+                                self.logger.error(f"delete_song error: {e}")
                                 if self.relay_client and self.relay_client.connected:
                                     self.relay_client.send_event('song_deleted', {
                                         'success': False,
@@ -1260,7 +1258,7 @@ class TreatBotMain:
                                         'error': str(e)
                                     })
                         else:
-                            self.logger.warning(f"☁️ delete_song: file not found: {song_filename}")
+                            self.logger.warning(f"delete_song: file not found: {song_filename}")
                             if self.relay_client and self.relay_client.connected:
                                 self.relay_client.send_event('song_deleted', {
                                     'success': False,
@@ -1271,7 +1269,7 @@ class TreatBotMain:
                 elif command == 'list_songs':
                     # List all songs (system + user)
                     resp = client.get(f'{api_base}/music/list')
-                    self.logger.info(f"☁️ List songs -> {resp.status_code}")
+                    self.logger.debug(f"List songs -> {resp.status_code}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('music_update', {
                             'action': 'list',
@@ -1290,17 +1288,17 @@ class TreatBotMain:
                         from orchestrators.mission_engine import get_mission_engine
                         engine = get_mission_engine()
 
-                        # BUILD 38: Check if mission already active before starting
+                        # Check if mission already active before starting
                         pre_status = engine.get_mission_status()
                         was_already_active = pre_status.get('active', False)
                         existing_mission = pre_status.get('mission_name', '')
 
                         started = engine.start_mission(mission_name, dog_id=dog_id)
-                        self.logger.info(f"☁️ Start mission '{mission_name}' -> {started} (was_active={was_already_active})")
+                        self.logger.debug(f"Start mission '{mission_name}' -> {started} (was_active={was_already_active})")
 
                         if self.relay_client and self.relay_client.connected:
                             status = engine.get_mission_status()
-                            # BUILD 40: Fixed field names to match app contract
+                            # Field names match app contract
                             response = {
                                 'action': 'started' if started else 'failed',
                                 'mission_id': mission_name,
@@ -1309,7 +1307,7 @@ class TreatBotMain:
                                 'total_stages': status.get('total_stages', 0),
                                 'dog_id': dog_id,
                             }
-                            # BUILD 38: Add failure_reason for app to handle properly
+                            # Add failure_reason for app to handle properly
                             if not started:
                                 if was_already_active:
                                     response['failure_reason'] = 'mission_already_active'
@@ -1318,7 +1316,7 @@ class TreatBotMain:
                                     response['failure_reason'] = 'start_failed'
                             self.relay_client.send_event('mission_progress', response)
                     else:
-                        self.logger.warning("☁️ start_mission: no mission name provided")
+                        self.logger.warning("start_mission: no mission name provided")
 
                 elif command in ('cancel_mission', 'stop_mission'):
                     # Cancel/stop active mission
@@ -1327,7 +1325,7 @@ class TreatBotMain:
                     status = engine.get_mission_status()  # grab before stopping
                     reason = 'user_cancelled' if command == 'stop_mission' else 'app_cancelled'
                     cancelled = engine.stop_mission(reason=reason)
-                    self.logger.info(f"☁️ {command} -> {cancelled}")
+                    self.logger.debug(f"{command} -> {cancelled}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('mission_stopped', {
                             'reason': reason,
@@ -1340,7 +1338,7 @@ class TreatBotMain:
                     from orchestrators.mission_engine import get_mission_engine
                     engine = get_mission_engine()
                     status = engine.get_mission_status()
-                    self.logger.info(f"☁️ Mission status -> {status.get('active', False)}")
+                    self.logger.debug(f"Mission status -> {status.get('active', False)}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('mission_progress', {
                             'action': 'status',
@@ -1352,7 +1350,7 @@ class TreatBotMain:
                     from orchestrators.mission_engine import get_mission_engine
                     engine = get_mission_engine()
                     missions = engine.get_available_missions()
-                    self.logger.info(f"☁️ List missions -> {len(missions)} available")
+                    self.logger.debug(f"List missions -> {len(missions)} available")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('mission_progress', {
                             'action': 'list',
@@ -1367,12 +1365,12 @@ class TreatBotMain:
                     resp = client.post(f'{api_base}/camera/manual_control', json={
                         'active': active
                     })
-                    self.logger.info(f"☁️ Camera manual control active={active} -> {resp.status_code}")
+                    self.logger.debug(f"Camera manual control active={active} -> {resp.status_code}")
 
                 elif command == 'set_manual_control':
                     # Manual control toggle (from app drive screen)
                     active = params.get('active', False)
-                    self.logger.info(f"☁️ Manual control {'active' if active else 'inactive'}")
+                    self.logger.debug(f"Manual control {'active' if active else 'inactive'}")
 
                 elif command in ('play_voice', 'call_dog'):
                     # Unified voice playback handler
@@ -1387,49 +1385,49 @@ class TreatBotMain:
                               or params.get('data', {}).get('dog_id')
                               or event.data.get('dog_id'))
 
-                    self.logger.info(f"☁️ {command}: voice_type={voice_type}, dog_id={dog_id}, params={params}")
+                    self.logger.debug(f"{command}: voice_type={voice_type}, dog_id={dog_id}, params={params}")
 
                     if not voice_type:
-                        self.logger.warning(f"☁️ {command}: no voice_type provided, params={params}")
+                        self.logger.warning(f"{command}: no voice_type provided, params={params}")
                     else:
                         # Get path using voice_lookup (custom first, default fallback)
                         audio_path = get_voice_path(voice_type, dog_id)
-                        self.logger.info(f"☁️ {command}: get_voice_path({voice_type}, {dog_id}) -> {audio_path}")
+                        self.logger.debug(f"{command}: get_voice_path({voice_type}, {dog_id}) -> {audio_path}")
 
                         if audio_path:
                             try:
                                 audio_svc = get_usb_audio_service()
-                                self.logger.info(f"☁️ {command}: audio_svc initialized={audio_svc.is_initialized if audio_svc else 'None'}")
+                                self.logger.debug(f"{command}: audio_svc initialized={audio_svc.is_initialized if audio_svc else 'None'}")
                                 if audio_svc and audio_svc.is_initialized:
                                     result = audio_svc.play_file(audio_path)
-                                    self.logger.info(f"☁️ {command}: play_file({audio_path}) result={result}")
+                                    self.logger.debug(f"{command}: play_file({audio_path}) result={result}")
                                 else:
-                                    self.logger.warning(f"☁️ {command}: USB audio not initialized (svc={audio_svc})")
+                                    self.logger.warning(f"{command}: USB audio not initialized (svc={audio_svc})")
                             except Exception as e:
-                                self.logger.error(f"☁️ {command} error: {e}", exc_info=True)
+                                self.logger.error(f"{command} error: {e}", exc_info=True)
                         else:
                             # For call_dog, fall back to default come.mp3 if custom not found
                             if command == 'call_dog':
                                 fallback_path = "/home/morgan/dogbot/VOICEMP3/talks/default/come.mp3"
-                                self.logger.info(f"☁️ call_dog: trying fallback {fallback_path}")
+                                self.logger.debug(f"call_dog: trying fallback {fallback_path}")
                                 try:
                                     audio_svc = get_usb_audio_service()
                                     if audio_svc and audio_svc.is_initialized:
                                         result = audio_svc.play_file(fallback_path)
-                                        self.logger.info(f"☁️ call_dog: fallback play result={result}")
+                                        self.logger.debug(f"call_dog: fallback play result={result}")
                                     else:
-                                        self.logger.warning(f"☁️ call_dog: USB audio not available for fallback")
+                                        self.logger.warning(f"call_dog: USB audio not available for fallback")
                                 except Exception as e:
-                                    self.logger.error(f"☁️ call_dog fallback error: {e}", exc_info=True)
+                                    self.logger.error(f"call_dog fallback error: {e}", exc_info=True)
                             else:
-                                self.logger.error(f"☁️ {command}: voice file not found for type={voice_type}, dog={dog_id}")
+                                self.logger.error(f"{command}: voice file not found for type={voice_type}, dog={dog_id}")
 
-                # ==================== BUILD 38 FIX: SCHEDULER COMMANDS ====================
+                # Scheduler commands
                 elif command == 'get_schedules':
                     from core.schedule_manager import get_schedule_manager
                     manager = get_schedule_manager()
                     schedules = manager.list_schedules()
-                    self.logger.info(f"☁️ get_schedules -> {len(schedules)} schedules")
+                    self.logger.debug(f"get_schedules -> {len(schedules)} schedules")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('schedules_list', {
                             'success': True,
@@ -1443,9 +1441,9 @@ class TreatBotMain:
                     result = manager.create_schedule(params)
                     success = result.get('success', False)
                     if success:
-                        self.logger.info(f"☁️ create_schedule -> success=True, id={result.get('schedule_id')}")
+                        self.logger.debug(f"create_schedule -> success=True, id={result.get('schedule_id')}")
                     else:
-                        self.logger.warning(f"☁️ create_schedule -> FAILED: {result.get('error', 'Unknown error')}")
+                        self.logger.warning(f"create_schedule -> FAILED: {result.get('error', 'Unknown error')}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('schedule_created', result)
 
@@ -1455,7 +1453,7 @@ class TreatBotMain:
                     schedule_id = params.get('schedule_id') or params.get('id')
                     result = manager.update_schedule(schedule_id, params)
                     success = result.get('success', False)
-                    self.logger.info(f"☁️ update_schedule {schedule_id} -> success={success}")
+                    self.logger.debug(f"update_schedule {schedule_id} -> success={success}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('schedule_updated', result)
 
@@ -1465,7 +1463,7 @@ class TreatBotMain:
                     schedule_id = params.get('schedule_id') or params.get('id')
                     result = manager.delete_schedule(schedule_id)
                     success = result.get('success', False)
-                    self.logger.info(f"☁️ delete_schedule {schedule_id} -> success={success}")
+                    self.logger.debug(f"delete_schedule {schedule_id} -> success={success}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('schedule_deleted', result)
 
@@ -1473,18 +1471,18 @@ class TreatBotMain:
                     from core.mission_scheduler import get_mission_scheduler
                     scheduler = get_mission_scheduler()
                     status = scheduler.get_status() if scheduler else {'enabled': False, 'error': 'Scheduler not initialized'}
-                    self.logger.info(f"☁️ get_scheduler_status -> enabled={status.get('enabled', False)}")
+                    self.logger.debug(f"get_scheduler_status -> enabled={status.get('enabled', False)}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('scheduler_status', status)
 
-                # ==================== BUILD 38 FIX: COACH COMMANDS ====================
+                # Coach commands
                 elif command == 'start_coach':
                     # App sends this after set_mode - coaching engine already started via _on_mode_change
                     # Just acknowledge and send current state
                     from orchestrators.coaching_engine import get_coaching_engine
                     engine = get_coaching_engine()
                     running = engine.running if engine else False
-                    self.logger.info(f"☁️ start_coach -> already running={running}")
+                    self.logger.debug(f"start_coach -> already running={running}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('coach_started', {'success': True, 'running': running})
 
@@ -1494,7 +1492,7 @@ class TreatBotMain:
                     from orchestrators.coaching_engine import get_coaching_engine
                     engine = get_coaching_engine()
                     was_running = engine.running if engine else False
-                    self.logger.info(f"☁️ stop_coach -> was_running={was_running}")
+                    self.logger.debug(f"stop_coach -> was_running={was_running}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('coach_stopped', {'success': True})
 
@@ -1507,47 +1505,46 @@ class TreatBotMain:
                         engine._forced_trick = trick
                         # Reset cooldown to allow immediate session
                         engine._last_session_end = 0.0
-                        self.logger.info(f"☁️ force_trick -> {trick}")
+                        self.logger.debug(f"force_trick -> {trick}")
                         if self.relay_client and self.relay_client.connected:
                             self.relay_client.send_event('trick_forced', {'success': True, 'trick': trick})
                     else:
-                        self.logger.warning(f"☁️ force_trick failed: engine={engine is not None}, running={engine.running if engine else False}, trick={trick}")
+                        self.logger.warning(f"force_trick failed: engine={engine is not None}, running={engine.running if engine else False}, trick={trick}")
                         if self.relay_client and self.relay_client.connected:
                             self.relay_client.send_event('trick_forced', {'success': False, 'error': 'Coach not running or no trick specified'})
 
-                # ==================== BUILD 38 FIX: TRACKING COMMAND ====================
-                # BUILD 40: Added debug logging for tracking command
+                # Tracking command
                 elif command == 'set_tracking_enabled':
-                    self.logger.info(f"[TRACKING] set_tracking_enabled received, params={params}")
+                    self.logger.debug(f"set_tracking_enabled received, params={params}")
                     enabled = params.get('enabled', False) or params.get('data', {}).get('enabled', False)
                     from services.motion.pan_tilt import get_pantilt_service
                     pantilt = get_pantilt_service()
                     if pantilt:
                         pantilt.set_tracking_enabled(enabled)
-                        self.logger.info(f"[TRACKING] set_tracking_enabled -> {enabled}")
+                        self.logger.debug(f"set_tracking_enabled -> {enabled}")
                         if self.relay_client and self.relay_client.connected:
                             self.relay_client.send_event('tracking_enabled', {'success': True, 'enabled': enabled})
                     else:
-                        self.logger.warning("[TRACKING] set_tracking_enabled: pan/tilt service not available")
+                        self.logger.warning("set_tracking_enabled: pan/tilt service not available")
 
-                # ==================== BUILD 38 FIX: MISSION STATUS COMMAND ====================
+                # Mission status command
                 elif command == 'get_mission_status':
                     from orchestrators.mission_engine import get_mission_engine
                     engine = get_mission_engine()
                     status = engine.get_mission_status() if engine else {'active': False}
-                    self.logger.info(f"☁️ get_mission_status -> active={status.get('active', False)}")
+                    self.logger.debug(f"get_mission_status -> active={status.get('active', False)}")
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('mission_status', status)
 
                 else:
-                    self.logger.warning(f"☁️ Unknown cloud command: {command}")
+                    self.logger.warning(f"Unknown cloud command: {command}")
 
         except httpx.TimeoutException:
-            self.logger.error(f"☁️ Cloud command timeout: {command}")
+            self.logger.error(f"Cloud command timeout: {command}")
         except httpx.ConnectError:
-            self.logger.error(f"☁️ Cloud command failed - API not reachable")
+            self.logger.error(f"Cloud command failed - API not reachable")
         except Exception as e:
-            self.logger.error(f"☁️ Cloud command error: {e}", exc_info=True)
+            self.logger.error(f"Cloud command error: {e}", exc_info=True)
 
     def _on_mode_change(self, data: Dict[str, Any]) -> None:
         """Handle mode changes to start/stop mode handlers"""
@@ -1559,10 +1556,10 @@ class TreatBotMain:
             # Log with reason and traceback for debugging
             import traceback
             caller_info = "".join(traceback.format_stack()[-5:-1]).strip().replace('\n', ' | ')
-            self.logger.info(f"🔄 MODE CHANGE: {previous_mode} → {new_mode} [reason: {reason}] [source: {caller_info[:300]}]")
+            self.logger.info(f"MODE CHANGE: {previous_mode} -> {new_mode} [reason: {reason}] [source: {caller_info[:300]}]")
 
             # Notify app of mode change via relay
-            # BUILD 34: Send 'mode_changed' event (not 'status_update') for proper app sync
+            # Send 'mode_changed' event for app sync
             if self.relay_client and self.relay_client.connected:
                 import time
                 # Use contract mode names (must match telemetry mode_map)
@@ -1582,7 +1579,7 @@ class TreatBotMain:
                     'reason': reason,
                     'timestamp': time.time()
                 })
-                self.logger.info(f"📱 Mode changed event sent: {contract_prev} -> {contract_new} (locked={locked})")
+                self.logger.debug(f"Mode changed event sent: {contract_prev} -> {contract_new} (locked={locked})")
 
             # Play voice announcement for mode change
             self._announce_mode(new_mode)
@@ -1591,27 +1588,27 @@ class TreatBotMain:
             if previous_mode == 'silent_guardian':
                 if self.silent_guardian_mode and self.silent_guardian_mode.running:
                     self.silent_guardian_mode.stop()
-                    self.logger.info("🛑 Silent Guardian mode stopped")
+                    self.logger.info("Silent Guardian mode stopped")
 
             # Stop Coach mode if leaving that mode
             if previous_mode == 'coach':
                 if self.coaching_engine and self.coaching_engine.running:
                     self.coaching_engine.stop()
-                    self.logger.info("🛑 Coach mode stopped")
+                    self.logger.info("Coach mode stopped")
                 # NOTE: AI detection continues running in all modes (it's a perception layer)
 
             # Start Silent Guardian if entering that mode
             if new_mode == 'silent_guardian':
                 if self.silent_guardian_mode:
                     self.silent_guardian_mode.start()
-                    self.logger.info("🛡️ Silent Guardian mode started")
+                    self.logger.info("Silent Guardian mode started")
 
             # Start Coach mode if entering that mode
             if new_mode == 'coach':
                 # NOTE: AI detection is already running (started at boot)
                 if self.coaching_engine:
                     self.coaching_engine.start()
-                    self.logger.info("🎓 Coach mode started")
+                    self.logger.info("Coach mode started")
 
             # Bark detection management - only run in modes that NEED it
             # SILENT_GUARDIAN: always on (core functionality)
@@ -1621,12 +1618,12 @@ class TreatBotMain:
             bark_needed = False
             if new_mode == 'silent_guardian':
                 bark_needed = True
-                self.logger.debug("🎤 Bark detection needed (Silent Guardian mode)")
+                self.logger.debug("Bark detection needed (Silent Guardian mode)")
             elif new_mode == 'coach':
                 # Coach mode needs bark for speak trick
                 # The coaching engine filters barks internally via listening_for_barks flag
                 bark_needed = True
-                self.logger.debug("🎤 Bark detection enabled (Coach mode - for speak trick)")
+                self.logger.debug("Bark detection enabled (Coach mode - for speak trick)")
             elif new_mode == 'mission':
                 # Only enable bark detection for missions with bark/quiet stages
                 try:
@@ -1639,12 +1636,12 @@ class TreatBotMain:
                         for stage in mission.stages:
                             if any(kw.lower() in stage.success_event.lower() for kw in bark_keywords):
                                 bark_needed = True
-                                self.logger.info(f"🎤 Mission '{mission.name}' has bark/quiet stages - enabling detection")
+                                self.logger.debug(f"Mission '{mission.name}' has bark/quiet stages - enabling detection")
                                 break
                         if not bark_needed:
-                            self.logger.info(f"🎤 Mission '{mission.name}' doesn't need bark detection - skipping")
+                            self.logger.debug(f"Mission '{mission.name}' doesn't need bark detection - skipping")
                     else:
-                        self.logger.debug("🎤 No active mission - bark detection not needed")
+                        self.logger.debug("No active mission - bark detection not needed")
                 except Exception as e:
                     self.logger.warning(f"Could not check mission bark requirement: {e}")
 
@@ -1654,7 +1651,7 @@ class TreatBotMain:
                 # Leaving a bark-detection mode or entering mode that doesn't need it
                 if self.bark_detector and self.bark_detector.enabled and self.bark_detector.is_running:
                     self.bark_detector.stop()
-                    self.logger.info("🎤 Bark detection stopped (not needed in current mode)")
+                    self.logger.info("Bark detection stopped (not needed in current mode)")
                     # Resume WebRTC mic after bark detection releases it
                     time.sleep(0.3)  # Wait for arecord cleanup
                     audio_track = get_audio_track()
@@ -1670,7 +1667,7 @@ class TreatBotMain:
                         audio_track.pause_capture()
                         time.sleep(0.5)  # Wait for ALSA device release
                     self.bark_detector.start()
-                    self.logger.info("🎤 Bark detection started (needed for current mode)")
+                    self.logger.info("Bark detection started (needed for current mode)")
 
         except Exception as e:
             self.logger.error(f"Mode change handler error: {e}")
@@ -1690,16 +1687,16 @@ class TreatBotMain:
                         pass
 
                     if app_connected:
-                        self.logger.info("🎮 Xbox controller disconnected - app is connected, keeping MANUAL mode")
+                        self.logger.info("Xbox controller disconnected - app is connected, keeping MANUAL mode")
                     else:
-                        self.logger.info("🎮 Xbox controller disconnected - no app connected, returning to IDLE")
+                        self.logger.info("Xbox controller disconnected - no app connected, returning to IDLE")
                         self.state.set_mode(SystemMode.IDLE, "Controller disconnected, no app")
 
             elif event.subtype == 'controller_connected':
                 # Controller connected - switch to Manual mode
                 current_mode = self.state.get_mode()
                 if current_mode != SystemMode.MANUAL:
-                    self.logger.info("🎮 Xbox controller connected - switching to Manual mode")
+                    self.logger.info("Xbox controller connected - switching to Manual mode")
                     self.mode_fsm.force_mode(SystemMode.MANUAL, "Xbox controller connected")
 
         except Exception as e:
@@ -1739,7 +1736,7 @@ class TreatBotMain:
 
                     result = self.usb_audio.play_file(audio_file)
                     if result.get('success'):
-                        self.logger.info(f"🔊 Mode announcement: {mode}")
+                        self.logger.debug(f"Mode announcement: {mode}")
                     else:
                         self.logger.warning(f"Mode announcement failed: {result.get('error')}")
                 else:
@@ -1765,13 +1762,13 @@ class TreatBotMain:
                 if os.path.exists(self.startup_audio):
                     result = self.usb_audio.play_file(self.startup_audio)
                     if result.get('success'):
-                        self.logger.info("🔊 WIM-Z Online announcement played")
+                        self.logger.info("WIM-Z Online announcement played")
                     else:
                         self.logger.warning(f"Startup audio failed: {result.get('error')}")
                 else:
                     self.logger.warning(f"Startup audio file not found: {self.startup_audio}")
             else:
-                self.logger.info("🤫 Silent startup (USB audio not available)")
+                self.logger.info("Silent startup (USB audio not available)")
 
         except Exception as e:
             self.logger.error(f"Startup sequence failed: {e}")
@@ -1805,12 +1802,12 @@ class TreatBotMain:
         elif current_mode == SystemMode.MANUAL:
             self.logger.info("Xbox controller active - staying in MANUAL mode")
 
-        self.logger.info("🚀 TreatBot main system started!")
+        self.logger.info("TreatBot main system started")
         return True
 
     def _main_loop(self) -> None:
         """Main system loop"""
-        self.logger.info("🔄 Main loop started")
+        self.logger.info("Main loop started")
         self.last_heartbeat = time.time()
 
         while not self._stop_event.wait(1.0):  # 1Hz main loop
@@ -1841,7 +1838,7 @@ class TreatBotMain:
             except Exception as e:
                 self.logger.error(f"Main loop error: {e}")
 
-        self.logger.info("🔄 Main loop stopped")
+        self.logger.info("Main loop stopped")
 
     def _update_telemetry(self) -> None:
         """Update system telemetry"""
@@ -1880,7 +1877,7 @@ class TreatBotMain:
                     if os.path.exists(self.low_battery_audio):
                         result = self.usb_audio.play_file(self.low_battery_audio)
                         if result.get('success'):
-                            self.logger.warning(f"🔋 Low battery warning: {battery_voltage:.1f}V")
+                            self.logger.warning(f"Low battery warning: {battery_voltage:.1f}V")
                             self.low_battery_announced = True
                         else:
                             self.logger.error(f"Battery warning audio failed: {result.get('error')}")
@@ -1903,11 +1900,11 @@ class TreatBotMain:
             'active_sequences': self.sequence_engine.get_status()['active_sequences']
         }
 
-        self.logger.info(f"📊 System Status: {status}")
+        self.logger.info(f"System status: {status}")
 
     def stop(self) -> None:
         """Stop the TreatBot system gracefully"""
-        self.logger.info("🛑 Stopping TreatBot system...")
+        self.logger.info("Stopping TreatBot system...")
 
         self.running = False
         self._stop_event.set()
@@ -1926,7 +1923,7 @@ class TreatBotMain:
         # Stop all subsystems
         self._stop_subsystems()
 
-        self.logger.info("🛑 TreatBot system stopped")
+        self.logger.info("TreatBot system stopped")
 
     def _run_shutdown_sequence(self) -> None:
         """Run shutdown sequence"""
@@ -2011,7 +2008,7 @@ class TreatBotMain:
 
     def _emergency_shutdown(self, reason: str, data: Dict[str, Any]) -> None:
         """Emergency shutdown callback"""
-        self.logger.critical(f"🚨 EMERGENCY SHUTDOWN: {reason}")
+        self.logger.critical(f"EMERGENCY SHUTDOWN: {reason}")
         self.shutdown_requested = True
 
         # Immediate hardware stops
@@ -2032,7 +2029,7 @@ class TreatBotMain:
 
     def _signal_handler(self, signum: int, frame) -> None:
         """Handle system signals"""
-        self.logger.info(f"📡 Received signal {signum}")
+        self.logger.info(f"Received signal {signum}")
         self.stop()
 
     def get_status(self) -> Dict[str, Any]:
@@ -2126,7 +2123,7 @@ def _setup_asyncio_exception_handler():
 
 def main():
     """Main entry point"""
-    print("🤖 TreatBot - AI Dog Training Robot")
+    print("TreatBot - AI Dog Training Robot")
     print("=" * 50)
 
     # Setup global asyncio exception handler FIRST
@@ -2138,33 +2135,32 @@ def main():
     try:
         # Initialize system
         if not treatbot.initialize():
-            print("❌ Initialization failed")
+            print("Initialization failed")
             return 1
 
         # Start system
         if not treatbot.start():
-            print("❌ Startup failed")
+            print("Startup failed")
             return 1
 
-        print("✅ TreatBot is running!")
-        print("Press Ctrl+C to stop")
+        print("TreatBot is running. Press Ctrl+C to stop.")
 
         # Keep main thread alive
         while treatbot.running:
             time.sleep(1.0)
 
     except KeyboardInterrupt:
-        print("\n🛑 Shutdown requested by user")
+        print("\nShutdown requested by user")
 
     except Exception as e:
-        print(f"❌ Fatal error: {e}")
+        print(f"Fatal error: {e}")
         return 1
 
     finally:
         # Clean shutdown
         treatbot.stop()
 
-    print("👋 TreatBot shutdown complete")
+    print("TreatBot shutdown complete")
     return 0
 
 

@@ -205,7 +205,7 @@ class RewardLogic:
         # Get current mode for logging
         from core.state import SystemMode
         current_mode = self.state.get_mode()
-        self.logger.info(f"🐕 Bark event: {dog_name} ({dog_id}) - {emotion} (conf: {confidence:.2f}), mode={current_mode.value}")
+        self.logger.debug(f"Bark event: {dog_name} ({dog_id}) - {emotion} (conf: {confidence:.2f}), mode={current_mode.value}")
 
         # Define bark reward policy
         bark_policy = RewardPolicy(
@@ -223,7 +223,7 @@ class RewardLogic:
         # Check if this emotion should trigger reward
         reward_emotions = ['alert', 'attention']  # From config
         if emotion in reward_emotions and confidence >= 0.55:
-            self.logger.info(f"🎯 Bark qualifies for reward eval: {emotion} >= 0.55 conf, mode={current_mode.value}")
+            self.logger.debug(f"Bark qualifies for reward eval: {emotion} >= 0.55 conf, mode={current_mode.value}")
             self._evaluate_bark_reward(dog_id, emotion, confidence, bark_policy)
         else:
             self.logger.debug(f"Bark skipped: emotion={emotion} (need {reward_emotions}), conf={confidence:.2f} (need >=0.55)")
@@ -232,17 +232,17 @@ class RewardLogic:
                              policy: RewardPolicy) -> None:
         """Evaluate whether to give a bark-based reward"""
         behavior_name = f'bark_{emotion}'
-        self.logger.info(f"🎰 Evaluating bark reward: {dog_id} {behavior_name} (conf={confidence:.2f})")
+        self.logger.debug(f"Evaluating bark reward: {dog_id} {behavior_name} (conf={confidence:.2f})")
 
         # Use same cooldown/limit checking but for bark rewards
         if not self._check_cooldown(dog_id, policy.cooldown):
-            self.logger.info(f"❌ Bark reward BLOCKED by cooldown: {dog_id} (cooldown={policy.cooldown}s)")
+            self.logger.info(f"Bark reward BLOCKED by cooldown: {dog_id} (cooldown={policy.cooldown}s)")
             return
 
         # Check daily limit for bark rewards specifically
         if not self._check_daily_limit(dog_id, behavior_name, policy.max_daily_rewards):
             current_count = self.daily_reward_counts.get(dog_id, {}).get(behavior_name, 0)
-            self.logger.info(f"❌ Bark reward BLOCKED by daily limit: {dog_id} {behavior_name} ({current_count}/{policy.max_daily_rewards})")
+            self.logger.info(f"Bark reward BLOCKED by daily limit: {dog_id} {behavior_name} ({current_count}/{policy.max_daily_rewards})")
             return
 
         # Bark rewards don't check mission quiet requirement - they're independent
@@ -250,11 +250,11 @@ class RewardLogic:
         # Variable ratio reward
         roll = random.random()
         if roll > policy.treat_probability:
-            self.logger.info(f"❌ Bark reward DENIED by probability: {dog_id} {behavior_name} (roll={roll:.2f} > p={policy.treat_probability})")
+            self.logger.info(f"Bark reward DENIED by probability: {dog_id} {behavior_name} (roll={roll:.2f} > p={policy.treat_probability})")
             return
 
         # Grant bark reward!
-        self.logger.warning(f"🎁 GRANTING bark reward: {dog_id} {behavior_name} (roll={roll:.2f} <= p={policy.treat_probability})")
+        self.logger.info(f"GRANTING bark reward: {dog_id} {behavior_name} (roll={roll:.2f} <= p={policy.treat_probability})")
         self._grant_reward(dog_id, behavior_name, confidence, 0.0, policy)
 
     def _evaluate_reward(self, dog_id: str, behavior: str, confidence: float,
@@ -423,7 +423,7 @@ class RewardLogic:
             mission_name=mission_name
         )
 
-        self.logger.info(f"🎉 REWARD GRANTED: {dog_id} for {behavior} (conf: {confidence:.2f}, dur: {duration:.1f}s)")
+        self.logger.info(f"REWARD GRANTED: {dog_id} for {behavior} (conf: {confidence:.2f}, dur: {duration:.1f}s)")
 
     def should_dispense(self, dog_id: str, behavior: str, confidence: float) -> RewardDecision:
         """
@@ -529,7 +529,7 @@ class RewardLogic:
             interrupt=True
         )
 
-        self.logger.info(f"🎉 FORCED REWARD: {dog_id} for {behavior}")
+        self.logger.info(f"FORCED REWARD: {dog_id} for {behavior}")
         return sequence_id is not None
 
     def update_policy(self, behavior: str, **kwargs) -> bool:
@@ -681,7 +681,7 @@ class RewardLogic:
             mission_name=mission_name
         )
 
-        self.logger.info(f"✅ Reward approved for {dog_id}: {behavior} (confidence: {confidence:.2f})")
+        self.logger.info(f"Reward approved for {dog_id}: {behavior} (confidence: {confidence:.2f})")
         return True
 
     def cleanup(self) -> None:

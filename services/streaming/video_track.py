@@ -63,8 +63,7 @@ class WIMZVideoTrack(VideoStreamTrack):
 
         self.logger.info(f"WIMZVideoTrack initialized at {fps} FPS, overlay={enable_overlay}")
 
-    # BUILD 36: Maximum frame age before considering it stale (500ms)
-    MAX_FRAME_AGE_SEC = 0.5
+    MAX_FRAME_AGE_SEC = 0.5  # seconds before frame considered stale
 
     async def recv(self) -> VideoFrame:
         """Receive next video frame for WebRTC transmission"""
@@ -77,8 +76,6 @@ class WIMZVideoTrack(VideoStreamTrack):
             await asyncio.sleep(self.frame_interval - elapsed)
         self.last_frame_time = time.time()
 
-        # BUILD 36: Get frame WITH timestamp to check freshness
-        # This fixes Issue 7 from Build 35 - video lag of 10-30 seconds
         frame = None
         frame_age = float('inf')
         if not self._paused:
@@ -88,22 +85,21 @@ class WIMZVideoTrack(VideoStreamTrack):
                 # Skip stale frames to prevent video lag
                 if frame_age > self.MAX_FRAME_AGE_SEC:
                     if self.frame_count % 50 == 0:  # Log periodically
-                        self.logger.warning(f"📹 Skipping stale frame (age={frame_age:.2f}s > {self.MAX_FRAME_AGE_SEC}s)")
+                        self.logger.warning(f"Skipping stale frame (age={frame_age:.2f}s > {self.MAX_FRAME_AGE_SEC}s)")
                     frame = None  # Force black frame with "Buffering" message
 
         # Log frame status periodically (every 100 frames)
         if self.frame_count % 100 == 0:
             if frame is not None:
-                self.logger.info(f"📹 Video frame {self.frame_count}: {frame.shape}, age={frame_age:.3f}s")
+                self.logger.debug(f"Video frame {self.frame_count}: {frame.shape}, age={frame_age:.3f}s")
             else:
-                self.logger.warning(f"📹 Video frame {self.frame_count}: None (no camera feed or stale)")
+                self.logger.warning(f"Video frame {self.frame_count}: None (no camera feed or stale)")
 
         if frame is None:
             # Return black frame if no camera data - use detector's current resolution
             resolution = getattr(self.detector, '_current_resolution', (640, 640))
             height, width = resolution[1], resolution[0]  # resolution is (width, height)
             frame = np.zeros((height, width, 3), dtype=np.uint8)
-            # BUILD 36: Show different message for stale frames vs no camera
             if frame_age < float('inf') and frame_age > self.MAX_FRAME_AGE_SEC:
                 # Frame exists but is stale - show buffering
                 cv2.putText(
@@ -117,8 +113,6 @@ class WIMZVideoTrack(VideoStreamTrack):
                     (width // 3, height // 2), cv2.FONT_HERSHEY_SIMPLEX,
                     1.0, (255, 255, 255), 2
                 )
-            # BUILD 36 Fix 1: Add status overlay to black frames so users see current mode
-            # This fixes Issue 4 - no status shown during camera reconfig
             self._add_status_overlay(frame)
             frame_rgb = frame  # Already RGB (black frame)
         else:
@@ -164,8 +158,6 @@ class WIMZVideoTrack(VideoStreamTrack):
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
                         # Dog name/ID label
-                        # BUILD 36: Show "Dog" when ArUco identification unavailable
-                        # Issue 3 from Build 35 - no label shown when name is None
                         dog_name = dog_data.get('name') or 'Dog'
                         cv2.putText(
                             frame, str(dog_name),
@@ -238,11 +230,7 @@ class WIMZVideoTrack(VideoStreamTrack):
                         cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Yellow
 
     def _add_status_overlay(self, frame: np.ndarray):
-        """Add mode and status text overlay (large, visible text at top)
-
-        BUILD 34: Removed emoji characters - OpenCV FONT_HERSHEY_SIMPLEX doesn't
-        support Unicode emoji, causing ???? display. Using plain text indicators.
-        """
+        """Add mode and status text overlay (large, visible text at top)"""
         try:
             from core.state import get_state, SystemMode
 
@@ -286,8 +274,6 @@ class WIMZVideoTrack(VideoStreamTrack):
                 try:
                     from orchestrators.mission_engine import get_mission_engine
                     engine = get_mission_engine()
-                    # BUILD 38: Use thread-safe get_mission_status() instead of direct active_session access
-                    # This fixes the race condition that caused overlay to show "IDLE" during active missions
                     status = engine.get_mission_status()
                     if status.get("active"):
                         fsm = status.get("state", "unknown")
@@ -312,7 +298,6 @@ class WIMZVideoTrack(VideoStreamTrack):
                             status_text = f"[MISSION {stage_num}/{total}] Retry {trick}..."
                             status_color = (255, 128, 0)  # Orange
                         elif 'idle' in fsm or 'starting' in fsm:
-                            # BUILD 38: Handle idle/starting states that shouldn't normally appear
                             status_text = f"[MISSION {stage_num}/{total}] Initializing..."
                             status_color = (255, 255, 0)  # Yellow
                         else:
@@ -369,8 +354,6 @@ class WIMZVideoTrack(VideoStreamTrack):
                     status_color, thickness, cv2.LINE_AA
                 )
 
-            # BUILD 36 Fix 2: Add frame generation timestamp at bottom
-            # This helps users identify stale/delayed video from WebRTC buffering
             frame_height, frame_width = frame.shape[:2]
             frame_time = time.strftime("%H:%M:%S")
             cv2.putText(

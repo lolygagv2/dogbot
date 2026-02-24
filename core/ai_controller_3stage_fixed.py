@@ -565,7 +565,7 @@ class AI3StageControllerFixed:
                         conf_raw = np.clip(conf_raw, -500, 500)
                         conf = 1.0 / (1.0 + np.exp(-conf_raw))  # Sigmoid
 
-                        if conf < 0.6:  # BUILD 38: Raised from 0.5 to 0.6 to prevent arms/objects being classified as dogs
+                        if conf < 0.6:  # Raised from 0.5 to 0.6 to prevent arms/objects being classified as dogs
                             continue
 
                         # Decode bounding box from DFL format (64 channels = 4 sides * 16 bins)
@@ -855,8 +855,8 @@ class AI3StageControllerFixed:
                                 visible_kpts = np.sum(kpt_confs > 0.3)
                                 det = current_poses[dog_idx].detection
                                 aspect = (det.y2 - det.y1) / max(det.x2 - det.x1, 1)
-                                logger.info(f"Behavior [{prob_str}] -> {max_behavior} | "
-                                           f"kpts={visible_kpts}/24, aspect={aspect:.2f}")
+                                logger.debug(f"Behavior [{prob_str}] -> {max_behavior} | "
+                                            f"kpts={visible_kpts}/24, aspect={aspect:.2f}")
 
                 # Determine behavior - try geometric fallback first if conditions met
                 behavior_name = None
@@ -919,7 +919,7 @@ class AI3StageControllerFixed:
                     # SPIN bypasses temporal voting - it's a quick motion, not a held pose
                     # Temporal voting would average it out to "stand" since spin only lasts 1-2 frames
                     if behavior_name == "spin":
-                        logger.info(f"🔄 SPIN bypasses temporal voting (instant detection)")
+                        logger.debug("Spin bypasses temporal voting")
                     elif self._temporal_voting_enabled:
                         # Apply temporal voting for stable predictions (sit, stand, lie)
                         dog_id = f"dog_{dog_idx}"
@@ -939,7 +939,7 @@ class AI3StageControllerFixed:
                     if self._check_cooldown(behavior_name, dog_idx):
                         behaviors.append(BehaviorResult(behavior_name, max_prob, current_time))
                         self._update_cooldown(behavior_name, dog_idx)
-                        logger.info(f"🎯 BEHAVIOR: {behavior_name} (conf={max_prob:.2f}, method={classification_method})")
+                        logger.debug(f"Behavior: {behavior_name} (conf={max_prob:.2f}, method={classification_method})")
 
             return behaviors
 

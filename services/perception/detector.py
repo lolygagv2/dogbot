@@ -17,11 +17,9 @@ from core.store import get_store
 
 # Mode-based resolution configuration
 # AI modes need 640x640 for Hailo inference
-# BUILD 36: IDLE changed to 640x640 to eliminate camera reconfig delay when
-# switching to AI modes (mission, coach, silent_guardian). This fixes the
-# 10-20 second black screen when starting a mission from IDLE mode.
+# IDLE uses 640x640 to eliminate camera reconfig delay when switching to AI modes
 MODE_RESOLUTIONS = {
-    SystemMode.IDLE: (640, 640),             # BUILD 36: AI-ready, instant mode switch
+    SystemMode.IDLE: (640, 640),             # AI-ready, instant mode switch
     SystemMode.MANUAL: (1920, 1080),          # No AI, full HD video
     SystemMode.SILENT_GUARDIAN: (640, 640),  # AI active
     SystemMode.COACH: (640, 640),            # AI active
@@ -42,9 +40,8 @@ except ImportError:
 
 # ArUco detection
 ARUCO_DICT = cv2.aruco.DICT_4X4_1000
-# BUILD 35: Removed hardcoded dog names - use dog profiles from app instead
 DOG_MARKERS = {
-    # Dog markers are now loaded dynamically from dog profiles
+    # Dog markers are loaded dynamically from dog profiles
     # ArUco ID -> dog name mappings come from DogProfileManager
 }
 
@@ -91,8 +88,6 @@ class DetectorService:
         self.current_fps = 0.0
 
         # Rate limiting for detection events (prevent log spam)
-        # BUILD 35: Reduced from 5.0s to 0.2s to fix presence ratio calculation
-        # Mission/coaching engines need frequent events to calculate 66% presence correctly
         self._last_detection_event_time = 0
         self._detection_event_interval = 0.2  # Minimum seconds between detection events
 
@@ -285,18 +280,18 @@ class DetectorService:
                 self.camera = None
                 self.camera_initialized = False
                 self._camera_paused = True
-                self.logger.info("📷 Camera released for MANUAL mode")
+                self.logger.debug("Camera released for MANUAL mode")
             except Exception as e:
                 self.logger.error(f"Camera release error: {e}")
 
     def _reacquire_camera(self) -> bool:
         """Re-acquire camera after MANUAL mode"""
         if self._camera_paused:
-            self.logger.info("📷 Re-acquiring camera from MANUAL mode...")
+            self.logger.debug("Re-acquiring camera from MANUAL mode...")
             result = self._initialize_camera()
             if result:
                 self._camera_paused = False
-                self.logger.info("📷 Camera re-acquired successfully")
+                self.logger.debug("Camera re-acquired successfully")
             return result
         return self.camera_initialized
 
@@ -318,9 +313,9 @@ class DetectorService:
 
             # Only change if resolution differs
             if target_resolution != self._current_resolution:
-                self.logger.info(
-                    f"📹 Mode change {previous_mode_str} → {new_mode_str}: "
-                    f"Resolution {self._current_resolution} → {target_resolution}"
+                self.logger.debug(
+                    f"Mode change {previous_mode_str} -> {new_mode_str}: "
+                    f"Resolution {self._current_resolution} -> {target_resolution}"
                 )
                 self._change_resolution(target_resolution)
             else:
@@ -353,10 +348,10 @@ class DetectorService:
             if not self.camera_initialized or self.camera is None:
                 # Camera not initialized, just update target resolution
                 self._current_resolution = new_resolution
-                self.logger.info(f"📹 Resolution set to {new_resolution} (camera not active)")
+                self.logger.debug(f"Resolution set to {new_resolution} (camera not active)")
                 return True
 
-            self.logger.info(f"📹 Changing resolution from {old_resolution} to {new_resolution}...")
+            self.logger.debug(f"Changing resolution from {old_resolution} to {new_resolution}...")
 
             # Pause WebRTC video track before camera reconfig to prevent stale reads
             publish_vision_event('webrtc_pause_requested', {
@@ -405,7 +400,7 @@ class DetectorService:
                 if test_frame is not None:
                     actual_shape = test_frame.shape[:2]  # (height, width)
                     expected_shape = (new_resolution[1], new_resolution[0])  # height, width
-                    self.logger.info(f"📹 Resolution changed successfully: {actual_shape}")
+                    self.logger.debug(f"Resolution changed successfully: {actual_shape}")
                     self._current_resolution = new_resolution
                     return True
                 else:
@@ -441,7 +436,6 @@ class DetectorService:
         """
         Get last captured frame with its timestamp (thread-safe)
 
-        BUILD 36: Added to support frame freshness check in video_track.py
         Returns (frame, timestamp) tuple. If no frame, returns (None, 0)
         """
         with self._frame_lock:
@@ -542,7 +536,7 @@ class DetectorService:
 
                 # Log diagnostic every 100 iterations (or first 5 for debugging)
                 if self._loop_iteration <= 5 or self._loop_iteration % 100 == 0:
-                    self.logger.info(f"Detection loop alive: iter={self._loop_iteration}, camera_init={self.camera_initialized}, paused={self._camera_paused}, mode={self.state.get_mode()}")
+                    self.logger.debug(f"Detection loop alive: iter={self._loop_iteration}, camera_init={self.camera_initialized}, paused={self._camera_paused}, mode={self.state.get_mode()}")
 
                 # Check mode to determine behavior
                 # - SHUTDOWN/EMERGENCY: Stop everything
@@ -574,7 +568,7 @@ class DetectorService:
 
                 # Capture frame from camera (always, for WebRTC streaming)
                 if self._loop_iteration <= 5:
-                    self.logger.info(f"About to capture frame...")
+                    self.logger.debug("About to capture frame...")
                 frame = self._capture_frame()
                 if frame is None:
                     self.logger.warning(f"No frame captured (camera_init={self.camera_initialized}), waiting...")
@@ -582,7 +576,7 @@ class DetectorService:
                     continue
 
                 if self._loop_iteration <= 5:
-                    self.logger.info(f"Frame captured: {frame.shape}")
+                    self.logger.debug(f"Frame captured: {frame.shape}")
 
                 # Determine if AI processing should run
                 # Full AI: COACH, MISSION (detection + pose + behavior)
@@ -632,7 +626,7 @@ class DetectorService:
                     self.current_fps = self.frame_count / (now - self.last_fps_time)
                     self.frame_count = 0
                     self.last_fps_time = now
-                    self.logger.info(f"Detection FPS: {self.current_fps:.1f}")
+                    self.logger.debug(f"Detection FPS: {self.current_fps:.1f}")
 
                 # CRITICAL: Minimum loop interval to prevent Hailo driver exhaustion
                 # Primary rate limiting is in AI controller, this is a safety backstop
@@ -685,7 +679,6 @@ class DetectorService:
         # Update state
         num_dogs = len(dogs)
         # Get primary dog name and id method (first detection)
-        # BUILD 34: Use "Dog" for unidentified dogs instead of empty string
         primary_dog_name = dog_assignments.get(0, "")
         primary_id_method = dog_id_methods.get(0, "")
         display_name = primary_dog_name.capitalize() if primary_dog_name else "Dog"

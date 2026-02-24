@@ -116,8 +116,7 @@ class DogProfileManager:
     def _load_default_profiles(self):
         """Load default dog profiles from config
 
-        BUILD 35: Removed hardcoded bezik/elsa defaults.
-        Dog profiles should come from the app via sync_from_cloud() or add_profile().
+        Dog profiles come from the app via sync_from_cloud() or add_profile().
         Only create profiles when a real dog with ArUco marker is registered.
         """
         # No hardcoded profiles - profiles come from app/cloud

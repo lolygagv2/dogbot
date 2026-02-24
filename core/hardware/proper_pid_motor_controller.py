@@ -144,7 +144,7 @@ class ProperPIDMotorController:
         self.ramped_left_target = 0.0
         self.ramped_right_target = 0.0
 
-        logger.info("🎯 Proper PID Motor Controller Initialized (GPIO deferred to start)")
+        logger.info("Proper PID Motor Controller Initialized (GPIO deferred to start)")
         logger.info(f"   Encoder PPR: {self.ENCODER_PPR}")
         logger.info(f"   PWM range: {self.PWM_MIN}-{self.PWM_MAX}%")
         logger.info(f"   PID gains: Kp={self.left_gains.kp}, Ki={self.left_gains.ki}, Kd={self.left_gains.kd}")
@@ -172,7 +172,7 @@ class ProperPIDMotorController:
         self.pid_thread = threading.Thread(target=self._pid_loop, daemon=False)
         self.pid_thread.start()
 
-        logger.info("✅ PID Motor Controller Started")
+        logger.info("PID Motor Controller Started")
         logger.info(f"   Encoder polling: {self.ENCODER_POLL_RATE}Hz")
         logger.info(f"   PID control: {self.PID_UPDATE_RATE}Hz")
         return True
@@ -180,7 +180,7 @@ class ProperPIDMotorController:
     def _initialize_gpio(self) -> bool:
         """Initialize GPIO handles for motor control and encoders"""
         try:
-            logger.info("🔧 Initializing GPIO for motor control...")
+            logger.info("Initializing GPIO for motor control...")
 
             # Open GPIO chip for encoder reading
             self.gpio_handle = lgpio.gpiochip_open(0)
@@ -207,11 +207,11 @@ class ProperPIDMotorController:
             self._init_encoder_states()
 
             self._gpio_initialized = True
-            logger.info("✅ GPIO initialized successfully")
+            logger.info("GPIO initialized successfully")
             return True
 
         except Exception as e:
-            logger.error(f"❌ GPIO initialization failed: {e}")
+            logger.error(f"GPIO initialization failed: {e}")
             # Cleanup any partially initialized resources
             self._cleanup_gpio()
             return False
@@ -258,7 +258,7 @@ class ProperPIDMotorController:
         if self.pid_thread:
             self.pid_thread.join(timeout=2.0)
 
-        logger.info("🛑 PID Motor Controller Stopped")
+        logger.info("PID Motor Controller Stopped")
 
     def set_motor_rpm(self, left_rpm: float, right_rpm: float):
         """
@@ -288,7 +288,7 @@ class ProperPIDMotorController:
             else:
                 self.motors_should_be_stopped = True
 
-        logger.debug(f"🎯 Target RPM: L={left_rpm:.1f}, R={right_rpm:.1f}")
+        logger.debug(f"Target RPM: L={left_rpm:.1f}, R={right_rpm:.1f}")
 
     def get_motor_rpm(self) -> dict:
         """Get current actual RPM for both motors"""
@@ -350,7 +350,7 @@ class ProperPIDMotorController:
         self.right.last_a = lgpio.gpio_read(self.gpio_handle, self.pins.ENCODER_A2)
         self.right.last_b = lgpio.gpio_read(self.gpio_handle, self.pins.ENCODER_B2)
 
-        logger.info(f"🔧 Encoder pins initialized on GPIO{self.pins.ENCODER_A1}/{self.pins.ENCODER_B1} (left), GPIO{self.pins.ENCODER_A2}/{self.pins.ENCODER_B2} (right)")
+        logger.info(f"Encoder pins initialized on GPIO{self.pins.ENCODER_A1}/{self.pins.ENCODER_B1} (left), GPIO{self.pins.ENCODER_A2}/{self.pins.ENCODER_B2} (right)")
         logger.info(f"   Initial states: Left A={self.left.last_a},B={self.left.last_b} | Right A={self.right.last_a},B={self.right.last_b}")
 
     def _encoder_loop(self):
@@ -456,7 +456,7 @@ class ProperPIDMotorController:
                 time_since_cmd = current_time - self.last_command_time
                 if time_since_cmd > self.watchdog_timeout:
                     if not self.emergency_stopped:
-                        logger.warning(f"⏰ Watchdog timeout - no commands for {time_since_cmd:.1f}s (threshold={self.watchdog_timeout}s), stopping motors")
+                        logger.warning(f"Watchdog timeout - no commands for {time_since_cmd:.1f}s (threshold={self.watchdog_timeout}s), stopping motors")
                         logger.warning(f"   Last command time: {self.last_command_time:.3f}, open_loop={self.open_loop_mode}")
                         self._emergency_stop()
                     time.sleep(pid_interval)
@@ -468,7 +468,7 @@ class ProperPIDMotorController:
                 if not self.motors_should_be_stopped:
                     if current_time - self.last_nonzero_command_time > 2.5:
                         # Haven't received a fresh movement command in 2.5 seconds while motors running
-                        logger.info("⏰ Stale movement command (2.5s) - stopping motors")
+                        logger.info("Stale movement command (2.5s) - stopping motors")
                         with self.lock:
                             self.left.target_rpm = 0
                             self.right.target_rpm = 0
@@ -492,7 +492,7 @@ class ProperPIDMotorController:
                 debug_counter += 1
                 if debug_counter >= 100:
                     logger.info(
-                        f"🎯 PID: Target L={self.ramped_left_target:6.1f} R={self.ramped_right_target:6.1f} | "
+                        f"PID: Target L={self.ramped_left_target:6.1f} R={self.ramped_right_target:6.1f} | "
                         f"Actual L={self.left.current_rpm:6.1f} R={self.right.current_rpm:6.1f} | "
                         f"PWM L={self.left.pwm_output:5.1f} R={self.right.pwm_output:5.1f} | "
                         f"Enc L={self.left.encoder_count} R={self.right.encoder_count}"
@@ -609,7 +609,7 @@ class ProperPIDMotorController:
                 self.left_in1.off()
                 self.left_in2.off()
                 self.left_ena.value = 0
-                logger.debug(f"🔧 LEFT MOTOR: STOP (IN1=0, IN2=0, PWM=0)")
+                logger.debug(f"LEFT MOTOR: STOP (IN1=0, IN2=0, PWM=0)")
             elif motor.direction == 'forward':
                 self.left_in1.off()   # IN1=0 for forward
                 self.left_in2.on()    # IN2=1 for forward
@@ -624,7 +624,7 @@ class ProperPIDMotorController:
                 self.right_in3.off()
                 self.right_in4.off()
                 self.right_enb.value = 0
-                logger.debug(f"🔧 RIGHT MOTOR: STOP (IN3=0, IN4=0, PWM=0)")
+                logger.debug(f"RIGHT MOTOR: STOP (IN3=0, IN4=0, PWM=0)")
             elif motor.direction == 'forward':
                 self.right_in3.on()   # IN3=1 for forward
                 self.right_in4.off()  # IN4=0 for forward
@@ -652,7 +652,7 @@ class ProperPIDMotorController:
         self._apply_pwm(self.left, 0)
         self._apply_pwm(self.right, 0)
 
-        logger.critical("🚨 EMERGENCY STOP - All motors halted")
+        logger.critical("EMERGENCY STOP - All motors halted")
 
     def emergency_stop(self):
         """Public emergency stop interface"""
@@ -661,7 +661,7 @@ class ProperPIDMotorController:
 
     def cleanup(self):
         """Cleanup GPIO and stop all operations"""
-        logger.info("🧹 Cleaning up PID motor controller")
+        logger.info("Cleaning up PID motor controller")
 
         # Stop control loops
         self.stop()
@@ -672,7 +672,7 @@ class ProperPIDMotorController:
 
         # Close GPIO devices
         self._cleanup_gpio()
-        logger.info("✅ GPIO devices closed")
+        logger.info("GPIO devices closed")
 
     def set_motor_pwm_direct(self, left_pwm: float, right_pwm: float):
         """
@@ -726,7 +726,7 @@ class ProperPIDMotorController:
             self._apply_pwm(self.left, self.left.pwm_output)
             self._apply_pwm(self.right, self.right.pwm_output)
 
-            logger.debug(f"📍 Direct PWM: L={left_pwm:.1f}% ({self.left.direction}), R={right_pwm:.1f}% ({self.right.direction})")
+            logger.debug(f"Direct PWM: L={left_pwm:.1f}% ({self.left.direction}), R={right_pwm:.1f}% ({self.right.direction})")
 
 
 # Legacy compatibility interface
@@ -820,14 +820,14 @@ class MotorControllerPolling(ProperPIDMotorController):
             self._apply_pwm(self.left, self.left.pwm_output)
             self._apply_pwm(self.right, self.right.pwm_output)
 
-            logger.debug(f"📍 Direct PWM: L={left_pwm:.1f}% ({self.left.direction}), R={right_pwm:.1f}% ({self.right.direction})")
+            logger.debug(f"Direct PWM: L={left_pwm:.1f}% ({self.left.direction}), R={right_pwm:.1f}% ({self.right.direction})")
 
 
 if __name__ == "__main__":
     # Test the controller
     logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
-    print("🎯 Testing Proper PID Motor Controller")
+    print("Testing Proper PID Motor Controller")
     controller = ProperPIDMotorController()
 
     try:

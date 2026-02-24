@@ -35,9 +35,9 @@ class PanTiltService:
         self.smoothed_target = None  # Smoothed target for less jitter
         self.last_detection_time = 0.0
         self.lost_target_time = 3.0  # seconds before starting scan
-        self._edge_stable_since = None  # BUILD 38: Track when dog first reached frame edge (for nudge tracking)
+        self._edge_stable_since = None  # Track when dog first reached frame edge (for nudge tracking)
 
-        # PID parameters - BUILD 34: Further reduced for smoother tracking
+        # PID parameters
         self.pid_params = {
             'pan': {'kp': 0.08, 'ki': 0.002, 'kd': 0.04},   # Reduced 50% from previous
             'tilt': {'kp': 0.05, 'ki': 0.002, 'kd': 0.02}   # Reduced 50% from previous
@@ -71,8 +71,7 @@ class PanTiltService:
 
         # Configurable center position (calibrated default viewing angle)
         # These values are the actual servo positions for "looking straight ahead"
-        # BUILD 41: Adjusted pan center 20° left to compensate for physical mount offset
-        self.center_pan = 110   # Pan center position (calibrated for this robot)
+        self.center_pan = 110   # Pan center position (calibrated for this robot, 20° left offset)
         self.center_tilt = 90   # Tilt center position (internal servo units)
 
         # Servo command rate limiting (debounce)
@@ -202,7 +201,7 @@ class PanTiltService:
                 if current_mode == SystemMode.COACH:
                     self._handle_coach_mode(dt)
                 elif current_mode == SystemMode.MISSION:
-                    # BUILD 38: Mission mode also uses nudge tracking
+                    # Mission mode also uses nudge tracking
                     self._handle_coach_mode(dt)
                 elif current_mode == SystemMode.SILENT_GUARDIAN:
                     self._handle_silent_guardian_mode(dt)
@@ -215,14 +214,14 @@ class PanTiltService:
     def _handle_coach_mode(self, dt: float) -> None:
         """Handle tracking in coaching mode - gentle nudge tracking only
 
-        BUILD 38: Replaced aggressive PID tracking with gentle "nudge" mode.
+        Uses gentle "nudge" mode instead of aggressive PID tracking.
         Only adjusts camera if dog is near frame edge AND has been there for 500ms+.
         Max movement speed: 2 degrees/second to prevent jerky motion.
 
         This allows the camera to gently re-center a sitting/lying dog without
         the oscillation and jerkiness of full PID tracking.
 
-        BUILD 40: Auto-enable tracking in COACH mode (user can still disable via settings)
+        Auto-enables tracking in COACH mode (user can still disable via settings).
         """
         if not self.tracking_enabled:
             self.logger.info("Auto-enabling tracking for COACH mode")
@@ -379,15 +378,12 @@ class PanTiltService:
         # Combine terms
         output = p_term + i_term + d_term
 
-        # Limit output - BUILD 34: Further reduced for smoother movement
+        # Limit output
         max_output = 1.5  # degrees per iteration (was 3.0)
         return max(-max_output, min(max_output, output))
 
     def _scan_for_target(self) -> None:
-        """Execute smooth sweep scan pattern
-
-        BUILD 34: Slower sweep with reduced range to prevent jerky movement.
-        """
+        """Execute smooth sweep scan pattern with reduced range to prevent jerky movement."""
         # Smooth continuous scanning instead of jumping between positions
         current_time = time.time()
 

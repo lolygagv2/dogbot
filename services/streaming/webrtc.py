@@ -201,8 +201,7 @@ class WebRTCService:
 
         @channel.on("message")
         async def on_message(message):
-            self.logger.info(f"📥 Data channel message from {session_id}: {message[:200]}")
-            print(f"[WebRTC] 📥 Data channel message: {message[:200]}", flush=True)
+            self.logger.debug(f"Data channel message from {session_id}: {message[:200]}")
             await self._handle_data_channel_message(message, session_id)
 
     def _on_vision_event(self, event):
@@ -692,7 +691,7 @@ class WebRTCService:
                     )
                     if local_type == "relay" or remote_type == "relay":
                         self.logger.warning(
-                            f"[WEBRTC] ⚠️ TURN RELAY in use — expect higher latency! "
+                            f"[WEBRTC] TURN RELAY in use — expect higher latency. "
                             f"Consider checking NAT/firewall for P2P connectivity."
                         )
                     return

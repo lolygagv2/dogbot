@@ -181,7 +181,7 @@ class MissionScheduler:
                     self._start_scheduled_mission(name)
                     return  # Only start one mission at a time
 
-        # BUILD 35: Check user-created schedules from ScheduleManager
+        # Check user-created schedules from ScheduleManager
         try:
             from core.schedule_manager import get_schedule_manager
             schedule_manager = get_schedule_manager()

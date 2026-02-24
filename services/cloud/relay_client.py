@@ -160,7 +160,6 @@ class RelayClient:
 
             self._connected = True
             self.logger.info("Connected to cloud relay")
-            print("[RelayClient] ✅ Connected to cloud relay", flush=True)
 
             # Send robot_connected announcement
             await self._send({
@@ -284,7 +283,7 @@ class RelayClient:
                         'device_id': self.config.device_id,
                         'timestamp': int(time.time())
                     })
-                    self.logger.debug("💓 Heartbeat sent")
+                    self.logger.debug("Heartbeat sent")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -335,7 +334,7 @@ class RelayClient:
                         },
                         'timestamp': datetime.utcnow().isoformat() + "Z"
                     })
-                    self.logger.debug(f"📊 Telemetry sent: {battery_pct:.0f}%, {hardware.get('cpu_temp', 0)}°C")
+                    self.logger.debug(f"Telemetry sent: {battery_pct:.0f}%, {hardware.get('cpu_temp', 0)}C")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -346,9 +345,7 @@ class RelayClient:
         msg_type = data.get('type')
         msg_device_id = data.get('device_id')
 
-        # Log at INFO level to ensure visibility
-        self.logger.info(f"📥 Relay message received: type={msg_type}, device_id={msg_device_id}")
-        print(f"[RelayClient] 📥 Message: type={msg_type}, device_id={msg_device_id}, data={data}", flush=True)
+        self.logger.debug(f"Relay message received: type={msg_type}, device_id={msg_device_id}")
 
         # Filter by device_id if present - ignore messages for other robots
         if msg_device_id and msg_device_id != self.config.device_id:
@@ -373,7 +370,6 @@ class RelayClient:
         ice_servers = data.get('ice_servers', {})
 
         self.logger.info(f"WebRTC request received: session={session_id}")
-        print(f"[RelayClient] 🎥 WebRTC request: session={session_id}, ice_servers={ice_servers}", flush=True)
 
         # Track that app is connected (mode change comes via set_mode command)
         self._app_connected = True
@@ -419,14 +415,9 @@ class RelayClient:
             })
 
             self.logger.info(f"Sent WebRTC offer for session {session_id}")
-            print(f"[RelayClient] ✅ Sent WebRTC offer for {session_id}", flush=True)
 
         except Exception as e:
-            import traceback
-            self.logger.error(f"Failed to create WebRTC offer: {e}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            print(f"[RelayClient] ❌ WebRTC offer failed: {e}", flush=True)
-            print(f"[RelayClient] Traceback: {traceback.format_exc()}", flush=True)
+            self.logger.error(f"Failed to create WebRTC offer: {e}", exc_info=True)
             await self._send({
                 'type': 'webrtc_error',
                 'device_id': self.config.device_id,
@@ -491,10 +482,10 @@ class RelayClient:
         if not params:
             params = {k: v for k, v in data.items() if k not in ('type', 'command')}
 
-        self.logger.info(f"☁️ Command: {command}, params: {params}")
+        self.logger.debug(f"Command: {command}, params: {params}")
 
         if command is None:
-            self.logger.warning(f"☁️ Missing command in message: {data}")
+            self.logger.warning(f"Missing command in message: {data}")
             await self._send({
                 'type': 'command_ack',
                 'command': 'unknown',
@@ -543,7 +534,7 @@ class RelayClient:
                         if mode_name == 'manual':
                             fsm.pre_manual_mode = prev_mode
                         success = fsm.set_mode_override(new_mode)
-                        self.logger.info(f"☁️ Mode override set via FSM: {mode_name} (source={source})")
+                        self.logger.debug(f"Mode override set via FSM: {mode_name} (source={source})")
                     else:
                         success = self.state.set_mode(new_mode, f"App command: {mode_name} (source={source})")
 
@@ -554,7 +545,7 @@ class RelayClient:
                     })
                     return
                 except ValueError:
-                    self.logger.warning(f"☁️ Invalid mode: {mode_name}")
+                    self.logger.warning(f"Invalid mode: {mode_name}")
                     await self._send({
                         'type': 'command_ack',
                         'command': command,
@@ -604,7 +595,7 @@ class RelayClient:
             ssid = f"WIMZ-{serial}"
             password = "wimzsetup"
 
-            self.logger.info(f"📡 Switching to Local Mode (AP: {ssid})")
+            self.logger.info(f"Switching to Local Mode (AP: {ssid})")
 
             # Send response BEFORE switching (we'll lose relay connection)
             await self._send({
@@ -623,9 +614,9 @@ class RelayClient:
             success = wifi.start_hotspot(ssid, password)
 
             if success:
-                self.logger.info(f"✅ Local Mode active - AP: {ssid}")
+                self.logger.info(f"Local Mode active - AP: {ssid}")
             else:
-                self.logger.error("❌ Failed to start AP mode")
+                self.logger.error("Failed to start AP mode")
 
         except Exception as e:
             self.logger.error(f"Local mode switch error: {e}")
@@ -646,7 +637,7 @@ class RelayClient:
 
             wifi = WiFiManager()
 
-            self.logger.info("☁️ Switching to Cloud Mode")
+            self.logger.info("Switching to Cloud Mode")
 
             # Stop hotspot
             wifi.stop_hotspot()
@@ -656,10 +647,10 @@ class RelayClient:
 
             if connected:
                 status = wifi.get_connection_status()
-                self.logger.info(f"✅ Cloud Mode active - connected to {status.get('ssid')}")
+                self.logger.info(f"Cloud Mode active - connected to {status.get('ssid')}")
                 # Note: The relay client will auto-reconnect to relay server
             else:
-                self.logger.warning("⚠️ Hotspot stopped but could not reconnect to WiFi")
+                self.logger.warning("Hotspot stopped but could not reconnect to WiFi")
 
         except Exception as e:
             self.logger.error(f"Cloud mode switch error: {e}")
@@ -677,7 +668,7 @@ class RelayClient:
         }
         """
         profiles = data.get('profiles', [])
-        self.logger.info(f"📥 Received {len(profiles)} dog profiles from cloud")
+        self.logger.debug(f"Received {len(profiles)} dog profiles from cloud")
 
         # Get profile manager lazily to avoid circular import
         if self._profile_manager is None:
@@ -690,7 +681,7 @@ class RelayClient:
 
         if self._profile_manager:
             self._profile_manager.update_profiles_from_cloud(profiles)
-            self.logger.info(f"✅ Updated dog profiles from cloud")
+            self.logger.debug("Updated dog profiles from cloud")
 
     async def request_profiles(self):
         """Request dog profiles from cloud relay"""
@@ -698,7 +689,7 @@ class RelayClient:
             'type': 'get_profiles',
             'device_id': self.config.device_id
         })
-        self.logger.info("📤 Requested dog profiles from cloud")
+        self.logger.debug("Requested dog profiles from cloud")
 
     async def _handle_audio_message(self, data: dict):
         """Handle audio_message - play audio from app (push-to-talk)
@@ -714,10 +705,10 @@ class RelayClient:
             audio_format = data.get('format', 'aac')
 
             if not audio_data:
-                self.logger.warning("☁️ Audio message missing data")
+                self.logger.warning("Audio message missing data")
                 return
 
-            self.logger.info(f"🔊 Playing PTT audio from cloud ({audio_format})")
+            self.logger.debug(f"Playing PTT audio from cloud ({audio_format})")
             result = ptt_service.play_audio_base64(audio_data, audio_format)
 
             # Send response
@@ -729,7 +720,7 @@ class RelayClient:
             })
 
         except Exception as e:
-            self.logger.error(f"☁️ Audio message error: {e}")
+            self.logger.error(f"Audio message error: {e}")
 
     async def _handle_audio_request(self, data: dict):
         """Handle audio_request - record from mic and send back (listen feature)
@@ -745,7 +736,7 @@ class RelayClient:
             duration = data.get('duration', 5)
             audio_format = data.get('format', 'aac')
 
-            self.logger.info(f"🎤 AUDIO_REQUEST: Starting mic capture ({duration}s, format={audio_format})")
+            self.logger.debug(f"Audio request: starting mic capture ({duration}s, format={audio_format})")
 
             # Run blocking record_audio in a thread to avoid freezing the event loop
             loop = asyncio.get_event_loop()
@@ -754,7 +745,7 @@ class RelayClient:
             )
 
             if result.get('success'):
-                self.logger.info(f"🎤 Recording complete, sending {result.get('size_bytes')} bytes to app")
+                self.logger.debug(f"Recording complete, sending {result.get('size_bytes')} bytes to app")
                 await self._send({
                     'event': 'audio_message',
                     'device_id': self.config.device_id,
@@ -763,9 +754,9 @@ class RelayClient:
                     'duration_ms': result.get('duration_ms'),
                     'size_bytes': result.get('size_bytes')
                 })
-                self.logger.info(f"📤 Sent PTT audio to cloud ({result.get('size_bytes')} bytes)")
+                self.logger.debug(f"Sent PTT audio to cloud ({result.get('size_bytes')} bytes)")
             else:
-                self.logger.error(f"🎤 Recording failed: {result.get('error')}")
+                self.logger.error(f"Recording failed: {result.get('error')}")
                 await self._send({
                     'event': 'audio_error',
                     'device_id': self.config.device_id,
@@ -773,7 +764,7 @@ class RelayClient:
                 })
 
         except Exception as e:
-            self.logger.error(f"☁️ Audio request error: {e}", exc_info=True)
+            self.logger.error(f"Audio request error: {e}", exc_info=True)
             await self._send({
                 'event': 'audio_error',
                 'device_id': self.config.device_id,
@@ -781,14 +772,13 @@ class RelayClient:
             })
 
     async def _handle_user_connected(self, data: dict):
-        """Handle user_connected event from relay (Build 32)
+        """Handle user_connected event from relay
 
         Sent when an app user connects to the robot.
         Expected format: {"type": "user_connected", "user_id": "user_123"}
         """
         user_id = data.get('user_id')
-        self.logger.info(f"📱 User connected: {user_id}")
-        print(f"[RelayClient] 📱 User connected: {user_id}", flush=True)
+        self.logger.info(f"User connected: {user_id}")
 
         self._connected_user_id = user_id
         self._app_connected = True
@@ -804,7 +794,7 @@ class RelayClient:
         await self.request_profiles()
 
     async def _handle_user_disconnected(self, data: dict):
-        """Handle user_disconnected event from relay (Build 32)
+        """Handle user_disconnected event from relay
 
         Sent after 5-min grace period when app user disconnects.
         Expected format: {"type": "user_disconnected", "user_id": "user_123"}
@@ -815,8 +805,7 @@ class RelayClient:
         - Keep Silent Guardian running (autonomous mode)
         """
         user_id = data.get('user_id')
-        self.logger.info(f"📱 User disconnected: {user_id}")
-        print(f"[RelayClient] 📱 User disconnected: {user_id}", flush=True)
+        self.logger.info(f"User disconnected: {user_id}")
 
         self._connected_user_id = None
         self._app_connected = False

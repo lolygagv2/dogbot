@@ -3,7 +3,7 @@
 Schedule Manager for WIM-Z
 Handles CRUD operations for training schedules
 
-BUILD 35: Added to support app schedule creation/management
+Handles CRUD operations for training schedules created via the app.
 """
 
 import os

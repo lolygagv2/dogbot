@@ -11,9 +11,12 @@ Identification Priority:
 4. No match (show "Unknown Dog")
 """
 
+import logging
 import time
 from typing import Dict, List, Tuple, Optional
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Import profile manager for color-based identification
 try:
@@ -67,7 +70,7 @@ class DogTracker:
             try:
                 self._profile_manager = get_dog_profile_manager()
             except Exception as e:
-                print(f"Warning: Could not load profile manager: {e}")
+                logger.warning("Could not load profile manager: %s", e)
 
     def update_valid_ids(self, dog_list: List[dict]):
         """Update the list of valid dog IDs (Rule 1 - user configurable)"""
@@ -182,8 +185,7 @@ class DogTracker:
                         if idx in self.unidentified_dogs:
                             del self.unidentified_dogs[idx]
                 else:
-                    # BUILD 38: Store unidentified dogs with generic name so bounding boxes can be drawn
-                    # Previously, unidentified dogs weren't stored, causing no boxes on WebRTC overlay
+                    # Store unidentified dogs with generic name so bounding boxes can be drawn
                     generic_id = f"dog_{idx}"
                     assignments[idx] = generic_id
                     # Store in tracking with generic marker ID (negative to avoid collision with real ArUco)
@@ -216,7 +218,7 @@ class DogTracker:
                                   total_detections: int, current_time: float) -> Optional[str]:
         """Apply persistence rules to identify dog without direct marker detection
 
-        BUILD 34 FIX: More conservative identification to prevent wrong dog labels.
+        Uses conservative identification to prevent wrong dog labels:
         - Only use proximity if ArUco was seen in same bbox recently
         - Don't default to specific dog names - return None for unknown
         - Let caller display "Dog" for unidentified detections
@@ -241,14 +243,11 @@ class DogTracker:
             if tracking and tracking.get('id_method') == 'aruco':
                 return self.valid_dog_ids.get(closest_dog)
 
-        # Rule 5: Mutual exclusion - DISABLED in Build 34
+        # Rule 5: Mutual exclusion - DISABLED
         # This rule was too aggressive and labeled wrong dogs
-        # if total_detections == 2 and len(valid_markers) == 1:
-        #     ... removed
 
-        # BUILD 34: Don't use default dog name for unknown detections
+        # Don't use default dog name for unknown detections
         # Return None and let the caller display "Dog" generically
-        # This prevents wrong dog names from appearing
         return None
 
     def _find_closest_tracked_dog(self, bbox: List[float], current_time: float, max_distance: float = 200) -> Optional[int]:
@@ -390,7 +389,7 @@ class DogTracker:
                 continue
 
             dog_name = self.valid_dog_ids.get(marker_id, f"dog_{marker_id}")
-            # BUILD 38: Display "Dog" for unidentified dogs instead of "dog_0", "dog_-1000" etc
+            # Display "Dog" for unidentified dogs instead of internal IDs
             id_method = tracking.get('id_method', 'persistence')
             display_name = dog_name
             if id_method == "unknown" or dog_name.startswith("dog_"):

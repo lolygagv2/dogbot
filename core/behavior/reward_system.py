@@ -104,7 +104,7 @@ class RewardSystem:
             self.dispensing_in_progress = True
             current_time = time.time()
 
-            self.logger.info(f"🎉 Dispensing treat for behavior: {behavior} (confidence: {confidence:.2f})")
+            self.logger.info(f"Dispensing treat for behavior: {behavior} (confidence: {confidence:.2f})")
 
             # Update tracking
             self.last_treat_time = current_time

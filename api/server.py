@@ -53,7 +53,6 @@ try:
     AI_AVAILABLE = True
 except ImportError:
     AI_AVAILABLE = False
-    print("AI detection not available")
 
 # Direct GPIO control for blue LED to avoid conflicts
 _gpio_handle = None
@@ -67,9 +66,9 @@ def get_gpio_handle():
             try:
                 _gpio_handle = lgpio.gpiochip_open(0)
                 lgpio.gpio_claim_output(_gpio_handle, BLUE_LED_PIN)
-                logger.warning("🔵 Direct GPIO control initialized for blue LED")
+                logger.debug("Direct GPIO control initialized for blue LED")
             except Exception as e:
-                logger.error(f"🔵 GPIO init failed: {e}")
+                logger.error(f"GPIO init failed: {e}")
                 _gpio_handle = None
         return _gpio_handle
 
@@ -79,11 +78,11 @@ def blue_led_direct_control(state):
         handle = get_gpio_handle()
         if handle is not None:
             lgpio.gpio_write(handle, BLUE_LED_PIN, 1 if state else 0)
-            logger.warning(f"🔵 Blue LED {'ON' if state else 'OFF'} via direct GPIO")
+            logger.debug(f"Blue LED {'ON' if state else 'OFF'} via direct GPIO")
             return True
         return False
     except Exception as e:
-        logger.error(f"🔵 Direct GPIO error: {e}")
+        logger.error(f"Direct GPIO error: {e}")
         return False
 
 # Direct NeoPixel control for API (separate from main LED service)
@@ -108,9 +107,9 @@ def get_neopixels():
                 )
                 _neopixels.fill((0, 0, 0))
                 _neopixels.show()
-                logger.warning("🔗 Direct NeoPixel control initialized for API")
+                logger.debug("Direct NeoPixel control initialized for API")
             except Exception as e:
-                logger.error(f"🔗 Direct NeoPixel init failed: {e}")
+                logger.error(f"Direct NeoPixel init failed: {e}")
                 raise Exception(f"Cannot initialize NeoPixels: {e}")
         return _neopixels
 
@@ -127,9 +126,9 @@ class DirectNeoPixelController:
             self._blue_chip = lgpio.gpiochip_open(0)
             lgpio.gpio_claim_output(self._blue_chip, BLUE_LED_PIN, lgpio.SET_PULL_NONE)
             lgpio.gpio_write(self._blue_chip, BLUE_LED_PIN, 0)
-            logger.info(f"🔵 Blue LED initialized on GPIO{BLUE_LED_PIN}")
+            logger.debug(f"Blue LED initialized on GPIO{BLUE_LED_PIN}")
         except Exception as e:
-            logger.warning(f"🔵 Blue LED init skipped (may be claimed by main LED service): {e}")
+            logger.warning(f"Blue LED init skipped (may be claimed by main LED service): {e}")
             self._blue_chip = None
 
     def blue_on(self):
@@ -140,10 +139,10 @@ class DirectNeoPixelController:
         try:
             lgpio.gpio_write(self._blue_chip, BLUE_LED_PIN, 1)
             self.blue_is_on = True
-            logger.warning("🔵 Blue LED: ON")
+            logger.debug("Blue LED: ON")
             return True
         except Exception as e:
-            logger.error(f"🔵 Blue LED on error: {e}")
+            logger.error(f"Blue LED on error: {e}")
             return False
 
     def blue_off(self):
@@ -154,10 +153,10 @@ class DirectNeoPixelController:
         try:
             lgpio.gpio_write(self._blue_chip, BLUE_LED_PIN, 0)
             self.blue_is_on = False
-            logger.warning("🔵 Blue LED: OFF")
+            logger.debug("Blue LED: OFF")
             return True
         except Exception as e:
-            logger.error(f"🔵 Blue LED off error: {e}")
+            logger.error(f"Blue LED off error: {e}")
             return False
 
     def stop_animation(self):
@@ -167,12 +166,12 @@ class DirectNeoPixelController:
             self.animation_thread.join(timeout=0.2)
         # Make sure it's really dead
         self.animation_thread = None
-        logger.warning("🛑 Animation stopped")
+        logger.debug("Animation stopped")
 
     def set_mode(self, mode):
         """Set NeoPixel mode with safe patterns"""
         self.current_mode = mode.value if hasattr(mode, 'value') else mode
-        logger.warning(f"🔗 Direct NeoPixel mode: {self.current_mode}")
+        logger.debug(f"Direct NeoPixel mode: {self.current_mode}")
 
         # Always stop animation first
         self.stop_animation()
@@ -211,14 +210,14 @@ class DirectNeoPixelController:
         """Start a single safe animation thread"""
         import threading
         self.animation_active = True
-        logger.warning(f"🎬 Starting animation: {pattern_type}")
+        logger.debug(f"Starting animation: {pattern_type}")
         self.animation_thread = threading.Thread(
             target=self._safe_animation_loop,
             args=(pattern_type, color),
             daemon=True
         )
         self.animation_thread.start()
-        logger.warning(f"🎬 Animation thread started: {self.animation_thread.is_alive()}")
+        logger.debug(f"Animation thread started: {self.animation_thread.is_alive()}")
 
     def _safe_animation_loop(self, pattern_type, color):
         """Single animation loop that handles all patterns safely"""
@@ -286,9 +285,9 @@ class DirectNeoPixelController:
                 time.sleep(0.1)
 
             except Exception as e:
-                logger.error(f"🎬 Animation error: {e}")
+                logger.error(f"Animation error: {e}")
                 break
-        logger.warning(f"🎬 Animation loop ended: {pattern_type}")
+        logger.debug(f"Animation loop ended: {pattern_type}")
 
     def _hsv_to_rgb(self, h, s, v):
         """Convert HSV to RGB"""
@@ -421,14 +420,14 @@ def get_led_controller():
             from services.media.led import get_led_service
             led_service = get_led_service()
             if led_service.led_initialized and led_service.led:
-                logger.warning("🔗 Using main LED service controller")
+                logger.debug("Using main LED service controller")
                 _led_controller = led_service.led
                 return _led_controller
         except Exception as e:
-            logger.warning(f"🔗 Main LED service not available: {e}")
+            logger.warning(f"Main LED service not available: {e}")
 
         # Fallback to DirectNeoPixelController
-        logger.warning("🏗️ Creating DirectNeoPixelController (fallback)")
+        logger.debug("Creating DirectNeoPixelController (fallback)")
         _led_controller = DirectNeoPixelController()
     return _led_controller
 
@@ -955,9 +954,7 @@ async def get_behavior_tricks():
 # Mission endpoints
 @app.get("/missions")
 async def list_available_missions():
-    """Get list of available mission definitions for app catalog
-    BUILD 40: Added endpoint for app mission browser
-    """
+    """Get list of available mission definitions for app catalog"""
     mission_engine = get_mission_engine()
     missions = mission_engine.get_available_missions()
     # Format for app: id, name, stages
@@ -1648,9 +1645,9 @@ async def capture_photo_imx500():
         result = subprocess.run(['pgrep', '-f', 'xbox_hybrid_controller'],
                               capture_output=True, text=True, timeout=0.5)
         xbox_active = (result.returncode == 0)
-        logger.info(f"📸 Xbox check: rc={result.returncode}, active={xbox_active}, pids={result.stdout.strip()}")
+        logger.debug(f"Xbox check: rc={result.returncode}, active={xbox_active}, pids={result.stdout.strip()}")
     except Exception as e:
-        logger.error(f"📸 Xbox check failed: {e}")
+        logger.error(f"Xbox check failed: {e}")
 
     # Allow photo if in MANUAL mode OR Xbox controller is active
     if current_mode != SystemMode.MANUAL and not xbox_active:
@@ -1670,11 +1667,11 @@ async def capture_photo_imx500():
         detector = get_detector_service()
         for _ in range(20):  # 20 x 100ms = 2 seconds max
             if detector._camera_paused or not detector.camera_initialized:
-                logger.info("📷 Camera released by detector, proceeding with photo")
+                logger.debug("Camera released by detector, proceeding with photo")
                 break
             time.sleep(0.1)
         else:
-            logger.warning("⚠️ Camera may still be held by detector, attempting photo anyway")
+            logger.warning("Camera may still be held by detector, attempting photo anyway")
 
     try:
         # Create captures directory if needed
@@ -1765,7 +1762,7 @@ async def capture_snapshot_from_stream():
         file_size = os.path.getsize(filepath)
         height, width = frame.shape[:2]
 
-        logger.info(f"📸 Snapshot captured: {filepath} ({width}x{height}, {file_size} bytes, age={frame_age:.2f}s)")
+        logger.debug(f"Snapshot captured: {filepath} ({width}x{height}, {file_size} bytes, age={frame_age:.2f}s)")
 
         return {
             "success": True,
@@ -2579,7 +2576,7 @@ async def delete_user_song(filename: str):
 
 @app.delete("/music/song/{filename}")
 async def delete_song(filename: str, dog_id: Optional[str] = None):
-    """BUILD 41: Delete a song from default or dog-specific folder
+    """Delete a song from default or dog-specific folder
 
     Args:
         filename: The song filename to delete
@@ -3088,11 +3085,11 @@ async def stop_led_animation():
 @app.post("/leds/blue/on")
 async def blue_led_on():
     """Turn blue LED on"""
-    logger.warning("🔵 BLUE LED ON API CALLED!")
+    logger.debug("Blue LED ON API called")
     try:
         leds = get_led_controller()
         success = leds.blue_on()
-        logger.warning(f"🔵 Blue LED ON result: {success}")
+        logger.debug(f"Blue LED ON result: {success}")
 
         return {
             "success": success,
@@ -3108,7 +3105,7 @@ async def blue_led_off():
     try:
         leds = get_led_controller()
         success = leds.blue_off()
-        logger.warning(f"🔵 Blue LED OFF result: {success}")
+        logger.debug(f"Blue LED OFF result: {success}")
 
         return {
             "success": success,
@@ -3414,7 +3411,7 @@ async def websocket_local(websocket: WebSocket):
         pantilt_service = get_pantilt_service()
         state = get_state()
 
-        logger.info("📱 Local mode WebSocket connection established")
+        logger.debug("Local mode WebSocket connection established")
 
         # Send initial status
         await websocket.send_json({
@@ -3505,7 +3502,7 @@ async def websocket_local(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "message": f"Unknown command: {command}"})
 
     except WebSocketDisconnect:
-        logger.info("📱 Local mode WebSocket disconnected")
+        logger.debug("Local mode WebSocket disconnected")
         if motor_service:
             motor_service.emergency_stop()
     except Exception as e:
@@ -3571,7 +3568,7 @@ async def enter_local_mode():
         ssid = f"WIMZ-{serial}"
         password = "wimzsetup"
 
-        logger.info(f"🔄 Switching to Local Mode (AP: {ssid})")
+        logger.info(f"Switching to Local Mode (AP: {ssid})")
 
         # Start hotspot
         success = wifi.start_hotspot(ssid, password)
@@ -3605,7 +3602,7 @@ async def enter_cloud_mode():
 
         wifi = WiFiManager()
 
-        logger.info("🔄 Switching to Cloud Mode (stopping hotspot)")
+        logger.info("Switching to Cloud Mode (stopping hotspot)")
 
         # Stop hotspot (returns to client mode)
         wifi.stop_hotspot()
@@ -3799,7 +3796,7 @@ async def start_audio_recording():
     """
     # Check if already recording - reject duplicate requests
     if _recording_state["in_progress"]:
-        logger.warning("🎙️ Recording already in progress - ignoring duplicate request")
+        logger.warning("Recording already in progress - ignoring duplicate request")
         return {"success": False, "error": "Recording already in progress"}
 
     try:
@@ -3812,7 +3809,7 @@ async def start_audio_recording():
         usb_audio_service = get_usb_audio_service()
 
         # Step 1: Pause bark detector to free the microphone
-        logger.info("🎙️ Pausing bark detector for recording...")
+        logger.debug("Pausing bark detector for recording")
         try:
             bark_detector = get_bark_detector_service()
             bark_detector.set_enabled(False)
@@ -3828,7 +3825,7 @@ async def start_audio_recording():
             logger.warning(f"Could not set fire LED mode: {e}")
 
         # Step 3: Play recording start sound and wait for it to finish
-        logger.info("🎙️ Playing recording start sound...")
+        logger.debug("Playing recording start sound")
         usb_audio_service.play_file("/home/morgan/dogbot/VOICEMP3/wimz/Wimz_recording.mp3")
         time.sleep(1.5)  # Wait for sound to finish completely
 
@@ -3841,7 +3838,7 @@ async def start_audio_recording():
             if os.path.exists(f):
                 os.remove(f)
 
-        logger.info("🎙️ RECORDING NOW - Speak for 2 seconds...")
+        logger.debug("Recording now - speak for 2 seconds")
         record_cmd = [
             'arecord', '-D', 'hw:2,0', '-f', 'S16_LE', '-r', '44100',
             '-c', '1', '-d', '2', wav_path
@@ -3852,7 +3849,7 @@ async def start_audio_recording():
         try:
             bark_detector = get_bark_detector_service()
             bark_detector.set_enabled(True)
-            logger.info("🎙️ Bark detector re-enabled")
+            logger.debug("Bark detector re-enabled")
         except:
             pass
 
@@ -3868,7 +3865,7 @@ async def start_audio_recording():
             return {"success": False, "error": "Recording failed - mic busy"}
 
         # Step 5: Convert WAV to MP3 using ffmpeg
-        logger.info("🔄 Converting to MP3...")
+        logger.debug("Converting to MP3")
         convert_cmd = [
             'ffmpeg', '-y', '-i', wav_path, '-acodec', 'libmp3lame',
             '-b:a', '128k', mp3_path
@@ -3881,7 +3878,7 @@ async def start_audio_recording():
             return {"success": False, "error": "MP3 conversion failed"}
 
         # Step 6: Play back the recording so user can hear it
-        logger.info("🔊 Playing back your recording...")
+        logger.debug("Playing back recording")
         usb_audio_service.play_file(mp3_path)
         time.sleep(2.5)  # Wait for 2 second recording to play back
 
@@ -3897,7 +3894,7 @@ async def start_audio_recording():
         except Exception as e:
             logger.warning(f"Could not set chase LED mode: {e}")
 
-        logger.info("⏳ Waiting for confirmation - press START again within 10s to save")
+        logger.debug("Waiting for confirmation - press START again within 10s to save")
 
         return {
             "success": True,
@@ -3968,7 +3965,7 @@ async def confirm_audio_recording():
         except Exception as e:
             logger.warning(f"Could not reset LED mode: {e}")
 
-        logger.info(f"✅ Recording saved: {new_filename}")
+        logger.info(f"Recording saved: {new_filename}")
 
         return {
             "success": True,
@@ -3992,7 +3989,7 @@ async def cancel_audio_recording():
             if os.path.exists(f):
                 os.remove(f)
 
-        logger.info("🗑️ Recording discarded")
+        logger.debug("Recording discarded")
         return {"success": True, "message": "Recording discarded"}
 
     except Exception as e:
@@ -4188,13 +4185,8 @@ async def force_start_mission(mission_name: str):
 # ============== END MISSION SCHEDULER ENDPOINTS ==============
 
 # ============== TRAINING SCHEDULES CRUD ENDPOINTS ==============
-# BUILD 35: Added schedule CRUD for app schedule management
-
 class ScheduleCreateRequest(BaseModel):
-    """Request to create a training schedule
-
-    BUILD 41: Made name and end_time optional with auto-generated defaults
-    """
+    """Request to create a training schedule"""
     mission_name: str
     dog_id: str  # Required: ID of the dog this schedule is for
     start_time: str  # HH:MM format

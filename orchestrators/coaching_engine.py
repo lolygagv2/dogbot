@@ -287,18 +287,18 @@ class CoachingEngine:
                     'name': dog_name if dog_name not in ['unknown', None] else None
                 }
                 display_name = dog_name if dog_name and dog_name not in ['unknown', None] else dog_id
-                logger.info(f"🐕 Dog entered view for coaching: {display_name}")
+                logger.debug(f"Dog entered view for coaching: {display_name}")
             else:
                 # Existing dog - update tracking
                 entry = self.dogs_in_view[dog_id]
                 entry['last_seen'] = now
                 entry['frames_seen'] += 1
-                entry['frames_total'] += 1  # BUILD 35: Increment both counters together
+                entry['frames_total'] += 1  # Increment both counters together
 
                 # Update name if ArUco identified (can happen anytime)
                 if dog_name and dog_name not in ['unknown', None] and entry['name'] is None:
                     entry['name'] = dog_name
-                    logger.info(f"🏷️ Dog {dog_id} identified as {dog_name}")
+                    logger.debug(f"Dog {dog_id} identified as {dog_name}")
 
                     # Announce name if session is active for this dog (late ArUco identification)
                     if (self.current_session and
@@ -338,7 +338,7 @@ class CoachingEngine:
                     # So we count any bark the gate detected
                     self.bark_count += 1
                     self.bark_timestamps.append(time.time())
-                    logger.info(f"🐕 Bark detected during speak trick! Count: {self.bark_count}")
+                    logger.debug(f"Bark detected during speak trick, count: {self.bark_count}")
 
                     # Check for too many barks (immediate fail)
                     if self.bark_count > self.SPEAK_MAX_BARKS:
@@ -416,7 +416,6 @@ class CoachingEngine:
                 # Clean stale dog visibility
                 self._cleanup_stale_dogs()
 
-                # BUILD 35: Removed frames_total increment from main loop
                 # frames_total now increments in event handler alongside frames_seen
                 # This ensures presence ratio works correctly with detection event timing
 
@@ -492,7 +491,7 @@ class CoachingEngine:
             # Log every ~5 seconds so user/developer knows WHY it's waiting
             if not hasattr(self, '_last_cooldown_log') or (now - self._last_cooldown_log) > 5.0:
                 remaining = self.global_session_cooldown_sec - time_since_last
-                logger.info(f"⏳ Session cooldown: {remaining:.0f}s remaining (dog visible but waiting)")
+                logger.debug(f"Session cooldown: {remaining:.0f}s remaining (dog visible but waiting)")
                 self._last_cooldown_log = now
             return
 
@@ -518,9 +517,9 @@ class CoachingEngine:
         # Select the best candidate
         dog_id, info, has_aruco_name, time_elapsed, presence_ratio = eligible_dogs[0]
         display_name = info.get('name') or dog_id
-        logger.info(f"🎯 Selected {display_name} for coaching "
-                   f"({time_elapsed:.1f}s, {presence_ratio*100:.0f}% presence, "
-                   f"ArUco: {has_aruco_name})")
+        logger.debug(f"Selected {display_name} for coaching "
+                    f"({time_elapsed:.1f}s, {presence_ratio*100:.0f}% presence, "
+                    f"ArUco: {has_aruco_name})")
 
         self._start_session(dog_id)
 
@@ -569,7 +568,7 @@ class CoachingEngine:
         dog_name = self.current_session.dog_name or 'dog'
         trick = self.current_session.trick_requested or "trick"
 
-        # BUILD 40: Send coach_progress event for greeting stage
+        # Send coach_progress event for greeting stage
         try:
             relay = get_relay_client()
             if relay and relay.connected:
@@ -630,7 +629,7 @@ class CoachingEngine:
 
         trick = self.current_session.trick_requested
 
-        # BUILD 40: Send coach_progress event for command stage
+        # Send coach_progress event for command stage
         try:
             relay = get_relay_client()
             if relay and relay.connected:
@@ -650,11 +649,7 @@ class CoachingEngine:
         # CRITICAL: Reset behavior tracking AFTER audio finishes
         # If we reset before audio, the dog's pose gets tracked during the 3s audio playback
         # and by the time we enter WATCHING, hold time has already accumulated
-        # BUILD 38 DEBUG: Log before/after reset
-        pre_status = self.interpreter.get_status()
-        logger.info(f"📍 PRE-RESET state: behavior={pre_status['current_behavior']}, hold={pre_status['hold_duration']:.1f}s")
         self.interpreter.reset_tracking()
-        logger.info(f"📍 POST-RESET: now watching for {trick}")
 
         # Start listening for barks if speak trick
         if trick == 'speak':
@@ -665,7 +660,7 @@ class CoachingEngine:
             self.bark_timestamps = []
             self._listening_started_at = time.time()  # Record BEFORE enabling (for stale event filtering)
             self.listening_for_barks = True
-            logger.info(f"Listening for barks (speak trick) from {self._listening_started_at:.3f}...")
+            logger.debug(f"Listening for barks (speak trick) from {self._listening_started_at:.3f}...")
 
         self.current_session.command_time = time.time()
         self.fsm_state = CoachState.WATCHING
@@ -720,7 +715,7 @@ class CoachingEngine:
         # Standard pose-based tricks - use BehaviorInterpreter (Layer 1)
         result = self.interpreter.check_trick(expected_trick, dog_id=dog_name)
 
-        # BUILD 40: Send periodic coach_progress during watching (~every 500ms)
+        # Send periodic coach_progress during watching (~every 500ms)
         # Throttle by checking if half-second boundary crossed
         if int(watch_elapsed * 2) != int((watch_elapsed - 0.1) * 2):
             try:
@@ -742,8 +737,7 @@ class CoachingEngine:
             self.current_session.behavior_detected = result.behavior_detected
             self.fsm_state = CoachState.SUCCESS
             watch_elapsed = time.time() - self.current_session.command_time
-            # BUILD 38 DEBUG: Detailed success logging
-            logger.info(f"🎉 SUCCESS! {dog_name} → {expected_trick} "
+            logger.info(f"SUCCESS! {dog_name} performed {expected_trick} "
                        f"(behavior={result.behavior_detected}, "
                        f"held={result.hold_duration:.1f}s, conf={result.confidence:.2f}, "
                        f"watch_time={watch_elapsed:.1f}s)")
@@ -771,7 +765,7 @@ class CoachingEngine:
         dog_name = self.current_session.dog_name
         behavior = self.current_session.behavior_detected
 
-        # BUILD 40: Send coach_reward event for success
+        # Send coach_reward event for success
         try:
             relay = get_relay_client()
             if relay and relay.connected:
@@ -823,7 +817,7 @@ class CoachingEngine:
             return
 
         dog_name = self.current_session.dog_name or 'dog'
-        logger.info(f"Retry greeting: {dog_name}")
+        logger.debug(f"Retry greeting: {dog_name}")
 
         # LED attention pattern
         if self.led:
@@ -857,7 +851,7 @@ class CoachingEngine:
             return
 
         trick = self.current_session.trick_requested
-        logger.info(f"Retry command: {trick}")
+        logger.debug(f"Retry command: {trick}")
 
         # Say the trick command again - wait for completion
         trick_rules = self.interpreter.get_trick_rules(trick)
@@ -875,7 +869,7 @@ class CoachingEngine:
             self.bark_timestamps = []
             self._listening_started_at = time.time()  # Record BEFORE enabling (for stale event filtering)
             self.listening_for_barks = True
-            logger.info(f"Listening for barks (speak trick retry) from {self._listening_started_at:.3f}...")
+            logger.debug(f"Listening for barks (speak trick retry) from {self._listening_started_at:.3f}...")
 
         self.current_session.command_time = time.time()
         self.fsm_state = CoachState.RETRY_WATCHING
@@ -1043,13 +1037,12 @@ class CoachingEngine:
                 dog_id = self.current_session.dog_id if self.current_session else None
                 trick = self.current_session.trick_requested if self.current_session else 'unknown'
                 behavior = self.current_session.behavior_detected if self.current_session else 'unknown'
-                # BUILD 38 DEBUG: Log exactly what triggered the treat
-                logger.info(f"🍖 DISPENSING TREAT: dog={dog_id}, trick={trick}, behavior={behavior}")
+                logger.debug(f"Dispensing treat: dog={dog_id}, trick={trick}, behavior={behavior}")
                 self.dispenser.dispense_treat(
                     dog_id=dog_id,
                     reason='coaching_reward'
                 )
-                logger.info("✅ Treat dispensed successfully")
+                logger.debug("Treat dispensed successfully")
 
         except Exception as e:
             logger.error(f"Treat dispense error: {e}")
@@ -1179,7 +1172,7 @@ class CoachingEngine:
             info['frames_total'] = 10
 
         dogs_count = len(self.dogs_in_view)
-        logger.info(f"🔄 FULL RESET - Session cancelled, {dogs_count} dogs ready for new session")
+        logger.info(f"FULL RESET - Session cancelled, {dogs_count} dogs ready for new session")
         return {'reset': True, 'dogs_ready': dogs_count, 'message': 'Full reset - ready for new session'}
 
     def set_forced_trick(self, trick: str = None) -> Dict[str, Any]:

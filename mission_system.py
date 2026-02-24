@@ -57,16 +57,16 @@ class MissionController:
         # Test camera
         ret, frame = self.camera.read()
         if not ret:
-            self.logger.error("❌ Camera initialization failed")
+            self.logger.error("Camera initialization failed")
             return False
         
-        self.logger.info("✅ Camera initialized")
+        self.logger.info("Camera initialized")
         return True
     
     def dispense_treat(self, behavior_info):
         """Dispense treat with full feedback system"""
         try:
-            self.logger.info(f"🍪 Dispensing treat for: {behavior_info}")
+            self.logger.info(f"Dispensing treat for: {behavior_info}")
             
             # LED feedback - excitement pattern
             self.led_controller.set_pattern('excitement')
@@ -97,10 +97,10 @@ class MissionController:
             time.sleep(1)
             self.led_controller.set_pattern('success')
             
-            self.logger.info(f"✅ Treat dispensed successfully (Total: {self.treats_dispensed})")
+            self.logger.info(f"Treat dispensed successfully (Total: {self.treats_dispensed})")
             
         except Exception as e:
-            self.logger.error(f"❌ Treat dispensing failed: {e}")
+            self.logger.error(f"Treat dispensing failed: {e}")
             self.led_controller.set_pattern('error')
     
     def process_frame(self, frame):
@@ -129,12 +129,12 @@ class MissionController:
             return detections, behavior_analysis
             
         except Exception as e:
-            self.logger.error(f"❌ Frame processing error: {e}")
+            self.logger.error(f"Frame processing error: {e}")
             return [], {}
     
     def autonomous_mission_loop(self):
         """Main autonomous operation loop"""
-        self.logger.info("🤖 Starting autonomous mission loop")
+        self.logger.info("Starting autonomous mission loop")
         frame_count = 0
         
         while self.running:
@@ -142,7 +142,7 @@ class MissionController:
                 # Capture frame
                 ret, frame = self.camera.read()
                 if not ret:
-                    self.logger.warning("⚠️ Failed to capture frame")
+                    self.logger.warning("Failed to capture frame")
                     continue
                 
                 frame_count += 1
@@ -152,19 +152,19 @@ class MissionController:
                 
                 # Log significant events
                 if detections:
-                    self.logger.info(f"🔍 Frame {frame_count}: {len(detections)} detections")
+                    self.logger.info(f"Frame {frame_count}: {len(detections)} detections")
                 
                 # Add small delay to prevent CPU overload
                 time.sleep(0.033)  # ~30 FPS
                 
             except KeyboardInterrupt:
-                self.logger.info("🛑 Mission interrupted by user")
+                self.logger.info("Mission interrupted by user")
                 break
             except Exception as e:
-                self.logger.error(f"❌ Mission loop error: {e}")
+                self.logger.error(f"Mission loop error: {e}")
                 time.sleep(1)  # Prevent rapid error spam
         
-        self.logger.info("🏁 Autonomous mission completed")
+        self.logger.info("Autonomous mission completed")
     
     def start_mission(self):
         """Start autonomous mission"""
@@ -188,7 +188,7 @@ class MissionController:
         self.mission_thread = threading.Thread(target=self.autonomous_mission_loop)
         self.mission_thread.start()
         
-        self.logger.info("🚀 Autonomous mission started")
+        self.logger.info("Autonomous mission started")
         return True
     
     def stop_mission(self):
@@ -208,7 +208,7 @@ class MissionController:
         # Save mission log
         self.save_mission_log()
         
-        self.logger.info("🛑 Mission stopped")
+        self.logger.info("Mission stopped")
     
     def save_mission_log(self):
         """Save mission log to file"""
@@ -225,10 +225,10 @@ class MissionController:
             with open(log_filename, 'w') as f:
                 json.dump(session_summary, f, indent=2)
             
-            self.logger.info(f"📝 Mission log saved: {log_filename}")
+            self.logger.info(f"Mission log saved: {log_filename}")
             
         except Exception as e:
-            self.logger.error(f"❌ Failed to save mission log: {e}")
+            self.logger.error(f"Failed to save mission log: {e}")
     
     def get_mission_status(self):
         """Get current mission status"""
@@ -257,7 +257,7 @@ if __name__ == "__main__":
                 mission.stop_mission()
         
         elif command == 'test':
-            print("🧪 Running test mode...")
+            print("Running test mode...")
             if mission.initialize_camera():
                 # Run for 30 seconds
                 mission.start_mission()

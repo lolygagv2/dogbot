@@ -90,8 +90,6 @@ POSE_TO_TRICK = {
     "Come": "come",
 }
 
-# BUILD 36: Mission name aliases - maps app/display names to actual mission filenames
-# Resolves Issue 1 from Build 35 - app sends "stay_training" but robot has "sit_training"
 MISSION_ALIASES = {
     # App name variations -> actual mission name
     "stay_training": "sit_training",
@@ -124,7 +122,7 @@ class MissionSession:
     start_time: float = field(default_factory=time.time)
     current_stage: int = 0
     stage_start_time: float = field(default_factory=time.time)
-    state: MissionState = MissionState.STARTING  # BUILD 38: Default to STARTING, not IDLE (fixes overlay bug)
+    state: MissionState = MissionState.STARTING
     rewards_given: int = 0
     attempts: int = 0  # Attempts for current stage (max 2)
     events_log: List[Dict[str, Any]] = field(default_factory=list)
@@ -164,7 +162,6 @@ class MissionEngine:
     """
 
     # Coach-style timing constants
-    # BUILD 38: Adjusted to 2.0s/55% per user feedback (1.5s/50% felt too fast)
     DETECTION_TIME_SEC = 2.0  # Dog must be visible this long
     PRESENCE_RATIO_MIN = 0.55  # Dog must be in 55% of frames
     ATTENTION_DURATION_SEC = 2.0  # Attention check duration
@@ -285,7 +282,7 @@ class MissionEngine:
         self.logger.info(f"[MISSION] start_mission called: name={mission_name}, dog_id={dog_id}")
         self.logger.info(f"[MISSION] Available missions: {list(self.missions.keys())}")
 
-        # BUILD 36: Check mission aliases if direct name not found
+        # Check mission aliases if direct name not found
         actual_mission_name = mission_name
         if mission_name not in self.missions:
             # Try alias lookup
@@ -360,9 +357,6 @@ class MissionEngine:
                 "dog_id": dog_id
             })
 
-            # BUILD 36: Send mission_progress with action: 'started' for app
-            # This tells the app the mission has actually started (not just requested)
-            # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
             try:
                 relay = get_relay_client()
                 if relay and relay.connected:
@@ -497,7 +491,7 @@ class MissionEngine:
             session.state = MissionState.STARTING
             session.stage_start_time = time.time()
 
-            self.logger.info(f"🎯 Mission loop started: {session.mission.name}")
+            self.logger.debug(f"Mission loop started: {session.mission.name}")
 
             while self.running and session.state not in [
                 MissionState.COMPLETED, MissionState.FAILED, MissionState.STOPPED
@@ -519,10 +513,6 @@ class MissionEngine:
 
                 # Clean stale dogs (like coaching engine)
                 self._cleanup_stale_dogs()
-
-                # BUILD 35: Removed frames_total increment from main loop
-                # frames_total now increments in event handler alongside frames_seen
-                # This ensures presence ratio works correctly with detection event timing
 
                 # Process current state (coach-style state machine)
                 self._process_state()
@@ -635,7 +625,7 @@ class MissionEngine:
         session = self.active_session
         stage = session.mission.stages[session.current_stage]
 
-        self.logger.info(f"📋 Starting stage {session.current_stage + 1}: {stage.name}")
+        self.logger.debug(f"Starting stage {session.current_stage + 1}: {stage.name}")
         session.state = MissionState.WAITING_FOR_DOG
         session.stage_start_time = time.time()
         session.attempts = 0
@@ -680,8 +670,8 @@ class MissionEngine:
         dog_id, info, has_aruco_name, time_elapsed = eligible_dogs[0]
         dog_name = self._get_dog_name(dog_id)
 
-        self.logger.info(f"🐕 Dog ready for mission: {dog_name} "
-                        f"(visible {time_elapsed:.1f}s, presence={presence_ratio:.0%}, aruco={'yes' if has_aruco_name else 'no'})")
+        self.logger.debug(f"Dog ready for mission: {dog_name} "
+                         f"(visible {time_elapsed:.1f}s, presence={presence_ratio:.0%}, aruco={'yes' if has_aruco_name else 'no'})")
 
         # Update session
         session.dog_id = dog_id
@@ -710,7 +700,7 @@ class MissionEngine:
         dog_name = session.dog_name or 'dog'
         trick = session.trick_requested or 'trick'
 
-        self.logger.info(f"👋 Greeting {dog_name} for {trick}")
+        self.logger.debug(f"Greeting {dog_name} for {trick}")
 
         # LED attention pattern
         if self.led:
@@ -750,7 +740,7 @@ class MissionEngine:
             session.state = MissionState.WATCHING
             return
 
-        self.logger.info(f"🎤 Commanding: {trick}")
+        self.logger.debug(f"Commanding: {trick}")
 
         # Play trick command audio
         trick_rules = self.interpreter.get_trick_rules(trick)
@@ -767,7 +757,7 @@ class MissionEngine:
             self.bark_timestamps = []
             self._listening_started_at = time.time()
             self.listening_for_barks = True
-            self.logger.info("🎤 Listening for barks (speak mission)...")
+            self.logger.debug("Listening for barks (speak mission)")
 
         session.command_time = time.time()
         session.pose_tracking_reset = True
@@ -807,7 +797,7 @@ class MissionEngine:
                 self.listening_for_barks = False
                 session.behavior_detected = 'bark'
                 session.state = MissionState.SUCCESS
-                self.logger.info(f"✅ Success! Dog spoke with {self.bark_count} bark(s)")
+                self.logger.debug(f"Success: dog spoke with {self.bark_count} bark(s)")
                 return
 
             if watch_elapsed >= speak_timeout:
@@ -828,13 +818,13 @@ class MissionEngine:
                 if result.behavior_detected and result.hold_duration >= hold_required:
                     session.behavior_detected = result.behavior_detected
                     session.state = MissionState.SUCCESS
-                    self.logger.info(f"✅ Success! {dog_name} held {trick} for {result.hold_duration:.1f}s")
+                    self.logger.debug(f"Success: {dog_name} held {trick} for {result.hold_duration:.1f}s")
                     return
             else:
                 if result.completed:
                     session.behavior_detected = result.behavior_detected
                     session.state = MissionState.SUCCESS
-                    self.logger.info(f"✅ Success! {dog_name} performed {trick}")
+                    self.logger.debug(f"Success: {dog_name} performed {trick}")
                     return
 
             # Log progress
@@ -844,7 +834,7 @@ class MissionEngine:
         # Check timeout
         if watch_elapsed >= detection_window:
             session.state = MissionState.FAILURE
-            self.logger.info(f"⏱️ Watch timeout for {trick}")
+            self.logger.debug(f"Watch timeout for {trick}")
 
     def _state_success(self):
         """Handle successful behavior detection"""
@@ -853,7 +843,7 @@ class MissionEngine:
         dog_name = session.dog_name or 'unknown'
         trick = session.trick_requested
 
-        self.logger.info(f"🎉 Mission stage success: {trick} by {dog_name}")
+        self.logger.debug(f"Mission stage success: {trick} by {dog_name}")
 
         # Play success audio
         self._play_audio('good_dog.mp3', wait=True, timeout=3.0)
@@ -870,7 +860,7 @@ class MissionEngine:
             try:
                 self.dispenser.dispense_treat()
                 session.rewards_given += 1
-                self.logger.info(f"🍖 Treat dispensed ({session.rewards_given}/{session.mission.max_rewards})")
+                self.logger.debug(f"Treat dispensed ({session.rewards_given}/{session.mission.max_rewards})")
             except Exception as e:
                 self.logger.error(f"Dispenser error: {e}")
 
@@ -900,7 +890,7 @@ class MissionEngine:
             session.state = MissionState.FINAL_FAILURE
             return
 
-        self.logger.info(f"😔 First attempt failed, retrying...")
+        self.logger.debug(f"First attempt failed, retrying")
         self._play_audio('good_dog.mp3', wait=True, timeout=2.0)  # "Good try!"
         time.sleep(1.0)
         session.state = MissionState.RETRY_GREETING
@@ -916,7 +906,7 @@ class MissionEngine:
             session.state = MissionState.WAITING_FOR_DOG
             return
 
-        self.logger.info(f"🔄 Retry greeting {dog_name}")
+        self.logger.debug(f"Retry greeting {dog_name}")
         name_audio = f'{dog_name.lower()}.mp3'
         self._play_audio(name_audio, wait=True, timeout=3.0)
         time.sleep(0.3)
@@ -927,7 +917,7 @@ class MissionEngine:
         session = self.active_session
         trick = session.trick_requested
 
-        self.logger.info(f"🔄 Retry command: {trick}")
+        self.logger.debug(f"Retry command: {trick}")
 
         trick_rules = self.interpreter.get_trick_rules(trick) if trick else {}
         audio_file = trick_rules.get('audio_command', f'{trick}.mp3') if trick_rules else f'{trick}.mp3'
@@ -957,7 +947,7 @@ class MissionEngine:
         stage = session.mission.stages[session.current_stage]
         trick = session.trick_requested
 
-        self.logger.info(f"❌ Mission stage failed after retry: {trick}")
+        self.logger.debug(f"Mission stage failed after retry: {trick}")
 
         # Play consolation
         self._play_audio('good_dog.mp3', wait=True, timeout=2.0)
@@ -980,9 +970,7 @@ class MissionEngine:
         self._advance_stage()
 
     def _send_mission_status(self, status: str, trick: str = None):
-        """Send mission status to app via relay
-        BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
-        """
+        """Send mission status to app via relay"""
         try:
             relay = get_relay_client()
             if relay and relay.connected:
@@ -1065,7 +1053,6 @@ class MissionEngine:
             self.logger.info(f"Mission pose stage: watching for '{trick_name}' (reset tracking)")
 
             # Send initial watching event to app
-            # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
             hold_required = stage.min_duration if stage.min_duration > 0 else 0
             try:
                 relay = get_relay_client()
@@ -1095,8 +1082,7 @@ class MissionEngine:
         trick_rules = self.interpreter.get_trick_rules(trick_name)
         trick_hold = trick_rules.get('hold_duration_sec', 1.0) if trick_rules else 1.0
 
-        # Send progress updates (throttled to ~1Hz via stage_start_time check)
-        # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
+        # Send progress updates (throttled to ~1Hz)
         if result.behavior_detected and result.hold_duration > 0:
             stage_elapsed = time.time() - session.stage_start_time
             # Send progress every ~1 second
@@ -1174,7 +1160,6 @@ class MissionEngine:
         })
 
         # Send success event to app
-        # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
         try:
             relay = get_relay_client()
             if relay and relay.connected:
@@ -1233,7 +1218,6 @@ class MissionEngine:
         if stage.conditions.get("optional", False):
             self.logger.info(f"Optional stage '{stage.name}' timed out - skipping")
             # Send skip event to app for this stage
-            # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
             trick_name = self._get_trick_name(stage)
             if trick_name:
                 try:
@@ -1257,7 +1241,6 @@ class MissionEngine:
         session.attempts += 1
 
         # Send failure event to app
-        # BUILD 40: Fixed field names to match app contract (mission_id, stage_number)
         trick_name = self._get_trick_name(stage)
         if trick_name:
             try:
@@ -1318,7 +1301,6 @@ class MissionEngine:
         })
 
         # Send mission_complete event to app via relay
-        # BUILD 40: Fixed field names to match app contract (mission_id)
         try:
             relay = get_relay_client()
             if relay and relay.connected:
@@ -1398,7 +1380,7 @@ class MissionEngine:
 
                     self.bark_count += 1
                     self.bark_timestamps.append(time.time())
-                    self.logger.info(f"🐕 Bark detected during speak mission! Count: {self.bark_count}")
+                    self.logger.debug(f"Bark detected during speak mission, count: {self.bark_count}")
 
             # Also handle for bark-based stages
             self._handle_bark_for_mission(event_data)
@@ -1430,18 +1412,18 @@ class MissionEngine:
                 'name': dog_name if dog_name not in ['unknown', None] else None
             }
             display_name = dog_name if dog_name and dog_name not in ['unknown', None] else dog_id
-            self.logger.info(f"🐕 Dog entered view for mission: {display_name}")
+            self.logger.debug(f"Dog entered view for mission: {display_name}")
         else:
             # Existing dog - update tracking
             entry = self.dogs_in_view[dog_id]
             entry['last_seen'] = now
             entry['frames_seen'] += 1
-            entry['frames_total'] += 1  # BUILD 35: Increment both counters together
+            entry['frames_total'] += 1
 
             # Update name if ArUco identified
             if dog_name and dog_name not in ['unknown', None] and entry['name'] is None:
                 entry['name'] = dog_name
-                self.logger.info(f"🏷️ Dog {dog_id} identified as {dog_name}")
+                self.logger.debug(f"Dog {dog_id} identified as {dog_name}")
 
         # Check if dog detection is the success event (non-pose stages)
         session = self.active_session
@@ -1596,7 +1578,9 @@ def get_mission_engine() -> MissionEngine:
 
 # Example usage
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
     engine = get_mission_engine()
-    print("Available missions:")
+    logger = logging.getLogger(__name__)
+    logger.info("Available missions:")
     for mission in engine.get_available_missions():
-        print(f"- {mission['name']}: {mission['description']}")
+        logger.info(f"- {mission['name']}: {mission['description']}")

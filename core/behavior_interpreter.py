@@ -177,7 +177,7 @@ class BehaviorInterpreter:
                         self._last_confidence = confidence
                         self._pending_behavior = None
                         self._pending_count = 0
-                        logger.info(f"🎯 Behavior: None → {behavior} (conf={confidence:.2f}) @ {now:.3f}")
+                        logger.debug(f"Behavior: None -> {behavior} (conf={confidence:.2f}) @ {now:.3f}")
                     else:
                         # DEBOUNCE: Require multiple consecutive different-behavior
                         # detections before switching. Prevents single-frame flickers
@@ -199,7 +199,7 @@ class BehaviorInterpreter:
                             self._last_confidence = self._pending_confidence
                             self._pending_behavior = None
                             self._pending_count = 0
-                            logger.info(f"🎯 Behavior: {prev} → {behavior} (conf={confidence:.2f}) @ {now:.3f}")
+                            logger.debug(f"Behavior: {prev} -> {behavior} (conf={confidence:.2f}) @ {now:.3f}")
                         else:
                             # Not enough consecutive frames yet — keep current behavior
                             # but still update the timestamp so detection isn't stale
@@ -232,7 +232,7 @@ class BehaviorInterpreter:
             self._pending_count = 0
             self._pending_confidence = 0.0
             self._reset_timestamp = time.time()  # Events before this are stale
-            logger.info(f"🔄 RESET tracking (was: {old_behavior}, held: {old_hold:.1f}s) @ {self._reset_timestamp:.3f}")
+            logger.debug(f"Reset tracking (was: {old_behavior}, held: {old_hold:.1f}s) @ {self._reset_timestamp:.3f}")
 
     def check_trick(self, trick_name: str, dog_id: str = None) -> TrickCheckResult:
         """
@@ -293,9 +293,8 @@ class BehaviorInterpreter:
                 )
 
             # Success!
-            # BUILD 38 DEBUG: Log the exact moment trick is completed
-            logger.info(f"✅ TRICK COMPLETED: {trick_name} → {self._last_behavior} "
-                       f"(hold={hold_duration:.2f}s >= {hold_required}s, conf={self._last_confidence:.2f})")
+            logger.debug(f"Trick completed: {trick_name} -> {self._last_behavior} "
+                        f"(hold={hold_duration:.2f}s >= {hold_required}s, conf={self._last_confidence:.2f})")
             return TrickCheckResult(
                 completed=True,
                 behavior_detected=self._last_behavior,

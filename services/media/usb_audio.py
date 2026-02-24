@@ -78,8 +78,7 @@ class USBAudioService:
     def _build_playlist(self, dog_id: str = None):
         """Build playlist from songs folder, combining default and all dog-specific songs
 
-        BUILD 41: Changed from exclusive (dog OR default) to inclusive (default + all dogs)
-        This ensures uploaded songs are always available in rotation.
+        Combines default and all dog-specific songs so uploaded songs are always available.
         """
         songs_base = os.path.join(self.base_path, "songs")
         default_path = os.path.join(songs_base, "default")
@@ -184,7 +183,7 @@ class USBAudioService:
                 # Log with call stack to trace where audio is triggered from
                 import traceback
                 caller_info = "".join(traceback.format_stack()[-4:-1]).strip().replace('\n', ' | ')
-                self.logger.info(f"🔊 AUDIO PLAY{loop_msg}: {full_path} [source: {caller_info[:200]}...]")
+                self.logger.debug(f"AUDIO PLAY{loop_msg}: {full_path} [source: {caller_info[:200]}...]")
 
                 # Send audio state event to app (only for music, not voice clips)
                 if is_music:

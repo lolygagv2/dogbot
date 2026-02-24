@@ -856,10 +856,10 @@ class LedService:
                 action = event.data.get('action')
                 if action == 'on':
                     success = self.led.blue_on()
-                    self.logger.warning(f"🔵 Blue LED ON via event bus: {success}")
+                    self.logger.debug(f"Blue LED ON via event bus: {success}")
                 elif action == 'off':
                     success = self.led.blue_off()
-                    self.logger.warning(f"🔵 Blue LED OFF via event bus: {success}")
+                    self.logger.debug(f"Blue LED OFF via event bus: {success}")
             else:
                 self.logger.error("Blue LED control failed - LED not initialized")
 
@@ -905,10 +905,10 @@ class LedService:
 
                     if command == 'ON' and self.led and self.led_initialized:
                         success = self.led.blue_on()
-                        self.logger.warning(f"🔵 Blue LED ON executed: {success}")
+                        self.logger.debug(f"Blue LED ON executed: {success}")
                     elif command == 'OFF' and self.led and self.led_initialized:
                         success = self.led.blue_off()
-                        self.logger.warning(f"🔵 Blue LED OFF executed: {success}")
+                        self.logger.debug(f"Blue LED OFF executed: {success}")
 
                     # Clear the command file
                     os.remove(command_file)
