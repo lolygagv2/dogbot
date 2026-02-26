@@ -1013,7 +1013,7 @@ class XboxHybridControllerFixed:
 
             logger.debug(f"OPEN-LOOP: Speed L={left} R={right} -> PWM L={left_pwm:.1f}% R={right_pwm:.1f}%")
 
-            # Send to motor controller
+            # Send to motor controller - try direct GPIO first, then API
             if self.motor_controller and hasattr(self.motor_controller, 'set_motor_pwm_direct'):
                 try:
                     self.motor_controller.set_motor_pwm_direct(left_pwm, right_pwm)
@@ -1027,7 +1027,17 @@ class XboxHybridControllerFixed:
                     return
                 except Exception as e:
                     logger.error(f"Motor bus PWM error: {e}")
-            logger.warning("No motor control available!")
+
+            # API fallback - main process owns motor bus, send commands via HTTP
+            try:
+                self.session.post(
+                    f"{self.API_BASE_URL}/motor/control",
+                    json={"left_speed": int(left_pwm), "right_speed": int(right_pwm)},
+                    timeout=0.2
+                )
+                return
+            except Exception as e:
+                logger.debug(f"Motor API error: {e}")
             return
 
         # PID MODE (legacy path - not used when USE_PID_CONTROL=false)
@@ -1065,8 +1075,16 @@ class XboxHybridControllerFixed:
                     return
                 except Exception as e:
                     logger.error(f"Motor bus PWM error: {e}")
-            # Last resort - log error
-            logger.warning(f"No open-loop motor control available! motor_controller={self.motor_controller}, motor_bus={self.motor_bus}")
+            # API fallback - main process owns motor bus
+            try:
+                self.session.post(
+                    f"{self.API_BASE_URL}/motor/control",
+                    json={"left_speed": int(left), "right_speed": int(right)},
+                    timeout=0.2
+                )
+                return
+            except Exception as e:
+                logger.debug(f"Motor API error: {e}")
             return
 
         # PID MODE: Use closed-loop RPM control

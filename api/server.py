@@ -1446,16 +1446,16 @@ async def set_manual_mode(mode: str):
 # iPhone App Motor Control endpoints
 @app.post("/motor/control")
 async def motor_control(request: MotorControlRequest):
-    """Direct motor control for iPhone app"""
+    """Direct motor control - routes to motor command bus"""
     try:
-        motor_service = get_motor_service()
-
-        # Set individual motor speeds
-        success = motor_service.set_motor_speeds(
-            left_speed=request.left_speed,
-            right_speed=request.right_speed,
-            duration=request.duration
-        )
+        from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+        motor_bus = get_motor_bus()
+        if motor_bus and motor_bus.running:
+            cmd = create_motor_command(request.left_speed, request.right_speed, CommandSource.API)
+            success = motor_bus.send_command(cmd)
+        else:
+            logger.warning("Motor control: motor bus not running")
+            success = False
 
         return {
             "success": success,
@@ -1469,9 +1469,9 @@ async def motor_control(request: MotorControlRequest):
 
 @app.post("/motor/joystick")
 async def joystick_control(request: JoystickRequest):
-    """Virtual joystick control from iPhone app"""
+    """Virtual joystick control - routes to motor command bus"""
     try:
-        motor_service = get_motor_service()
+        from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
 
         # Convert joystick input to motor speeds
         # Forward/back is y, left/right is x
@@ -1482,10 +1482,12 @@ async def joystick_control(request: JoystickRequest):
         left_speed = max(-100, min(100, left_speed))
         right_speed = max(-100, min(100, right_speed))
 
-        success = motor_service.set_motor_speeds(
-            left_speed=left_speed,
-            right_speed=right_speed
-        )
+        motor_bus = get_motor_bus()
+        if motor_bus and motor_bus.running:
+            cmd = create_motor_command(left_speed, right_speed, CommandSource.API)
+            success = motor_bus.send_command(cmd)
+        else:
+            success = False
 
         return {
             "success": success,
@@ -1572,8 +1574,11 @@ async def toggle_turbo(request: dict):
 async def motor_stop(request: Optional[EmergencyStopRequest] = None):
     """Emergency stop all motors"""
     try:
-        motor_service = get_motor_service()
-        motor_service.emergency_stop()
+        from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+        motor_bus = get_motor_bus()
+        if motor_bus and motor_bus.running:
+            cmd = create_motor_command(0, 0, CommandSource.EMERGENCY)
+            motor_bus.send_command(cmd)
 
         reason = request.reason if request else "emergency_stop"
         logger.warning(f"Motor emergency stop: {reason}")
@@ -3289,12 +3294,11 @@ async def reset_bark_statistics():
 async def websocket_control(websocket: WebSocket):
     """WebSocket endpoint for real-time robot control from iPhone app"""
     await websocket.accept()
-    motor_service = None
     pantilt_service = None
 
     try:
         # Get services
-        motor_service = get_motor_service()
+        from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
         pantilt_service = get_pantilt_service()
 
         logger.info("WebSocket control connection established")
@@ -3306,10 +3310,13 @@ async def websocket_control(websocket: WebSocket):
             command = data.get("command")
 
             if command == "motor":
-                # Motor control
+                # Motor control via motor bus
                 left = data.get("left", 0)
                 right = data.get("right", 0)
-                motor_service.set_motor_speeds(left, right)
+                motor_bus = get_motor_bus()
+                if motor_bus and motor_bus.running:
+                    cmd = create_motor_command(left, right, CommandSource.API)
+                    motor_bus.send_command(cmd)
 
                 await websocket.send_json({
                     "type": "motor_ack",
@@ -3328,7 +3335,10 @@ async def websocket_control(websocket: WebSocket):
                 left = max(-100, min(100, left))
                 right = max(-100, min(100, right))
 
-                motor_service.set_motor_speeds(left, right)
+                motor_bus = get_motor_bus()
+                if motor_bus and motor_bus.running:
+                    cmd = create_motor_command(left, right, CommandSource.API)
+                    motor_bus.send_command(cmd)
 
                 await websocket.send_json({
                     "type": "joystick_ack",
@@ -3403,11 +3413,10 @@ async def websocket_local(websocket: WebSocket):
     It provides the same control as /ws/control plus mode switching and status.
     """
     await websocket.accept()
-    motor_service = None
     pantilt_service = None
 
     try:
-        motor_service = get_motor_service()
+        from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
         pantilt_service = get_pantilt_service()
         state = get_state()
 
@@ -3428,7 +3437,10 @@ async def websocket_local(websocket: WebSocket):
             if command == "motor":
                 left = data.get("left", 0)
                 right = data.get("right", 0)
-                motor_service.set_motor_speeds(left, right)
+                motor_bus = get_motor_bus()
+                if motor_bus and motor_bus.running:
+                    cmd = create_motor_command(left, right, CommandSource.API)
+                    motor_bus.send_command(cmd)
                 await websocket.send_json({"type": "motor_ack", "left": left, "right": right})
 
             elif command == "joystick":
@@ -3438,7 +3450,10 @@ async def websocket_local(websocket: WebSocket):
                 right = int((y - x) * 100)
                 left = max(-100, min(100, left))
                 right = max(-100, min(100, right))
-                motor_service.set_motor_speeds(left, right)
+                motor_bus = get_motor_bus()
+                if motor_bus and motor_bus.running:
+                    cmd = create_motor_command(left, right, CommandSource.API)
+                    motor_bus.send_command(cmd)
                 await websocket.send_json({"type": "joystick_ack", "motors": {"left": left, "right": right}})
 
             elif command == "camera":
@@ -4799,9 +4814,7 @@ async def instagram_post_video(request: InstagramVideoRequest):
 async def motor_speed_contract(request: MotorSpeedRequest):
     """Set motor speeds per API contract: -1.0 to 1.0"""
     try:
-        motor = get_motor_service()
-        if not motor:
-            raise HTTPException(status_code=503, detail="Motor service not available")
+        from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
 
         # Convert -1.0 to 1.0 range to -100 to 100 percentage
         left_pct = int(request.left * 100)
@@ -4811,8 +4824,13 @@ async def motor_speed_contract(request: MotorSpeedRequest):
         left_pct = max(-100, min(100, left_pct))
         right_pct = max(-100, min(100, right_pct))
 
-        motor.set_speed(left_pct, right_pct)
-        return {"success": True}
+        motor_bus = get_motor_bus()
+        if motor_bus and motor_bus.running:
+            cmd = create_motor_command(left_pct, right_pct, CommandSource.API)
+            motor_bus.send_command(cmd)
+            return {"success": True}
+        else:
+            return {"success": False, "error": {"code": "MOTOR_ERROR", "message": "Motor bus not running"}}
     except Exception as e:
         logger.error(f"Motor speed error: {e}")
         return {"success": False, "error": {"code": "MOTOR_ERROR", "message": str(e)}}
@@ -4821,9 +4839,11 @@ async def motor_speed_contract(request: MotorSpeedRequest):
 async def motor_emergency_contract():
     """Emergency stop all motors (contract alias)"""
     try:
-        motor = get_motor_service()
-        if motor:
-            motor.emergency_stop()
+        from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+        motor_bus = get_motor_bus()
+        if motor_bus and motor_bus.running:
+            cmd = create_motor_command(0, 0, CommandSource.EMERGENCY)
+            motor_bus.send_command(cmd)
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": {"code": "EMERGENCY_ERROR", "message": str(e)}}

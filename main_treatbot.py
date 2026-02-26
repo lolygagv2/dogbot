@@ -10,7 +10,12 @@ import time
 import signal
 import logging
 import threading
+import faulthandler
 from typing import Dict, Any, Optional
+
+# Enable faulthandler: kill -USR1 <pid> dumps all thread stacks to stderr/journal
+faulthandler.enable()
+faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -259,32 +264,22 @@ class TreatBotMain:
             self.logger.error(f"Pan/tilt service failed: {e}")
             services_status['pantilt'] = False
 
-        # Motor bus - Conditional initialization based on Xbox controller presence
-        # Xbox controller subprocess needs exclusive GPIO access for low-latency control
-        # If no Xbox connected, main process owns motor_bus for WebRTC direct control
-        import os
-        xbox_connected = os.path.exists('/dev/input/js0')
-
-        if xbox_connected:
-            # Xbox controller will spawn subprocess that owns motor GPIO
-            self.motor_bus = None
-            services_status['motor'] = False
-            self.logger.info("Xbox controller detected - motor GPIO reserved for Xbox subprocess")
-        else:
-            # No Xbox - main process can own motor_bus for WebRTC low-latency control
-            try:
-                from core.motor_command_bus import get_motor_bus
-                self.motor_bus = get_motor_bus()
-                if self.motor_bus.start():
-                    services_status['motor'] = True
-                    self.logger.info("Motor bus initialized (WebRTC direct control - no Xbox)")
-                else:
-                    services_status['motor'] = False
-                    self.logger.warning("Motor bus failed to start")
-            except Exception as e:
-                self.logger.error(f"Motor bus failed: {e}")
+        # Motor bus - ALWAYS initialize in main process
+        # Xbox subprocess sends motor commands via HTTP API to main process
+        # Main process always owns GPIO for motor control
+        try:
+            from core.motor_command_bus import get_motor_bus
+            self.motor_bus = get_motor_bus()
+            if self.motor_bus.start():
+                services_status['motor'] = True
+                self.logger.info("Motor bus initialized (main process owns GPIO)")
+            else:
                 services_status['motor'] = False
-                self.motor_bus = None
+                self.logger.warning("Motor bus failed to start")
+        except Exception as e:
+            self.logger.error(f"Motor bus failed: {e}")
+            services_status['motor'] = False
+            self.motor_bus = None
 
         # Dispenser service
         try:
@@ -1499,13 +1494,23 @@ class TreatBotMain:
                 elif command == 'force_trick':
                     # Force a specific trick in coach mode (like Xbox Guide button)
                     trick = params.get('trick') or params.get('data', {}).get('trick')
+                    # Map behavior names to trick names (app may send either)
+                    BEHAVIOR_TO_TRICK = {'stand': 'come', 'lie': 'laydown', 'down': 'laydown'}
+                    if trick in BEHAVIOR_TO_TRICK:
+                        self.logger.debug(f"force_trick: mapped '{trick}' -> '{BEHAVIOR_TO_TRICK[trick]}'")
+                        trick = BEHAVIOR_TO_TRICK[trick]
                     from orchestrators.coaching_engine import get_coaching_engine
                     engine = get_coaching_engine()
                     if engine and engine.running and trick:
-                        engine._forced_trick = trick
-                        # Reset cooldown to allow immediate session
-                        engine._last_session_end = 0.0
-                        self.logger.debug(f"force_trick -> {trick}")
+                        result = engine.set_forced_trick(trick)
+                        if result.get('error'):
+                            self.logger.warning(f"force_trick rejected: {result['error']}")
+                            if self.relay_client and self.relay_client.connected:
+                                self.relay_client.send_event('trick_forced', {'success': False, 'error': result['error']})
+                        else:
+                            # Reset cooldown to allow immediate session
+                            engine._last_session_end = 0.0
+                            self.logger.debug(f"force_trick -> {trick}")
                         if self.relay_client and self.relay_client.connected:
                             self.relay_client.send_event('trick_forced', {'success': True, 'trick': trick})
                     else:
@@ -1581,8 +1586,8 @@ class TreatBotMain:
                 })
                 self.logger.debug(f"Mode changed event sent: {contract_prev} -> {contract_new} (locked={locked})")
 
-            # Play voice announcement for mode change
-            self._announce_mode(new_mode)
+            # NOTE: Mode announcement moved to END of handler to avoid ALSA race
+            # condition with audio_track.pause_capture() (both touch same USB device)
 
             # Stop Silent Guardian if leaving that mode
             if previous_mode == 'silent_guardian':
@@ -1625,25 +1630,11 @@ class TreatBotMain:
                 bark_needed = True
                 self.logger.debug("Bark detection enabled (Coach mode - for speak trick)")
             elif new_mode == 'mission':
-                # Only enable bark detection for missions with bark/quiet stages
-                try:
-                    from orchestrators.mission_engine import get_mission_engine
-                    engine = get_mission_engine()
-                    if engine.active_session:
-                        mission = engine.active_session.mission
-                        # Check if any stage uses bark or quiet events
-                        bark_keywords = ['AudioEvent.Bark', 'AudioEvent.Quiet', 'Speak']
-                        for stage in mission.stages:
-                            if any(kw.lower() in stage.success_event.lower() for kw in bark_keywords):
-                                bark_needed = True
-                                self.logger.debug(f"Mission '{mission.name}' has bark/quiet stages - enabling detection")
-                                break
-                        if not bark_needed:
-                            self.logger.debug(f"Mission '{mission.name}' doesn't need bark detection - skipping")
-                    else:
-                        self.logger.debug("No active mission - bark detection not needed")
-                except Exception as e:
-                    self.logger.warning(f"Could not check mission bark requirement: {e}")
+                # Mission engine manages bark detection on-demand when bark stages are reached.
+                # Don't eagerly start it here — it races with audio track pause and
+                # isn't needed until the specific bark/quiet stage.
+                bark_needed = False
+                self.logger.debug("Mission mode: bark detection deferred to mission engine")
 
             previous_bark_modes = ['silent_guardian', 'coach', 'mission']
 
@@ -1668,6 +1659,11 @@ class TreatBotMain:
                         time.sleep(0.5)  # Wait for ALSA device release
                     self.bark_detector.start()
                     self.logger.info("Bark detection started (needed for current mode)")
+
+            # Play voice announcement LAST — after audio track capture is released.
+            # Must come after bark detection management to avoid ALSA mutex deadlock
+            # (audio_track.pause_capture closes sounddevice while pygame opens same device).
+            self._announce_mode(new_mode)
 
         except Exception as e:
             self.logger.error(f"Mode change handler error: {e}")
@@ -1713,6 +1709,21 @@ class TreatBotMain:
             if audio_file:
                 import os
                 if os.path.exists(audio_file):
+                    # Ensure audio track capture is fully released before playing.
+                    # The audio_track listener runs in a separate thread and may still
+                    # be closing sounddevice when we get here. Wait for it to finish
+                    # to avoid ALSA/PortAudio mutex deadlock on shared USB audio device.
+                    try:
+                        audio_track = get_audio_track()
+                        if audio_track and audio_track._stream is not None:
+                            # Stream still open — wait for the audio_track listener to close it
+                            for _ in range(10):  # Max 500ms wait
+                                if audio_track._stream is None:
+                                    break
+                                time.sleep(0.05)
+                    except Exception:
+                        pass
+
                     # Wait for any current audio to finish (max 3 seconds)
                     # This prevents mode announcements from interrupting important audio
                     wait_count = 0
