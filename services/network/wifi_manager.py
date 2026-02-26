@@ -178,7 +178,7 @@ class WiFiManager:
         """Check if WiFi is connected to any network"""
         return self.get_connection_status()['connected']
 
-    def try_connect_known(self, timeout: int = 30) -> bool:
+    def try_connect_known(self, timeout: int = 15) -> bool:
         """Try to connect to any known WiFi network"""
         logger.info("Attempting to connect to known WiFi networks...")
 
@@ -196,21 +196,26 @@ class WiFiManager:
         logger.info(f"Found {len(saved)} saved WiFi connections")
 
         # Try to bring up the device and auto-connect
-        # Cap nmcli timeout to avoid blocking longer than our overall timeout
-        nmcli_timeout = min(timeout, 15)
+        nmcli_timeout = min(timeout, 10)
         success, output = self._run_nmcli(
             ["device", "connect", self.interface],
             timeout=nmcli_timeout
         )
 
+        if success:
+            status = self.get_connection_status()
+            logger.info(f"Connected to {status['ssid']} ({status['ip_address']})")
+            return True
+
         # If nmcli says no network found, fail immediately - no point polling
-        if not success and "could not be found" in output.lower():
+        if "could not be found" in output.lower() or "timed out" in output.lower():
             logger.info("No known WiFi networks in range - skipping wait")
             return False
 
-        # Poll for connection for remaining time
+        # Poll for connection for remaining time (nmcli may have started a bg connect)
         start_time = time.time()
-        while time.time() - start_time < timeout:
+        remaining = timeout - nmcli_timeout
+        while time.time() - start_time < remaining:
             if self.is_connected():
                 status = self.get_connection_status()
                 logger.info(f"Connected to {status['ssid']} ({status['ip_address']})")
@@ -274,7 +279,7 @@ class WiFiManager:
         networks.sort(key=lambda x: x['signal'], reverse=True)
         return networks
 
-    def _wait_for_ssid_in_scan(self, ssid: str, timeout: int = 25) -> bool:
+    def _wait_for_ssid_in_scan(self, ssid: str, timeout: int = 30) -> bool:
         """Poll NM scan results until target SSID appears (after AP→client switch)"""
         logger.info(f"Waiting for '{ssid}' to appear in scan results (timeout={timeout}s)...")
         start = time.time()
@@ -298,9 +303,15 @@ class WiFiManager:
                     elapsed = time.time() - start
                     logger.info(f"Found '{ssid}' in scan results after {elapsed:.1f}s (attempt {attempt})")
                     return True
-                logger.debug(f"Scan attempt {attempt}: {len(ssids)} networks, '{ssid}' not yet found")
+                # Log what we ARE seeing on first and last attempts for debugging
+                if attempt == 1 or time.time() - start > timeout - 5:
+                    logger.info(f"Scan attempt {attempt}: {len(ssids)} networks visible, target '{ssid}' not found")
+                    if attempt == 1 and ssids:
+                        logger.info(f"  Sample SSIDs: {ssids[:5]}")
+                else:
+                    logger.debug(f"Scan attempt {attempt}: {len(ssids)} networks, '{ssid}' not yet found")
             else:
-                logger.debug(f"Scan attempt {attempt}: nmcli scan list failed")
+                logger.warning(f"Scan attempt {attempt}: nmcli wifi list failed (NM may not be ready)")
 
         logger.warning(f"SSID '{ssid}' not found after {timeout}s ({attempt} attempts)")
         return False
@@ -419,6 +430,30 @@ address=/#/{self.HOTSPOT_IP}
             except FileNotFoundError:
                 pass
 
+    def _wait_for_nm_ready(self, timeout: int = 20) -> bool:
+        """Wait for NetworkManager to show wlan0 in a scannable state (disconnected)"""
+        logger.info(f"Waiting for NetworkManager to be ready (timeout={timeout}s)...")
+        start = time.time()
+        while time.time() - start < timeout:
+            success, output = self._run_nmcli([
+                "-t", "-f", "DEVICE,STATE",
+                "device", "status"
+            ])
+            if success:
+                for line in output.strip().split('\n'):
+                    parts = line.split(':')
+                    if len(parts) >= 2 and parts[0] == self.interface:
+                        state = parts[1].strip()
+                        if state in ("disconnected", "connected"):
+                            elapsed = time.time() - start
+                            logger.info(f"NM ready: wlan0 state={state} after {elapsed:.1f}s")
+                            return True
+                        logger.debug(f"NM device state: {state} (waiting for disconnected/connected)")
+            time.sleep(1)
+
+        logger.warning(f"NM not ready after {timeout}s")
+        return False
+
     def stop_hotspot(self) -> bool:
         """Stop WiFi hotspot and return to client mode"""
         logger.info("Stopping hotspot...")
@@ -429,9 +464,19 @@ address=/#/{self.HOTSPOT_IP}
         # Flush interface IP
         self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
 
+        # Cycle interface down/up to force driver out of AP mode at kernel level
+        # Without this, the wireless driver stays in AP mode and NM scans fail
+        logger.info("Cycling interface to force station mode...")
+        self._run_cmd(["sudo", "ip", "link", "set", self.interface, "down"])
+        time.sleep(0.5)
+        self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
+        time.sleep(1)
+
         # Return interface to NetworkManager control
         self._run_nmcli(["device", "set", self.interface, "managed", "yes"])
-        time.sleep(1)
+
+        # Wait for NM to actually reclaim the interface and be ready to scan
+        self._wait_for_nm_ready(timeout=20)
 
         logger.info("Hotspot stopped")
         self._in_ap_mode = False
@@ -450,13 +495,11 @@ address=/#/{self.HOTSPOT_IP}
             "should_restart_ap": False
         }
 
-        # Stop hotspot if running
+        # Stop hotspot if running (this now cycles the interface and waits for NM)
         self.stop_hotspot()
-        time.sleep(3)  # Initial wait for NM to reclaim interface
 
         # Wait for target SSID to appear in scan results
-        # (NM needs time to switch wlan0 from AP→client and rescan)
-        ssid_found = self._wait_for_ssid_in_scan(ssid, timeout=25)
+        ssid_found = self._wait_for_ssid_in_scan(ssid, timeout=30)
         if not ssid_found:
             logger.warning(f"SSID '{ssid}' not in scan results — attempting connect anyway")
 
