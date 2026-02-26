@@ -474,6 +474,11 @@ class RelayClient:
         if self._webrtc_service:
             await self._webrtc_service.close_connection(session_id)
 
+    # Command staleness thresholds (seconds)
+    COMMAND_MAX_AGE_SEC = 30  # General commands
+    SAFETY_COMMAND_MAX_AGE_SEC = 5  # Safety-critical commands (physical actions)
+    SAFETY_COMMANDS = {'dispense_treat', 'motor_command', 'drive', 'emergency_stop'}
+
     async def _handle_command(self, data: dict):
         """Handle command from app
 
@@ -487,6 +492,49 @@ class RelayClient:
         # Also check for top-level params (app sends mode at top level)
         if not params:
             params = {k: v for k, v in data.items() if k not in ('type', 'command')}
+
+        # --- Staleness check: reject commands with old timestamps ---
+        cmd_timestamp = data.get('timestamp')
+        if cmd_timestamp is not None:
+            now_ms = int(time.time() * 1000)
+            age_sec = (now_ms - cmd_timestamp) / 1000.0
+
+            # Pick threshold based on command type
+            max_age = self.SAFETY_COMMAND_MAX_AGE_SEC if command in self.SAFETY_COMMANDS else self.COMMAND_MAX_AGE_SEC
+
+            if age_sec > max_age:
+                self.logger.warning(
+                    f"STALE command rejected: {command}, age={age_sec:.1f}s (max={max_age}s), "
+                    f"timestamp={cmd_timestamp}"
+                )
+                await self._send({
+                    'type': 'command_ack',
+                    'command': command,
+                    'success': False,
+                    'error': f'Command too old ({age_sec:.1f}s > {max_age}s limit)'
+                })
+                return
+
+            if age_sec < -5:
+                # Clock skew: command timestamp is >5s in the future
+                self.logger.warning(
+                    f"FUTURE command rejected: {command}, age={age_sec:.1f}s, "
+                    f"timestamp={cmd_timestamp} (clock skew?)"
+                )
+                await self._send({
+                    'type': 'command_ack',
+                    'command': command,
+                    'success': False,
+                    'error': f'Command timestamp in future ({age_sec:.1f}s skew)'
+                })
+                return
+
+        # --- Session check: warn if no user session is active ---
+        if not self._app_connected and command not in ('set_mode', 'local_mode', 'cloud_mode'):
+            self.logger.warning(
+                f"Command received with no active user session: {command} "
+                f"(user={self._connected_user_id})"
+            )
 
         self.logger.debug(f"Command: {command}, params: {params}")
 
