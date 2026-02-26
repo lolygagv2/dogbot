@@ -223,6 +223,53 @@
             color: #999;
             font-size: 12px;
         }
+
+        .saved-networks {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .saved-networks h3 {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .saved-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #e8e8e8;
+        }
+
+        .saved-item:last-child {
+            border-bottom: none;
+        }
+
+        .saved-item span {
+            font-size: 14px;
+            color: #333;
+        }
+
+        .btn-forget {
+            background: #ffebee;
+            color: #c62828;
+            border: none;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .btn-forget:hover {
+            background: #ffcdd2;
+        }
     </style>
 </head>
 <body>
@@ -230,6 +277,11 @@
         <div class="logo">
             <h1>WIM-Z</h1>
             <p>WiFi Setup</p>
+        </div>
+
+        <div class="saved-networks" id="saved-networks" style="display: none;">
+            <h3>Saved Networks</h3>
+            <div id="saved-list"></div>
         </div>
 
         <form id="wifi-form">
@@ -421,8 +473,63 @@
             scanNetworks();
         });
 
+        // Load saved networks
+        async function loadSavedNetworks() {
+            try {
+                const response = await fetch('/saved');
+                const data = await response.json();
+                const container = document.getElementById('saved-networks');
+                const list = document.getElementById('saved-list');
+
+                if (data.success && data.connections.length > 0) {
+                    list.innerHTML = '';
+                    data.connections.forEach(conn => {
+                        const item = document.createElement('div');
+                        item.className = 'saved-item';
+                        item.innerHTML = '<span>' + conn.name + '</span>' +
+                            '<button class="btn-forget" onclick="forgetNetwork(\'' +
+                            conn.name.replace(/'/g, "\\'") + '\', this)">Forget</button>';
+                        list.appendChild(item);
+                    });
+                    container.style.display = 'block';
+                } else {
+                    container.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Load saved error:', error);
+            }
+        }
+
+        // Forget a saved network
+        async function forgetNetwork(ssid, btn) {
+            btn.disabled = true;
+            btn.textContent = '...';
+            try {
+                const response = await fetch('/forget', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid: ssid, password: '' })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    btn.closest('.saved-item').remove();
+                    // Hide section if no saved networks left
+                    if (document.getElementById('saved-list').children.length === 0) {
+                        document.getElementById('saved-networks').style.display = 'none';
+                    }
+                } else {
+                    btn.textContent = 'Failed';
+                    setTimeout(() => { btn.textContent = 'Forget'; btn.disabled = false; }, 2000);
+                }
+            } catch (error) {
+                btn.textContent = 'Error';
+                setTimeout(() => { btn.textContent = 'Forget'; btn.disabled = false; }, 2000);
+            }
+        }
+
         // Initial scan on page load
         document.addEventListener('DOMContentLoaded', function() {
+            loadSavedNetworks();
             scanNetworks();
         });
     </script>

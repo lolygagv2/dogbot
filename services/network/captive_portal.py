@@ -82,6 +82,43 @@ class CaptivePortal:
                     "networks": []
                 })
 
+        @app.get("/saved")
+        async def get_saved_networks():
+            """Return list of saved WiFi connections"""
+            try:
+                saved = self.wifi_manager.get_saved_connections()
+                # Filter out the hotspot connection
+                saved = [c for c in saved if c['name'] != self.wifi_manager.HOTSPOT_CONNECTION_NAME]
+                return JSONResponse(content={
+                    "success": True,
+                    "connections": saved
+                })
+            except Exception as e:
+                logger.error(f"Saved networks error: {e}")
+                return JSONResponse(content={
+                    "success": False,
+                    "error": str(e),
+                    "connections": []
+                })
+
+        @app.post("/forget")
+        async def forget_network(credentials: WiFiCredentials):
+            """Forget a saved WiFi connection by SSID"""
+            if not credentials.ssid:
+                raise HTTPException(status_code=400, detail="SSID is required")
+            try:
+                success, message = self.wifi_manager.forget_connection(credentials.ssid)
+                return JSONResponse(content={
+                    "success": success,
+                    "message": message
+                })
+            except Exception as e:
+                logger.error(f"Forget error: {e}")
+                return JSONResponse(content={
+                    "success": False,
+                    "message": f"Error: {str(e)}"
+                })
+
         @app.post("/connect")
         async def connect_wifi(credentials: WiFiCredentials):
             """Save WiFi credentials and trigger connection"""

@@ -920,7 +920,7 @@ class XboxHybridControllerFixed:
                     self._last_rt_time = 0
                 if current_time - self._last_rt_time > 1.0:  # 1 second cooldown
                     logger.debug("RT: Playing good.mp3")
-                    self.api_request('POST', '/audio/play/file', {"filepath": "/talks/default/good.mp3"})
+                    self.api_request('POST', '/audio/play/file', {"filepath": "/talks/good.mp3"})
                     self._last_rt_time = current_time
             else:
                 self.state.right_trigger = 0.0

@@ -113,6 +113,17 @@ class WiFiManager:
 
         return connections
 
+    def forget_connection(self, ssid: str) -> Tuple[bool, str]:
+        """Delete a saved WiFi connection by SSID"""
+        logger.info(f"Forgetting saved connection: {ssid}")
+        success, output = self._run_nmcli(["connection", "delete", ssid])
+        if success:
+            logger.info(f"Deleted saved connection: {ssid}")
+            return True, f"Forgot '{ssid}'"
+        else:
+            logger.warning(f"Failed to delete connection '{ssid}': {output}")
+            return False, f"Could not forget '{ssid}'"
+
     def get_connection_status(self) -> Dict:
         """Get current WiFi connection status"""
         status = {
@@ -263,6 +274,37 @@ class WiFiManager:
         networks.sort(key=lambda x: x['signal'], reverse=True)
         return networks
 
+    def _wait_for_ssid_in_scan(self, ssid: str, timeout: int = 25) -> bool:
+        """Poll NM scan results until target SSID appears (after AP→client switch)"""
+        logger.info(f"Waiting for '{ssid}' to appear in scan results (timeout={timeout}s)...")
+        start = time.time()
+        attempt = 0
+        while time.time() - start < timeout:
+            attempt += 1
+            # Trigger a rescan
+            self._run_nmcli(
+                ["device", "wifi", "rescan", "ifname", self.interface],
+                timeout=10
+            )
+            time.sleep(3)
+            # Check scan results for target SSID
+            success, output = self._run_nmcli([
+                "-t", "-f", "SSID",
+                "device", "wifi", "list", "ifname", self.interface
+            ])
+            if success:
+                ssids = [line.strip() for line in output.strip().split('\n') if line.strip()]
+                if ssid in ssids:
+                    elapsed = time.time() - start
+                    logger.info(f"Found '{ssid}' in scan results after {elapsed:.1f}s (attempt {attempt})")
+                    return True
+                logger.debug(f"Scan attempt {attempt}: {len(ssids)} networks, '{ssid}' not yet found")
+            else:
+                logger.debug(f"Scan attempt {attempt}: nmcli scan list failed")
+
+        logger.warning(f"SSID '{ssid}' not found after {timeout}s ({attempt} attempts)")
+        return False
+
     def start_hotspot(self, ssid: str, password: str) -> bool:
         """Start WiFi hotspot using hostapd + dnsmasq (bypasses NM's broken AP mode)"""
         logger.info(f"Starting hotspot: {ssid}")
@@ -410,7 +452,13 @@ address=/#/{self.HOTSPOT_IP}
 
         # Stop hotspot if running
         self.stop_hotspot()
-        time.sleep(2)
+        time.sleep(3)  # Initial wait for NM to reclaim interface
+
+        # Wait for target SSID to appear in scan results
+        # (NM needs time to switch wlan0 from AP→client and rescan)
+        ssid_found = self._wait_for_ssid_in_scan(ssid, timeout=25)
+        if not ssid_found:
+            logger.warning(f"SSID '{ssid}' not in scan results — attempting connect anyway")
 
         # Delete any existing connection with same name
         self._run_nmcli(["connection", "delete", ssid])
