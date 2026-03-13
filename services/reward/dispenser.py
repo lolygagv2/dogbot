@@ -13,7 +13,7 @@ from typing import Dict, Any, Optional
 from core.bus import get_bus, publish_reward_event
 from core.state import get_state
 from core.store import get_store
-from core.hardware.servo_controller import ServoController
+from core.hardware.servo_controller import get_servo_controller
 from config.config_loader import get_config
 
 
@@ -54,7 +54,7 @@ class DispenserService:
     def initialize(self) -> bool:
         """Initialize servo controller"""
         try:
-            self.servo = ServoController()
+            self.servo = get_servo_controller()
 
             if self.servo.is_initialized():
                 self.servo_initialized = True

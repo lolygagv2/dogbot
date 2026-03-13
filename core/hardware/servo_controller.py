@@ -334,6 +334,26 @@ class ServoController:
             except Exception as e:
                 print(f"Servo cleanup error: {e}")
 
+# Singleton accessor
+import threading
+_servo_instance = None
+_servo_lock = threading.Lock()
+
+def get_servo_controller() -> ServoController:
+    """Get the shared ServoController singleton.
+
+    Both PanTiltService and DispenserService MUST use this
+    instead of creating their own ServoController() instances.
+    Multiple instances cause PCA9685 reset conflicts that kill servo channels.
+    """
+    global _servo_instance
+    if _servo_instance is None:
+        with _servo_lock:
+            if _servo_instance is None:
+                _servo_instance = ServoController()
+    return _servo_instance
+
+
 # Test function for individual module testing
 def test_servos():
     """Simple test function for servo controller"""

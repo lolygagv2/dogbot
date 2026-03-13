@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, Tuple
 
 from core.bus import get_bus, publish_motion_event
 from core.state import get_state, SystemMode
-from core.hardware.servo_controller import ServoController
+from core.hardware.servo_controller import get_servo_controller
 
 
 class PanTiltService:
@@ -108,7 +108,7 @@ class PanTiltService:
     def initialize(self) -> bool:
         """Initialize servo controller"""
         try:
-            self.servo = ServoController()
+            self.servo = get_servo_controller()
 
             if self.servo.is_initialized():
                 self.servo_initialized = True
