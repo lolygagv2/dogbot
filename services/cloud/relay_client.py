@@ -762,19 +762,34 @@ class RelayClient:
                 self.logger.warning("Audio message missing data")
                 return
 
-            self.logger.debug(f"Playing PTT audio from cloud ({audio_format})")
+            import base64
+            raw_size = len(base64.b64decode(audio_data))
+            self.logger.info(f"PTT_PLAY: received {raw_size} bytes ({audio_format}) from app")
+
             result = ptt_service.play_audio_base64(audio_data, audio_format)
 
-            # Send response
+            # Send ack immediately (playback is async/queued)
             await self._send({
                 'event': 'audio_played',
                 'device_id': self.config.device_id,
                 'success': result.get('success'),
-                'error': result.get('error')
+                'error': result.get('error'),
+                'queue_depth': result.get('queue_depth', 1)
             })
+            self.logger.info(f"PTT_ACK: sent audio_played (success={result.get('success')})")
 
         except Exception as e:
             self.logger.error(f"Audio message error: {e}")
+            # Always send ack even on error
+            try:
+                await self._send({
+                    'event': 'audio_played',
+                    'device_id': self.config.device_id,
+                    'success': False,
+                    'error': str(e)
+                })
+            except Exception:
+                pass
 
     async def _handle_audio_request(self, data: dict):
         """Handle audio_request - record from mic and send back (listen feature)

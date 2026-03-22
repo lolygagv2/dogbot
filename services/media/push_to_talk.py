@@ -56,6 +56,7 @@ class PushToTalkService:
     - Play audio received from app (AAC, MP3, WAV, Opus)
     - Record audio from USB microphone
     - Compress and encode for transmission
+    - Queues incoming audio so nothing is dropped
     """
 
     def __init__(self):
@@ -63,6 +64,14 @@ class PushToTalkService:
         self._lock = threading.Lock()
         self._recording = False
         self._playing = False
+
+        # Audio playback queue — second message queues behind first
+        self._play_queue: list = []
+        self._queue_lock = threading.Lock()
+        self._queue_worker_running = False
+
+        # Callback for playback-done notification (set by relay client)
+        self._on_play_done: Optional[callable] = None
 
         # Ensure temp directory exists
         TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -108,7 +117,9 @@ class PushToTalkService:
         """
         Play audio received from app via USBAudio service (pygame).
         Routes through USBAudio to avoid device conflicts with aplay.
-        Returns immediately - playback happens in background thread.
+        Returns immediately - playback happens in background via queue.
+
+        If already playing, the audio is queued (not dropped).
 
         Args:
             audio_data: Raw audio bytes
@@ -117,89 +128,129 @@ class PushToTalkService:
         Returns:
             Dict with success status
         """
-        if self._playing:
-            return {"success": False, "error": "Already playing audio"}
-
         try:
             ext = format.lower()
             if ext not in ('aac', 'mp3', 'wav', 'opus', 'm4a'):
                 ext = 'aac'
 
+            duration_est_ms = int(len(audio_data) / 16 * 1000 / 1000)  # rough estimate
+            self.logger.info(f"PTT_PLAY: received {duration_est_ms}ms ({len(audio_data)} bytes), format={ext}")
+
+            # Queue the audio for playback
+            with self._queue_lock:
+                self._play_queue.append((audio_data, ext))
+                queue_depth = len(self._play_queue)
+
+            if queue_depth > 1:
+                self.logger.info(f"PTT_PLAY: queued (position {queue_depth})")
+
+            # Start queue worker if not already running
+            self._ensure_queue_worker()
+
+            return {
+                "success": True,
+                "message": "Audio playback queued" if queue_depth > 1 else "Audio playback started",
+                "size_bytes": len(audio_data),
+                "format": format,
+                "queue_depth": queue_depth
+            }
+
+        except Exception as e:
+            self.logger.error(f"PTT play error: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _ensure_queue_worker(self):
+        """Start the queue worker thread if not already running"""
+        with self._queue_lock:
+            if self._queue_worker_running:
+                return
+            self._queue_worker_running = True
+
+        threading.Thread(target=self._queue_worker_loop, daemon=True, name="PTTQueue").start()
+
+    def _queue_worker_loop(self):
+        """Process queued audio items sequentially"""
+        try:
+            while True:
+                # Get next item
+                with self._queue_lock:
+                    if not self._play_queue:
+                        self._queue_worker_running = False
+                        return
+                    audio_data, ext = self._play_queue.pop(0)
+
+                # Play this item (blocking until done)
+                self._playing = True
+                self._play_single(audio_data, ext)
+                self._playing = False
+        except Exception as e:
+            self.logger.error(f"PTT queue worker error: {e}")
+        finally:
+            self._playing = False
+            with self._queue_lock:
+                self._queue_worker_running = False
+
+    def _play_single(self, audio_data: bytes, ext: str):
+        """Play a single audio clip (blocks until playback complete)"""
+        try:
             input_file = INCOMING_AUDIO.with_suffix(f'.{ext}')
 
             # Write incoming audio to temp file
             with open(input_file, 'wb') as f:
                 f.write(audio_data)
 
-            self.logger.info(f"PTT received: {len(audio_data)} bytes, format={format}")
-
-            # Start playback in background thread - return immediately
-            self._playing = True
-
-            # API Contract v1.3: Mute WebRTC audio track during PTT playback (echo suppression)
-            # Estimate playback duration - use 5 seconds as default buffer
+            # Mute WebRTC audio track during PTT playback (echo suppression)
             try:
                 from services.streaming.audio_track import mute_audio_for_ptt
-                # Mute for estimated duration + 1 second buffer
-                estimated_duration = len(audio_data) / 16000  # Rough estimate based on typical bitrate
+                estimated_duration = len(audio_data) / 16000
                 mute_audio_for_ptt(max(estimated_duration, 3.0) + 1.0)
             except Exception as e:
                 self.logger.debug(f"Could not mute audio track for PTT: {e}")
 
-            def _play_background():
+            # Determine playable file path
+            if ext in ('wav', 'mp3'):
+                play_file = input_file
+            else:
+                # Convert AAC/opus/m4a to WAV for pygame compatibility
+                play_file = INCOMING_AUDIO.with_suffix('.wav')
+                result = subprocess.run(
+                    ['ffmpeg', '-y', '-i', str(input_file),
+                     '-ar', '44100', '-ac', '2', str(play_file)],
+                    capture_output=True, timeout=10
+                )
+                if result.returncode != 0:
+                    self.logger.error(f"Audio conversion failed: {result.stderr.decode()}")
+                    return
+
+            # Route through USBAudio service to avoid device conflicts
+            from services.media.usb_audio import get_usb_audio_service
+            usb_audio = get_usb_audio_service()
+
+            if usb_audio.is_busy():
+                usb_audio.stop()
+                self.logger.info("PTT: Stopped current audio for priority playback")
+
+            result = usb_audio.play_file(str(play_file))
+
+            if result.get('success'):
+                # Wait for playback to finish before processing next in queue
+                while usb_audio.is_busy():
+                    time.sleep(0.1)
+                self.logger.info("PTT_DONE: playback complete")
+            else:
+                self.logger.error(f"PTT playback failed: {result.get('error')}")
+
+            # Notify done callback (for sending ack after actual playback)
+            if self._on_play_done:
                 try:
-                    # Determine playable file path
-                    # pygame handles WAV and MP3 natively; convert others
-                    if ext in ('wav', 'mp3'):
-                        play_file = input_file
-                    else:
-                        # Convert AAC/opus/m4a to WAV for pygame compatibility
-                        play_file = INCOMING_AUDIO.with_suffix('.wav')
-                        result = subprocess.run(
-                            ['ffmpeg', '-y', '-i', str(input_file),
-                             '-ar', '44100', '-ac', '2', str(play_file)],
-                            capture_output=True, timeout=10
-                        )
-                        if result.returncode != 0:
-                            self.logger.error(f"Audio conversion failed: {result.stderr.decode()}")
-                            return
+                    self._on_play_done()
+                except Exception:
+                    pass
 
-                    # Route through USBAudio service to avoid device conflicts
-                    # PTT has priority - stop any current playback first
-                    from services.media.usb_audio import get_usb_audio_service
-                    usb_audio = get_usb_audio_service()
-
-                    if usb_audio.is_busy():
-                        usb_audio.stop()
-                        self.logger.info("PTT: Stopped current audio for priority playback")
-
-                    result = usb_audio.play_file(str(play_file))
-
-                    if result.get('success'):
-                        self.logger.info("PTT background playback started")
-                    else:
-                        self.logger.error(f"PTT playback failed: {result.get('error')}")
-
-                except subprocess.TimeoutExpired:
-                    self.logger.error("Audio conversion timed out")
-                except Exception as e:
-                    self.logger.error(f"PTT background playback error: {e}")
-                finally:
-                    self._playing = False
-
-            threading.Thread(target=_play_background, daemon=True, name="PTTPlayback").start()
-
-            return {
-                "success": True,
-                "message": "Audio playback started",
-                "size_bytes": len(audio_data),
-                "format": format
-            }
-
+        except subprocess.TimeoutExpired:
+            self.logger.error("Audio conversion timed out")
         except Exception as e:
-            self._playing = False
-            self.logger.error(f"PTT play error: {e}")
-            return {"success": False, "error": str(e)}
+            self.logger.error(f"PTT playback error: {e}")
 
     def play_audio_base64(self, base64_data: str, format: str = "aac") -> Dict[str, Any]:
         """
