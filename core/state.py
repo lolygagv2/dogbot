@@ -31,6 +31,8 @@ class SystemMode(Enum):
         deprecated_map = {
             "detection": cls.COACH,
             "vigilant": cls.SILENT_GUARDIAN,
+            "guardian": cls.SILENT_GUARDIAN,  # app alias
+            "training": cls.COACH,  # app alias
         }
         if value in deprecated_map:
             import logging

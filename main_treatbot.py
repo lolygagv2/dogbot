@@ -750,8 +750,8 @@ class TreatBotMain:
                     # Get current mode for telemetry — use contract names
                     # so the app recognizes them (guardian, training, etc.)
                     _battery_mode_map = {
-                        "idle": "idle", "silent_guardian": "guardian",
-                        "coach": "training", "mission": "mission",
+                        "idle": "idle", "silent_guardian": "silent_guardian",
+                        "coach": "coach", "mission": "mission",
                         "manual": "manual", "photography": "manual",
                         "emergency": "manual"
                     }
@@ -1569,8 +1569,8 @@ class TreatBotMain:
                 import time
                 # Use contract mode names (must match telemetry mode_map)
                 _mode_map = {
-                    "idle": "idle", "silent_guardian": "guardian",
-                    "coach": "training", "mission": "mission",
+                    "idle": "idle", "silent_guardian": "silent_guardian",
+                    "coach": "coach", "mission": "mission",
                     "manual": "manual", "photography": "manual",
                     "emergency": "manual"
                 }

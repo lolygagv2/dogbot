@@ -296,8 +296,8 @@ class RelayClient:
         # Mode mapping (same as api/ws.py)
         mode_map = {
             "idle": "idle",
-            "silent_guardian": "guardian",
-            "coach": "training",
+            "silent_guardian": "silent_guardian",
+            "coach": "coach",
             "mission": "mission",
             "manual": "manual",
             "photography": "manual",
@@ -846,6 +846,49 @@ class RelayClient:
 
         # Request fresh dog profiles when user connects
         await self.request_profiles()
+
+        # Send current mode + status after a brief delay so the app's
+        # listeners are ready (race condition: mode_changed can arrive
+        # before the app finishes setting up its WebSocket handlers)
+        await asyncio.sleep(1.0)
+
+        _mode_map = {
+            "idle": "idle", "silent_guardian": "silent_guardian",
+            "coach": "coach", "mission": "mission",
+            "manual": "manual", "photography": "manual",
+            "emergency": "manual"
+        }
+        current_mode = self.state.get_mode().value
+        contract_mode = _mode_map.get(current_mode, current_mode)
+
+        # Send mode_changed event
+        await self._send({
+            'event': 'mode_changed',
+            'device_id': self.config.device_id,
+            'mode': contract_mode,
+            'previous_mode': contract_mode,
+            'locked': False,
+            'reason': 'user_connected sync',
+            'timestamp': time.time()
+        })
+
+        # Also send battery telemetry with mode (second chance for app to pick up mode)
+        try:
+            from services.power.battery_monitor import get_battery_monitor
+            batt = get_battery_monitor()
+            await self._send({
+                'event': 'battery',
+                'device_id': self.config.device_id,
+                'level': batt.percentage,
+                'voltage': batt.voltage,
+                'charging': batt.charging_detected,
+                'mode': contract_mode,
+                'temperature': self.state.hardware.temperature,
+            })
+        except Exception as e:
+            self.logger.debug(f"Could not send battery sync on connect: {e}")
+
+        self.logger.info(f"Sent mode sync to app on connect: {contract_mode}")
 
     async def _handle_user_disconnected(self, data: dict):
         """Handle user_disconnected event from relay

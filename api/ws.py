@@ -295,11 +295,13 @@ class TreatBotWebSocketServer:
                     from orchestrators.mode_fsm import get_mode_fsm
                     from core.state import SystemMode
                     mode_fsm = get_mode_fsm()
-                    # Map contract modes to internal modes
+                    # Map contract modes to internal modes (accept both aliases)
                     mode_map = {
                         "idle": SystemMode.IDLE,
-                        "guardian": SystemMode.SILENT_GUARDIAN,
-                        "training": SystemMode.COACH,
+                        "silent_guardian": SystemMode.SILENT_GUARDIAN,
+                        "guardian": SystemMode.SILENT_GUARDIAN,  # alias
+                        "coach": SystemMode.COACH,
+                        "training": SystemMode.COACH,  # alias
                         "mission": SystemMode.MISSION,
                         "manual": SystemMode.MANUAL,
                         "docking": SystemMode.IDLE  # No docking mode yet
@@ -961,8 +963,8 @@ class TreatBotWebSocketServer:
             # Map internal mode to contract mode
             mode_map = {
                 "idle": "idle",
-                "silent_guardian": "guardian",
-                "coach": "training",
+                "silent_guardian": "silent_guardian",
+                "coach": "coach",
                 "mission": "mission",
                 "manual": "manual",
                 "photography": "manual",
