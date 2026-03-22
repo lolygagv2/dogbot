@@ -423,15 +423,28 @@ class SafetyMonitor:
             self.logger.debug(f"Could not play hot audio: {e}")
 
     def _handle_critical_alert(self, alert_type: str, data: Dict[str, Any]) -> None:
-        """Handle critical safety alerts"""
+        """Handle critical safety alerts.
+
+        NOTE: Does NOT force mode changes. Silent Guardian and other modes
+        are protected from automatic reversion. Only emergency (11.0V) triggers
+        forced shutdown via set_emergency(). Critical alerts are logged and
+        published for the app to display.
+        """
         if alert_type.startswith('battery_'):
-            # Stop all missions, reduce performance
-            self.state.set_mode(SystemMode.IDLE, "Battery critical")
+            # Log critical battery but do NOT force mode change.
+            # SG mode is lightweight (bark detection only) and safe at low battery.
+            # Emergency shutdown at 11.0V handles true danger via set_emergency().
+            current_mode = self.state.get_mode()
+            self.logger.warning(
+                f"Battery critical alert in mode={current_mode.value} | "
+                f"voltage={data.get('voltage', '?')}V | "
+                f"NOT forcing mode change (emergency at {self.thresholds.battery_emergency}V)"
+            )
 
         elif alert_type.startswith('temp_'):
-            # Just log warning - don't force mode change during testing
-            # Pi 5 handles up to 85°C before throttling
-            self.logger.warning(f"Temperature critical but continuing (testing mode)")
+            # Just log warning - don't force mode change
+            # Pi 5 handles up to 85C before throttling
+            self.logger.warning(f"Temperature critical but continuing (Pi thermal management active)")
 
         elif alert_type.startswith('cpu_') or alert_type.startswith('memory_'):
             # Reduce AI inference rate, clear caches

@@ -1685,8 +1685,10 @@ class TreatBotMain:
                     if app_connected:
                         self.logger.info("Xbox controller disconnected - app is connected, keeping MANUAL mode")
                     else:
-                        self.logger.info("Xbox controller disconnected - no app connected, returning to IDLE")
-                        self.state.set_mode(SystemMode.IDLE, "Controller disconnected, no app")
+                        # Return to pre-manual mode (e.g. SG), not always IDLE
+                        pre_mode = self.mode_fsm.pre_manual_mode if self.mode_fsm else SystemMode.IDLE
+                        self.logger.info(f"Xbox controller disconnected - no app, returning to {pre_mode.value}")
+                        self.state.set_mode(pre_mode, f"Controller disconnected, restoring {pre_mode.value}")
 
             elif event.subtype == 'controller_connected':
                 # Controller connected - switch to Manual mode

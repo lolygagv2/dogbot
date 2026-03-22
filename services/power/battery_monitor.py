@@ -226,10 +226,13 @@ class BatteryMonitorService:
                 # Send battery telemetry every 30 seconds for app display
                 now = time.time()
                 if now - last_telemetry >= 30:
+                    # Include current mode as authoritative state for app sync
+                    current_mode = self.state.get_mode().value if self.state else 'idle'
                     publish_system_event('battery_status', {
                         'percentage': self.percentage,
                         'voltage': self.voltage,
-                        'charging': self.charging_detected
+                        'charging': self.charging_detected,
+                        'mode': current_mode,
                     }, 'battery_monitor')
                     last_telemetry = now
 

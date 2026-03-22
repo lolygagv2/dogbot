@@ -234,12 +234,15 @@ class ModeFSM:
 
         # Validate transition
         if new_mode not in self.valid_transitions.get(current_mode, []):
-            self.logger.warning(f"Invalid transition: {current_mode.value} -> {new_mode.value}")
+            self.logger.warning(f"MODE_CHANGE INVALID (FSM): {current_mode.value} -> {new_mode.value} | trigger={trigger.value}")
             return
 
         # CRITICAL: Set manual input time BEFORE mode change to avoid race condition
         if new_mode == SystemMode.MANUAL:
             self.last_manual_input_time = time.time()
+            # Save current mode for return
+            if current_mode != SystemMode.MANUAL:
+                self.pre_manual_mode = current_mode
 
         # Execute transition
         success = self.state.set_mode(new_mode, f"FSM: {trigger.value}")
@@ -320,6 +323,11 @@ class ModeFSM:
         # CRITICAL: Set manual input time BEFORE mode change to avoid race condition
         if mode == SystemMode.MANUAL:
             self.last_manual_input_time = time.time()
+            # Save current mode so we can return to it when MANUAL exits
+            current = self.state.get_mode()
+            if current != SystemMode.MANUAL:
+                self.pre_manual_mode = current
+                self.logger.info(f"Saving pre-manual mode: {current.value}")
 
         # Force transition to override mode
         success = self.state.set_mode(mode, f"User override for {duration}s")
@@ -359,6 +367,11 @@ class ModeFSM:
         # The FSM thread could check timeout between set_mode() and time update
         if mode == SystemMode.MANUAL:
             self.last_manual_input_time = time.time()
+            # Save current mode so we can return to it when MANUAL exits
+            current = self.state.get_mode()
+            if current != SystemMode.MANUAL:
+                self.pre_manual_mode = current
+                self.logger.info(f"Saving pre-manual mode: {current.value}")
 
         success = self.state.set_mode(mode, f"Force: {reason}")
 

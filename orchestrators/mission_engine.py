@@ -188,6 +188,9 @@ class MissionEngine:
         self.running = False
         self._lock = threading.Lock()
 
+        # Track mode before mission started so we can restore it on completion
+        self.pre_mission_mode: SystemMode = SystemMode.IDLE
+
         # Coach-style dog tracking (same as coaching_engine.py)
         self.dogs_in_view: Dict[str, Dict[str, Any]] = {}
 
@@ -331,6 +334,10 @@ class MissionEngine:
                 dog_id=dog_id
             )
 
+            # Save current mode to restore after mission completes
+            self.pre_mission_mode = self.state.get_mode()
+            self.logger.info(f"[MISSION] Saving pre-mission mode: {self.pre_mission_mode.value}")
+
             # Set mode to MISSION and lock it to prevent interruption
             self.state.set_mode(SystemMode.MISSION, reason=f'Mission: {mission_name}')
             self.state.lock_mode(f'Mission active: {mission_name}')
@@ -397,11 +404,14 @@ class MissionEngine:
                 }
             )
 
-            # Unlock mode FIRST, then set to idle
+            # Unlock mode FIRST, then restore pre-mission mode (not always IDLE)
             self.state.unlock_mode()
-            self.state.set_mode(SystemMode.IDLE, reason=f'Mission stopped: {reason}')
+            restore_mode = self.pre_mission_mode
+            if restore_mode == SystemMode.MISSION:
+                restore_mode = SystemMode.IDLE  # Prevent re-entering MISSION
+            self.state.set_mode(restore_mode, reason=f'Mission stopped: {reason} (restoring {restore_mode.value})')
 
-            self.logger.info(f"Stopped mission: {session.mission.name} ({reason}), mode unlocked")
+            self.logger.info(f"Stopped mission: {session.mission.name} ({reason}), restored to {restore_mode.value}")
             publish_system_event("mission.stopped", {
                 "mission_name": session.mission.name,
                 "mission_id": session.mission_id,
@@ -1287,11 +1297,14 @@ class MissionEngine:
             }
         )
 
-        # Unlock mode and set to idle
+        # Unlock mode and restore pre-mission mode (not always IDLE)
         self.state.unlock_mode()
-        self.state.set_mode(SystemMode.IDLE, reason=f'Mission {reason}')
+        restore_mode = self.pre_mission_mode
+        if restore_mode == SystemMode.MISSION:
+            restore_mode = SystemMode.IDLE  # Prevent re-entering MISSION
+        self.state.set_mode(restore_mode, reason=f'Mission {reason} (restoring {restore_mode.value})')
 
-        self.logger.info(f"Mission completed: {session.mission.name} ({reason}), mode unlocked")
+        self.logger.info(f"Mission completed: {session.mission.name} ({reason}), restored to {restore_mode.value}")
         publish_system_event("mission.completed", {
             "mission_name": session.mission.name,
             "mission_id": session.mission_id,

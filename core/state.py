@@ -221,7 +221,8 @@ class StateManager:
 
             # Check mode lock (unless force override for emergencies)
             if self._mode_locked and not force:
-                self.logger.warning(f"[MODE] BLOCKED '{new_mode.value}' - mode locked: {self._mode_lock_reason}")
+                self.logger.warning(f"MODE_CHANGE BLOCKED: {self.mode.value} -> {new_mode.value} | "
+                                    f"trigger={reason} | mode locked: {self._mode_lock_reason}")
                 # Publish rejection event for app notification
                 from core.bus import publish_system_event
                 publish_system_event('mode_change_rejected', {
@@ -231,16 +232,47 @@ class StateManager:
                 })
                 return False
 
+            # SG PROTECTION: Silent Guardian is "sticky" — only explicit user action
+            # or safety emergency can take it out of SG. This prevents bark events,
+            # battery events, mission completions, timeouts, WebRTC disconnects, etc.
+            # from silently reverting SG to IDLE.
+            if self.mode == SystemMode.SILENT_GUARDIAN and not force:
+                # Always allow transitions TO emergency/shutdown (safety)
+                # Always allow transitions TO manual/mission/coach (explicit user actions)
+                if new_mode == SystemMode.IDLE:
+                    # Only explicit user action can revert SG to IDLE
+                    _user_keywords = ['user', 'app', 'api', 'override', 'dropdown', 'user_action']
+                    is_user_action = any(kw in reason.lower() for kw in _user_keywords)
+                    if not is_user_action:
+                        self.logger.warning(
+                            f"MODE_CHANGE BLOCKED: silent_guardian -> idle | "
+                            f"trigger={reason} | SG is protected — only explicit user action can revert to idle"
+                        )
+                        return False
+
             # Validate mode transition
             if not self._is_valid_transition(self.mode, new_mode):
-                self.logger.warning(f"Invalid mode transition: {self.mode.value} -> {new_mode.value}")
+                self.logger.warning(f"MODE_CHANGE INVALID: {self.mode.value} -> {new_mode.value} | trigger={reason}")
                 return False
 
             self.previous_mode = self.mode
             self.mode = new_mode
             self.mode_changed_time = time.time()
 
-            self.logger.info(f"Mode changed: {self.previous_mode.value} -> {new_mode.value} ({reason})")
+            # Comprehensive mode change logging with trigger and source
+            import traceback
+            stack = traceback.extract_stack()
+            # Find the caller outside of state.py
+            caller_str = "unknown"
+            for frame in reversed(stack[:-1]):
+                if 'state.py' not in frame.filename:
+                    caller_str = f"{frame.filename}:{frame.lineno}"
+                    break
+            self.logger.info(
+                f"MODE_CHANGE: {self.previous_mode.value} -> {new_mode.value} | "
+                f"trigger={reason} | source={caller_str} | "
+                f"timestamp={self.mode_changed_time:.3f}"
+            )
 
             # Notify listeners
             self._notify_listeners('mode_change', {
@@ -332,12 +364,16 @@ class StateManager:
             self.logger.error(f"EMERGENCY: {reason}")
 
     def clear_emergency(self) -> None:
-        """Clear emergency state"""
+        """Clear emergency state - restore previous mode (not always IDLE)"""
         with self._lock:
             self.emergency_stop = False
             self.emergency_reason = ""
-            self.set_mode(SystemMode.IDLE, "Emergency cleared")
-            self.logger.info("Emergency cleared")
+            # Restore mode from before emergency, not always IDLE
+            restore_mode = self.previous_mode if self.previous_mode not in (
+                SystemMode.EMERGENCY, SystemMode.SHUTDOWN
+            ) else SystemMode.IDLE
+            self.set_mode(restore_mode, f"Emergency cleared, restoring {restore_mode.value}")
+            self.logger.info(f"Emergency cleared, restored to {restore_mode.value}")
 
     def is_emergency(self) -> bool:
         """Check if in emergency state"""
