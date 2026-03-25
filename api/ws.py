@@ -949,6 +949,14 @@ class TreatBotWebSocketServer:
         except Exception as e:
             self.logger.error(f"Telemetry loop error: {e}")
 
+    def _get_treats_remaining(self) -> int:
+        """Get actual treats remaining from dispenser service"""
+        try:
+            from services.reward.dispenser import get_dispenser_service
+            return get_dispenser_service().treats_remaining
+        except Exception:
+            return 0
+
     async def _broadcast_contract_status(self):
         """Broadcast status in API contract format"""
         from datetime import datetime
@@ -957,7 +965,7 @@ class TreatBotWebSocketServer:
 
             # Get battery percentage
             battery_voltage = state.get("hardware", {}).get("battery_voltage", 0)
-            battery_pct = (battery_voltage / 16.8 * 100) if battery_voltage else 0
+            battery_pct = ((battery_voltage - 12.0) / 4.8 * 100) if battery_voltage else 0
             battery_pct = min(100, max(0, battery_pct))
 
             # Map internal mode to contract mode
@@ -980,7 +988,7 @@ class TreatBotWebSocketServer:
                     "temperature": state.get("hardware", {}).get("cpu_temp", 0),
                     "mode": contract_mode,
                     "is_charging": state.get("hardware", {}).get("is_charging", False),
-                    "treats_remaining": 15  # TODO: Get from dispenser
+                    "treats_remaining": self._get_treats_remaining()
                 },
                 "timestamp": datetime.utcnow().isoformat() + "Z"
             })

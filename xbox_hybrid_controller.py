@@ -247,11 +247,11 @@ class XboxHybridControllerFixed:
     # These defaults are fallbacks if config loading fails
     DEADZONE = 0.20  # 20% deadzone - larger for reliable stop detection
     TRIGGER_DEADZONE = 0.1
-    MAX_SPEED = 50   # Capped speed percentage
+    MAX_SPEED = 80   # Match treatbot1.yaml config
     TURN_SPEED_FACTOR = 0.8  # Reduced for smoother turns
 
     # RPM Control - Convert speed percentages to RPM targets
-    MAX_RPM = 90     # Conservative RPM target for smoother control
+    MAX_RPM = 110    # Match treatbot1.yaml config
     USE_PID_CONTROL = True  # ENABLED - closed-loop control with encoder feedback
 
     # Motor calibration - per-motor power adjustment for hardware imbalance

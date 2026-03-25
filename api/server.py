@@ -9,7 +9,7 @@ import os
 import asyncio
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, HTMLResponse
@@ -1080,6 +1080,42 @@ async def get_treat_status():
     dispenser = get_dispenser_service()
     return dispenser.get_status()
 
+@app.post("/treat/unjam")
+async def treat_unjam():
+    """Run anti-jam wiggle sequence on treat dispenser"""
+    import asyncio
+    try:
+        dispenser = get_dispenser_service()
+        success = await asyncio.to_thread(dispenser.anti_jam_wiggle)
+        return {"success": success, "message": "Unjam sequence complete" if success else "Unjam failed"}
+    except Exception as e:
+        logger.error(f"Treat unjam error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/treat/counter/set")
+async def treat_counter_set(request: Request):
+    """Set treat counter (when user refills treats)"""
+    try:
+        body = await request.json()
+        count = int(body.get('count', 0))
+        dispenser = get_dispenser_service()
+        dispenser.set_treat_count(count)
+        return {"success": True, "treats_loaded": dispenser.treats_loaded, "treats_remaining": dispenser.treats_remaining}
+    except Exception as e:
+        logger.error(f"Treat counter set error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/treat/counter/reset")
+async def treat_counter_reset():
+    """Reset treat counter to 0"""
+    try:
+        dispenser = get_dispenser_service()
+        dispenser.reset_treat_counter()
+        return {"success": True, "treats_loaded": 0, "treats_remaining": 0}
+    except Exception as e:
+        logger.error(f"Treat counter reset error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post("/treat/force_reward")
 async def force_reward(dog_id: str = "api_test"):
     """Force a reward for testing"""
@@ -1096,6 +1132,43 @@ async def force_reward(dog_id: str = "api_test"):
     except Exception as e:
         logger.error(f"Force reward error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Dog profile endpoints
+@app.post("/dogs/profiles")
+async def set_dog_profiles(request: Request):
+    """Push dog profiles to robot. Persists to SQLite and updates ArUco detection immediately.
+    Body: {"profiles": [{"name": "Bezik", "aruco_id": 832, "color": "black"}, ...]}
+    """
+    try:
+        body = await request.json()
+        profiles = body.get('profiles', body.get('dogs', []))
+        if not profiles:
+            return JSONResponse(status_code=400, content={"error": "No profiles provided"})
+
+        from core.dog_profile_manager import get_dog_profile_manager
+        pm = get_dog_profile_manager()
+        pm.update_profiles_from_cloud(profiles)
+
+        return {
+            "success": True,
+            "profiles_loaded": len(profiles),
+            "aruco_map": pm.get_aruco_mapping()
+        }
+    except Exception as e:
+        logger.error(f"Set dog profiles error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/dogs/profiles")
+async def get_dog_profiles():
+    """Get currently loaded dog profiles"""
+    try:
+        from core.dog_profile_manager import get_dog_profile_manager
+        pm = get_dog_profile_manager()
+        return pm.get_status()
+    except Exception as e:
+        logger.error(f"Get dog profiles error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 # Sequence endpoints
 @app.post("/sequence/execute")
@@ -1207,6 +1280,34 @@ async def reset_bark_statistics():
     bark_detector.reset_statistics()
     return {"success": True, "message": "Statistics reset"}
 
+
+@app.post("/sg/config")
+async def update_sg_config(config: Dict[str, Any]):
+    """Update Silent Guardian config at runtime (no restart needed).
+
+    Accepts: bark_threshold (dB), confidence_minimum, bark_count_threshold
+    """
+    from modes.silent_guardian import get_silent_guardian_mode
+    sg = get_silent_guardian_mode()
+    updated = {}
+
+    if 'bark_threshold' in config:
+        new_db = float(config['bark_threshold'])
+        sg.config.setdefault('bark_detection', {})['loudness_threshold_db'] = new_db
+        updated['loudness_threshold_db'] = new_db
+
+    if 'confidence_minimum' in config:
+        new_conf = float(config['confidence_minimum'])
+        sg.config.setdefault('bark_detection', {})['confidence_minimum'] = new_conf
+        updated['confidence_minimum'] = new_conf
+
+    if 'bark_count_threshold' in config:
+        new_count = int(config['bark_count_threshold'])
+        sg.config.setdefault('bark_detection', {})['threshold'] = new_count
+        updated['bark_count_threshold'] = new_count
+
+    return {"success": True, "updated": updated}
+
 # Battery monitoring endpoints
 @app.get("/battery/status")
 async def get_battery_status():
@@ -1287,6 +1388,32 @@ async def get_event_stats():
     """Get event statistics"""
     store = get_store()
     return store.get_database_stats()
+
+
+# Dog event endpoints
+@app.get("/events/dog")
+async def get_dog_events(limit: int = 100, event_type: Optional[str] = None,
+                         dog_id: Optional[str] = None, since: Optional[str] = None):
+    """Query dog behavior events with optional filters"""
+    store = get_store()
+    events = store.get_dog_events(limit=limit, event_type=event_type,
+                                  dog_id=dog_id, since=since)
+    return {"events": events, "count": len(events)}
+
+
+@app.get("/events/dog/summary")
+async def get_dog_events_summary(hours: int = 24):
+    """Get summary of dog events over a time period"""
+    store = get_store()
+    return store.get_dog_events_summary(hours=hours)
+
+
+@app.get("/events/dog/latest")
+async def get_dog_events_latest(dog_id: Optional[str] = None):
+    """Get latest event of each type"""
+    store = get_store()
+    return store.get_dog_events_latest(dog_id=dog_id)
+
 
 # Dog endpoints
 @app.get("/dogs")
@@ -2033,6 +2160,30 @@ async def set_manual_camera_control(request: ManualCameraRequest):
 # Video Recording endpoints
 # ============================================================================
 
+@app.post("/video/record/highres")
+async def record_high_res_video(duration: int = 15, resolution: str = "1080p",
+                                 background_tasks: BackgroundTasks = None):
+    """Record high-resolution video (pauses AI detection during recording)"""
+    from services.media.video_recorder import get_video_recorder
+    recorder = get_video_recorder()
+
+    if recorder.recording:
+        raise HTTPException(status_code=400, detail="Already recording")
+
+    # Run in background since it blocks for duration seconds
+    def _record():
+        return recorder.record_high_res(duration=duration, resolution=resolution)
+
+    if background_tasks:
+        background_tasks.add_task(_record)
+        return {"success": True, "message": f"Recording {resolution} for {duration}s (AI paused)"}
+
+    result = recorder.record_high_res(duration=duration, resolution=resolution)
+    if result.get("success"):
+        return result
+    raise HTTPException(status_code=500, detail=result.get("error", "Recording failed"))
+
+
 @app.post("/video/record/start")
 async def start_video_recording(filename_prefix: str = "recording"):
     """Start video recording with AI overlays"""
@@ -2098,6 +2249,21 @@ async def list_video_recordings():
     except Exception as e:
         logger.error(f"Video list error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/video/download/{filename}")
+async def download_video(filename: str):
+    """Download a recorded video file"""
+    from fastapi.responses import FileResponse
+    import re
+    # Sanitize filename — only allow safe characters
+    if not re.match(r'^[\w\-\.]+\.mp4$', filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    filepath = f"/home/morgan/dogbot/recordings/{filename}"
+    import os
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(filepath, media_type="video/mp4", filename=filename)
 
 
 @app.post("/video/record/toggle")
@@ -3378,6 +3544,35 @@ async def websocket_control(websocket: WebSocket):
                     "message": "Treat dispensed"
                 })
 
+            elif command == "treat_unjam":
+                # Anti-jam wiggle sequence
+                dispenser = get_dispenser_service()
+                success = dispenser.anti_jam_wiggle()
+                await websocket.send_json({
+                    "type": "unjam_ack",
+                    "success": success,
+                    "message": "Unjam complete" if success else "Unjam failed"
+                })
+
+            elif command == "treat_counter_set":
+                dispenser = get_dispenser_service()
+                count = int(data.get("count", 0))
+                dispenser.set_treat_count(count)
+                await websocket.send_json({
+                    "type": "treat_counter_ack",
+                    "treats_loaded": dispenser.treats_loaded,
+                    "treats_remaining": dispenser.treats_remaining
+                })
+
+            elif command == "treat_counter_reset":
+                dispenser = get_dispenser_service()
+                dispenser.reset_treat_counter()
+                await websocket.send_json({
+                    "type": "treat_counter_ack",
+                    "treats_loaded": 0,
+                    "treats_remaining": 0
+                })
+
             elif command == "ping":
                 # Keep-alive ping
                 await websocket.send_json({
@@ -3473,6 +3668,22 @@ async def websocket_local(websocket: WebSocket):
                 dispenser = get_dispenser_service()
                 dispenser.dispense_treat(reason="local_mode")
                 await websocket.send_json({"type": "treat_ack", "message": "Treat dispensed"})
+
+            elif command == "treat_unjam":
+                dispenser = get_dispenser_service()
+                success = dispenser.anti_jam_wiggle()
+                await websocket.send_json({"type": "unjam_ack", "success": success, "message": "Unjam complete" if success else "Unjam failed"})
+
+            elif command == "treat_counter_set":
+                dispenser = get_dispenser_service()
+                count = int(data.get("count", 0))
+                dispenser.set_treat_count(count)
+                await websocket.send_json({"type": "treat_counter_ack", "treats_loaded": dispenser.treats_loaded, "treats_remaining": dispenser.treats_remaining})
+
+            elif command == "treat_counter_reset":
+                dispenser = get_dispenser_service()
+                dispenser.reset_treat_counter()
+                await websocket.send_json({"type": "treat_counter_ack", "treats_loaded": 0, "treats_remaining": 0})
 
             elif command == "set_mode":
                 mode_name = data.get("mode", "").lower()
@@ -5128,14 +5339,14 @@ async def telemetry_contract():
     dispenser = get_dispenser_service()
 
     # Get battery info
-    battery_pct = state.hardware.battery_voltage / 16.8 * 100 if state.hardware.battery_voltage else 0
+    battery_pct = (state.hardware.battery_voltage - 12.0) / 4.8 * 100 if state.hardware.battery_voltage else 0
     battery_pct = min(100, max(0, battery_pct))
 
-    # Get treat count
-    treats_remaining = 15  # Default
+    # Get treat count from dispenser
+    treats_remaining = 0
     if dispenser:
         status = dispenser.get_status()
-        treats_remaining = status.get("treats_remaining", 15)
+        treats_remaining = status.get("treats_remaining", 0)
 
     return {
         "battery": round(battery_pct, 1),

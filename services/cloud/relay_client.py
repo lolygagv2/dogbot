@@ -314,7 +314,7 @@ class RelayClient:
 
                     # Calculate battery percentage
                     battery_voltage = hardware.get("battery_voltage", 0)
-                    battery_pct = (battery_voltage / 16.8 * 100) if battery_voltage else 0
+                    battery_pct = ((battery_voltage - 12.0) / 4.8 * 100) if battery_voltage else 0
                     battery_pct = min(100, max(0, battery_pct))
 
                     # Get mode
@@ -335,7 +335,7 @@ class RelayClient:
                             'temperature': hardware.get("cpu_temp", 0),
                             'mode': contract_mode,
                             'is_charging': hardware.get("is_charging", False),
-                            'treats_remaining': 15,  # TODO: Get from dispenser
+                            'treats_remaining': self._get_treats_remaining(),
                             'connection_type': connection_type,  # "LAN", "WAN", or null
                         },
                         'timestamp': datetime.utcnow().isoformat() + "Z"
@@ -1088,6 +1088,14 @@ class RelayClient:
             self._thread.join(timeout=5.0)
 
         self.logger.info("Relay client stopped")
+
+    def _get_treats_remaining(self) -> int:
+        """Get actual treats remaining from dispenser service"""
+        try:
+            from services.reward.dispenser import get_dispenser_service
+            return get_dispenser_service().treats_remaining
+        except Exception:
+            return 0
 
     def send_event(self, event_type: str, data: dict):
         """Send event to relay (thread-safe)
