@@ -22,11 +22,12 @@ dog_identification:
 
 # Bark detection thresholds
 # TUNED 2026-01-18: Raised thresholds to reduce false positives on non-bark sounds
+# TUNED 2026-03-22: +5% stricter dB threshold (-20 → -21)
 bark_detection:
   threshold: 3                    # Barks to trigger intervention (raised to reduce false triggers)
   window_seconds: 60              # Time window for counting barks (longer window more forgiving)
   confidence_minimum: 0.45        # Raised - only confident bark detections (was 0.10)
-  loudness_threshold_db: -20      # Raised - only louder sounds accepted (was -35)
+  loudness_threshold_db: -21      # 5% stricter than -20 (was -35 → -20 → -21)
 
 # Intervention sequences by escalation level
 intervention_sequences:
@@ -103,7 +104,7 @@ reward_sequence:
 # Escalation tracking
 escalation:
   window_minutes: 60              # Events within this window increase level
-  reset_after_quiet_minutes: 60   # Level resets after this much quiet time
+  reset_after_quiet_minutes: 15   # 15 min continuous quiet → reset to level 0 with ceremony
   max_level: 3                    # Cap at level 3
 
 # Session limits
@@ -141,7 +142,7 @@ audio_paths:
   come: "talks/dogs_come.mp3"
   sit: "talks/sit.mp3"
   treat: "talks/treat.mp3"
-  good_dog: "talks/good.mp3"
+  good_dog: "talks/good_dog.mp3"
   elsa: "talks/elsa.mp3"
   bezik: "talks/bezik.mp3"
   calming_music: "songs/mozart_piano.mp3"

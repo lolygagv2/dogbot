@@ -277,7 +277,8 @@ class SequenceEngine:
         if command == 'stop':
             self.pantilt.set_tracking_enabled(False)
         elif command == 'center':
-            self.pantilt.center_camera()
+            self.logger.debug("SERVO_CENTER: sequence 'center' command ignored — center only on explicit user command")
+            pass
         elif command == 'track':
             self.pantilt.set_tracking_enabled(True)
 

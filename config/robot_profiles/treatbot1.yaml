@@ -10,11 +10,11 @@ camera:
 
 # Dispenser settings (dispenser.py)
 dispenser:
-  dispense_duration: 0.12
+  dispense_duration: 0.17
 
 # Servo settings (servo_controller.py)
 servo:
-  slow_pulse: 1590        # rotate_winch 'slow' direction pulse value
+  slow_pulse: 1544  # rotate_winch 'slow' direction pulse value vs 1590 for 'fast'
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:

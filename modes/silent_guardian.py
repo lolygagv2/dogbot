@@ -16,7 +16,7 @@ Anti-Farming Features:
 Resets:
 - If dog barks during intervention → restart that level's sequence
 - After 90s with no success → give up, enter 2-min cooldown
-- After 60 minutes of quiet → reset escalation level and progressive requirements
+- After 15 min continuous quiet → reset escalation to 0 (LED pulse + app event)
 - Mode switch → full reset (new session)
 """
 
@@ -132,6 +132,12 @@ class SilentGuardianMode:
         self.consecutive_interventions = 0  # For progressive quiet requirements
         self.treat_eligible = True  # Whether treats can be given
 
+        # Quiet reset tracking (continuous quiet → reset escalation)
+        escalation_config = self.config.get('escalation', {})
+        self.quiet_reset_minutes = escalation_config.get('reset_after_quiet_minutes', 15)
+        self.quiet_since = 0.0  # Timestamp of when continuous quiet started (0 = not quiet)
+        self.total_escalation_resets = 0  # Resets this session
+
         logger.info("Silent Guardian mode initialized (3-level escalation + anti-farming)")
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
@@ -156,7 +162,7 @@ class SilentGuardianMode:
             },
             'escalation': {
                 'window_minutes': 60,
-                'reset_after_quiet_minutes': 60,
+                'reset_after_quiet_minutes': 15,
                 'max_level': 3
             },
             'intervention_sequences': {
@@ -210,24 +216,58 @@ class SilentGuardianMode:
         return min(level, max_level)
 
     def _check_escalation_reset(self):
-        """Reset escalation level after extended quiet period"""
+        """
+        Reset escalation after 15 minutes of continuous quiet.
+        Continuous quiet = no bark events AND not in an active intervention.
+        """
+        # Nothing to reset if no interventions ever happened
         if self.last_intervention_time == 0.0:
             return
 
+        # Don't check during active intervention
+        if self.fsm_state != SGState.LISTENING:
+            self.quiet_since = 0.0
+            return
+
         now = time.time()
-        escalation_config = self.config.get('escalation', {})
-        reset_minutes = escalation_config.get('reset_after_quiet_minutes', 60)
 
-        elapsed_minutes = (now - self.last_intervention_time) / 60
+        # Start quiet timer if not already running
+        if self.quiet_since == 0.0:
+            self.quiet_since = now
+            return
 
-        if elapsed_minutes >= reset_minutes:
-            if self.escalation_events:
-                logger.info(f"Escalation reset after {elapsed_minutes:.1f} minutes of quiet")
-                self.escalation_events = []
-            # Also reset consecutive interventions when escalation resets
-            if self.consecutive_interventions > 0:
-                self.consecutive_interventions = 0
-                logger.info("Progressive quiet requirements reset")
+        quiet_minutes = (now - self.quiet_since) / 60.0
+
+        if quiet_minutes >= self.quiet_reset_minutes and self.escalation_events:
+            # === ESCALATION RESET CEREMONY ===
+            old_level = self.current_escalation_level
+            self.escalation_events = []
+            self.current_escalation_level = 1
+            self.consecutive_interventions = 0
+            self.total_escalation_resets += 1
+            self.quiet_since = 0.0  # Reset timer
+
+            logger.info(
+                f"SG_RESET: Dogs quiet for {quiet_minutes:.0f}min, "
+                f"resetting escalation (was level {old_level} → 0, "
+                f"reset #{self.total_escalation_resets} this session)"
+            )
+
+            # Green LED pulse (good dog signal)
+            if self.led:
+                self.led.set_pattern('success', duration=3.0)
+
+            # Send event to app
+            publish_system_event('sg_reset', {
+                'reason': 'quiet_period',
+                'quiet_minutes': round(quiet_minutes, 1),
+                'previous_level': old_level,
+                'resets_this_session': self.total_escalation_resets,
+                'session_id': self.session_id,
+            }, 'silent_guardian')
+
+            # Log progressive quiet reset
+            logger.info("Progressive quiet requirements reset")
 
     def _check_treat_eligibility(self):
         """
@@ -291,6 +331,8 @@ class SilentGuardianMode:
             self.treats_dispensed = 0
             self.interventions_triggered = 0
             self.escalation_events = []
+            self.quiet_since = 0.0
+            self.total_escalation_resets = 0
 
             # Reset anti-farming state
             self.last_treat_time = 0.0
@@ -392,7 +434,7 @@ class SilentGuardianMode:
         confidence_minimum = bark_config.get('confidence_minimum', 0.35)
 
         if loudness_db < loudness_threshold:
-            logger.debug(f"Ignoring quiet bark: {loudness_db:.1f}dB < {loudness_threshold}dB")
+            logger.info(f"BARK_BELOW_THRESHOLD: {loudness_db:.1f}dB < {loudness_threshold}dB — ignoring")
             return
 
         # Emotion classifier enriches bark events for logging/analytics only.
@@ -403,6 +445,7 @@ class SilentGuardianMode:
 
         logger.info(f"Bark detected: {dog_name or dog_id or 'unknown'} (conf: {confidence:.2f}, loud: {loudness_db:.1f}dB)")
         self.last_bark_time = time.time()
+        self.quiet_since = 0.0  # Any bark resets the continuous quiet timer
 
         # Handle based on current state
         if self.fsm_state == SGState.LISTENING:
@@ -512,6 +555,8 @@ class SilentGuardianMode:
         self.treats_dispensed = 0
         self.interventions_triggered = 0
         self.escalation_events = []
+        self.quiet_since = 0.0
+        self.total_escalation_resets = 0
 
         logger.info(f"New session: {self.session_id}")
 
@@ -745,7 +790,26 @@ class SilentGuardianMode:
             logger.error(f"Failed to stop calming music: {e}")
 
     def _give_reward(self):
-        """Give reward for successful quiet"""
+        """Give reward for successful quiet — with bark-state safety check"""
+        # SAFETY: Verify dog is STILL quiet at the moment of dispensing.
+        # Prevents race condition where bark arrives between loop tick and reward.
+        if self.bark_during_intervention:
+            logger.info("SG_REWARD_CANCELLED: Dog barking at reward time — not dispensing")
+            self.bark_during_intervention = False
+            self.quiet_start_time = time.time()
+            self.quiet_periods_achieved = 0
+            return
+
+        # Double-check: reject reward if bark detected in last 5 seconds
+        if self.last_bark_time > 0 and (time.time() - self.last_bark_time) < 5.0:
+            logger.info(
+                f"SG_REWARD_CANCELLED: Last bark {time.time() - self.last_bark_time:.1f}s ago "
+                f"(< 5s safety window) — restarting quiet timer"
+            )
+            self.quiet_start_time = time.time()
+            self.quiet_periods_achieved = 0
+            return
+
         # Stop calming music if playing
         self._stop_calming_music()
 
@@ -756,7 +820,7 @@ class SilentGuardianMode:
         max_treats = self.config.get('session_limits', {}).get('max_treats', 11)
         if self.treats_dispensed >= max_treats:
             logger.info(f"Treat limit reached ({self.treats_dispensed}/{max_treats})")
-            self._play_audio('good.mp3')
+            self._play_audio('good_dog.mp3')
             return
 
         # Check treat eligibility (anti-farming)
@@ -770,7 +834,7 @@ class SilentGuardianMode:
             logger.info(f"Verbal praise only - treat cooldown ({cooldown_remaining/60:.1f} min remaining)")
             if self.led:
                 self.led.set_pattern('success', duration=2.0)
-            self._play_audio('good.mp3')
+            self._play_audio('good_dog.mp3')
 
             # Log intervention without treat
             self.store.log_sg_intervention(
@@ -788,9 +852,9 @@ class SilentGuardianMode:
         if self.led:
             self.led.celebration_sequence(3.0)
 
-        # Play good.mp3
-        logger.info("Playing good.mp3")
-        self._play_audio('good.mp3')
+        # Play good_dog.mp3 for reward
+        logger.info("SG_REWARD: Playing good_dog.mp3")
+        self._play_audio('good_dog.mp3')
         time.sleep(1.0)
 
         # Dispense treat
@@ -873,7 +937,23 @@ class SilentGuardianMode:
             if filename.startswith('/'):
                 full_path = filename
             else:
-                full_path = os.path.join(base, filename)
+                # Check for dog-specific custom recording first
+                # e.g. VOICEMP3/talks/dog_1769842864722/quiet.mp3
+                full_path = None
+                if self.intervention_dog_id:
+                    custom_path = os.path.join(base, self.intervention_dog_id, filename)
+                    if os.path.exists(custom_path):
+                        full_path = custom_path
+                        logger.debug(f"Using custom voice: {custom_path}")
+
+                # Fall back to default
+                if full_path is None:
+                    default_path = os.path.join(base, 'default', filename)
+                    if os.path.exists(default_path):
+                        full_path = default_path
+                    else:
+                        # Legacy: try directly in talks dir
+                        full_path = os.path.join(base, filename)
 
             if os.path.exists(full_path):
                 if self.audio:
@@ -885,8 +965,8 @@ class SilentGuardianMode:
                     except Exception:
                         pass  # Don't let suppression failure block audio
 
+                    logger.info(f"SG_AUDIO: Playing {filename} from {full_path}")
                     self.audio.play_file(full_path)
-                    logger.debug(f"Playing: {full_path}")
                     if wait:
                         # Wait for audio to finish (max 5s timeout)
                         self.audio.wait_for_completion(timeout=5.0)
@@ -897,26 +977,36 @@ class SilentGuardianMode:
                             bark_svc.suppress_detection(2.0)
                         except Exception:
                             pass
+                    logger.info(f"SG_AUDIO: Playback complete: {filename}")
+                else:
+                    logger.error(f"SG_AUDIO: No audio service available for {filename}")
             else:
-                logger.warning(f"Audio file not found: {full_path}")
+                logger.error(f"SG_AUDIO: File not found: {full_path}")
 
         except Exception as e:
-            logger.error(f"Audio error: {e}")
+            logger.error(f"SG_AUDIO: Playback error for {filename}: {e}")
 
     def get_status(self) -> Dict[str, Any]:
-        """Get current status"""
+        """Get current status including escalation telemetry for app display"""
+        now = time.time()
+
         # Calculate time until treat eligibility
         if self.last_treat_time > 0:
-            time_since_treat = time.time() - self.last_treat_time
+            time_since_treat = now - self.last_treat_time
             treat_cooldown_remaining = max(0, self.treat_eligibility_cooldown - time_since_treat)
         else:
             treat_cooldown_remaining = 0
+
+        # Quiet timer: seconds since last bark/intervention (for app display)
+        quiet_timer = now - self.quiet_since if self.quiet_since > 0 else 0.0
+
+        max_level = self.config.get('escalation', {}).get('max_level', 3)
 
         return {
             'running': self.running,
             'fsm_state': self.fsm_state.value if self.fsm_state else None,
             'session_id': self.session_id,
-            'session_duration': time.time() - self.session_start_time if self.session_start_time else 0,
+            'session_duration': now - self.session_start_time if self.session_start_time else 0,
             'interventions_triggered': self.interventions_triggered,
             'treats_dispensed': self.treats_dispensed,
             'treats_remaining': max(0, self.config.get('session_limits', {}).get('max_treats', 11) - self.treats_dispensed),
@@ -929,7 +1019,13 @@ class SilentGuardianMode:
             # Anti-farming tracking
             'treat_eligible': self.treat_eligible,
             'treat_cooldown_remaining': treat_cooldown_remaining,
-            'consecutive_interventions': self.consecutive_interventions
+            'consecutive_interventions': self.consecutive_interventions,
+            # Escalation telemetry for app display
+            # e.g. "Guardian Level 2/3 — Quiet for 7 min"
+            'sg_level': self.current_escalation_level,
+            'sg_max': max_level,
+            'quiet_timer': round(quiet_timer),
+            'total_escalation_resets': self.total_escalation_resets,
         }
 
     def cleanup(self):

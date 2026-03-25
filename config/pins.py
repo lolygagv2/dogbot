@@ -31,9 +31,13 @@ class TreatBotPins:
     I2C_SDA = 2      # GPIO2 (Pin 3) - I2C Data
     I2C_SCL = 3      # GPIO3 (Pin 5) - I2C Clock
     
+    # Treat Dispenser
+    VIBRATOR = 16     # GPIO16 (Pin 36) - Coin vibrator motor via MOSFET (HIGH=vibrate)
+
     # Available pins for future expansion
-    FREE_PINS = [14, 15, 16, 20, 21, 26]  # GPIO numbers available for sensors, etc.
+    FREE_PINS = [14, 15, 20, 21, 26]  # GPIO numbers available for sensors, etc.
     # Note: GPIO5, GPIO6 now used for Motor 2 encoders
+    # Note: GPIO16 now used for vibrator motor
 
     @classmethod
     def validate_pins(cls):
@@ -42,7 +46,8 @@ class TreatBotPins:
             cls.MOTOR_IN1, cls.MOTOR_IN2, cls.MOTOR_IN3, cls.MOTOR_IN4,
             cls.MOTOR_ENA, cls.MOTOR_ENB,
             cls.ENCODER_A1, cls.ENCODER_B1, cls.ENCODER_A2, cls.ENCODER_B2,
-            cls.NEOPIXEL, cls.BLUE_LED, cls.I2C_SDA, cls.I2C_SCL
+            cls.NEOPIXEL, cls.BLUE_LED, cls.I2C_SDA, cls.I2C_SCL,
+            cls.VIBRATOR
         ]
         
         if len(used_pins) != len(set(used_pins)):

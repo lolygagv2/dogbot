@@ -108,19 +108,64 @@ class DogProfileManager:
         # Color extraction settings
         self._sample_size = 50  # pixels to sample for color
 
-        # Default profiles (can be overridden by cloud)
-        self._load_default_profiles()
+        # Load persisted profiles from SQLite
+        self._load_persisted_profiles()
 
         self.logger.info("DogProfileManager initialized")
 
-    def _load_default_profiles(self):
-        """Load default dog profiles from config
+    def _load_persisted_profiles(self):
+        """Load dog profiles from SQLite persistence (survives restarts)"""
+        try:
+            from core.store import get_store
+            import json
+            store = get_store()
+            stored = store.get_setting('dog_profiles')
+            if stored:
+                profiles_data = json.loads(stored)
+                for data in profiles_data:
+                    try:
+                        color_str = data.get('color', 'unknown').lower()
+                        try:
+                            color = DogColor(color_str)
+                        except ValueError:
+                            color = DogColor.UNKNOWN
+                        profile = DogProfile(
+                            name=data.get('name', 'Unknown'),
+                            aruco_id=data.get('aruco_id'),
+                            color=color,
+                            household_id=data.get('household_id', ''),
+                            photo_url=data.get('photo_url')
+                        )
+                        self.add_profile(profile)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to load persisted profile: {e}")
+                self.logger.info(f"Loaded {len(self._profiles)} dog profiles from SQLite: {dict(self._aruco_map)}")
+                # Sync to dog tracker on startup
+                self._sync_to_dog_tracker()
+            else:
+                self.logger.info("No persisted dog profiles found — waiting for app to send profiles")
+        except Exception as e:
+            self.logger.warning(f"Could not load persisted profiles: {e}")
 
-        Dog profiles come from the app via sync_from_cloud() or add_profile().
-        Only create profiles when a real dog with ArUco marker is registered.
-        """
-        # No hardcoded profiles - profiles come from app/cloud
-        self.logger.info("DogProfileManager ready (no hardcoded profiles)")
+    def _persist_profiles(self):
+        """Save current profiles to SQLite"""
+        try:
+            from core.store import get_store
+            import json
+            store = get_store()
+            profiles_data = []
+            for profile in self._profiles.values():
+                profiles_data.append({
+                    'name': profile.name,
+                    'aruco_id': profile.aruco_id,
+                    'color': profile.color.value,
+                    'household_id': profile.household_id,
+                    'photo_url': profile.photo_url,
+                })
+            store.set_setting('dog_profiles', json.dumps(profiles_data))
+            self.logger.debug(f"Persisted {len(profiles_data)} dog profiles to SQLite")
+        except Exception as e:
+            self.logger.warning(f"Could not persist profiles: {e}")
 
     def add_profile(self, profile: DogProfile):
         """Add or update a dog profile"""
@@ -181,7 +226,13 @@ class DogProfileManager:
                 except Exception as e:
                     self.logger.warning(f"Failed to parse profile: {e}")
 
-            self.logger.info(f"Updated {len(self._profiles)} profiles from cloud")
+            self.logger.info(f"Updated {len(self._profiles)} profiles from cloud: {dict(self._aruco_map)}")
+
+            # Persist to SQLite so profiles survive restarts
+            self._persist_profiles()
+
+            # Notify DogTracker so ArUco detection picks up new IDs immediately
+            self._sync_to_dog_tracker()
 
     def identify_dog(
         self,
@@ -371,6 +422,22 @@ class DogProfileManager:
         """Get ARUCO ID to name mapping (for dog tracker)"""
         with self._lock:
             return dict(self._aruco_map)
+
+    def _sync_to_dog_tracker(self):
+        """Publish event so AI controller updates its DogTracker (no restart needed)"""
+        try:
+            from core.bus import publish_system_event
+            dog_list = [
+                {'marker_id': aruco_id, 'id': name}
+                for aruco_id, name in self._aruco_map.items()
+            ]
+            publish_system_event('profiles_updated', {
+                'dogs': dog_list,
+                'aruco_map': dict(self._aruco_map),
+            }, 'dog_profile_manager')
+            self.logger.info(f"Published profiles_updated: {len(dog_list)} dogs, aruco={self._aruco_map}")
+        except Exception as e:
+            self.logger.warning(f"Could not publish profiles_updated: {e}")
 
     def get_status(self) -> Dict[str, Any]:
         """Get manager status"""

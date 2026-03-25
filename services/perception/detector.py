@@ -66,10 +66,17 @@ class DetectorService:
         self.camera = None
         self.camera_initialized = False
 
-        # ArUco detector
+        # ArUco detector with tuned parameters to reduce false positives
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
         self.aruco_params = cv2.aruco.DetectorParameters()
+        self.aruco_params.adaptiveThreshConstant = 10
+        self.aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self.aruco_params.minMarkerPerimeterRate = 0.05  # Reject tiny markers (noise)
+        self.aruco_params.maxMarkerPerimeterRate = 4.0
+        self.aruco_params.errorCorrectionRate = 0.4  # Stricter error correction (default 0.6)
         self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+        self._aruco_consecutive = {}  # {marker_id: consecutive_frame_count} for validation
+        self._aruco_min_frames = 3  # Require 3 consecutive frames before accepting
 
         # Detection state
         self.running = False
@@ -78,6 +85,7 @@ class DetectorService:
 
         # Camera pause state (for MANUAL mode)
         self._camera_paused = False
+        self._ai_paused = False
         self._last_frame = None  # Store last frame for snapshots
         self._last_frame_time = 0
         self._frame_lock = threading.Lock()
@@ -425,6 +433,33 @@ class DetectorService:
         """Get current camera resolution"""
         return self._current_resolution
 
+    def pause_ai(self):
+        """Pause AI processing (keep camera running for frame capture)"""
+        self._ai_paused = True
+        self.logger.info("AI detection paused")
+
+    def resume_ai(self):
+        """Resume AI processing"""
+        self._ai_paused = False
+        self.logger.info("AI detection resumed")
+
+    def set_resolution(self, resolution: tuple):
+        """Change camera resolution at runtime"""
+        if self.camera is None or not self.camera_initialized:
+            self.logger.warning("Cannot set resolution - camera not initialized")
+            return
+        try:
+            self.camera.stop()
+            config = self.camera.create_preview_configuration(
+                main={"size": resolution, "format": "RGB888"}
+            )
+            self.camera.configure(config)
+            self.camera.start()
+            self._current_resolution = resolution
+            self.logger.info(f"Camera resolution changed to {resolution}")
+        except Exception as e:
+            self.logger.error(f"Failed to set resolution: {e}")
+
     def get_last_frame(self) -> Optional[np.ndarray]:
         """Get last captured frame for snapshots (thread-safe)"""
         with self._frame_lock:
@@ -451,26 +486,43 @@ class DetectorService:
         return float('inf')
 
     def _detect_aruco_markers(self, frame) -> List[Tuple[int, float, float]]:
-        """Detect ArUco markers in frame and return (marker_id, cx, cy) tuples"""
+        """Detect ArUco markers in frame with quality filtering.
+        Requires markers to appear in consecutive frames to reduce false positives."""
         markers = []
+        seen_this_frame = set()
         try:
-            # Convert to grayscale for ArUco detection
             gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-
-            # Detect markers
             corners, ids, rejected = self.aruco_detector.detectMarkers(gray)
 
             if ids is not None:
                 for i, marker_id in enumerate(ids.flatten()):
-                    # Get center of marker
+                    mid = int(marker_id)
                     corner = corners[i][0]
+
+                    # Minimum marker size filter (perimeter in pixels)
+                    perimeter = cv2.arcLength(corner.reshape(-1, 1, 2), True)
+                    if perimeter < 60:  # Reject tiny detections (noise)
+                        self.logger.debug(f"ARUCO_REJECTED: ID {mid} too small (perimeter={perimeter:.0f}px)")
+                        continue
+
+                    seen_this_frame.add(mid)
                     cx = float(np.mean(corner[:, 0]))
                     cy = float(np.mean(corner[:, 1]))
-                    markers.append((int(marker_id), cx, cy))
 
-                    # Log known dog markers
+                    # Consecutive frame validation
+                    self._aruco_consecutive[mid] = self._aruco_consecutive.get(mid, 0) + 1
+                    if self._aruco_consecutive[mid] < self._aruco_min_frames:
+                        continue  # Not confirmed yet
+
+                    markers.append((mid, cx, cy))
+
                     if marker_id in DOG_MARKERS:
-                        self.logger.info(f"ArUco marker {marker_id} ({DOG_MARKERS[marker_id]}) at ({cx:.0f}, {cy:.0f})")
+                        self.logger.info(f"ArUco marker {mid} ({DOG_MARKERS[mid]}) at ({cx:.0f}, {cy:.0f})")
+
+            # Reset counters for markers NOT seen this frame
+            for mid in list(self._aruco_consecutive.keys()):
+                if mid not in seen_this_frame:
+                    del self._aruco_consecutive[mid]
 
         except Exception as e:
             self.logger.error(f"ArUco detection error: {e}")
@@ -592,7 +644,7 @@ class DetectorService:
                 dog_assignments = {}
                 aruco_markers = []
 
-                if run_full_ai or lightweight_ai_mode:
+                if (run_full_ai or lightweight_ai_mode) and not self._ai_paused:
                     # Detect ArUco markers for dog identification
                     aruco_markers = self._detect_aruco_markers(frame)
 

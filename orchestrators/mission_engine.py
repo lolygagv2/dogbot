@@ -190,17 +190,17 @@ class MissionEngine:
 
         # Track mode before mission started so we can restore it on completion
         self.pre_mission_mode: SystemMode = SystemMode.IDLE
+        self.last_failure_reason: str = ''
+
+        # Daily reward limit — disabled by default, configurable via app/API
+        self.daily_limit_enabled: bool = False
+        self.daily_limit: int = 100  # Default when enabled
 
         # Coach-style dog tracking (same as coaching_engine.py)
         self.dogs_in_view: Dict[str, Dict[str, Any]] = {}
 
-        # Dog name mapping
-        self.dog_names = {
-            'aruco_315': 'Elsa',
-            'aruco_832': 'Bezik',
-            315: 'Elsa',
-            832: 'Bezik'
-        }
+        # Dog name mapping — loaded dynamically from profiles
+        self.dog_names = self._load_dog_names()
 
         # Bark tracking for speak missions
         self.bark_count = 0
@@ -271,6 +271,20 @@ class MissionEngine:
         self.bus.subscribe("reward", self._on_reward_event)
         self.bus.subscribe("system", self._on_system_event)
 
+    def _load_dog_names(self) -> dict:
+        """Load dog name mappings dynamically from dog profile manager"""
+        names = {}
+        try:
+            from core.dog_profile_manager import get_dog_profile_manager
+            pm = get_dog_profile_manager()
+            for profile in pm.get_all_profiles():
+                if profile.aruco_id is not None:
+                    names[profile.aruco_id] = profile.name
+                    names[f'aruco_{profile.aruco_id}'] = profile.name
+        except Exception as e:
+            self.logger.warning(f"Could not load dog profiles for mission: {e}")
+        return names
+
     def start_mission(self, mission_name: str, dog_id: str = None) -> bool:
         """
         Start a training mission
@@ -313,11 +327,13 @@ class MissionEngine:
         with self._lock:
             if self.active_session:
                 self.logger.error("Mission already active")
+                self.last_failure_reason = 'mission_already_active'
                 return False
 
             # Check daily limits
             if self._check_daily_limits(dog_id):
-                self.logger.warning("Daily reward limit reached")
+                self.logger.warning("[MISSION] REJECTED: Daily reward limit reached")
+                self.last_failure_reason = 'daily_reward_limit'
                 return False
 
             # Create database mission record
@@ -1339,16 +1355,21 @@ class MissionEngine:
                 self.logger.debug(f"Could not play mission complete audio: {e}")
 
     def _check_daily_limits(self, dog_id: str = None) -> bool:
-        """Check if daily reward limits are reached"""
-        # Get today's rewards from store
+        """Check if daily reward limits are reached. Returns True if limit hit."""
+        if not self.daily_limit_enabled:
+            return False
+
         rewards_today = len(self.store.get_reward_history(dog_id, days=1))
+        daily_limit = self.daily_limit
 
-        # Get daily limit from active mission config, or use system default
-        daily_limit = 30  # System default
+        # Per-mission config can override
         if self.active_session and self.active_session.mission:
-            daily_limit = self.active_session.mission.config.get('daily_limit', 30)
+            daily_limit = self.active_session.mission.config.get('daily_limit', daily_limit)
 
-        return rewards_today >= daily_limit
+        if rewards_today >= daily_limit:
+            self.logger.info(f"[MISSION] Daily limit check: {rewards_today}/{daily_limit} rewards today")
+            return True
+        return False
 
     # Event handlers
     def _on_vision_event(self, event):

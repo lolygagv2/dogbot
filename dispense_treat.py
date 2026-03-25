@@ -30,8 +30,8 @@ def dispense_treats(num_treats=1):
             print(f"  Treat {i+1}/{num_treats}")
 
             # Rotate carousel forward
-            carousel_servo.duty_cycle = pulse_to_duty(1700)
-            time.sleep(0.12)  # Slightly longer rotation for reliable dispensing
+            carousel_servo.duty_cycle = pulse_to_duty(1280)  #1700
+            time.sleep(0.2)  # 0.12Slightly longer rotation for reliable dispensing
             carousel_servo.duty_cycle = 0  # Stop
 
             # Pause between treats

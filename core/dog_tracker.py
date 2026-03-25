@@ -39,9 +39,10 @@ class DogTracker:
         self.valid_dog_ids = {dog['marker_id']: dog['id'] for dog in config.get('dogs', [])}
         self.dog_names = {v: k for k, v in self.valid_dog_ids.items()}  # Reverse mapping
 
-        # Rule 4: Default dog (Bezik 832)
-        self.default_dog_id = 832
-        self.default_dog_name = self.valid_dog_ids.get(832, "bezik")
+        # Rule 4: Default dog (first in config, or none)
+        first_dog = config.get('dogs', [{}])[0] if config.get('dogs') else {}
+        self.default_dog_id = first_dog.get('marker_id', None)
+        self.default_dog_name = first_dog.get('id', 'Dog')
 
         # Rule 6: Maximum dogs on screen
         self.max_dogs = config.get('max_dogs_on_screen', 2)
@@ -63,6 +64,10 @@ class DogTracker:
         self.frame_count = 0
         self.active_dogs = set()
 
+        # Unknown marker notification (rate-limited to avoid spam)
+        self._last_unknown_notify = {}  # {marker_id: timestamp}
+        self._unknown_notify_cooldown = 60.0  # seconds between notifications per marker
+
         # Profile manager for color-based identification
         self._profile_manager = None
         self._last_frame = None  # Cache for color extraction
@@ -76,6 +81,21 @@ class DogTracker:
         """Update the list of valid dog IDs (Rule 1 - user configurable)"""
         self.valid_dog_ids = {dog['marker_id']: dog['id'] for dog in dog_list}
         self.dog_names = {v: k for k, v in self.valid_dog_ids.items()}
+
+    def _notify_unknown_markers(self, unknown_markers: list, current_time: float):
+        """Publish event for unregistered ArUco markers so app can prompt to add profile"""
+        from core.bus import publish_vision_event
+        for marker_id, x, y in unknown_markers:
+            last = self._last_unknown_notify.get(marker_id, 0)
+            if current_time - last < self._unknown_notify_cooldown:
+                continue
+            self._last_unknown_notify[marker_id] = current_time
+            logger.info(f"UNKNOWN_DOG: ArUco marker {marker_id} detected but no profile exists")
+            publish_vision_event('unknown_dog_detected', {
+                'aruco_id': marker_id,
+                'position': [x, y],
+                'timestamp': current_time
+            }, 'dog_tracker')
 
     def set_frame(self, frame):
         """Set current frame for color extraction (call before process_frame)"""
@@ -100,8 +120,11 @@ class DogTracker:
         current_time = time.time()
         assignments = {}  # {detection_idx: dog_name}
 
-        # Rule 1: Filter out invalid ArUco IDs
+        # Rule 1: Filter out invalid ArUco IDs — notify app about unknown markers
         valid_markers = [(id, x, y) for id, x, y in aruco_markers if id in self.valid_dog_ids]
+        unknown_markers = [(id, x, y) for id, x, y in aruco_markers if id not in self.valid_dog_ids and id > 0]
+        if unknown_markers:
+            self._notify_unknown_markers(unknown_markers, current_time)
 
         # Clean up old persistence data
         self._cleanup_old_tracking(current_time)

@@ -543,6 +543,12 @@ class TreatBotMain:
                 self.logger.debug("Event forwarding to relay enabled")
                 self.logger.debug("Cloud command handler enabled")
 
+            # Start dog event logger (persistent behavior logging)
+            from services.logging.dog_event_logger import get_dog_event_logger
+            self.dog_event_logger = get_dog_event_logger()
+            self.dog_event_logger.start()
+            self.logger.info("Dog event logger started")
+
             self.logger.info("All subsystems started")
             return True
 
@@ -672,6 +678,14 @@ class TreatBotMain:
                         'dog_name': event.data.get('dog_name'),
                     }
                     should_throttle = True
+                elif event.subtype == 'unknown_dog_detected':
+                    # Unregistered ArUco marker — app should prompt to add profile
+                    event_type = 'unknown_dog_detected'
+                    event_data = {
+                        'aruco_id': event.data.get('aruco_id'),
+                        'position': event.data.get('position'),
+                    }
+                    should_throttle = False  # Always forward
 
             elif event.type == EventType.AUDIO:
                 if event.subtype == 'bark_detected':
@@ -1289,7 +1303,7 @@ class TreatBotMain:
                         existing_mission = pre_status.get('mission_name', '')
 
                         started = engine.start_mission(mission_name, dog_id=dog_id)
-                        self.logger.debug(f"Start mission '{mission_name}' -> {started} (was_active={was_already_active})")
+                        self.logger.info(f"Start mission '{mission_name}' -> {'OK' if started else 'FAILED'} (reason={engine.last_failure_reason})")
 
                         if self.relay_client and self.relay_client.connected:
                             status = engine.get_mission_status()
@@ -1302,13 +1316,28 @@ class TreatBotMain:
                                 'total_stages': status.get('total_stages', 0),
                                 'dog_id': dog_id,
                             }
-                            # Add failure_reason for app to handle properly
                             if not started:
+                                reason = engine.last_failure_reason or 'start_failed'
                                 if was_already_active:
-                                    response['failure_reason'] = 'mission_already_active'
+                                    reason = 'mission_already_active'
                                     response['existing_mission'] = existing_mission
-                                else:
-                                    response['failure_reason'] = 'start_failed'
+                                response['failure_reason'] = reason
+
+                                # Human-readable error messages
+                                error_messages = {
+                                    'daily_reward_limit': 'Daily treat limit reached. Reset limit in settings or try again tomorrow.',
+                                    'mission_already_active': f'Mission "{existing_mission}" is already running.',
+                                    'start_failed': f'Could not start mission "{mission_name}".',
+                                }
+                                response['message'] = error_messages.get(reason, f'Mission failed: {reason}')
+
+                                # Send dedicated error event so app can show alert
+                                self.relay_client.send_event('mission_error', {
+                                    'mission_id': mission_name,
+                                    'failure_reason': reason,
+                                    'message': response['message'],
+                                })
+
                             self.relay_client.send_event('mission_progress', response)
                     else:
                         self.logger.warning("start_mission: no mission name provided")
@@ -1541,6 +1570,120 @@ class TreatBotMain:
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('mission_status', status)
 
+                elif command == 'record_video':
+                    # High-res video recording
+                    duration = params.get('duration', 15)
+                    resolution = params.get('resolution', '1080p')
+                    from services.media.video_recorder import get_video_recorder
+                    recorder = get_video_recorder()
+
+                    def _do_record():
+                        result = recorder.record_high_res(duration=duration, resolution=resolution)
+                        if result.get('success') and result.get('filename'):
+                            # Upload to relay server so app can download remotely
+                            download_url = self._upload_video_to_relay(result['path'], result['filename'])
+                            if download_url:
+                                result['download_url'] = download_url
+                            else:
+                                # Fallback: LAN-only download
+                                robot_ip = self._get_lan_ip()
+                                result['download_url'] = f"http://{robot_ip}:8000/video/download/{result['filename']}"
+                                result['download_note'] = 'lan_only'
+                        self.logger.info(f"VIDEO_RECORD: Sending video_ready — success={result.get('success')}, file={result.get('filename')}, size={result.get('size_bytes', 0)}")
+                        if self.relay_client and self.relay_client.connected:
+                            self.relay_client.send_event('video_ready', result)
+                            self.logger.info("VIDEO_RECORD: video_ready event sent to relay")
+
+                    threading.Thread(target=_do_record, daemon=True, name="HighResRecord").start()
+                    self.logger.info(f"High-res recording started: {resolution} for {duration}s")
+
+                elif command == 'stop_recording':
+                    from services.media.video_recorder import get_video_recorder
+                    recorder = get_video_recorder()
+                    recorder.stop_high_res()
+                    # video_ready event will be sent by the recording thread when it finishes
+
+                elif command == 'reload_dogs':
+                    # Accept profiles directly from app OR request from relay
+                    profiles = params.get('profiles', params.get('dogs', []))
+                    if profiles:
+                        # App sent profiles directly — use them
+                        from core.dog_profile_manager import get_dog_profile_manager
+                        pm = get_dog_profile_manager()
+                        pm.update_profiles_from_cloud(profiles)
+                        self.logger.info(f"DOG_PROFILES: Loaded {len(profiles)} profiles from app: {[(p.get('name'), p.get('aruco_id')) for p in profiles]}")
+                    elif self.relay_client and self.relay_client.connected:
+                        # No profiles in command — request from relay
+                        import asyncio
+                        asyncio.run_coroutine_threadsafe(
+                            self.relay_client.request_profiles(),
+                            self.relay_client._loop
+                        )
+                        self.logger.info("Requested dog profile refresh from relay")
+                    else:
+                        self.logger.warning("reload_dogs: no profiles provided and relay not connected")
+
+                elif command == 'sg_config':
+                    # Runtime SG config update from app
+                    # e.g. {"command": "sg_config", "data": {"bark_threshold": -18}}
+                    from modes.silent_guardian import get_silent_guardian_mode
+                    sg = get_silent_guardian_mode()
+                    updated = {}
+                    if 'bark_threshold' in params:
+                        new_db = float(params['bark_threshold'])
+                        sg.config.setdefault('bark_detection', {})['loudness_threshold_db'] = new_db
+                        updated['loudness_threshold_db'] = new_db
+                    if 'confidence_minimum' in params:
+                        new_conf = float(params['confidence_minimum'])
+                        sg.config.setdefault('bark_detection', {})['confidence_minimum'] = new_conf
+                        updated['confidence_minimum'] = new_conf
+                    if 'bark_count_threshold' in params:
+                        new_count = int(params['bark_count_threshold'])
+                        sg.config.setdefault('bark_detection', {})['threshold'] = new_count
+                        updated['bark_count_threshold'] = new_count
+                    self.logger.info(f"SG config updated via app: {updated}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('sg_config_updated', updated)
+
+                elif command == 'mission_config':
+                    # e.g. {"command": "mission_config", "data": {"daily_limit_enabled": true, "daily_limit": 50}}
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    updated = {}
+                    if 'daily_limit_enabled' in params:
+                        engine.daily_limit_enabled = bool(params['daily_limit_enabled'])
+                        updated['daily_limit_enabled'] = engine.daily_limit_enabled
+                    if 'daily_limit' in params:
+                        engine.daily_limit = max(1, int(params['daily_limit']))
+                        updated['daily_limit'] = engine.daily_limit
+                    self.logger.info(f"Mission config updated: {updated}")
+                    if self.relay_client and self.relay_client.connected:
+                        self.relay_client.send_event('mission_config_updated', updated)
+
+                elif command == 'treat_unjam':
+                    # Anti-jam wiggle sequence
+                    from services.reward.dispenser import get_dispenser_service
+                    dispenser = get_dispenser_service()
+                    def _do_unjam():
+                        success = dispenser.anti_jam_wiggle()
+                        if self.relay_client and self.relay_client.connected:
+                            self.relay_client.send_event('unjam_result', {'success': success})
+                    threading.Thread(target=_do_unjam, daemon=True, name="TreatUnjam").start()
+                    self.logger.info("Treat unjam sequence started")
+
+                elif command == 'treat_counter_set':
+                    from services.reward.dispenser import get_dispenser_service
+                    dispenser = get_dispenser_service()
+                    count = int(params.get('count', 0))
+                    dispenser.set_treat_count(count)
+                    self.logger.info(f"Treat counter set to {count} via cloud")
+
+                elif command == 'treat_counter_reset':
+                    from services.reward.dispenser import get_dispenser_service
+                    dispenser = get_dispenser_service()
+                    dispenser.reset_treat_counter()
+                    self.logger.info("Treat counter reset via cloud")
+
                 else:
                     self.logger.warning(f"Unknown cloud command: {command}")
 
@@ -1550,6 +1693,49 @@ class TreatBotMain:
             self.logger.error(f"Cloud command failed - API not reachable")
         except Exception as e:
             self.logger.error(f"Cloud command error: {e}", exc_info=True)
+
+    def _get_lan_ip(self) -> str:
+        """Get the robot's LAN IP address"""
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+
+    def _upload_video_to_relay(self, filepath: str, filename: str) -> str:
+        """Upload video file to relay server, return download URL or None on failure"""
+        import httpx
+        relay_base = "https://api.wimzai.com"
+        device_id = self.relay_client.config.device_id if self.relay_client else "unknown"
+
+        try:
+            self.logger.info(f"VIDEO_UPLOAD: Uploading {filename} to relay...")
+            with open(filepath, 'rb') as f:
+                response = httpx.post(
+                    f"{relay_base}/api/media/upload",
+                    files={'file': (filename, f, 'video/mp4')},
+                    data={'device_id': device_id},
+                    timeout=120.0  # Large file upload timeout
+                )
+
+            if response.status_code == 200:
+                data = response.json()
+                download_url = data.get('download_url', '')
+                if not download_url.startswith('http'):
+                    download_url = f"{relay_base}{download_url}"
+                self.logger.info(f"VIDEO_UPLOAD: Success — {download_url}")
+                return download_url
+            else:
+                self.logger.error(f"VIDEO_UPLOAD: Relay returned {response.status_code}: {response.text[:200]}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"VIDEO_UPLOAD: Failed — {e}")
+            return None
 
     def _on_mode_change(self, data: Dict[str, Any]) -> None:
         """Handle mode changes to start/stop mode handlers"""
@@ -1696,6 +1882,29 @@ class TreatBotMain:
                 if current_mode != SystemMode.MANUAL:
                     self.logger.info("Xbox controller connected - switching to Manual mode")
                     self.mode_fsm.force_mode(SystemMode.MANUAL, "Xbox controller connected")
+
+            elif event.subtype == 'profiles_updated':
+                # Dog profiles updated — push to DogTracker + coaching/mission engines
+                dog_list = event.data.get('dogs', [])
+                if self.detector and hasattr(self.detector, 'ai') and self.detector.ai:
+                    if self.detector.ai.dog_tracker:
+                        self.detector.ai.dog_tracker.update_valid_ids(dog_list)
+                        self.logger.info(f"DogTracker updated with {len(dog_list)} dogs: {event.data.get('aruco_map', {})}")
+                # Also update coaching and mission engine name mappings
+                try:
+                    from orchestrators.coaching_engine import get_coaching_engine
+                    ce = get_coaching_engine()
+                    if ce:
+                        ce.reload_dog_names()
+                except Exception:
+                    pass
+                try:
+                    from orchestrators.mission_engine import get_mission_engine
+                    me = get_mission_engine()
+                    if me:
+                        me.dog_names = me._load_dog_names()
+                except Exception:
+                    pass
 
         except Exception as e:
             self.logger.error(f"System event handler error: {e}")
@@ -2029,8 +2238,7 @@ class TreatBotMain:
             if self.detector:
                 self.detector.stop_detection()
             if self.pantilt:
-                if self.pantilt:
-                    self.pantilt.center_camera()
+                pass  # Don't auto-center on emergency — preserve position
             if self.led:
                 self.led.set_pattern('error', 10.0)
 

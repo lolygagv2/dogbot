@@ -140,13 +140,8 @@ class CoachingEngine:
         self.watch_duration = self.config.get('watch_duration', 10.0)  # Per-trick override below
         # Note: Per-dog cooldown removed - only global session cooldown (3 min) applies now
 
-        # Dog identification mapping
-        self.dog_names = {
-            'aruco_315': 'Elsa',
-            'aruco_832': 'Bezik',
-            315: 'Elsa',
-            832: 'Bezik'
-        }
+        # Dog identification mapping — loaded dynamically from profiles
+        self.dog_names = self._load_dog_names()
 
         # Engine state
         self.running = False
@@ -188,6 +183,25 @@ class CoachingEngine:
         self.global_session_cooldown_sec = 30.0  # 30 seconds between automatic sessions (was 180s — too long)
 
         logger.info("Coaching Engine initialized")
+
+    def _load_dog_names(self) -> dict:
+        """Load dog name mappings dynamically from dog profile manager"""
+        names = {}
+        try:
+            from core.dog_profile_manager import get_dog_profile_manager
+            pm = get_dog_profile_manager()
+            for profile in pm.get_all_profiles():
+                if profile.aruco_id is not None:
+                    names[profile.aruco_id] = profile.name
+                    names[f'aruco_{profile.aruco_id}'] = profile.name
+        except Exception as e:
+            logger.warning(f"Could not load dog profiles for coaching: {e}")
+        logger.info(f"Coach dog names loaded: {names}")
+        return names
+
+    def reload_dog_names(self):
+        """Reload dog names from profiles (called when profiles update)"""
+        self.dog_names = self._load_dog_names()
 
     def start(self) -> bool:
         """Start coaching engine"""

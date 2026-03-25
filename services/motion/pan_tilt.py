@@ -114,8 +114,8 @@ class PanTiltService:
                 self.servo_initialized = True
                 self.logger.info("Pan/tilt servos initialized")
 
-                # Center camera
-                self.center_camera()
+                # Center camera on startup
+                self.center_camera(reason="startup")
 
                 self.state.update_hardware(servos_initialized=True)
                 return True
@@ -313,8 +313,8 @@ class PanTiltService:
             # Manual mode - don't interfere with Xbox controller
             return
 
-        if abs(self.current_pan - self.center_pan) > 5 or abs(self.current_tilt - self.center_tilt) > 5:
-            self.center_camera()
+        # Auto-center removed — only center on explicit user command or startup
+        pass
 
     def _track_target(self, target: Tuple[float, float], dt: float) -> None:
         """Track target using PID control with smoothing"""
@@ -460,12 +460,15 @@ class PanTiltService:
             except Exception as e:
                 self.logger.error(f"Servo movement error: {e}")
 
-    def center_camera(self) -> bool:
+    def center_camera(self, reason: str = "unknown") -> bool:
         """Center camera to calibrated default viewing position
 
         Uses self.center_pan and self.center_tilt which are the calibrated
         servo positions for the desired default viewing angle.
         """
+        import traceback
+        caller = traceback.extract_stack(limit=3)[0]
+        self.logger.info(f"SERVO_CENTER: triggered by {reason} (from {caller.filename}:{caller.lineno})")
         # Check if Xbox controller is active - if so, don't center
         import subprocess
         try:
@@ -583,7 +586,6 @@ class PanTiltService:
             self.logger.info("Tracking enabled")
         else:
             self.logger.info("Tracking disabled")
-            self.center_camera()
 
     def set_manual_camera(self, active: bool) -> None:
         """Enable/disable manual camera control from app drive screen.

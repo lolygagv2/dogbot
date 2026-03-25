@@ -471,7 +471,7 @@ class VideoRecorder:
                 cv2.drawMarker(frame, (cx, cy), (255, 255, 0), cv2.MARKER_DIAMOND, 20, 2)
 
                 # Label with dog name
-                dog_name = {315: 'ELSA', 832: 'BEZIK'}.get(marker_id, f'ID:{marker_id}')
+                dog_name = dog_assignments.get(marker_id, f'ID:{marker_id}').upper()
                 cv2.putText(frame, f"[{dog_name}]", (cx + 15, cy),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
@@ -523,6 +523,128 @@ class VideoRecorder:
             return self.stop_recording()
         else:
             return self.start_recording(filename_prefix)
+
+    def record_high_res(self, duration: int = 15, resolution: str = "1080p") -> Dict[str, Any]:
+        """
+        Record high-resolution video. Pauses AI detection during recording.
+
+        Args:
+            duration: Recording duration in seconds (max 30)
+            resolution: "1080p" (1920x1080) or "2k" (2560x1440)
+
+        Returns:
+            Dict with filename, duration, resolution, size
+        """
+        from services.perception.detector import get_detector_service
+
+        duration = min(max(1, duration), 30)
+
+        res_map = {
+            "1080p": (1920, 1080),
+            "2k": (2560, 1440),
+        }
+        target_res = res_map.get(resolution, (1920, 1080))
+        resolution_label = f"{target_res[0]}x{target_res[1]}"
+
+        if self.recording:
+            return {"success": False, "error": "Already recording"}
+
+        detector = get_detector_service()
+        self.recording = True
+        self._stop_event.clear()
+        self.logger.info(f"VIDEO_RECORD: Starting, resolution={resolution_label}, max_duration={duration}")
+
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"wimz_{timestamp}.mp4"
+        output_path = self.output_dir / filename
+
+        # Pause AI detection
+        ai_was_running = False
+        if detector and detector.ai_initialized:
+            ai_was_running = True
+            detector.pause_ai()
+            self.logger.info("AI detection paused for high-res recording")
+
+        try:
+            # Switch camera resolution
+            original_res = None
+            if detector and hasattr(detector, 'camera'):
+                original_res = detector.get_current_resolution()
+                detector.set_resolution(target_res)
+                time.sleep(0.5)  # Let camera settle
+
+            # Record frames
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            fps = 15.0
+            writer = cv2.VideoWriter(str(output_path), fourcc, fps, target_res)
+
+            if not writer.isOpened():
+                return {"success": False, "error": "Failed to open video writer"}
+
+            frame_interval = 1.0 / fps
+            start = time.time()
+            frames = 0
+
+            while time.time() - start < duration and not self._stop_event.is_set():
+                frame = detector.get_last_frame() if detector else None
+                if frame is not None:
+                    if frame.shape[1] != target_res[0] or frame.shape[0] != target_res[1]:
+                        frame = cv2.resize(frame, target_res)
+                    if len(frame.shape) == 3 and frame.shape[2] == 3:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+                    # Timestamp overlay
+                    ts_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    cv2.putText(frame, ts_text, (target_res[0] - 250, target_res[1] - 20),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+                    writer.write(frame)
+                    frames += 1
+
+                time.sleep(frame_interval)
+
+            writer.release()
+            actual_duration = time.time() - start
+            file_size = output_path.stat().st_size if output_path.exists() else 0
+            stopped_early = self._stop_event.is_set()
+
+            self.logger.info(f"VIDEO_RECORD: Stopped after {actual_duration:.1f}s, file={filename}, size={file_size} bytes{' (early stop)' if stopped_early else ''}")
+
+            return {
+                "success": True,
+                "filename": filename,
+                "path": str(output_path),
+                "duration_seconds": round(actual_duration, 1),
+                "resolution": resolution_label,
+                "size_bytes": file_size,
+                "frames": frames,
+            }
+
+        except Exception as e:
+            self.logger.error(f"VIDEO_RECORD: ERROR - {e}")
+            return {"success": False, "error": str(e)}
+
+        finally:
+            self.recording = False
+
+            # Restore camera resolution
+            if detector and original_res:
+                detector.set_resolution(original_res)
+
+            # Resume AI detection
+            if ai_was_running and detector:
+                detector.resume_ai()
+                self.logger.info("AI detection resumed")
+
+
+    def stop_high_res(self):
+        """Stop a high-res recording early"""
+        if self.recording:
+            self.logger.info("VIDEO_RECORD: Stop requested")
+            self._stop_event.set()
+        else:
+            self.logger.info("VIDEO_RECORD: Stop requested but not recording")
 
 
 def get_video_recorder() -> VideoRecorder:

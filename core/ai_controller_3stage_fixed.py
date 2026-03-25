@@ -352,7 +352,7 @@ class AI3StageControllerFixed:
                     dog_name = assignments[idx]
 
                     # Get marker ID from dog name
-                    marker_id = self.dog_tracker.dog_names.get(dog_name, 832)
+                    marker_id = self.dog_tracker.dog_names.get(dog_name, None)
 
                     # Publish behavior detection event
                     if behavior.behavior and behavior.confidence > self.behavior_confidence_threshold:

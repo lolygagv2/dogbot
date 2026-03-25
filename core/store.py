@@ -165,6 +165,20 @@ class TreatBotStore:
                     )
                 ''')
 
+                # Dog events table (unified behavior log)
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS dog_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        dog_id TEXT DEFAULT 'unknown',
+                        dog_name TEXT DEFAULT '',
+                        details TEXT DEFAULT '{}',
+                        mode TEXT DEFAULT '',
+                        session_id TEXT DEFAULT ''
+                    )
+                ''')
+
                 # Create indexes for performance
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_type ON events (type, subtype)')
@@ -174,6 +188,18 @@ class TreatBotStore:
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_sg_sessions_start ON silent_guardian_sessions (session_start)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_sg_interventions_session ON sg_interventions (session_id)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_coaching_timestamp ON coaching_sessions (timestamp)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_dog_events_timestamp ON dog_events (timestamp)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_dog_events_type ON dog_events (event_type)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_dog_events_dog ON dog_events (dog_id)')
+
+                # Key-value settings table (for treat counter, etc.)
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at REAL NOT NULL
+                    )
+                ''')
 
                 conn.commit()
                 self.logger.info("Database initialized successfully")
@@ -778,6 +804,183 @@ class TreatBotStore:
             except Exception as e:
                 self.logger.error(f"Failed to get coaching stats: {e}")
                 return {}
+            finally:
+                conn.close()
+
+
+    # ========== Dog Events Methods ==========
+
+    def log_dog_event(self, event_type: str, dog_id: str = "unknown",
+                      dog_name: str = "", details: Dict[str, Any] = None,
+                      mode: str = "", session_id: str = "") -> int:
+        """Log a dog behavior event (non-blocking)"""
+        if not self._lock.acquire(timeout=0.5):
+            self.logger.warning("log_dog_event skipped - lock busy")
+            return -1
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO dog_events (timestamp, event_type, dog_id, dog_name, details, mode, session_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (datetime.now().isoformat(), event_type, dog_id, dog_name,
+                      json.dumps(details or {}), mode, session_id))
+
+                event_id = cursor.lastrowid
+                conn.commit()
+                return event_id
+
+            except Exception as e:
+                self.logger.error(f"Failed to log dog event: {e}")
+                conn.rollback()
+                return -1
+            finally:
+                conn.close()
+        finally:
+            self._lock.release()
+
+    def get_dog_events(self, limit: int = 100, event_type: str = None,
+                       dog_id: str = None, since: str = None) -> List[Dict[str, Any]]:
+        """Query dog events with optional filters"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                query = 'SELECT * FROM dog_events WHERE 1=1'
+                params = []
+
+                if event_type:
+                    query += ' AND event_type = ?'
+                    params.append(event_type)
+                if dog_id:
+                    query += ' AND dog_id = ?'
+                    params.append(dog_id)
+                if since:
+                    query += ' AND timestamp >= ?'
+                    params.append(since)
+
+                query += ' ORDER BY timestamp DESC LIMIT ?'
+                params.append(limit)
+
+                cursor.execute(query, params)
+                columns = [desc[0] for desc in cursor.description]
+                events = []
+                for row in cursor.fetchall():
+                    event = dict(zip(columns, row))
+                    event['details'] = json.loads(event.get('details', '{}'))
+                    events.append(event)
+                return events
+
+            except Exception as e:
+                self.logger.error(f"Failed to query dog events: {e}")
+                return []
+            finally:
+                conn.close()
+
+    def get_dog_events_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """Get summary of dog events over a time period"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                since = (datetime.now() - timedelta(hours=hours)).isoformat()
+
+                # Count by event type
+                cursor.execute('''
+                    SELECT event_type, COUNT(*) FROM dog_events
+                    WHERE timestamp >= ?
+                    GROUP BY event_type
+                ''', (since,))
+                by_type = {row[0]: row[1] for row in cursor.fetchall()}
+
+                # Count by dog
+                cursor.execute('''
+                    SELECT dog_name, COUNT(*) FROM dog_events
+                    WHERE timestamp >= ? AND dog_name != ''
+                    GROUP BY dog_name
+                ''', (since,))
+                by_dog = {row[0]: row[1] for row in cursor.fetchall()}
+
+                # Total count
+                cursor.execute('''
+                    SELECT COUNT(*) FROM dog_events WHERE timestamp >= ?
+                ''', (since,))
+                total = cursor.fetchone()[0]
+
+                return {
+                    'hours': hours,
+                    'total_events': total,
+                    'by_type': by_type,
+                    'by_dog': by_dog,
+                    'since': since
+                }
+
+            except Exception as e:
+                self.logger.error(f"Failed to get dog events summary: {e}")
+                return {}
+            finally:
+                conn.close()
+
+    def get_dog_events_latest(self, dog_id: str = None) -> Dict[str, Any]:
+        """Get latest event of each type (optionally filtered by dog)"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                query = '''
+                    SELECT * FROM dog_events
+                    WHERE id IN (
+                        SELECT MAX(id) FROM dog_events
+                '''
+                params = []
+                if dog_id:
+                    query += ' WHERE dog_id = ?'
+                    params.append(dog_id)
+                query += ' GROUP BY event_type)'
+                query += ' ORDER BY timestamp DESC'
+
+                cursor.execute(query, params)
+                columns = [desc[0] for desc in cursor.description]
+                events = []
+                for row in cursor.fetchall():
+                    event = dict(zip(columns, row))
+                    event['details'] = json.loads(event.get('details', '{}'))
+                    events.append(event)
+                return {'latest_by_type': events}
+
+            except Exception as e:
+                self.logger.error(f"Failed to get latest dog events: {e}")
+                return {}
+            finally:
+                conn.close()
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Store a key-value setting"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute(
+                    'INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)',
+                    (key, value, time.time())
+                )
+                conn.commit()
+            except Exception as e:
+                self.logger.error(f"Failed to set setting {key}: {e}")
+            finally:
+                conn.close()
+
+    def get_setting(self, key: str, default: str = None) -> Optional[str]:
+        """Retrieve a key-value setting"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.execute('SELECT value FROM settings WHERE key = ?', (key,))
+                row = cursor.fetchone()
+                return row[0] if row else default
+            except Exception as e:
+                self.logger.error(f"Failed to get setting {key}: {e}")
+                return default
             finally:
                 conn.close()
 
