@@ -55,6 +55,7 @@ class DispenserService:
         robot_config = get_config()
         self.dispense_pulse = 1300  # NOT USED? microseconds - legacy value
         self.dispense_duration = robot_config.dispenser.dispense_duration  # Robot-specific duration
+        self.vibrator_enabled = robot_config.dispenser.vibrator_enabled
 
         # Treat counter — persisted to SQLite
         self.treats_loaded = 0
@@ -80,8 +81,10 @@ class DispenserService:
                 self.logger.error(f"Dispenser initialization error: {e}")
                 return False
 
-        # Vibrator init — only once
-        if not self.vibrator_initialized and self.gpio_chip is None:
+        # Vibrator init — only once (skip if disabled in config)
+        if not self.vibrator_enabled:
+            self.logger.info("Vibrator motor disabled in config")
+        elif not self.vibrator_initialized and self.gpio_chip is None:
             try:
                 self.gpio_chip = lgpio.gpiochip_open(0)
                 lgpio.gpio_claim_output(self.gpio_chip, self.vibrator_pin, lgpio.SET_PULL_NONE)
@@ -182,6 +185,8 @@ class DispenserService:
 
     def _vibrator_on(self):
         """Turn vibrator motor ON"""
+        if not self.vibrator_enabled:
+            return
         if self.vibrator_initialized:
             try:
                 lgpio.gpio_write(self.gpio_chip, self.vibrator_pin, 1)

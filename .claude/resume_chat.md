@@ -1,127 +1,135 @@
 # WIM-Z Resume Chat Log
 
-## Session: 2026-02-26 - WiFi Provisioning Fix & Parallel Boot
-**Goal:** Fix broken WiFi provisioning (AP→station transition) and improve boot speed
+## Session: 2026-03-26 - Treat Dispenser Calibration, Xbox Motor Attempt (Reverted)
+**Goal:** Fix 3 issues: direct AP connection, Xbox carpet movement, treat dispenser degradation
+**Status:** PARTIAL — dispenser fixed, AP deferred, Xbox reverted
+
+---
+
+### Problems Solved This Session
+
+| # | Problem | Root Cause | Solution | Status |
+|---|---------|------------|----------|--------|
+| 1 | Direct phone-to-robot connection doesn't work | Flutter app hardcoded to cloud relay; DNS hijack on AP breaks relay but local API works | Deferred — robot side ready (API on 0.0.0.0:8000), needs Flutter app changes | DEFERRED |
+| 2 | Treat dispenser: full rotation initially, then 5-10% movement after ~20 treats, eventually unresponsive | slow_pulse=1544 too close to servo dead band (1500). As friction/temp increased, pulse fell inside dead band. NOT thermal drift (persisted through restarts). | Changed slow_pulse 1544→1560, dispense_duration 0.17→0.10 in treatbot1.yaml. Tested 5x dispenses consistently. | FIXED |
+| 3 | Vibrator motor broken | Physical hardware — motor broke off | Added `vibrator_enabled: false` config flag, dispenser skips vibrator init and GPIO calls | FIXED |
+| 4 | Xbox controller carpet movement | Attempted: multiplier relocation, carpet minimum scaling, motor_command_bus PID bypass | All changes broke motor control worse — dead center didn't stop, all directions degraded. **Fully reverted.** | REVERTED |
+
+---
+
+### Key Code Changes
+
+**Treat dispenser fix** (3 files, working):
+- `config/robot_profiles/treatbot1.yaml`: slow_pulse 1544→1560, dispense_duration 0.17→0.10, vibrator_enabled: false
+- `config/config_loader.py`: Added `DispenserConfig.vibrator_enabled` property
+- `services/reward/dispenser.py`: Check vibrator_enabled before init/use
+
+**Diagnostic script** (new):
+- `tests/hardware/test_treat_servo_diag.py`: Non-interactive PCA9685/servo diagnostic
+
+**Xbox controller** — ALL CHANGES REVERTED:
+- `xbox_hybrid_controller.py`: Reverted to HEAD
+- `core/motor_command_bus.py`: Reverted to HEAD
+
+### Key Findings (Xbox Controller — For Future Reference)
+
+1. Xbox controller runs as a SUBPROCESS launched by treatbot service (`services/control/xbox_controller.py` → subprocess of `xbox_hybrid_controller.py`)
+2. Motor commands flow: xbox subprocess → POST /motor/control → motor_command_bus → PID controller
+3. PID controller logs showed Target L=0.0 R=0.0 even during active driving — values not propagating correctly through API→bus��PID chain
+4. motor_command_bus divides speed by 100.0 instead of MAX_SPEED (80) when converting to RPM — 20% power loss
+5. The treatbot2 fix (multipliers on forward, motor_bus PID bypass) does NOT directly translate to treatbot1 architecture
+6. Never kill/restart the Xbox subprocess independently — it's managed by treatbot service
+
+### Treat Servo Diagnostic Results
+
+- PCA9685 at 0x40, I2C working fine
+- Pan/tilt servos (ch0, ch1) both working
+- Winch servo (ch2) works but 1544us too weak for carousel friction
+- 1560us at 0.10s = correct one-slot rotation at full battery (16.58V)
+- Battery was at 16.58V (full charge) during testing
+
+### Git Status
+- Branch: `main` at `81dea00`
+- 0 commits made this session (changes pending)
+- Protected files: unchanged
+- Xbox controller: fully reverted to HEAD
+
+### Next Steps
+1. **Commit treat dispenser fix** (config_loader, treatbot1.yaml, dispenser.py)
+2. **Xbox carpet movement** — needs careful investigation of the API→motor_bus→PID value propagation chain before attempting fixes
+3. **Direct AP connection** — needs Flutter app changes (robot side ready)
+4. **Backward power on carpet** — related to Xbox issue, PID controller may need tuning
+5. **Replace vibrator motor** when hardware available
+
+---
+
+## Session: 2026-03-25 - Battery Fix, Motor Speed, Treat Counter Push, Local AP Control
+**Goal:** Fix battery meter showing 98% instead of ~60%, increase motor speed for carpet, push uncommitted treat/dispenser code for treatbot2, verify local AP control path
 **Status:** COMPLETE
 
 ---
 
 ### Problems Solved This Session
 
-| # | Problem | Root Cause | Solution | Files Modified |
-|---|---------|------------|----------|----------------|
-| 1 | WiFi provisioning fails after submitting hotspot credentials | After killing hostapd, wireless driver stays in AP mode at kernel level — NM scans return nothing for 25s | Cycle wlan0 down/up to force station mode, wait for NM readiness before scanning | `services/network/wifi_manager.py` |
-| 2 | Xbox controller blocked until WiFi provisioning completes | `treatbot.service` has `After=wifi-provision.service` + 10s sleep | Removed After dependency, removed sleep — parallel boot | `/etc/systemd/system/treatbot.service` |
-| 3 | Slow fallback to AP mode (~30s) when no known WiFi | nmcli timeout 15s + polling loop 15s | Reduced nmcli timeout to 10s, bail on timeout immediately | `services/network/wifi_manager.py` |
+| # | Problem | Root Cause | Solution | Status |
+|---|---------|------------|----------|--------|
+| 1 | Battery meter showing ~98% at ~60% real charge | 3 endpoints used wrong formula `voltage/16.8*100` instead of correct `(voltage-12.0)/4.8*100` | Fixed formula in `api/ws.py`, `api/server.py`, `services/cloud/relay_client.py` | FIXED |
+| 2 | Robot struggles on carpet | Xbox controller hardcoded MAX_SPEED=50, MAX_RPM=90 despite config saying 80/110 | Updated defaults in `xbox_hybrid_controller.py` to match `treatbot1.yaml` (80/110) | FIXED |
+| 3 | Treatbot2 crashing: `No module named 'services.logging'` | `services/logging/` directory not in git | Pushed `dog_event_logger.py` + `__init__.py` to git | FIXED |
+| 4 | Treatbot2 missing treat counter, dispenser improvements | 17 source files with accumulated changes never committed | Committed all: treat counter persistence, vibrator motor, anti-jam, dog profiles, SG config, video recording, etc. | FIXED |
+| 5 | Resume chat log 1 month behind (last entry Feb 26) | Previous sessions didn't run /session_end | Reconstructed Mar 12 and Mar 22 sessions from git history | FIXED |
 
 ---
 
-### Key Code Changes Made
+### Key Code Changes
 
-#### 1. WiFi Manager - AP→Station Transition Fix
-**File:** `services/network/wifi_manager.py`
-- **New `_wait_for_nm_ready()`**: Polls `nmcli device status` until wlan0 shows `disconnected` or `connected`
-- **`stop_hotspot()` rewritten**: Cycles `ip link set wlan0 down/up` after killing hostapd to force driver back to station mode, then waits for NM readiness (20s timeout)
-- **`save_credentials()`**: Removed redundant 3s sleep (stop_hotspot now handles the wait)
-- **`_wait_for_ssid_in_scan()`**: Increased timeout to 30s, added diagnostic logging (shows sample SSIDs on first scan, logs what's visible on last attempts)
-- **`try_connect_known()`**: Reduced from ~30s to ~12s worst case (10s nmcli + bail on timeout)
+**Battery percentage fix** (`3eb3c2b` — 4 files):
+- `api/ws.py:968`, `services/cloud/relay_client.py:317`, `api/server.py:5342`: Changed `voltage/16.8*100` to `(voltage-12.0)/4.8*100`
+- `xbox_hybrid_controller.py`: MAX_SPEED 50→80, MAX_RPM 90→110
 
-#### 2. Systemd Service - Parallel Boot
-**File:** `/etc/systemd/system/treatbot.service` (NOT in git)
-- Removed `After=wifi-provision.service` — treatbot starts in parallel
-- Removed `ExecStartPre=/bin/sleep 10` — no longer needed
-- Kept `Wants=wifi-provision.service` so it still starts
+**Accumulated features push** (`204322f` — 17 files, +1109/-116):
+- `services/reward/dispenser.py`: Treat counter (SQLite persistence), vibrator motor (GPIO16), anti-jam wiggle
+- `core/store.py`: Dog event storage/query (+203 lines)
+- `core/dog_profile_manager.py`: Cloud profile sync with ArUco mapping
+- `modes/silent_guardian.py`: Runtime config updates, enhanced bark detection
+- `services/media/video_recorder.py`: High-res recording with AI pause
+- `main_treatbot.py`: Major updates (+222 lines)
+- Plus: coaching_engine, mission_engine, detector, pan_tilt, sequence_engine, config files
 
----
+**Missing module push** (`81dea00` — 2 files):
+- `services/logging/__init__.py` + `services/logging/dog_event_logger.py`
 
-### Log Analysis (What Failed)
-Timeline from `logs/wifi_provision.log`:
-1. User submitted "FriendlyKimchi (2)" credentials via captive portal
-2. Hotspot stopped, NM told to take over wlan0
-3. Scanned for SSID for 25s (9 attempts) — **never found it**
-4. `nmcli device wifi connect` failed: "No network with SSID found"
-5. Fell back to AP mode... and NOW cached 47 networks (scans working!)
-6. Root cause: wireless driver stuck in AP mode after hostapd killed
+### Local AP Control Investigation
+- Confirmed: Robot can be controlled via phone without internet
+- Phone connects to `WIMZ-xxxx` AP (password: `wimzsetup`)
+- Treatbot API accessible at `192.168.4.1:8000` (runs in parallel with provisioning)
+- App's server address field can point to `192.168.4.1:8000`
+- Just don't submit WiFi credentials in captive portal — AP stays up
 
----
-
-### Commits Made
-- `e5c2999` - fix: WiFi provisioning AP→station transition, parallel boot, faster connect
-
----
-
-### Treatbot1 Update Instructions Written
-Provided user with manual steps for treatbot1:
-1. `git pull origin main`
-2. Manually edit `/etc/systemd/system/treatbot.service` (remove After=wifi-provision, remove sleep)
-3. `sudo systemctl daemon-reload && sudo reboot`
-
----
-
-### Relay Client Verified
-Confirmed relay client has robust reconnection:
-- `_reconnect_loop()` with exponential backoff (1s → 30s max)
-- Runs forever while `_running=True`
-- Auto-flushes queued messages on reconnect
-- Safe to start treatbot before WiFi is up
-
----
+### Git Status
+- Branch: `main` at `81dea00`
+- 3 commits made this session
+- Protected files: unchanged
 
 ### Next Steps
-1. Test WiFi provisioning on treatbot1 with the new code
-2. Test parallel boot — verify Xbox connects before WiFi
-3. Test hotspot→new-network flow end-to-end
+1. Test battery meter accuracy in app (should show ~58% at 14.8V nominal)
+2. Test motor speed on carpet with Xbox controller (MAX_SPEED now 80)
+3. Xbox controller full button test
+4. Treatbot2: `git pull` to get all pushed changes
+5. Test local AP control: phone → WIMZ AP → app at 192.168.4.1:8000
 
 ---
 
-## Session: 2026-02-25 - Code Review: Xbox vs App Coach Mode & Spin Detection
-**Goal:** Compare Xbox controller and app coach mode paths to verify identical code
-**Status:** COMPLETE (read-only review, no code changes)
+## Session: 2026-03-22 - PTT Queuing, Mode Sync & Silent Guardian Stability
+**Goal:** Fix app-robot communication bugs and Silent Guardian mode dropping to IDLE
+**Status:** COMPLETE
 
 ---
 
 ### Problems Solved This Session
 
-| # | Question | Finding |
-|---|----------|---------|
-| 1 | Are VOICEMP3/songs/ root files vs default/ duplicates? | Root files are dead copies (~92MB). All code references `songs/default/`. Safe to delete root mp3s. |
-| 2 | Is Xbox coach mode identical to app coach mode? | YES — both go through `POST /mode/set` → `mode_fsm.force_mode()` → `_on_mode_change()` → `coaching_engine.start()` |
-| 3 | Is spin trick detection identical for Xbox vs app? | YES — same pipeline: `geometric_classifier._check_spin()` → temporal voting bypass → spin latch → 0.3s hold check |
-
----
-
-### Key Findings
-
-#### Coach Mode Entry — Identical
-- Xbox: `cycle_mode()` → `POST /mode/set {"mode":"coach"}`
-- App: relay `command: "mode"` → `POST /mode/set {"mode":"coach"}`
-- Both converge at `api/server.py:875` → `mode_fsm.force_mode(COACH)` → event bus → `_on_mode_change()` → `coaching_engine.start()`
-
-#### Spin Detection Pipeline — Identical
-1. `geometric_classifier.py:131-134` — `_check_spin()` called FIRST (before pose classification)
-2. `_check_spin()` uses bbox temporal analysis: aspect deltas, center movement, width variation over 4-8 frames
-3. `ai_controller_3stage_fixed.py:919-922` — Spin bypasses temporal voting (instant motion, not held pose)
-4. `behavior_interpreter.py:170-177` — Spin latch: ignores sit/stand/lie for 2s after spin detected
-5. `behavior_interpreter.py:126` — Only 0.3s hold required for spin trick
-6. Both Xbox and app use `coaching_engine.py:724` → `interpreter.check_trick("spin")`
-
-#### Minor Gap Found
-- Xbox `cycle_trick()` calls `reset_session_cooldown` before `force_trick` (xbox_hybrid_controller.py:1540)
-- App `force_trick` command does NOT call `reset_session_cooldown`
-- Impact: App force_trick may not start new session if cooldown active
-
-#### VOICEMP3/songs/ Duplication
-- `songs/` root: 12 files (Feb 2 dates) — NOT referenced by any code
-- `songs/default/`: 13 files (Feb 22 dates) — ALL code points here
-- `songs/default/` has one extra: `Trancewimz.mp3`
-
----
-
-### Commits Made
-*(None — read-only review session)*
-
----
-
-### Next Steps
-1. Consider deleting root `VOICEMP3/songs/*.mp3` files (~92MB unused duplicates)
-2. Consider adding `reset_session_cooldown` to app's `force_trick` handler for parity with Xbox
+| # | Problem | Root Cause | Solution | Status |
+|---|---------|------------|----------|--------|
+| 1 | Silent Guardian randomly reverting to IDLE | Multiple unprotected code paths (mission complete, battery critical, emergency clear, Xbox disconnect) all defaulted to IDLE | Added SG protection gate in `set_mode()` — blocks SG→IDLE unless triggered by explicit user action; mission engine restores pre-mission mode; Xbox disconnect restores pre-manual mode | FIXED |
+| 2 | App mode indicator out of sync on connect | Robot sent aliases ("guardian"/"training") but app expected raw names ("silent_guardian"/"coach") | Fixed all 4 outbound mode maps to send raw internal names; added 1s delay before mode sync on `user_connected`; added inbound aliases for backward compat | FIXED |
+| 3 | Second PTT audio message dropped | `push_to_talk.py` rejected new audio while first was playing ("Already playing audio") | Replaced with queue worker that processes items sequentially; always sends `audio_played` ack even on error | FIXED |

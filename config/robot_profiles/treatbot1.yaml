@@ -10,11 +10,12 @@ camera:
 
 # Dispenser settings (dispenser.py)
 dispenser:
-  dispense_duration: 0.17
+  dispense_duration: 0.10
+  vibrator_enabled: false  # Vibrator motor broke off — disable until replaced
 
 # Servo settings (servo_controller.py)
 servo:
-  slow_pulse: 1544  # rotate_winch 'slow' direction pulse value vs 1590 for 'fast'
+  slow_pulse: 1560  # rotate_winch 'slow' direction pulse value (was 1544, too weak for carousel friction)
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:
