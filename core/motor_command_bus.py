@@ -42,6 +42,15 @@ class MotorCommandBus:
         self.running = False
         self.last_command = None
         self.lock = threading.Lock()
+        self.use_pid = True  # default, overridden by config
+
+        # Load PID config from robot profile
+        try:
+            from config.config_loader import get_config
+            self.use_pid = get_config().controller.use_pid_control
+            self.logger.info(f"Motor bus: use_pid={self.use_pid} (from robot config)")
+        except Exception:
+            self.logger.warning("Motor bus: could not load config, defaulting use_pid=True")
 
         # Try to import motor controller - prioritize proper PID controller
         try:
@@ -123,8 +132,11 @@ class MotorCommandBus:
                 left_speed = max(-70, min(70, command.left_speed))  # 70% max for safety
                 right_speed = max(-70, min(70, command.right_speed))
 
-                # Use PID RPM control if available, otherwise fall back to PWM
-                if hasattr(self.motor_controller, 'set_motor_rpm'):
+                # Use direct PWM when PID is disabled (broken encoders etc)
+                if not self.use_pid and hasattr(self.motor_controller, 'set_motor_pwm_direct'):
+                    self.motor_controller.set_motor_pwm_direct(float(left_speed), float(right_speed))
+                    self.logger.debug(f"Motor PWM direct: L={left_speed}, R={right_speed}")
+                elif hasattr(self.motor_controller, 'set_motor_rpm'):
                     # Convert speed percentages to RPM targets for PID control
                     max_rpm = 120  # Maximum safe RPM for DFRobot motors
                     left_rpm = (left_speed / 100.0) * max_rpm

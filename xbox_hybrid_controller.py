@@ -939,41 +939,23 @@ class XboxHybridControllerFixed:
             left_speed = 0
             right_speed = 0
         else:
-            # Calculate motor speeds from left stick position
-            forward = self.state.left_y * self.MAX_SPEED
+            # Apply motor balance correction to forward component only.
+            # This corrects straight-line drift without starving the
+            # outer wheel during turns (multipliers were killing right turns).
+            forward_left = self.state.left_y * self.MAX_SPEED * self.LEFT_MOTOR_MULTIPLIER
+            forward_right = self.state.left_y * self.MAX_SPEED * self.RIGHT_MOTOR_MULTIPLIER
             turn = -self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR
 
-            # Tank drive mixing
-            left_speed = forward - turn
-            right_speed = forward + turn
+            # Tank drive mixing — turn component is equal for both motors
+            left_speed = int(forward_left - turn)
+            right_speed = int(forward_right + turn)
+
+            # DEBUG: Log raw joystick to motor conversion (always log when moving)
+            logger.debug(f"JOY Y={self.state.left_y:.2f} X={self.state.left_x:.2f} -> L={left_speed} R={right_speed}")
 
             # Clamp to valid range
             left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
             right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
-
-            # Ensure minimum motor power during diagonal movement.
-            # On carpet, if one motor drops too low it stalls while the
-            # other spins — robot pivots instead of driving diagonally.
-            # Scale both motors up proportionally so the weaker one stays
-            # at MIN_DIAGONAL_SPEED while preserving the turn ratio.
-            MIN_DIAGONAL_SPEED = self.MAX_SPEED * 0.35  # 35% of max
-            if left_speed != 0 and right_speed != 0:
-                # Both motors active (diagonal move) — check the weaker one
-                min_mag = min(abs(left_speed), abs(right_speed))
-                max_mag = max(abs(left_speed), abs(right_speed))
-                if 0 < min_mag < MIN_DIAGONAL_SPEED and max_mag > 0:
-                    scale = MIN_DIAGONAL_SPEED / min_mag
-                    left_speed *= scale
-                    right_speed *= scale
-                    # Re-clamp after scaling
-                    left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
-                    right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
-
-            left_speed = int(left_speed)
-            right_speed = int(right_speed)
-
-            # DEBUG: Log raw joystick to motor conversion (always log when moving)
-            logger.debug(f"JOY Y={self.state.left_y:.2f} X={self.state.left_x:.2f} -> L={left_speed} R={right_speed}")
 
         # Rate limiting - 20Hz for motor commands (faster response)
         current_time = time.time()
@@ -1014,23 +996,19 @@ class XboxHybridControllerFixed:
         # OPEN-LOOP MODE: Map speed to PWM range directly
         if not self.USE_PID_CONTROL:
             # Calculate PWM for each motor
-            def speed_to_pwm(speed, multiplier):
+            # Balance multipliers already applied in mixing stage above
+            def speed_to_pwm(speed):
                 if speed == 0:
                     return 0
-                # Get direction
                 direction = 1 if speed > 0 else -1
                 magnitude = abs(speed)
                 # Map magnitude (0 to MAX_SPEED) to PWM (PWM_MIN to PWM_MAX)
-                # At magnitude=1, PWM=PWM_MIN; at magnitude=MAX_SPEED, PWM=PWM_MAX
                 pwm = PWM_MIN + (magnitude / self.MAX_SPEED) * (PWM_MAX - PWM_MIN)
-                # Apply balance multiplier
-                pwm = pwm * multiplier
-                # Only cap at max, let low values through (motor deadzone handles it)
                 pwm = min(PWM_MAX, pwm)
                 return direction * pwm
 
-            left_pwm = speed_to_pwm(left, self.LEFT_MOTOR_MULTIPLIER)
-            right_pwm = speed_to_pwm(right, self.RIGHT_MOTOR_MULTIPLIER)
+            left_pwm = speed_to_pwm(left)
+            right_pwm = speed_to_pwm(right)
 
             logger.debug(f"OPEN-LOOP: Speed L={left} R={right} -> PWM L={left_pwm:.1f}% R={right_pwm:.1f}%")
 
