@@ -22,7 +22,7 @@ tricks:
   laydown:
     description: "Dog lies down (any position)"
     required_behavior: "lie"
-    hold_duration_sec: 1.5
+    hold_duration_sec: 1.0
     detection_window_sec: 10
     alternative_behaviors: []         # Cross removed - unreliable detection
     confidence_threshold: 0.70        # Lowered - improved aspect ratio detection

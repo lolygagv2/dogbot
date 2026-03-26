@@ -317,8 +317,6 @@ class ModeFSM:
             return False
 
         duration = duration or self.timeouts['override_timeout']
-        self.override_mode = mode
-        self.override_until = time.time() + duration
 
         # CRITICAL: Set manual input time BEFORE mode change to avoid race condition
         if mode == SystemMode.MANUAL:
@@ -333,6 +331,10 @@ class ModeFSM:
         success = self.state.set_mode(mode, f"User override for {duration}s")
 
         if success:
+            # Only set override if mode change actually succeeded
+            # (mode could be locked by mission system)
+            self.override_mode = mode
+            self.override_until = time.time() + duration
             self.current_mode = mode
             self.mode_start_time = time.time()
 
@@ -342,6 +344,8 @@ class ModeFSM:
             }, 'mode_fsm')
 
             self.logger.info(f"Mode override set: {mode.value} for {duration}s")
+        else:
+            self.logger.warning(f"Mode override rejected: {mode.value} (mode change failed)")
 
         return success
 

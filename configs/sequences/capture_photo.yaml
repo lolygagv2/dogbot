@@ -1,0 +1,11 @@
+# Capture photo sequence
+name: capture_photo
+description: "Capture a photo of the dog after successful mission"
+
+steps:
+  - type: action
+    service: photo
+    command: capture
+    params:
+      reason: "mission_complete"
+    description: "Take photo of dog"

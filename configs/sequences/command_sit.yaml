@@ -1,0 +1,11 @@
+# Command sit sequence - plays sit command audio
+name: command_sit
+description: "Tell dog to sit"
+
+steps:
+  - type: action
+    service: audio
+    command: play_file
+    params:
+      file: "sit.mp3"
+    description: "Play sit command"

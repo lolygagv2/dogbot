@@ -350,9 +350,14 @@ class MissionEngine:
                 dog_id=dog_id
             )
 
-            # Save current mode to restore after mission completes
-            self.pre_mission_mode = self.state.get_mode()
-            self.logger.info(f"[MISSION] Saving pre-mission mode: {self.pre_mission_mode.value}")
+            # Clear any FSM override (e.g., drive_enter sending set_mode manual simultaneously)
+            try:
+                from orchestrators.mode_fsm import get_mode_fsm
+                fsm = get_mode_fsm()
+                if fsm and fsm.override_mode:
+                    fsm.clear_override("mission_start")
+            except Exception:
+                pass
 
             # Set mode to MISSION and lock it to prevent interruption
             self.state.set_mode(SystemMode.MISSION, reason=f'Mission: {mission_name}')
@@ -420,14 +425,11 @@ class MissionEngine:
                 }
             )
 
-            # Unlock mode FIRST, then restore pre-mission mode (not always IDLE)
+            # Unlock mode FIRST, then set to idle
             self.state.unlock_mode()
-            restore_mode = self.pre_mission_mode
-            if restore_mode == SystemMode.MISSION:
-                restore_mode = SystemMode.IDLE  # Prevent re-entering MISSION
-            self.state.set_mode(restore_mode, reason=f'Mission stopped: {reason} (restoring {restore_mode.value})')
+            self.state.set_mode(SystemMode.IDLE, reason=f'Mission stopped: {reason}')
 
-            self.logger.info(f"Stopped mission: {session.mission.name} ({reason}), restored to {restore_mode.value}")
+            self.logger.info(f"Stopped mission: {session.mission.name} ({reason}), mode unlocked")
             publish_system_event("mission.stopped", {
                 "mission_name": session.mission.name,
                 "mission_id": session.mission_id,
@@ -552,6 +554,15 @@ class MissionEngine:
         finally:
             self.running = False
             self.listening_for_barks = False
+            # Safety net: ensure active_session is cleared if loop exits
+            # without going through _complete_mission() or stop_mission()
+            if self.active_session and self.active_session.state not in [
+                MissionState.COMPLETED, MissionState.STOPPED
+            ]:
+                self.logger.warning(f"Mission loop exited without cleanup, clearing stale session")
+                self.state.unlock_mode()
+                self.state.set_mode(SystemMode.IDLE, reason='Mission loop exited unexpectedly')
+                self.active_session = None
 
     def _cleanup_stale_dogs(self):
         """Remove dogs not seen recently (same as coaching engine)"""
@@ -647,16 +658,38 @@ class MissionEngine:
             self._state_stage_cooldown()
 
     def _state_starting(self):
-        """Initialize first stage"""
+        """Initialize stage based on type"""
         session = self.active_session
         stage = session.mission.stages[session.current_stage]
 
         self.logger.debug(f"Starting stage {session.current_stage + 1}: {stage.name}")
-        session.state = MissionState.WAITING_FOR_DOG
         session.stage_start_time = time.time()
         session.attempts = 0
 
-        # Send status to app
+        # Sequence-only stages (no success_event): advance immediately
+        # (the sequence is executed inside _advance_stage)
+        if self._is_sequence_only_stage(stage):
+            self.logger.info(f"Sequence-only stage: {stage.name} — executing and advancing")
+            self._advance_stage()
+            return
+
+        # Bark detection stages: skip WAITING_FOR_DOG, go straight to watching
+        if stage.success_event.startswith("AudioEvent.Bark"):
+            self._ensure_bark_detection()
+            trick = self._get_trick_name(stage) or 'speak'
+            session.trick_requested = trick
+            session.command_time = time.time()
+            self.bark_count = 0
+            self.bark_timestamps = []
+            self._listening_started_at = time.time()
+            self.listening_for_barks = True
+            session.state = MissionState.WATCHING
+            self.logger.info(f"Bark stage: {stage.name} — listening for barks")
+            self._send_mission_status("watching", stage.name)
+            return
+
+        # Vision detection stages: wait for dog first
+        session.state = MissionState.WAITING_FOR_DOG
         self._send_mission_status("waiting_for_dog", stage.name)
 
     def _state_waiting_for_dog(self):
@@ -702,9 +735,31 @@ class MissionEngine:
         # Update session
         session.dog_id = dog_id
         session.dog_name = dog_name
-        session.trick_requested = self._get_trick_name(stage)
-        session.attention_start = now
-        session.state = MissionState.ATTENTION_CHECK
+
+        # DogDetected stages: dog found, advance immediately (no trick to watch)
+        if stage.success_event == "VisionEvent.DogDetected":
+            self.logger.info(f"Dog detected for stage '{stage.name}' — advancing")
+            self._advance_stage()
+            return
+
+        # Pose detection stages: dog found, set up trick tracking and go to WATCHING
+        # Skip GREETING/COMMAND since the mission has explicit sequence-only stages for those
+        trick = self._get_trick_name(stage)
+        session.trick_requested = trick
+        if trick:
+            self.interpreter.reset_tracking()
+            self.interpreter.set_target_behavior(
+                self.interpreter.get_trick_rules(trick).get('required_behavior', trick)
+            )
+            session.command_time = time.time()
+            session.pose_tracking_reset = True
+            session.state = MissionState.WATCHING
+            self.logger.info(f"Dog found for pose stage '{stage.name}' — watching for {trick}")
+            self._send_mission_status("watching", trick)
+        else:
+            # Unknown detection type — fall through to coaching flow
+            session.attention_start = now
+            session.state = MissionState.ATTENTION_CHECK
 
     def _state_attention_check(self):
         """Verify dog is still attentive (brief check)"""
@@ -811,7 +866,7 @@ class MissionEngine:
             speak_rules = trick_rules or {}
             min_barks = speak_rules.get('min_barks', 1)
             max_barks = speak_rules.get('max_barks', 2)
-            speak_timeout = speak_rules.get('detection_window_sec', 5.0)
+            speak_timeout = max(speak_rules.get('detection_window_sec', 5.0), stage.timeout)
 
             if self.bark_count > max_barks:
                 self.listening_for_barks = False
@@ -1013,6 +1068,27 @@ class MissionEngine:
         except Exception:
             pass
 
+    def _ensure_bark_detection(self):
+        """Start bark detection on-demand when a bark stage is reached"""
+        try:
+            from services.perception.bark_detector import get_bark_detector_service
+            bark_svc = get_bark_detector_service()
+            if bark_svc and bark_svc.enabled and not bark_svc.is_running:
+                # Pause audio capture first to release USB mic
+                from services.streaming.audio_track import get_audio_track
+                audio_track = get_audio_track()
+                if audio_track:
+                    audio_track.pause_capture()
+                    time.sleep(0.3)
+                bark_svc.start()
+                self.logger.info("Bark detection started on-demand for bark stage")
+        except Exception as e:
+            self.logger.warning(f"Could not start bark detection: {e}")
+
+    def _is_sequence_only_stage(self, stage: MissionStage) -> bool:
+        """Check if a stage is sequence-only (no detection required)"""
+        return bool(stage.sequence) and not stage.success_event
+
     def _is_pose_stage(self, stage: MissionStage) -> bool:
         """Check if a stage expects a pose/trick detection"""
         return stage.success_event.startswith("VisionEvent.Pose.")
@@ -1046,8 +1122,9 @@ class MissionEngine:
 
         # Update state based on current stage
         if session.state == MissionState.STARTING:
-            session.state = MissionState.WAITING_FOR_DOG
-            self.logger.info(f"Starting stage: {stage.name}")
+            # Route through _state_starting() which handles sequence-only vs detection stages
+            self._state_starting()
+            return
 
         # For pose stages in WAITING_FOR_BEHAVIOR, poll the interpreter
         if session.state == MissionState.WAITING_FOR_BEHAVIOR and self._is_pose_stage(stage):
@@ -1076,7 +1153,12 @@ class MissionEngine:
         if not session.pose_tracking_reset:
             self.interpreter.reset_tracking()
             session.pose_tracking_reset = True
-            self.logger.info(f"Mission pose stage: watching for '{trick_name}' (reset tracking)")
+            # Set target behavior for sticky detection (prevents flicker resets)
+            trick_rules_entry = self.interpreter.get_trick_rules(trick_name)
+            target_beh = trick_rules_entry.get('required_behavior') if trick_rules_entry else None
+            if target_beh:
+                self.interpreter.set_target_behavior(target_beh)
+            self.logger.info(f"Mission pose stage: watching for '{trick_name}' (reset tracking, target={target_beh})")
 
             # Send initial watching event to app
             hold_required = stage.min_duration if stage.min_duration > 0 else 0
@@ -1232,9 +1314,17 @@ class MissionEngine:
         if session.current_stage >= len(session.mission.stages):
             self._complete_mission("all_stages_completed")
         else:
-            session.state = MissionState.WAITING_FOR_DOG
             next_stage = session.mission.stages[session.current_stage]
             self.logger.info(f"Advanced to stage: {next_stage.name}")
+
+            # Sequence-only stages: advance immediately (no dog wait)
+            # Sequence is executed at top of _advance_stage on next call
+            if self._is_sequence_only_stage(next_stage):
+                self.logger.info(f"Sequence-only stage: {next_stage.name} — chaining")
+                self._advance_stage()
+            else:
+                # Route through STARTING state which handles bark vs vision stages
+                session.state = MissionState.STARTING
 
     def _handle_stage_timeout(self, stage: MissionStage):
         """Handle stage timeout"""
@@ -1313,14 +1403,11 @@ class MissionEngine:
             }
         )
 
-        # Unlock mode and restore pre-mission mode (not always IDLE)
+        # Unlock mode and set to IDLE
         self.state.unlock_mode()
-        restore_mode = self.pre_mission_mode
-        if restore_mode == SystemMode.MISSION:
-            restore_mode = SystemMode.IDLE  # Prevent re-entering MISSION
-        self.state.set_mode(restore_mode, reason=f'Mission {reason} (restoring {restore_mode.value})')
+        self.state.set_mode(SystemMode.IDLE, reason=f'Mission {reason}')
 
-        self.logger.info(f"Mission completed: {session.mission.name} ({reason}), restored to {restore_mode.value}")
+        self.logger.info(f"Mission completed: {session.mission.name} ({reason}), mode unlocked")
         publish_system_event("mission.completed", {
             "mission_name": session.mission.name,
             "mission_id": session.mission_id,
@@ -1343,6 +1430,9 @@ class MissionEngine:
                 })
         except Exception:
             pass
+
+        # Clear active session so new missions can start
+        self.active_session = None
 
         # Play mission complete audio on success
         if success:

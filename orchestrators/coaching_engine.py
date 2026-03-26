@@ -665,6 +665,14 @@ class CoachingEngine:
         # and by the time we enter WATCHING, hold time has already accumulated
         self.interpreter.reset_tracking()
 
+        # Set target behavior so interpreter is "sticky" on what we're looking for.
+        # This prevents classifier flicker (e.g., lie↔sit at boundary aspect ratios)
+        # from resetting the hold timer during the watching window.
+        trick_rules = self.interpreter.get_trick_rules(trick)
+        target_behavior = trick_rules.get('required_behavior')
+        if target_behavior and trick != 'speak':
+            self.interpreter.set_target_behavior(target_behavior)
+
         # Start listening for barks if speak trick
         if trick == 'speak':
             # Wait briefly to let any audio playback residue die down
@@ -678,7 +686,7 @@ class CoachingEngine:
 
         self.current_session.command_time = time.time()
         self.fsm_state = CoachState.WATCHING
-        logger.info(f"Command given: {trick}")
+        logger.info(f"Command given: {trick} (target_behavior={target_behavior})")
 
     def _state_watching(self):
         """Watch for behavior response using BehaviorInterpreter (Layer 1)"""
@@ -875,6 +883,11 @@ class CoachingEngine:
         # Reset behavior tracking AFTER audio finishes
         self.interpreter.reset_tracking()
 
+        # Set target behavior for sticky detection (same as _state_command)
+        target_behavior = trick_rules.get('required_behavior')
+        if target_behavior and trick != 'speak':
+            self.interpreter.set_target_behavior(target_behavior)
+
         # Reset bark tracking for speak trick retry
         if trick == 'speak':
             # Wait briefly to let any audio playback residue die down
@@ -1017,6 +1030,7 @@ class CoachingEngine:
         """
         try:
             if not self.audio:
+                logger.warning(f"_play_audio({filename}): audio service not available")
                 return
 
             # Try custom voice via play_command when session has dog_id
@@ -1026,23 +1040,31 @@ class CoachingEngine:
                 command = filename.replace('.mp3', '').replace('.wav', '')
                 result = self.audio.play_command(command, dog_id=dog_id)
                 if result.get('success'):
+                    logger.info(f"Playing audio: {command} (dog={dog_id}, source={result.get('voice_source', '?')})")
                     if wait:
                         self.audio.wait_for_completion(timeout=timeout)
                     return
+                else:
+                    logger.warning(f"play_command failed for '{command}' (dog={dog_id}): {result.get('error', 'unknown')}")
 
-            # Fallback to direct file path
+            # Fallback to direct file path — check default/ subfolder too
             base = '/home/morgan/dogbot/VOICEMP3/talks'
             full_path = os.path.join(base, filename)
 
+            if not os.path.exists(full_path):
+                # Try default/ subfolder
+                full_path = os.path.join(base, 'default', filename)
+
             if os.path.exists(full_path):
+                logger.info(f"Playing audio (fallback): {full_path}")
                 self.audio.play_file(full_path)
                 if wait:
                     self.audio.wait_for_completion(timeout=timeout)
             else:
-                logger.warning(f"Audio file not found: {full_path}")
+                logger.warning(f"Audio file not found: {filename} (checked talks/ and talks/default/)")
 
         except Exception as e:
-            logger.error(f"Audio playback error: {e}")
+            logger.error(f"Audio playback error for '{filename}': {e}")
 
     def _dispense_treat(self):
         """Dispense a treat"""

@@ -1,0 +1,11 @@
+# Command speak sequence - plays speak command audio
+name: command_speak
+description: "Tell dog to speak/bark"
+
+steps:
+  - type: action
+    service: audio
+    command: play_file
+    params:
+      file: "speak.mp3"
+    description: "Play speak command"

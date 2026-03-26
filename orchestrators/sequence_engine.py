@@ -236,6 +236,30 @@ class SequenceEngine:
             sound = params.get('sound', 'good_dog')
             volume = params.get('volume')
             self.sfx.play_sound(sound, volume)
+        elif command == 'play_file':
+            # Play audio file directly via usb_audio service (for mission commands)
+            filename = params.get('file', '')
+            if filename:
+                try:
+                    from services.media.usb_audio import get_usb_audio_service
+                    audio = get_usb_audio_service()
+                    if audio:
+                        import os
+                        # Check talks/ directory first, then full path
+                        base = '/home/morgan/dogbot/VOICEMP3/talks'
+                        full_path = os.path.join(base, filename)
+                        if not os.path.exists(full_path):
+                            full_path = os.path.join(base, 'default', filename)
+                        if os.path.exists(full_path):
+                            audio.play_file(full_path)
+                            audio.wait_for_completion(timeout=5.0)
+                            self.logger.info(f"Played audio file: {full_path}")
+                        else:
+                            self.logger.warning(f"Audio file not found: {filename}")
+                    else:
+                        self.logger.warning("USB audio service not available")
+                except Exception as e:
+                    self.logger.error(f"Audio play_file error: {e}")
         elif command == 'stop':
             self.sfx.stop_sound()
         elif command == 'volume':

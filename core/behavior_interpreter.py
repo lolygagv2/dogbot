@@ -64,6 +64,13 @@ class BehaviorInterpreter:
         self._pending_count: int = 0
         self._debounce_threshold: int = 2  # Need 2 consecutive frames to switch (was 3)
 
+        # Target behavior: when set, the interpreter becomes "sticky" on the target.
+        # Once the target behavior is detected, it requires a much higher debounce
+        # threshold to switch away. This prevents classifier flicker (e.g., lie↔sit
+        # at boundary aspect ratios) from resetting the hold timer.
+        self._target_behavior: Optional[str] = None
+        self._target_debounce_threshold: int = 5  # Higher threshold to switch AWAY from target
+
         # Default confidence thresholds (MUST be defined before _load_trick_rules)
         self.confidence_thresholds = {
             'stand': 0.60,
@@ -114,7 +121,7 @@ class BehaviorInterpreter:
 
         return {
             'sit': {'required_behavior': 'sit', 'hold_duration_sec': 1.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.65, 'audio_command': 'sit.mp3'},
-            'laydown': {'required_behavior': 'lie', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'lie_down.mp3'},
+            'laydown': {'required_behavior': 'lie', 'hold_duration_sec': 1.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'lie_down.mp3'},
             'come': {'required_behavior': 'stand', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.65, 'audio_command': 'come.mp3'},
             'spin': {'required_behavior': 'spin', 'hold_duration_sec': 0.3, 'detection_window_sec': 15, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'spin.mp3'},
             'speak': {'required_behavior': 'bark', 'hold_duration_sec': 0, 'detection_window_sec': 5, 'alternative_behaviors': [], 'confidence_threshold': 0.60, 'audio_command': 'speak.mp3', 'min_barks': 1, 'max_barks': 2},
@@ -191,7 +198,16 @@ class BehaviorInterpreter:
                             self._pending_confidence = confidence
                             self._pending_count = 1
 
-                        if self._pending_count >= self._debounce_threshold:
+                        # Use higher debounce threshold when switching AWAY from target
+                        # This makes the interpreter "sticky" on the target behavior,
+                        # preventing classifier flicker from resetting hold timer
+                        effective_threshold = self._debounce_threshold
+                        if (self._target_behavior and
+                                self._last_behavior == self._target_behavior and
+                                behavior != self._target_behavior):
+                            effective_threshold = self._target_debounce_threshold
+
+                        if self._pending_count >= effective_threshold:
                             # Confirmed behavior change
                             prev = self._last_behavior
                             self._last_behavior = behavior
@@ -213,6 +229,25 @@ class BehaviorInterpreter:
 
                 self._last_update_time = now
 
+    def set_target_behavior(self, behavior: Optional[str]):
+        """Set the target behavior for sticky detection.
+
+        When set, the interpreter requires a much higher debounce threshold
+        to switch AWAY from the target behavior. This prevents classifier
+        flicker (e.g., lie↔sit at boundary aspect ratios) from resetting
+        the hold timer during coaching/mission watching.
+
+        Args:
+            behavior: Target behavior name (e.g., 'lie', 'sit', 'stand') or None to clear
+        """
+        with self._lock:
+            old = self._target_behavior
+            self._target_behavior = behavior
+            if behavior:
+                logger.info(f"Target behavior set: {behavior} (sticky debounce={self._target_debounce_threshold})")
+            elif old:
+                logger.info(f"Target behavior cleared (was: {old})")
+
     def reset_tracking(self):
         """
         Reset behavior tracking state.
@@ -220,6 +255,7 @@ class BehaviorInterpreter:
         Call this when starting a new coaching session to prevent false
         positives from accumulated hold time before the session started.
         Also records timestamp to filter out stale threaded events.
+        Clears target behavior.
         """
         with self._lock:
             old_behavior = self._last_behavior
@@ -231,6 +267,7 @@ class BehaviorInterpreter:
             self._pending_behavior = None
             self._pending_count = 0
             self._pending_confidence = 0.0
+            self._target_behavior = None
             self._reset_timestamp = time.time()  # Events before this are stale
             logger.debug(f"Reset tracking (was: {old_behavior}, held: {old_hold:.1f}s) @ {self._reset_timestamp:.3f}")
 
@@ -320,6 +357,7 @@ class BehaviorInterpreter:
                 'confidence': self._last_confidence,
                 'hold_duration': hold,
                 'last_update': self._last_update_time,
+                'target_behavior': self._target_behavior,
                 'tricks_defined': list(self.trick_rules.keys()),
                 'thresholds': self.confidence_thresholds,
             }

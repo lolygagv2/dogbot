@@ -1,0 +1,11 @@
+# Call dog sequence - plays come/come_here audio
+name: call_dog
+description: "Call dog to approach the robot"
+
+steps:
+  - type: action
+    service: audio
+    command: play_file
+    params:
+      file: "come.mp3"
+    description: "Play come here command"

@@ -6,7 +6,7 @@ description: Deploy updated Python code to the WIM-Z Raspberry Pi robot. Use whe
 # WIM-Z Raspberry Pi Deployment
 
 ## Connection
-- **Host:** morgan@treatbot1 (check local network or use hostname `wimz.local`)
+- **Host:** morgan@treatbot2 (check local network or use hostname `wimz.local`)
 - **Project path:** `/home/morgan/dogbot/`
 - **Service name:** `treatbot`
 
@@ -18,22 +18,22 @@ description: Deploy updated Python code to the WIM-Z Raspberry Pi robot. Use whe
 ## Deploy Commands
 ```bash
 # Sync changed files (dry-run first)
-rsync -avz --dry-run --exclude='__pycache__' --exclude='*.pyc' --exclude='data/' --exclude='.git/' ./ morgan@treatbot1:/home/morgan/dogbot/
+rsync -avz --dry-run --exclude='__pycache__' --exclude='*.pyc' --exclude='data/' --exclude='.git/' ./ morgan@treatbot2:/home/morgan/dogbot/
 
 # Actual deploy (remove --dry-run after confirming)
-rsync -avz --exclude='__pycache__' --exclude='*.pyc' --exclude='data/' --exclude='.git/' ./ morgan@treatbot1:/home/morgan/dogbot/
+rsync -avz --exclude='__pycache__' --exclude='*.pyc' --exclude='data/' --exclude='.git/' ./ morgan@treatbot2:/home/morgan/dogbot/
 ```
 
 ## Post-Deploy
 ```bash
 # Restart the service
-ssh morgan@treatbot1 'sudo systemctl restart treatbot'
+ssh morgan@treatbot2 'sudo systemctl restart treatbot'
 
 # Watch logs for errors
-ssh morgan@treatbot1 'journalctl -u treatbot -f --no-pager -n 50'
+ssh morgan@treatbot2 'journalctl -u treatbot -f --no-pager -n 50'
 
 # Quick health check
-ssh morgan@treatbot1 'curl -s http://localhost:8000/health'
+ssh morgan@treatbot2 'curl -s http://localhost:8000/health'
 ```
 
 ## NEVER Deploy
@@ -46,10 +46,10 @@ ssh morgan@treatbot1 'curl -s http://localhost:8000/health'
 ## Emergency Rollback
 ```bash
 # If deploy breaks something, restore from git
-ssh morgan@treatbot1 'cd /home/morgan/dogbot && git checkout -- <broken_file>'
+ssh morgan@treatbot2 'cd /home/morgan/dogbot && git checkout -- <broken_file>'
 
 # Or restart with last known good state
-ssh morgan@treatbot1 'sudo systemctl restart treatbot'
+ssh morgan@treatbot2 'sudo systemctl restart treatbot'
 ```
 
 ## Key Service Files

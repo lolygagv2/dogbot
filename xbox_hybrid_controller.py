@@ -944,15 +944,36 @@ class XboxHybridControllerFixed:
             turn = -self.state.left_x * self.MAX_SPEED * self.TURN_SPEED_FACTOR
 
             # Tank drive mixing
-            left_speed = int(forward - turn)
-            right_speed = int(forward + turn)
-
-            # DEBUG: Log raw joystick to motor conversion (always log when moving)
-            logger.debug(f"JOY Y={self.state.left_y:.2f} -> L={left_speed} R={right_speed}")
+            left_speed = forward - turn
+            right_speed = forward + turn
 
             # Clamp to valid range
             left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
             right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
+
+            # Ensure minimum motor power during diagonal movement.
+            # On carpet, if one motor drops too low it stalls while the
+            # other spins — robot pivots instead of driving diagonally.
+            # Scale both motors up proportionally so the weaker one stays
+            # at MIN_DIAGONAL_SPEED while preserving the turn ratio.
+            MIN_DIAGONAL_SPEED = self.MAX_SPEED * 0.35  # 35% of max
+            if left_speed != 0 and right_speed != 0:
+                # Both motors active (diagonal move) — check the weaker one
+                min_mag = min(abs(left_speed), abs(right_speed))
+                max_mag = max(abs(left_speed), abs(right_speed))
+                if 0 < min_mag < MIN_DIAGONAL_SPEED and max_mag > 0:
+                    scale = MIN_DIAGONAL_SPEED / min_mag
+                    left_speed *= scale
+                    right_speed *= scale
+                    # Re-clamp after scaling
+                    left_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, left_speed))
+                    right_speed = max(-self.MAX_SPEED, min(self.MAX_SPEED, right_speed))
+
+            left_speed = int(left_speed)
+            right_speed = int(right_speed)
+
+            # DEBUG: Log raw joystick to motor conversion (always log when moving)
+            logger.debug(f"JOY Y={self.state.left_y:.2f} X={self.state.left_x:.2f} -> L={left_speed} R={right_speed}")
 
         # Rate limiting - 20Hz for motor commands (faster response)
         current_time = time.time()

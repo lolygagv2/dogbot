@@ -73,6 +73,7 @@ class WIMZAudioTrack(MediaStreamTrack):
         # Audio capture stream
         self._stream: Optional[sd.InputStream] = None
         self._capture_thread: Optional[threading.Thread] = None
+        self._stream_lock = threading.Lock()  # Protects _stream start/stop from concurrent calls
 
         # Subscribe to mode changes for auto-mute
         self.state.subscribe('mode_change', self._on_mode_change)
@@ -199,37 +200,42 @@ class WIMZAudioTrack(MediaStreamTrack):
         """
         Pause audio capture to release USB mic for bark detection.
         Track continues sending silence via recv() (self._stream is None path).
+        Thread-safe: multiple callers (audio_track listener + main_treatbot handler)
+        may call this concurrently on mode change.
         """
-        if self._stream is not None:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception as e:
-                self.logger.warning(f"Error stopping audio stream for pause: {e}")
-            self._stream = None
-            # Drain the queue so stale audio isn't sent on resume
-            while not self._audio_queue.empty():
+        with self._stream_lock:
+            if self._stream is not None:
                 try:
-                    self._audio_queue.get_nowait()
-                except queue.Empty:
-                    break
-            self.logger.info("Audio capture paused (mic released for bark detection)")
-        else:
-            self.logger.debug("Audio capture already paused")
+                    self._stream.stop()
+                    self._stream.close()
+                except Exception as e:
+                    self.logger.warning(f"Error stopping audio stream for pause: {e}")
+                self._stream = None
+                # Drain the queue so stale audio isn't sent on resume
+                while not self._audio_queue.empty():
+                    try:
+                        self._audio_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                self.logger.info("Audio capture paused (mic released for bark detection)")
+            else:
+                self.logger.debug("Audio capture already paused")
 
     def resume_capture(self):
         """
         Resume audio capture after bark detection releases the mic.
         Re-opens the USB mic via sounddevice.
+        Thread-safe: uses same lock as pause_capture().
         """
-        if self._stream is None and self._running:
-            self._start_capture()
-            if self._stream is not None:
-                self.logger.info("Audio capture resumed (mic reclaimed from bark detection)")
+        with self._stream_lock:
+            if self._stream is None and self._running:
+                self._start_capture()
+                if self._stream is not None:
+                    self.logger.info("Audio capture resumed (mic reclaimed from bark detection)")
+                else:
+                    self.logger.warning("Audio capture resume failed - stream could not start")
             else:
-                self.logger.warning("Audio capture resume failed - stream could not start")
-        else:
-            self.logger.debug("Audio capture already running")
+                self.logger.debug("Audio capture already running")
 
     async def recv(self) -> AudioFrame:
         """
