@@ -21,3 +21,10 @@ venv/
 .venv/
 VOICEMP3/songs/DOG DESENSITISATION*
 .env
+VOICEMP3/
+__pycache__/
+logs/
+hailort*
+captures/
+photos/
+recordings/
