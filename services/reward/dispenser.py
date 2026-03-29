@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
-Treat dispensing service
-Uses ServoController carousel servo to dispense treats
-This is for testing and development purposes
+Treat dispensing service — NEMA 17 stepper motor + TMC2209 driver
+
+Replaces the old servo-based carousel. Uses UART to configure TMC2209
+(current limits, microstepping, StealthChop) then GPIO for STEP/DIR/EN.
+
+Anti-jam: every dispense checks for stall via step count timing.
+If resistance is detected, reverses and retries (mimics manual tap-to-clear).
 """
 
 import threading
+import serial
+import struct
 import time
 import logging
 from typing import Dict, Any, Optional
@@ -15,15 +21,14 @@ import lgpio
 from core.bus import get_bus, publish_reward_event
 from core.state import get_state
 from core.store import get_store
-from core.hardware.servo_controller import get_servo_controller
 from config.config_loader import get_config
 from config.pins import TreatBotPins
 
 
 class DispenserService:
     """
-    Treat dispensing service using carousel servo
-    Tracks treats dispensed per dog and implements portion control
+    Treat dispensing service using NEMA 17 stepper + TMC2209 driver.
+    Tracks treats dispensed per dog and implements portion control.
     """
 
     def __init__(self):
@@ -32,30 +37,41 @@ class DispenserService:
         self.store = get_store()
         self.logger = logging.getLogger('DispenserService')
 
-        # Servo controller
-        self.servo = None
-        self.servo_initialized = False
-
-        # Vibrator motor (GPIO16 via MOSFET)
+        # Hardware handles
         self.gpio_chip = None
-        self.vibrator_pin = TreatBotPins.VIBRATOR
-        self.vibrator_initialized = False
+        self.uart = None
+        self.initialized = False
+
+        # GPIO pins
+        self.step_pin = TreatBotPins.STEPPER_STEP
+        self.dir_pin = TreatBotPins.STEPPER_DIR
+        self.en_pin = TreatBotPins.STEPPER_EN
+        self.uart_port = TreatBotPins.STEPPER_UART
+
+        # Config from YAML
+        robot_config = get_config()
+        self.steps_per_slot = robot_config.dispenser.steps_per_slot
+        self.step_delay = robot_config.dispenser.step_delay
+        self.max_retries = robot_config.dispenser.max_retries
+        self.reverse_steps = robot_config.dispenser.reverse_steps
+        self.irun = robot_config.dispenser.irun
+        self.ihold = robot_config.dispenser.ihold
+        self.microstepping = robot_config.dispenser.microstepping
+        self.sgthrs = getattr(robot_config.dispenser, 'sgthrs', 50)
+
+        # Direction constants
+        self.CW = 1   # Clockwise = dispense direction
+        self.CCW = 0   # Counter-clockwise = reverse/unjam
 
         # Dispensing state
         self.treats_dispensed_today = 0
         self.last_dispense_time = 0.0
-        self.min_dispense_interval = 0.0  # TESTING: removed cooldown - was 1.0 seconds between dispenses
-        self.daily_limit = 300  # max treats per day
+        self.min_dispense_interval = 0.0
+        self.daily_limit = 300
 
         # Per-dog tracking
-        self.dog_treat_counts = {}  # dog_id -> count
-        self.dog_cooldowns = {}     # dog_id -> last_dispense_time
-
-        # Dispensing parameters - loaded from robot-specific config
-        robot_config = get_config()
-        self.dispense_pulse = 1300  # NOT USED? microseconds - legacy value
-        self.dispense_duration = robot_config.dispenser.dispense_duration  # Robot-specific duration
-        self.vibrator_enabled = robot_config.dispenser.vibrator_enabled
+        self.dog_treat_counts = {}
+        self.dog_cooldowns = {}
 
         # Treat counter — persisted to SQLite
         self.treats_loaded = 0
@@ -64,56 +80,245 @@ class DispenserService:
 
         # Thread safety
         self._dispense_lock = threading.Lock()
+        self._refill_active = False
+        self._refill_stop_requested = False
 
-    def initialize(self) -> bool:
-        """Initialize servo controller and vibrator motor"""
-        # Servo init
-        if not self.servo_initialized:
-            try:
-                self.servo = get_servo_controller()
-                if self.servo.is_initialized():
-                    self.servo_initialized = True
-                    self.logger.info("Treat dispenser initialized")
+    # =========================================================================
+    # TMC2209 UART
+    # =========================================================================
+
+    def _tmc_crc(self, data):
+        """Calculate TMC2209 CRC8"""
+        crc = 0
+        for byte in data:
+            for _ in range(8):
+                if (crc >> 7) ^ (byte & 0x01):
+                    crc = ((crc << 1) ^ 0x07) & 0xFF
                 else:
-                    self.logger.error("Servo controller initialization failed")
-                    return False
-            except Exception as e:
-                self.logger.error(f"Dispenser initialization error: {e}")
-                return False
+                    crc = (crc << 1) & 0xFF
+                byte >>= 1
+        return crc
 
-        # Vibrator init — only once (skip if disabled in config)
-        if not self.vibrator_enabled:
-            self.logger.info("Vibrator motor disabled in config")
-        elif not self.vibrator_initialized and self.gpio_chip is None:
-            try:
-                self.gpio_chip = lgpio.gpiochip_open(0)
-                lgpio.gpio_claim_output(self.gpio_chip, self.vibrator_pin, lgpio.SET_PULL_NONE)
-                lgpio.gpio_write(self.gpio_chip, self.vibrator_pin, 0)  # Start OFF
-                self.vibrator_initialized = True
-                self.logger.info(f"Vibrator motor initialized on GPIO{self.vibrator_pin}")
-            except Exception as e:
-                self.logger.warning(f"Vibrator motor init failed (dispensing will work without it): {e}")
-                self.vibrator_initialized = False
+    def _tmc_write(self, reg, value):
+        """Write 32-bit value to TMC2209 register"""
+        if self.uart is None:
+            return
+        datagram = bytes([0x05, 0x00, reg | 0x80]) + struct.pack('>I', value)
+        datagram += bytes([self._tmc_crc(datagram)])
+        self.uart.write(datagram)
+        time.sleep(0.005)
+        self.uart.reset_input_buffer()
+
+    def _tmc_read(self, reg):
+        """Read 32-bit value from TMC2209 register"""
+        if self.uart is None:
+            return None
+        self.uart.reset_input_buffer()
+        datagram = bytes([0x05, 0x00, reg])
+        datagram += bytes([self._tmc_crc(datagram)])
+        self.uart.write(datagram)
+        time.sleep(0.01)
+        response = self.uart.read(12)
+        if len(response) >= 12:
+            return struct.unpack('>I', response[7:11])[0]
+        return None
+
+    def _configure_tmc(self):
+        """Configure TMC2209 for safe carousel operation with StallGuard"""
+        # MRES lookup: microstepping → register value
+        mres_map = {256: 0, 128: 1, 64: 2, 32: 3, 16: 4, 8: 5, 4: 6, 2: 7, 1: 8}
+        mres = mres_map.get(self.microstepping, 5)
+
+        # GCONF: I_scale_analog=1, mstep_reg_select=1 (UART overrides MS pins)
+        self._tmc_write(0x00, 0x00000081)
+
+        # IHOLD_IRUN: configured current with gradual ramp-down
+        ihold_irun = (6 << 16) | (self.irun << 8) | self.ihold
+        self._tmc_write(0x10, ihold_irun)
+
+        # CHOPCONF: configured microstepping, vsense=0 (high current range)
+        chopconf = (mres << 24) | 0x00000053
+        self._tmc_write(0x6C, chopconf)
+
+        # TPOWERDOWN: time before current drops to IHOLD
+        self._tmc_write(0x11, 20)
+
+        # SGTHRS: StallGuard sensitivity (0-255, higher = more sensitive)
+        self._tmc_write(0x40, self.sgthrs)
+
+        # TCOOLTHRS: velocity threshold for StallGuard activation
+        # Set very high so StallGuard is active even at our low speed (~3 RPM)
+        self._tmc_write(0x14, 0xFFFFF)
+
+        self.logger.info(
+            f"TMC2209 configured: IRUN={self.irun}, IHOLD={self.ihold}, "
+            f"{self.microstepping}x microstep, vsense=0, SGTHRS={self.sgthrs}"
+        )
+
+    # =========================================================================
+    # GPIO MOTOR CONTROL
+    # =========================================================================
+
+    def _enable_motor(self):
+        """Enable TMC2209 (EN LOW)"""
+        lgpio.gpio_write(self.gpio_chip, self.en_pin, 0)
+        time.sleep(0.05)
+
+    def _disable_motor(self):
+        """Disable TMC2209 (EN HIGH) — motor free-spins"""
+        lgpio.gpio_write(self.gpio_chip, self.en_pin, 1)
+
+    def _step(self, steps, direction, delay=None):
+        """
+        Step the motor. Checks _abort flag every step — aborts immediately if set.
+        """
+        if delay is None:
+            delay = self.step_delay
+
+        lgpio.gpio_write(self.gpio_chip, self.dir_pin, direction)
+        time.sleep(0.001)
+
+        for i in range(steps):
+            if self._abort or self._refill_stop_requested:
+                return False
+            lgpio.gpio_write(self.gpio_chip, self.step_pin, 1)
+            time.sleep(delay)
+            lgpio.gpio_write(self.gpio_chip, self.step_pin, 0)
+            time.sleep(delay)
 
         return True
 
-    def dispense_treat(self, dog_id: Optional[str] = None, reason: str = "manual",
-                      behavior: str = "", confidence: float = 0.0) -> bool:
-        """
-        Dispense a single treat
+    # =========================================================================
+    # INITIALIZATION
+    # =========================================================================
 
-        Args:
-            dog_id: ID of dog receiving treat (optional)
-            reason: Reason for dispensing (manual, reward, etc.)
-            behavior: Behavior that triggered reward
-            confidence: Confidence of behavior detection
+    def initialize(self) -> bool:
+        """Initialize UART + GPIO for stepper dispenser"""
+        if self.initialized:
+            return True
+
+        try:
+            # Open UART to TMC2209
+            try:
+                self.uart = serial.Serial(
+                    port=self.uart_port,
+                    baudrate=115200,
+                    timeout=0.2
+                )
+                self.uart.reset_input_buffer()
+                self.logger.info(f"TMC2209 UART opened: {self.uart_port}")
+            except Exception as e:
+                self.logger.warning(f"TMC2209 UART failed (will run without current config): {e}")
+                self.uart = None
+
+            # Configure TMC2209 via UART BEFORE enabling motor
+            if self.uart:
+                # Verify chip responds
+                ioin = self._tmc_read(0x06)
+                if ioin is not None:
+                    version = (ioin >> 24) & 0xFF
+                    self.logger.info(f"TMC2209 detected: version=0x{version:02X}")
+                    self._configure_tmc()
+                else:
+                    self.logger.warning("TMC2209 not responding on UART — using hardware defaults")
+
+            # Initialize GPIO
+            self.gpio_chip = lgpio.gpiochip_open(0)
+            lgpio.gpio_claim_output(self.gpio_chip, self.step_pin)
+            lgpio.gpio_claim_output(self.gpio_chip, self.dir_pin)
+            lgpio.gpio_claim_output(self.gpio_chip, self.en_pin)
+
+            # Start disabled
+            lgpio.gpio_write(self.gpio_chip, self.en_pin, 1)
+            lgpio.gpio_write(self.gpio_chip, self.step_pin, 0)
+            lgpio.gpio_write(self.gpio_chip, self.dir_pin, self.CW)
+
+            self.initialized = True
+            self.logger.info(
+                f"Stepper dispenser initialized: "
+                f"STEP=GPIO{self.step_pin}, DIR=GPIO{self.dir_pin}, EN=GPIO{self.en_pin}, "
+                f"{self.steps_per_slot} steps/slot"
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Dispenser initialization error: {e}")
+            return False
+
+    # =========================================================================
+    # DISPENSING
+    # =========================================================================
+
+    # Max time for a single dispense
+    DISPENSE_TIMEOUT = 10.0
+
+    # Abort flag — set by emergency_stop() to cancel any in-progress operation
+    _abort = False
+
+    def emergency_stop(self):
+        """Immediately stop all motor activity. Called from any thread."""
+        self._abort = True
+        self._refill_stop_requested = True
+        self._disable_motor()
+        self.logger.warning("EMERGENCY STOP — motor disabled")
+
+    def _rotate_carousel(self) -> bool:
+        """
+        Dispense one treat with post-step preventive nudge.
+
+        StallGuard cannot detect jams at our speed (~3 RPM).
+        Instead, every dispense does a reverse-forward nudge AFTER stepping
+        to clear any treat that got stuck mid-transition.
+
+        Sequence:
+        1. Forward 137 steps (advance one slot)
+        2. Pause (let treat fall by gravity)
+        3. Reverse 40 steps (loosen anything stuck)
+        4. Forward 40 steps (re-seat to correct position)
+        """
+        try:
+            self._abort = False
+            self._refill_stop_requested = False
+            self._enable_motor()
+            time.sleep(0.05)
+
+            # 1. Advance one slot
+            self._step(self.steps_per_slot, self.CW, delay=self.step_delay)
+            time.sleep(0.2)  # Let treat fall
+
+            if self._abort:
+                self._disable_motor()
+                return False
+
+            # 2. Post-dispense nudge — loosen any stuck treat
+            self._step(self.reverse_steps, self.CCW, delay=0.004)
+            time.sleep(0.1)
+            self._step(self.reverse_steps, self.CW, delay=0.004)
+
+            self._disable_motor()
+            return True
+
+        except Exception as e:
+            self._disable_motor()
+            self.logger.error(f"Carousel rotation error: {e}")
+            return False
+
+    def dispense_treat(self, dog_id: Optional[str] = None, reason: str = "manual",
+                       behavior: str = "", confidence: float = 0.0) -> bool:
+        """
+        Dispense a single treat.
 
         Returns:
             bool: True if treat was dispensed successfully
         """
-        with self._dispense_lock:
+        acquired = self._dispense_lock.acquire(timeout=self.DISPENSE_TIMEOUT + 2)
+        if not acquired:
+            self.logger.error("Dispense lock timeout — previous operation stuck, forcing motor disable")
+            self._disable_motor()
+            return False
+        try:
             # Auto-initialize if not already done
-            if not self.servo_initialized:
+            if not self.initialized:
                 self.logger.info("Auto-initializing dispenser on first use")
                 if not self.initialize():
                     self.logger.error("Dispenser auto-initialization failed")
@@ -130,19 +335,10 @@ class DispenserService:
                 self.logger.warning("Dispense too soon after last dispense")
                 return False
 
-            # Check dog-specific cooldown - TESTING: disabled for troubleshooting
-            # if dog_id and dog_id in self.dog_cooldowns:
-            #     dog_cooldown = 20.0  # seconds between treats for same dog
-            #     if now - self.dog_cooldowns[dog_id] < dog_cooldown:
-            #         self.logger.warning(f"Dog {dog_id} on cooldown")
-            #         return False
-
             try:
-                # Dispense treat using proven method
                 success = self._rotate_carousel()
 
                 if success:
-                    # Update counters
                     self.treats_dispensed_today += 1
                     self.last_dispense_time = now
                     self._decrement_treat_counter()
@@ -151,7 +347,6 @@ class DispenserService:
                         self.dog_treat_counts[dog_id] = self.dog_treat_counts.get(dog_id, 0) + 1
                         self.dog_cooldowns[dog_id] = now
 
-                    # Log to store
                     self.store.log_reward(
                         dog_id=dog_id,
                         behavior=behavior,
@@ -161,7 +356,6 @@ class DispenserService:
                         mission_name=self.state.mission.name
                     )
 
-                    # Publish event
                     publish_reward_event('treat_dispensed', {
                         'dog_id': dog_id,
                         'reason': reason,
@@ -174,7 +368,6 @@ class DispenserService:
 
                     self.logger.info(f"Treat dispensed for {dog_id or 'unknown'} ({reason})")
                     return True
-
                 else:
                     self.logger.error("Carousel rotation failed")
                     return False
@@ -182,177 +375,219 @@ class DispenserService:
             except Exception as e:
                 self.logger.error(f"Dispense error: {e}")
                 return False
-
-    def _vibrator_on(self):
-        """Turn vibrator motor ON"""
-        if not self.vibrator_enabled:
-            return
-        if self.vibrator_initialized:
-            try:
-                lgpio.gpio_write(self.gpio_chip, self.vibrator_pin, 1)
-                self.logger.debug("VIBRATOR: GPIO16 HIGH")
-            except Exception as e:
-                self.logger.warning(f"Vibrator ON failed: {e}")
-
-    def _vibrator_off(self):
-        """Turn vibrator motor OFF"""
-        if self.vibrator_initialized:
-            try:
-                lgpio.gpio_write(self.gpio_chip, self.vibrator_pin, 0)
-                self.logger.debug("VIBRATOR: GPIO16 LOW")
-            except Exception as e:
-                self.logger.warning(f"Vibrator OFF failed: {e}")
-
-    def _rotate_carousel(self) -> bool:
-        """Rotate carousel to dispense one treat with vibration assist"""
-        try:
-            # 1. Pre-shake to loosen stuck treats
-            self._vibrator_on()
-            time.sleep(0.3)
-            self._vibrator_off()
-            time.sleep(0.1)  # Let power settle before servo
-
-            # 2. Rotate carousel (vibrator OFF during rotation)
-            success = self.servo.rotate_winch('slow', self.dispense_duration)
-            time.sleep(0.1)  # Let servo fully stop
-
-            # 3. Post-vibrate to help treat fall
-            self._vibrator_on()
-            time.sleep(0.5)
-            self._vibrator_off()
-
-            return success
-
-        except Exception as e:
-            self._vibrator_off()  # Safety: ensure vibrator stops on error
-            self.logger.error(f"Carousel rotation error: {e}")
-            return False
+        finally:
+            self._dispense_lock.release()
 
     def anti_jam_wiggle(self) -> bool:
-        """Anti-jam wiggle sequence: vibrate + carousel wiggle to clear jams"""
-        with self._dispense_lock:
-            if not self.servo_initialized:
-                self.logger.error("DISPENSER_UNJAM: Servo not initialized")
+        """Anti-jam sequence: reverse, pause, forward with extra steps to clear."""
+        acquired = self._dispense_lock.acquire(timeout=self.DISPENSE_TIMEOUT + 2)
+        if not acquired:
+            self.logger.error("DISPENSER_UNJAM: Lock timeout")
+            self._disable_motor()
+            return False
+        try:
+            if not self.initialized:
+                self.logger.error("DISPENSER_UNJAM: Not initialized")
                 return False
             return self._anti_jam_wiggle_inner()
+        finally:
+            self._dispense_lock.release()
 
     def _anti_jam_wiggle_inner(self) -> bool:
-        """Inner anti-jam logic (must be called with _dispense_lock held)"""
-        self.logger.info("DISPENSER_UNJAM: Starting anti-jam wiggle sequence")
+        """Manual unjam: L1 gentle reverse-forward (5s) then L2 aggressive shake (3s)"""
+        self.logger.info("DISPENSER_UNJAM: Starting — L1 (5s)")
         try:
-            for cycle in range(3):
-                # Vibrate
-                self._vibrator_on()
-                time.sleep(0.4)
+            self._abort = False
+            self._refill_stop_requested = False
+            self._enable_motor()
+            time.sleep(0.1)
 
-                # Forward rotation
-                self.servo.rotate_winch('slow', 0.3)
-                time.sleep(0.2)
+            # L1: gentle reverse-forward for 5 seconds
+            deadline = time.time() + 5.0
+            cycle = 0
+            while time.time() < deadline and not self._abort:
+                cycle += 1
+                self._step(self.reverse_steps, self.CCW, delay=0.006)
+                time.sleep(0.15)
+                if self._abort:
+                    break
+                self._step(self.steps_per_slot + self.reverse_steps, self.CW, delay=self.step_delay)
+                time.sleep(0.15)
+                self.logger.info(f"Unjam L1 cycle {cycle}")
 
-                # Brief reverse (stop vibrator during reverse)
-                self._vibrator_off()
-                time.sleep(0.1)
+            if self._abort:
+                self._disable_motor()
+                return False
 
-                # Vibrate again
-                self._vibrator_on()
-                time.sleep(0.3)
+            # L2: aggressive shaking for 3 seconds
+            self.logger.info("DISPENSER_UNJAM: Escalating — L2 (3s)")
+            deadline = time.time() + 3.0
+            cycle = 0
+            while time.time() < deadline and not self._abort:
+                cycle += 1
+                self._step(self.reverse_steps * 3, self.CCW, delay=0.003)
+                time.sleep(0.08)
+                if self._abort:
+                    break
+                self._step(self.reverse_steps * 3, self.CW, delay=0.003)
+                time.sleep(0.08)
+                self.logger.info(f"Unjam L2 shake {cycle}")
 
-                self.logger.info(f"DISPENSER_UNJAM: Wiggle cycle {cycle + 1}/3 complete")
+            if not self._abort:
+                # Final forward to clear
+                self._step(self.steps_per_slot + 20, self.CW, delay=0.006)
+                time.sleep(0.15)
 
-            # Final forward rotation to clear
-            self.servo.rotate_winch('slow', self.dispense_duration)
-            time.sleep(0.3)
-            self._vibrator_off()
-
-            self.logger.info("DISPENSER_UNJAM: Anti-jam sequence complete")
-            publish_reward_event('unjam_complete', {
-                'timestamp': time.time()
-            }, 'dispenser_service')
+            self._disable_motor()
+            self.logger.info("DISPENSER_UNJAM: Sequence complete")
+            publish_reward_event('unjam_complete', {'timestamp': time.time()}, 'dispenser_service')
             return True
 
         except Exception as e:
-            self._vibrator_off()  # Safety
-            self.logger.error(f"Anti-jam wiggle error: {e}")
+            self._disable_motor()
+            self.logger.error(f"Anti-jam error: {e}")
             return False
 
+    def refill_step(self) -> bool:
+        """
+        Single refill step — keeps motor enabled between calls.
+        Checks for stall and runs inline unjam if jammed.
+        Checks _refill_stop_requested for instant stop.
+        No treat counter decrement (refill, not dispensing).
+        """
+        # Check stop/abort FIRST — never restart after a stop
+        if self._abort or self._refill_stop_requested:
+            self._disable_motor()
+            self._refill_active = False
+            return False
+
+        if not self.initialized:
+            if not self.initialize():
+                return False
+
+        if not self._refill_active:
+            self._enable_motor()
+            time.sleep(0.05)
+            self._refill_active = True
+
+        self._step(self.steps_per_slot, self.CW, delay=0.004)
+
+        if self._abort or self._refill_stop_requested:
+            self._disable_motor()
+            self._refill_active = False
+            return False
+        return True
+
+    def refill_continuous(self):
+        """
+        Continuous refill loop — runs until emergency_stop() is called.
+        Runs server-side in a background thread. The Xbox controller just
+        polls button state and calls /treat/stop when released.
+        """
+        if not self.initialized:
+            if not self.initialize():
+                return
+
+        self._abort = False
+        self._refill_stop_requested = False
+        self._refill_active = True
+        self._enable_motor()
+        time.sleep(0.05)
+
+        self.logger.info("Refill continuous: started")
+        try:
+            while not self._abort and not self._refill_stop_requested:
+                self._step(self.steps_per_slot, self.CW, delay=0.004)
+                # _step checks _abort every step, so it will exit fast
+        except Exception as e:
+            self.logger.error(f"Refill continuous error: {e}")
+        finally:
+            self._disable_motor()
+            self._refill_active = False
+            self.logger.info("Refill continuous: stopped")
+
+    def refill_stop(self):
+        """Stop refill mode — disable motor immediately."""
+        self._refill_stop_requested = True
+        self._disable_motor()
+        self._refill_active = False
+        self.logger.info("Refill stopped")
+
+    def refill_mode(self, total_slots: int = 56) -> int:
+        """
+        Refill mode: step through slots slowly for loading treats.
+        Returns number of slots advanced.
+        """
+        with self._dispense_lock:
+            if not self.initialized:
+                if not self.initialize():
+                    return 0
+
+            self._enable_motor()
+            time.sleep(0.1)
+            advanced = 0
+
+            try:
+                for slot in range(total_slots):
+                    self._step(self.steps_per_slot, self.CW)
+                    advanced += 1
+                    time.sleep(1.5)  # Pause for user to fill
+            except Exception as e:
+                self.logger.error(f"Refill mode error at slot {advanced}: {e}")
+            finally:
+                self._disable_motor()
+
+            self.logger.info(f"Refill mode: advanced {advanced}/{total_slots} slots")
+            return advanced
+
     def dispense_multiple(self, count: int, dog_id: Optional[str] = None,
-                         reason: str = "manual") -> int:
-        """
-        Dispense multiple treats with pauses
-
-        Args:
-            count: Number of treats to dispense
-            dog_id: Dog receiving treats
-            reason: Reason for dispensing
-
-        Returns:
-            int: Number of treats successfully dispensed
-        """
+                          reason: str = "manual") -> int:
+        """Dispense multiple treats with pauses"""
         dispensed = 0
-        pause_between = 0.5  # seconds
-
         for i in range(count):
             if self.dispense_treat(dog_id, reason, f"multi_{i+1}"):
                 dispensed += 1
-                if i < count - 1:  # Don't pause after last treat
-                    time.sleep(pause_between)
+                if i < count - 1:
+                    time.sleep(0.5)
             else:
-                break  # Stop if dispense fails
-
+                break
         self.logger.info(f"Dispensed {dispensed}/{count} treats")
         return dispensed
 
     def can_dispense_for_dog(self, dog_id: str) -> bool:
         """Check if we can dispense a treat for a specific dog"""
-        if not self.servo_initialized:
+        if not self.initialized:
             return False
-
         if self.treats_dispensed_today >= self.daily_limit:
             return False
-
-        # Check dog-specific cooldown - TESTING: disabled for troubleshooting
-        now = time.time()
-        # if dog_id in self.dog_cooldowns:
-        #     dog_cooldown = 20.0  # seconds
-        #     if now - self.dog_cooldowns[dog_id] < dog_cooldown:
-        #         return False
-
         return True
 
+    # =========================================================================
+    # TREAT COUNTER (unchanged from servo version)
+    # =========================================================================
+
     def get_dog_treat_count(self, dog_id: str) -> int:
-        """Get number of treats dispensed for a specific dog today"""
         return self.dog_treat_counts.get(dog_id, 0)
 
     def reset_daily_counters(self) -> None:
-        """Reset daily treat counters (called at midnight)"""
         self.treats_dispensed_today = 0
         self.dog_treat_counts.clear()
         self.logger.info("Daily treat counters reset")
-
-        publish_reward_event('daily_reset', {
-            'timestamp': time.time()
-        }, 'dispenser_service')
+        publish_reward_event('daily_reset', {'timestamp': time.time()}, 'dispenser_service')
 
     def set_daily_limit(self, limit: int) -> None:
-        """Set daily treat limit"""
-        self.daily_limit = max(1, min(100, limit))  # Reasonable bounds
+        self.daily_limit = max(1, min(300, limit))
         self.logger.info(f"Daily limit set to {self.daily_limit}")
 
     def _load_treat_counter(self):
-        """Load treat counter from SQLite persistence"""
         stored = self.store.get_setting('treats_loaded')
-        if stored is not None:
-            self.treats_loaded = int(stored)
-        else:
-            self.treats_loaded = 0
+        self.treats_loaded = int(stored) if stored is not None else 0
         self.logger.info(f"Treat counter loaded: {self.treats_loaded} treats loaded")
 
     def _save_treat_counter(self):
-        """Persist treat counter to SQLite"""
         self.store.set_setting('treats_loaded', str(self.treats_loaded))
 
     def _decrement_treat_counter(self):
-        """Decrement treat counter after successful dispense, warn if low"""
         self.treats_loaded -= 1
         self.treats_dispensed_session += 1
         self._save_treat_counter()
@@ -375,11 +610,9 @@ class DispenserService:
 
     @property
     def treats_remaining(self) -> int:
-        """Get treats remaining — can go negative (never blocks dispensing)"""
         return self.treats_loaded
 
     def set_treat_count(self, count: int) -> None:
-        """Set the number of treats loaded (called when user refills)"""
         self.treats_loaded = max(0, count)
         self.treats_dispensed_session = 0
         self._save_treat_counter()
@@ -392,21 +625,22 @@ class DispenserService:
         }, 'dispenser_service')
 
     def reset_treat_counter(self) -> None:
-        """Reset treat counter to 0"""
         self.treats_loaded = 0
         self.treats_dispensed_session = 0
         self._save_treat_counter()
         self.logger.info("TREAT_COUNTER: Reset to 0")
 
     def test_dispense(self) -> bool:
-        """Test dispense (for calibration/testing)"""
         return self.dispense_treat(None, "test", "test")
 
+    # =========================================================================
+    # STATUS & CLEANUP
+    # =========================================================================
+
     def get_status(self) -> Dict[str, Any]:
-        """Get dispenser service status"""
-        return {
-            'initialized': self.servo_initialized,
-            'vibrator_initialized': self.vibrator_initialized,
+        status = {
+            'initialized': self.initialized,
+            'driver': 'stepper_tmc2209',
             'treats_dispensed_today': self.treats_dispensed_today,
             'daily_limit': self.daily_limit,
             'last_dispense_time': self.last_dispense_time,
@@ -416,6 +650,12 @@ class DispenserService:
             'treats_remaining': self.treats_remaining,
             'treats_low': self.treats_remaining < 5,
             'dog_treat_counts': self.dog_treat_counts.copy(),
+            'config': {
+                'steps_per_slot': self.steps_per_slot,
+                'step_delay': self.step_delay,
+                'irun': self.irun,
+                'microstepping': self.microstepping,
+            },
             'active_cooldowns': {
                 dog_id: max(0, 20.0 - (time.time() - last_time))
                 for dog_id, last_time in self.dog_cooldowns.items()
@@ -423,22 +663,51 @@ class DispenserService:
             }
         }
 
+        # Read TMC2209 diagnostics if UART available
+        if self.uart:
+            try:
+                drv_status = self._tmc_read(0x6F)  # DRV_STATUS register
+                if drv_status is not None:
+                    status['tmc2209'] = {
+                        'stall': bool(drv_status & (1 << 31)),
+                        'overtemp_warning': bool(drv_status & (1 << 26)),
+                        'overtemp_shutdown': bool(drv_status & (1 << 25)),
+                        'short_a': bool(drv_status & (1 << 27)),
+                        'short_b': bool(drv_status & (1 << 28)),
+                        'open_a': bool(drv_status & (1 << 29)),
+                        'open_b': bool(drv_status & (1 << 30)),
+                    }
+            except Exception:
+                pass
+
+        return status
+
     def cleanup(self) -> None:
-        """Clean shutdown — ensure vibrator is OFF"""
-        self._vibrator_off()
+        """Clean shutdown — disable motor, close GPIO and UART"""
         if self.gpio_chip is not None:
             try:
+                lgpio.gpio_write(self.gpio_chip, self.en_pin, 1)  # Disable motor
+                lgpio.gpio_write(self.gpio_chip, self.step_pin, 0)
                 lgpio.gpiochip_close(self.gpio_chip)
             except Exception:
                 pass
             self.gpio_chip = None
-        self.vibrator_initialized = False
+
+        if self.uart is not None:
+            try:
+                self.uart.close()
+            except Exception:
+                pass
+            self.uart = None
+
+        self.initialized = False
         self.logger.info("Dispenser service cleaned up")
 
 
 # Global dispenser service instance
 _dispenser_instance = None
 _dispenser_lock = threading.Lock()
+
 
 def get_dispenser_service() -> DispenserService:
     """Get the global dispenser service instance (singleton)"""
@@ -447,7 +716,6 @@ def get_dispenser_service() -> DispenserService:
         with _dispenser_lock:
             if _dispenser_instance is None:
                 _dispenser_instance = DispenserService()
-                # Auto-initialize the dispenser hardware
-                if not _dispenser_instance.servo_initialized:
+                if not _dispenser_instance.initialized:
                     _dispenser_instance.initialize()
     return _dispenser_instance

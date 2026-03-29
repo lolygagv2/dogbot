@@ -1092,6 +1092,77 @@ async def treat_unjam():
         logger.error(f"Treat unjam error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.post("/treat/stop")
+async def treat_stop():
+    """Emergency stop — immediately halt all dispenser motor activity."""
+    try:
+        dispenser = get_dispenser_service()
+        dispenser.emergency_stop()
+        return {"success": True, "message": "Dispenser stopped"}
+    except Exception as e:
+        logger.error(f"Treat stop error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/treat/refill/start")
+async def treat_refill_start():
+    """Start continuous refill mode in background. Call /treat/stop to stop."""
+    import asyncio
+    try:
+        dispenser = get_dispenser_service()
+        # Run refill loop in background thread
+        asyncio.get_event_loop().run_in_executor(None, dispenser.refill_continuous)
+        return {"success": True, "message": "Refill started — POST /treat/stop to stop"}
+    except Exception as e:
+        logger.error(f"Refill start error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/treat/refill/step")
+async def treat_refill_step():
+    """Advance one slot quickly for refill — no stall check, no treat counter."""
+    try:
+        dispenser = get_dispenser_service()
+        success = dispenser.refill_step()
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Refill step error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/treat/refill/stop")
+async def treat_refill_stop():
+    """Stop refill mode — disable motor."""
+    try:
+        dispenser = get_dispenser_service()
+        dispenser.emergency_stop()
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Refill stop error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/treat/refill")
+async def treat_refill(request: Request):
+    """Run refill mode — steps through carousel slots slowly for loading treats.
+    Optionally set treat count after refill completes.
+    Body: {"slots": 56, "count": 44}  (both optional)
+    """
+    import asyncio
+    try:
+        body = await request.json()
+        slots = int(body.get('slots', 56))
+        count = body.get('count')  # Optional — set treat counter after refill
+        dispenser = get_dispenser_service()
+        advanced = await asyncio.to_thread(dispenser.refill_mode, slots)
+        if count is not None:
+            dispenser.set_treat_count(int(count))
+        return {
+            "success": advanced > 0,
+            "slots_advanced": advanced,
+            "treats_loaded": dispenser.treats_loaded,
+            "treats_remaining": dispenser.treats_remaining
+        }
+    except Exception as e:
+        logger.error(f"Treat refill error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post("/treat/counter/set")
 async def treat_counter_set(request: Request):
     """Set treat counter (when user refills treats)"""

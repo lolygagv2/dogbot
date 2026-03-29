@@ -8,14 +8,20 @@ description: "Primary demo unit with matched motors"
 camera:
   rotation: 0  # degrees clockwise (0, 90, 180, 270)
 
-# Dispenser settings (dispenser.py)
+# Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py)
 dispenser:
-  dispense_duration: 0.10
-  vibrator_enabled: false  # Vibrator motor broke off — disable until replaced
+  steps_per_slot: 137       # Microsteps to advance one treat slot (calibrated)
+  step_delay: 0.006         # Half-period per step in seconds (12ms/step = MEDIUM speed)
+  max_retries: 3            # Anti-jam retry attempts per dispense
+  reverse_steps: 40         # Steps to reverse during anti-jam
+  irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
+  ihold: 5                  # TMC2209 hold current (low to save battery)
+  microstepping: 8          # Microstepping multiplier (MRES=5)
+  sgthrs: 0                 # StallGuard disabled — SG_RESULT=0 at our low speed, any threshold causes false positives
 
-# Servo settings (servo_controller.py)
+# Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:
-  slow_pulse: 1560  # rotate_winch 'slow' direction pulse value (was 1544, too weak for carousel friction)
+  slow_pulse: 1560  # legacy — no longer used for dispenser
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:

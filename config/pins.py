@@ -31,13 +31,18 @@ class TreatBotPins:
     I2C_SDA = 2      # GPIO2 (Pin 3) - I2C Data
     I2C_SCL = 3      # GPIO3 (Pin 5) - I2C Clock
     
-    # Treat Dispenser
-    VIBRATOR = 16     # GPIO16 (Pin 36) - Coin vibrator motor via MOSFET (HIGH=vibrate)
+    # Treat Dispenser — NEMA 17 stepper + TMC2209 driver
+    STEPPER_STEP = 12  # GPIO12 (Pin 32) - TMC2209 STEP input
+    STEPPER_DIR = 16   # GPIO16 (Pin 36) - TMC2209 DIR input
+    STEPPER_EN = 24    # GPIO24 (Pin 18) - TMC2209 EN (active LOW)
+    # TMC2209 UART: GPIO14 (Pin 8, TX via 1K) + GPIO15 (Pin 10, RX) → TMC2209 Pin 4 (PDN_UART)
+    STEPPER_UART = '/dev/ttyAMA0'
 
     # Available pins for future expansion
-    FREE_PINS = [14, 15, 20, 21, 26]  # GPIO numbers available for sensors, etc.
+    FREE_PINS = [20, 21, 26]  # GPIO numbers available for sensors, etc.
     # Note: GPIO5, GPIO6 now used for Motor 2 encoders
-    # Note: GPIO16 now used for vibrator motor
+    # Note: GPIO12, GPIO16, GPIO24 now used for stepper dispenser
+    # Note: GPIO14, GPIO15 now used for TMC2209 UART
 
     @classmethod
     def validate_pins(cls):
@@ -47,7 +52,7 @@ class TreatBotPins:
             cls.MOTOR_ENA, cls.MOTOR_ENB,
             cls.ENCODER_A1, cls.ENCODER_B1, cls.ENCODER_A2, cls.ENCODER_B2,
             cls.NEOPIXEL, cls.BLUE_LED, cls.I2C_SDA, cls.I2C_SCL,
-            cls.VIBRATOR
+            cls.STEPPER_STEP, cls.STEPPER_DIR, cls.STEPPER_EN,
         ]
         
         if len(used_pins) != len(set(used_pins)):

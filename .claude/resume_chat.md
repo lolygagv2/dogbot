@@ -1,5 +1,98 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-03-29 - Stepper Motor Treat Dispenser (TMC2209 + NEMA 17)
+**Goal:** Replace servo dispenser with stepper motor (NEMA 17 + TMC2209 driver)
+**Status:** PARTIAL — Dispenser works, refill works, jam detection FAILED
+
+---
+
+### What Works
+- **Single treat dispense** — tap LB, motor steps 137 microsteps, treat drops. Reliable.
+- **Refill mode** — hold LB 5+ seconds, continuous fast stepping, release = instant stop.
+- **UART communication** — TMC2209 responds, current/microstepping configured via UART.
+- **Motor control** — STEP/DIR/EN all working, CW direction confirmed, calibrated.
+
+### What Does NOT Work
+- **Jam detection via StallGuard** — COMPLETELY non-functional at our speed.
+  - SG_RESULT = 0 in BOTH jammed and unjammed states. Identical register values.
+  - Tested: StealthChop mode, SpreadCycle mode, all SGTHRS values (0-200), all speeds (0.5ms-6ms), TCOOLTHRS=0xFFFFF.
+  - CS_ACTUAL = 31 (max) always — no current headroom for load measurement.
+  - TSTEP identical in jammed vs unjammed (~8540).
+  - Root cause: motor speed too low (~3 RPM) for StallGuard back-EMF sensing.
+  - **DIAG pin would show same result** — same StallGuard circuit.
+
+### Hardware Setup (Final Working)
+| Signal | Board Pin | GPIO (BCM) | TMC2209 Pin |
+|--------|-----------|------------|-------------|
+| STEP | 32 | GPIO 12 | Pin 7 (STEP) |
+| DIR | 36 | GPIO 16 | Pin 8 (DIR) |
+| EN | 18 | GPIO 24 | Pin 1 (EN) |
+| UART TX | 8 | GPIO 14 (1K resistor) | Pin 4 (PDN_UART) |
+| UART RX | 10 | GPIO 15 (direct) | Pin 4 (PDN_UART, spliced with TX) |
+| VCC_IO | Pi Pin 17 (3.3V) | — | Pin 7 (VCC_IO) |
+
+### Teyleten TMC2209 V2.0 Board Key Facts
+- **UART is on Pin 4 by default** (not Pin 5 as initially assumed)
+- Pin 5 is the alternate UART (requires solder bridge mod)
+- VCC_IO (Pin 7) MUST be powered externally — no onboard regulator
+- Single-wire UART: Pi TX (1K resistor) and Pi RX both splice to Pin 4
+- MS1 pulled HIGH on board → 32x microstepping hardware default
+- UART mstep_reg_select overrides to 8x
+
+### TMC2209 Configuration (Working)
+```
+GCONF:      0x00000081  (I_scale_analog=1, mstep_reg_select=1)
+IHOLD_IRUN: IRUN=31, IHOLD=5, IHOLDDELAY=6
+CHOPCONF:   MRES=5 (8x), vsense=0 (high current range)
+SGTHRS:     0 (disabled — doesn't work at our speed)
+TCOOLTHRS:  0xFFFFF
+```
+
+### Calibration
+- **Steps per slot:** 137 microsteps at 8x microstepping
+- **Step delay:** 0.006s (12ms/step = MEDIUM speed) for dispense
+- **Refill speed:** 0.004s (8ms/step = FAST)
+- **Direction:** CW = DIR pin HIGH (1)
+- **Reverse steps:** 40 (for unjam sequences)
+
+### Files Modified This Session
+- `config/pins.py` — Replaced VIBRATOR with STEPPER_STEP/DIR/EN/UART
+- `config/config_loader.py` — New DispenserConfig: steps_per_slot, step_delay, irun, ihold, sgthrs, etc.
+- `config/robot_profiles/treatbot1.yaml` — Stepper config replacing servo config
+- `services/reward/dispenser.py` — Full rewrite: UART→TMC2209→GPIO stepping, anti-jam (L1/L2), refill mode, emergency_stop
+- `api/server.py` — Added: `/treat/refill/step`, `/treat/refill/stop`, `/treat/stop`, `/treat/refill`
+- `xbox_hybrid_controller.py` — LB: tap=dispense, hold 5s=refill with instant stop
+- `tests/hardware/test_stepper_dispenser.py` — Interactive test/calibration script
+
+### Xbox LB Button Behavior
+- **Tap** (< 5s): Dispenses one treat immediately on press
+- **Hold** (≥ 5s): Refill mode — continuous fast stepping, release = instant stop
+- Refill uses `/treat/refill/step` and `/treat/refill/stop` endpoints
+- `_step()` checks abort/stop flags every single step (~8ms response time)
+
+### Anti-Jam Status (NOT WORKING — needs alternative approach)
+- Code exists: `_rotate_carousel()` calls `_check_stall()` after stepping, escalates L1→L2
+- `_check_stall()` reads DRV_STATUS bit 31 — always returns False during stepping
+- Anti-jam L1 (5s gentle reverse-forward) and L2 (3s aggressive shake) code is in place
+- Manual unjam endpoint: `POST /treat/unjam`
+- Emergency stop: `POST /treat/stop`
+- **Problem:** No way to detect jams. StallGuard produces identical readings jammed vs unjammed.
+
+### Next Steps (Jam Detection)
+Options to explore:
+1. **Physical sensor** — IR break-beam at drop hole (most reliable, needs hardware)
+2. **Audio detection** — onboard mic detects clicking pattern of stalled motor
+3. **No auto-detection** — manual unjam only, acceptable for now
+4. **Current sensing external** — separate current sensor on motor wire
+5. **Encoder/position feedback** — verify motor actually rotated
+
+### Git Status
+- Branch: `main` at `b5cd6e8`
+- 0 commits this session
+- All changes uncommitted: dispenser.py, pins.py, config_loader.py, treatbot1.yaml, server.py, xbox_hybrid_controller.py, test_stepper_dispenser.py
+
+---
+
 ## Session: 2026-03-26 - Treat Dispenser Calibration, Xbox Motor Attempt (Reverted)
 **Goal:** Fix 3 issues: direct AP connection, Xbox carpet movement, treat dispenser degradation
 **Status:** PARTIAL — dispenser fixed, AP deferred, Xbox reverted

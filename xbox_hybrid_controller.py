@@ -292,6 +292,9 @@ class XboxHybridControllerFixed:
 
         # Cooldown tracking
         self.last_treat_time = 0
+        self._lb_press_time = 0
+        self._lb_refill_active = False
+        self._lb_refill_thread = None
         self.last_photo_time = 0
         self.last_motor_update = 0
         self.last_motor_command_time = 0
@@ -1290,10 +1293,25 @@ class XboxHybridControllerFixed:
             if pressed:
                 self.play_reward_sound()
 
-        elif number == 4:  # Left bumper - Dispense treat (with cooldown)
+        elif number == 4:  # Left bumper - Tap=dispense, Hold(5s)=refill
             self.state.left_bumper = pressed
             if pressed:
+                self._lb_press_time = time.time()
+                self._lb_refill_active = False
+                # Dispense one treat immediately on press
                 self.dispense_treat_safe()
+                # Start background thread to detect hold for refill
+                self._lb_refill_thread = Thread(target=self._lb_hold_check, daemon=True)
+                self._lb_refill_thread.start()
+            else:
+                # Released — stop refill AND any dispense immediately
+                if self._lb_refill_active:
+                    self._lb_refill_active = False
+                    try:
+                        self.api_request('POST', '/treat/stop')
+                    except Exception:
+                        pass
+                    logger.info("LB released: Refill stopped")
 
         elif number == 5:  # Right bumper - Take photo
             self.state.right_bumper = pressed
@@ -1324,6 +1342,11 @@ class XboxHybridControllerFixed:
         elif number == 8:  # Xbox Guide button - Cycle tricks (coach mode only)
             if pressed:
                 self.cycle_trick()
+
+        elif number == 9:  # Left stick click - Manual unjam treat dispenser
+            if pressed:
+                logger.info("Left stick click: Running manual unjam")
+                Thread(target=self._run_unjam, daemon=True).start()
 
     # ============== AUDIO RECORDING ==============
     def handle_record_button(self):
@@ -1403,6 +1426,48 @@ class XboxHybridControllerFixed:
             logger.error(f"Video toggle error: {e}")
 
     # ============== END VIDEO RECORDING ==============
+
+    def _lb_hold_check(self):
+        """Background thread: if LB held >5s, enter refill mode (continuous spin)"""
+        # Check every 100ms for 5 seconds
+        for _ in range(50):
+            time.sleep(0.1)
+            if not self.state.left_bumper:
+                return  # Released before 5s — was a normal tap (already dispensed on press)
+
+        self._lb_refill_active = True
+        logger.info("LB held 5s: Starting refill — release to stop")
+
+        # Start refill on server side
+        try:
+            self.api_request('POST', '/treat/refill/start')
+        except Exception as e:
+            logger.error(f"Refill start error: {e}")
+            self._lb_refill_active = False
+            return
+
+        # Just poll button state — no API calls in the loop
+        try:
+            while self._lb_refill_active and self.state.left_bumper:
+                time.sleep(0.05)
+        finally:
+            self._lb_refill_active = False
+            try:
+                self.api_request('POST', '/treat/stop')
+            except Exception:
+                pass
+            logger.info("LB released: Refill stopped")
+
+    def _run_unjam(self):
+        """Run manual unjam via API (called from Share button thread)"""
+        try:
+            result = self.api_request('POST', '/treat/unjam')
+            if result and result.get('success'):
+                logger.info("Unjam complete")
+            else:
+                logger.error(f"Unjam failed: {result}")
+        except Exception as e:
+            logger.error(f"Unjam error: {e}")
 
     def dispense_treat_safe(self):
         """Dispense treat - always works on button press"""

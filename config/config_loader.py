@@ -148,18 +148,51 @@ class CameraConfig:
 
 
 class DispenserConfig:
-    """Dispenser-related configuration."""
+    """Dispenser-related configuration — stepper motor (NEMA 17 + TMC2209)."""
 
     def __init__(self, config: dict):
         self._config = config
 
+    @property
+    def steps_per_slot(self) -> int:
+        return self._config.get('steps_per_slot', 137)
+
+    @property
+    def step_delay(self) -> float:
+        return self._config.get('step_delay', 0.006)
+
+    @property
+    def max_retries(self) -> int:
+        return self._config.get('max_retries', 3)
+
+    @property
+    def reverse_steps(self) -> int:
+        return self._config.get('reverse_steps', 40)
+
+    @property
+    def irun(self) -> int:
+        return self._config.get('irun', 31)
+
+    @property
+    def ihold(self) -> int:
+        return self._config.get('ihold', 5)
+
+    @property
+    def microstepping(self) -> int:
+        return self._config.get('microstepping', 8)
+
+    @property
+    def sgthrs(self) -> int:
+        return self._config.get('sgthrs', 50)
+
+    # Legacy properties for backward compat during transition
     @property
     def dispense_duration(self) -> float:
         return self._config.get('dispense_duration', 0.12)
 
     @property
     def vibrator_enabled(self) -> bool:
-        return self._config.get('vibrator_enabled', True)
+        return self._config.get('vibrator_enabled', False)
 
 
 class ServoConfig:
