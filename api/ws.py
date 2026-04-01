@@ -140,6 +140,9 @@ class TreatBotWebSocketServer:
         """Handle a WebSocket connection"""
         await self.manager.connect(websocket)
 
+        # Signal that an app client is connected (LED idle, publish event)
+        self._on_app_connected()
+
         # Start telemetry if this is the first connection
         if len(self.manager.active_connections) == 1:
             await self._start_telemetry()
@@ -178,6 +181,22 @@ class TreatBotWebSocketServer:
             }
         })
 
+    def _on_app_connected(self):
+        """Signal that an app client connected via local WebSocket"""
+        self._get_services()
+        if self.led:
+            self.led.set_pattern('idle')
+        self.logger.info("App client connected via local WebSocket — LED set to idle")
+
+    async def _handle_get_status(self, websocket: WebSocket):
+        """Respond to get_status with robot online/paired status"""
+        await self.manager.send_to_one(websocket, {
+            "type": "status_response",
+            "robot_online": True,
+            "device_paired": True,
+            "timestamp": time.time()
+        })
+
     async def _handle_client_message(self, websocket: WebSocket, message: str):
         """Handle incoming message from client"""
         try:
@@ -192,6 +211,19 @@ class TreatBotWebSocketServer:
             if data.get("type") == "auth":
                 await self.manager.send_to_one(websocket, {"type": "auth_result", "success": True})
                 return
+
+            # Handle get_status request
+            if data.get("type") == "get_status":
+                await self._handle_get_status(websocket)
+                return
+
+            # Unwrap app command wrapper format:
+            # {"type": "command", "device_id": "local_robot", "command": "motor", "data": {"left": 0.5}}
+            # Flatten inner "data" to top level so downstream handlers find params directly
+            if data.get("type") == "command" and "command" in data:
+                inner_cmd = data["command"]
+                inner_data = data.get("data") or {}
+                data = {**inner_data, "type": inner_cmd, "command": inner_cmd}
 
             # Handle push-to-talk audio message (play from app)
             # Accept both "audio_message" (relay protocol) and "ptt_play" (app command)
