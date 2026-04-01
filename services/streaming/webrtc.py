@@ -529,8 +529,9 @@ class WebRTCService:
                 credential=server.get('credential')
             ))
 
-        # Fall back to default STUN if no servers provided
-        if not rtc_ice_servers:
+        # Fall back to default STUN if no servers provided (but not if explicitly empty)
+        # An explicit empty list means LAN-only (no STUN), e.g. local AP mode
+        if not rtc_ice_servers and ice_servers is None:
             for stun_url in self.config.stun_servers:
                 rtc_ice_servers.append(RTCIceServer(urls=stun_url))
 

@@ -182,11 +182,22 @@ class TreatBotWebSocketServer:
         })
 
     def _on_app_connected(self):
-        """Signal that an app client connected via local WebSocket"""
+        """Signal that an app client connected via local WebSocket
+
+        Stops the WiFi provisioning pulsing-blue animation and sets NeoPixels to idle.
+        Also sets GPIO25 blue LED to solid on (not flashing).
+        """
         self._get_services()
+        # Set NeoPixels to idle via the LED service
         if self.led:
             self.led.set_pattern('idle')
-        self.logger.info("App client connected via local WebSocket — LED set to idle")
+        # Set blue LED solid on via direct GPIO (stops the "flashing" look)
+        try:
+            from api.server import blue_led_direct_control
+            blue_led_direct_control(True)
+            self.logger.info("App connected via local WS — LED idle, blue LED solid ON")
+        except Exception as e:
+            self.logger.warning(f"Blue LED direct control failed (non-critical): {e}")
 
     async def _handle_get_status(self, websocket: WebSocket):
         """Respond to get_status with robot online/paired status"""
@@ -224,6 +235,7 @@ class TreatBotWebSocketServer:
                 inner_cmd = data["command"]
                 inner_data = data.get("data") or {}
                 data = {**inner_data, "type": inner_cmd, "command": inner_cmd}
+                self.logger.info(f"[LOCAL] Unwrapped command: {inner_cmd} (keys: {list(data.keys())})")
 
             # Handle push-to-talk audio message (play from app)
             # Accept both "audio_message" (relay protocol) and "ptt_play" (app command)
@@ -284,9 +296,13 @@ class TreatBotWebSocketServer:
             })
 
     async def _execute_contract_command(self, websocket: WebSocket, data: Dict[str, Any]):
-        """Execute API contract format commands"""
+        """Execute API contract format commands
+
+        Sends a command_response back for every command so the app gets confirmation.
+        """
         command = data.get("command")
         self._get_services()
+        result = {"success": True, "command": command}
 
         try:
             if command == "motor":
@@ -297,6 +313,8 @@ class TreatBotWebSocketServer:
                     left_pct = int(left * 100)
                     right_pct = int(right * 100)
                     self.motor.set_speed(left_pct, right_pct)
+                else:
+                    result = {"success": False, "command": command, "error": "Motor service not available"}
 
             elif command == "servo":
                 # {"command": "servo", "pan": 15.0, "tilt": -10.0}
@@ -306,11 +324,15 @@ class TreatBotWebSocketServer:
                     pan_internal = int(90 + pan) if pan is not None else None
                     tilt_internal = int(90 + tilt) if tilt is not None else None
                     self.pantilt.move_camera(pan=pan_internal, tilt=tilt_internal)
+                else:
+                    result = {"success": False, "command": command, "error": "Pan/tilt service not available"}
 
-            elif command == "treat":
-                # {"command": "treat"}
+            elif command in ("treat", "dispense_treat"):
+                # {"command": "treat"} or {"command": "dispense_treat"}
                 if self.dispenser:
                     self.dispenser.dispense_treat()
+                else:
+                    result = {"success": False, "command": command, "error": "Dispenser not available"}
 
             elif command == "led":
                 # {"command": "led", "pattern": "celebration"}
@@ -326,12 +348,17 @@ class TreatBotWebSocketServer:
                     }
                     mode = pattern_map.get(pattern, pattern)
                     self.led.set_pattern(mode)
+                    result["pattern"] = mode
+                else:
+                    result = {"success": False, "command": command, "error": "LED service not available"}
 
             elif command == "audio":
                 # {"command": "audio", "file": "good.mp3"}
                 audio_file = data.get("file")
                 if audio_file and self.sfx:
                     self.sfx.play_sound(audio_file)
+                elif not self.sfx:
+                    result = {"success": False, "command": command, "error": "SFX service not available"}
 
             elif command == "mode":
                 # {"command": "mode", "mode": "training"}
@@ -354,38 +381,56 @@ class TreatBotWebSocketServer:
                     internal_mode = mode_map.get(mode)
                     if internal_mode:
                         mode_fsm.force_mode(internal_mode, "websocket_command")
+                        result["mode"] = mode
 
             elif command == "take_photo":
                 # {"command": "take_photo", "with_hud": true}
                 with_hud = data.get("with_hud", True)
                 await self._handle_take_photo(websocket, with_hud)
+                return  # take_photo sends its own response
 
             elif command == "upload_voice":
-                # {"command": "upload_voice", "name": "sit", "dog_id": "1", "data": "<base64>"}
                 await self._handle_upload_voice(websocket, data)
+                return
 
             elif command == "upload_song":
-                # {"command": "upload_song", "filename": "my_song.mp3", "data": "<base64>"}
                 await self._handle_upload_song(websocket, data)
+                return
 
             elif command == "download_song":
                 await self._handle_download_song(websocket, data)
+                return
 
             elif command == "list_voices":
-                # {"command": "list_voices", "dog_id": "1"}
                 await self._handle_list_voices(websocket, data)
+                return
 
             elif command == "delete_voice":
-                # {"command": "delete_voice", "name": "sit", "dog_id": "1"}
                 await self._handle_delete_voice(websocket, data)
+                return
 
             elif command == "delete_dog":
-                # {"command": "delete_dog", "dog_id": "1"}
-                # Deletes all custom voices for a dog when dog is removed
                 await self._handle_delete_dog(websocket, data)
+                return
+
+            else:
+                self.logger.warning(f"Unknown contract command: {command}")
+                result = {"success": False, "command": command, "error": f"Unknown command: {command}"}
+
+            # Send response for basic commands (photo/voice/song handlers send their own)
+            await self.manager.send_to_one(websocket, {
+                "type": "command_response",
+                "data": result,
+                "timestamp": time.time()
+            })
 
         except Exception as e:
             self.logger.error(f"Contract command error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "command_response",
+                "data": {"success": False, "command": command, "error": str(e)},
+                "timestamp": time.time()
+            })
 
     async def _handle_take_photo(self, websocket: WebSocket, with_hud: bool = True):
         """Handle take_photo command - capture and send photo via WebSocket"""
@@ -863,8 +908,10 @@ class TreatBotWebSocketServer:
                     except Exception:
                         pass
 
-            # Local-only ICE config: STUN only, no TURN needed on LAN
-            local_ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
+            # Local LAN: no STUN/TURN needed — both devices are on the same AP network.
+            # Using an empty list forces host-only ICE candidates (direct LAN IPs).
+            # External STUN (e.g. stun.l.google.com) hangs when there's no internet.
+            local_ice_servers = []
 
             offer = await webrtc.create_offer(
                 session_id=session_id,
@@ -875,7 +922,7 @@ class TreatBotWebSocketServer:
             await self.manager.send_to_one(websocket, {
                 "type": "webrtc_credentials",
                 "session_id": session_id,
-                "ice_servers": local_ice_servers
+                "ice_servers": {"iceServers": local_ice_servers}
             })
             await self.manager.send_to_one(websocket, {
                 "type": "webrtc_offer",
