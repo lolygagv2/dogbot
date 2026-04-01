@@ -1298,8 +1298,8 @@ class XboxHybridControllerFixed:
             if pressed:
                 self._lb_press_time = time.time()
                 self._lb_refill_active = False
-                # Dispense one treat immediately on press
-                self.dispense_treat_safe()
+                # Dispense one treat in background — don't block event loop
+                Thread(target=self.dispense_treat_safe, daemon=True).start()
                 # Start background thread to detect hold for refill
                 self._lb_refill_thread = Thread(target=self._lb_hold_check, daemon=True)
                 self._lb_refill_thread.start()

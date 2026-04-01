@@ -2394,6 +2394,103 @@ async def debug_latency():
     }
 
 
+@app.get("/debug/ai-status")
+async def debug_ai_status():
+    """Get AI pipeline diagnostic status"""
+    from services.perception.detector import get_detector_service
+    detector = get_detector_service()
+
+    hailo_status = "unknown"
+    model_file = "unknown"
+    if detector.ai:
+        hailo_status = "active" if detector.ai_initialized else "failed"
+        model_file = getattr(detector.ai, 'model_path', 'dogpose_14.hef')
+        if hasattr(model_file, 'name'):
+            model_file = model_file.name
+
+    # Get current thresholds from behavior interpreter
+    thresholds = {}
+    try:
+        interpreter = get_behavior_interpreter()
+        thresholds = interpreter.get_confidence_thresholds()
+    except Exception:
+        pass
+
+    return {
+        "pipeline_running": detector.running and not detector._ai_paused,
+        "fps": round(detector.current_fps, 1),
+        "hailo_status": hailo_status,
+        "last_detection": detector._last_detection_info or {"class": None, "confidence": 0, "timestamp": None},
+        "current_thresholds": thresholds,
+        "frames_processed_total": detector._frames_processed_total,
+        "model_file": str(model_file),
+        "failure_stats_60s": {
+            "pipeline_errors": detector._cat_a_errors,
+            "below_threshold": detector._cat_b_misses,
+            "classification_fails": detector._cat_c_fails
+        }
+    }
+
+
+@app.post("/debug/ai-thresholds")
+async def debug_ai_thresholds(request: Request):
+    """Hot-update AI confidence thresholds at runtime.
+    Body: {"sit": 0.6, "lie": 0.65, ...}"""
+    data = await request.json()
+    interpreter = get_behavior_interpreter()
+    updated = {}
+
+    for behavior, threshold in data.items():
+        try:
+            old_val = interpreter.get_confidence_threshold(behavior)
+            interpreter.set_confidence_threshold(behavior, float(threshold))
+            logger.info(f"[AI] Threshold updated: {behavior}_confidence {old_val} → {threshold}")
+            updated[behavior] = {"old": old_val, "new": float(threshold)}
+        except Exception as e:
+            updated[behavior] = {"error": str(e)}
+
+    return {"success": True, "updated": updated}
+
+
+@app.post("/debug/ptt-test")
+async def debug_ptt_test():
+    """Play a test tone through the same audio path PTT uses.
+    Isolates hardware from network issues."""
+    import subprocess
+    from pathlib import Path
+
+    logger.info("[PTT] Debug test tone requested")
+    test_file = Path("/tmp/wimz_ptt/ptt_test_tone.wav")
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Generate a short 440Hz beep
+    try:
+        try:
+            subprocess.run(
+                ['sox', '-n', str(test_file), 'synth', '0.5', 'sine', '440'],
+                capture_output=True, timeout=5, check=True
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            subprocess.run([
+                'ffmpeg', '-y', '-f', 'lavfi',
+                '-i', 'sine=frequency=440:duration=0.5',
+                str(test_file)
+            ], capture_output=True, timeout=5, check=True)
+    except Exception as e:
+        logger.error(f"[PTT] Test tone generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not generate test tone: {e}")
+
+    # Play through USBAudio (same path as PTT)
+    usb_audio = get_usb_audio_service()
+    result = usb_audio.play_file(str(test_file))
+    logger.info(f"[PTT] Test tone result: {result}")
+
+    if result.get('success'):
+        return {"success": True, "message": "Test tone playing through USB audio (PTT path)"}
+    else:
+        raise HTTPException(status_code=500, detail=result.get('error', 'Playback failed'))
+
+
 @app.post("/webrtc/offer")
 async def webrtc_offer(request: WebRTCOfferRequest):
     """
@@ -3698,7 +3795,8 @@ async def websocket_local(websocket: WebSocket):
 
         while True:
             data = await websocket.receive_json()
-            command = data.get("command")
+            # Accept both "command" field (local protocol) and "type" field (relay protocol)
+            command = data.get("command") or data.get("type")
 
             if command == "motor":
                 left = data.get("left", 0)
@@ -3791,6 +3889,102 @@ async def websocket_local(websocket: WebSocket):
                 wifi.stop_hotspot()
                 wifi.try_connect_known(timeout=30)
                 break
+
+            elif command in ("audio_message", "ptt_play"):
+                # PTT: play audio from app through robot speaker
+                # Accept both command names: relay uses "audio_message", app may send "ptt_play"
+                from services.media.push_to_talk import get_push_to_talk_service
+                ptt = get_push_to_talk_service()
+                audio_data = data.get("data")
+                audio_format = data.get("format", "aac")
+                if audio_data:
+                    logger.info(f"[PTT] Received from local WS (command={command})")
+                    result = ptt.play_audio_base64(audio_data, audio_format)
+                    await websocket.send_json({"type": "audio_played", **result})
+                else:
+                    await websocket.send_json({"type": "audio_played", "success": False, "error": "Missing audio data"})
+
+            elif command == "audio_request":
+                # Record from mic and send back
+                from services.media.push_to_talk import get_push_to_talk_service
+                ptt = get_push_to_talk_service()
+                duration = data.get("duration", 5)
+                audio_format = data.get("format", "aac")
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: ptt.record_audio(duration=duration, format=audio_format)
+                )
+                if result.get("success"):
+                    await websocket.send_json({
+                        "type": "audio_message",
+                        "data": result.get("data"),
+                        "format": audio_format,
+                        "duration_ms": result.get("duration_ms"),
+                        "size_bytes": result.get("size_bytes")
+                    })
+                else:
+                    await websocket.send_json({"type": "audio_error", "error": result.get("error")})
+
+            elif command == "webrtc_request":
+                # Robot-initiated WebRTC: create peer connection + offer
+                # Local mode: no TURN needed, STUN only for LAN
+                from services.streaming.webrtc import get_webrtc_service
+                webrtc = get_webrtc_service()
+                session_id = data.get("session_id", "local")
+
+                # ICE candidate callback — trickle candidates back over this WS
+                async def on_ice_candidate(candidate):
+                    if candidate:
+                        try:
+                            await websocket.send_json({
+                                "type": "webrtc_ice",
+                                "session_id": session_id,
+                                "candidate": {
+                                    "candidate": candidate.candidate,
+                                    "sdpMid": candidate.sdpMid,
+                                    "sdpMLineIndex": candidate.sdpMLineIndex
+                                }
+                            })
+                        except Exception:
+                            pass
+
+                # Local-only ICE config: no TURN servers needed on LAN
+                local_ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
+
+                offer = await webrtc.create_offer(
+                    session_id=session_id,
+                    ice_servers=local_ice_servers,
+                    on_ice_candidate=on_ice_candidate
+                )
+
+                # Send credentials (local-only, no TURN) + offer back to app
+                await websocket.send_json({
+                    "type": "webrtc_credentials",
+                    "session_id": session_id,
+                    "ice_servers": local_ice_servers
+                })
+                await websocket.send_json({
+                    "type": "webrtc_offer",
+                    "session_id": session_id,
+                    "sdp": offer
+                })
+                logger.info(f"[LOCAL] WebRTC offer sent for session {session_id}")
+
+            elif command == "webrtc_answer":
+                # App sends SDP answer after receiving our offer
+                from services.streaming.webrtc import get_webrtc_service
+                webrtc = get_webrtc_service()
+                session_id = data.get("session_id", "local")
+                sdp = data.get("sdp")
+                await webrtc.handle_answer(session_id, sdp)
+                logger.info(f"[LOCAL] WebRTC answer processed for session {session_id}")
+
+            elif command == "webrtc_ice":
+                # ICE candidate from app
+                from services.streaming.webrtc import get_webrtc_service
+                webrtc = get_webrtc_service()
+                session_id = data.get("session_id", "local")
+                candidate = data.get("candidate")
+                await webrtc.add_ice_candidate(session_id, candidate)
 
             elif command == "ping":
                 await websocket.send_json({"type": "pong", "timestamp": data.get("timestamp")})
@@ -5535,6 +5729,15 @@ def create_app():
 
 def run_server(host: str = "0.0.0.0", port: int = 8000, debug: bool = False):
     """Run the API server"""
+    # Log local IP prominently for direct connection
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = "unknown"
+    logger.info(f"[LOCAL] Direct connect available at ws://{local_ip}:{port}/ws/local and http://{local_ip}:{port}")
     logger.info(f"Starting TreatBot API server on {host}:{port}")
 
     uvicorn.run(

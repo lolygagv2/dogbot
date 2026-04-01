@@ -206,13 +206,32 @@ class CoachingEngine:
     def start(self) -> bool:
         """Start coaching engine"""
         if self.running:
-            logger.warning("Coaching engine already running")
+            logger.warning("[COACH] Engine already running")
             return True
 
         try:
+            logger.info("[COACH] === Starting coach mode ===")
+
+            # Step 1: Mode FSM transitions to COACH
+            self.state.set_mode(SystemMode.COACH, "Coaching engine started")
+            logger.info("[COACH] Step 1: Mode set to COACH")
+
+            # Step 2: Play announcement and WAIT for it to finish
+            logger.info("[COACH] Step 2: Playing coach mode announcement")
+            if self.audio:
+                announcement = '/home/morgan/dogbot/VOICEMP3/wimz/CoachMode.mp3'
+                self.audio.play_file(announcement)
+                self.audio.wait_for_completion(timeout=5.0)
+                logger.info("[COACH] Step 2: Announcement finished")
+            else:
+                logger.warning("[COACH] Step 2: Audio service not available")
+
+            # Step 3: Now initialize detection and engine
+            logger.info("[COACH] Step 3: Initializing detection pipeline")
+
             # Disable AGC for bark detection (raw energy levels needed)
             set_agc(False)
-            logger.info("AGC disabled for coaching mode (bark detection)")
+            logger.info("[COACH] AGC disabled for coaching mode (bark detection)")
 
             # Reset FSM state on start (fixes mode re-entry)
             self.fsm_state = CoachState.WAITING_FOR_DOG
@@ -221,7 +240,7 @@ class CoachingEngine:
             self.bark_count = 0
             self.bark_timestamps.clear()
             self.listening_for_barks = False
-            logger.info("Coaching engine state reset to WAITING_FOR_DOG")
+            logger.info("[COACH] State reset to WAITING_FOR_DOG")
 
             # Subscribe to vision events (use string, not class)
             self.bus.subscribe('vision', self._on_vision_event)
@@ -236,19 +255,17 @@ class CoachingEngine:
                 name="CoachingEngine"
             )
             self.engine_thread.start()
-
-            # Set system mode
-            self.state.set_mode(SystemMode.COACH, "Coaching engine started")
+            logger.info("[COACH] Step 3: Detection pipeline active, scanning for dogs")
 
             publish_system_event('coaching_started', {
                 'tricks_available': self.TRICKS
             }, 'coaching_engine')
 
-            logger.info("Coaching engine started")
+            logger.info("[COACH] === Coach mode fully started ===")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to start coaching engine: {e}")
+            logger.error(f"[COACH] Failed to start coaching engine: {e}")
             return False
 
     def stop(self):
@@ -553,7 +570,7 @@ class CoachingEngine:
         )
 
         self.fsm_state = CoachState.GREETING
-        logger.info(f"Starting coaching session: {dog_name} - trick: {trick}")
+        logger.info(f"[COACH] Session started: dog={dog_name}, trick={trick}")
 
     def _state_attention_check(self):
         """Verify dog is still attentive"""
@@ -609,30 +626,52 @@ class CoachingEngine:
         if self.led:
             self.led.set_pattern('attention', duration=2.0)
 
-        # Say dog's name - try custom voice first, then default files
+        # Step 4 (per-session): Play dog name and wait for completion
         dog_id = self.current_session.dog_id if self.current_session else None
         name_played = False
 
-        # Try custom voice for dog name via play_command
-        if dog_id and self.audio:
+        # Check if we have an ArUco-identified name
+        has_aruco_name = (dog_name != 'dog' and dog_name != dog_id and
+                          dog_name not in [None, 'unknown', ''])
+
+        if has_aruco_name:
+            logger.info(f"[DOG-ID] Marker detected: {dog_id} → {dog_name}")
+        else:
+            logger.info(f"[DOG-ID] No marker after 3s, using generic greeting")
+
+        # Try custom voice for dog name via play_command (only if identified)
+        if has_aruco_name and dog_id and self.audio:
             result = self.audio.play_command(dog_name.lower(), dog_id=dog_id)
             if result.get('success'):
                 name_played = True
                 if result.get('voice_source') == 'custom':
-                    logger.info(f"Using custom voice for '{dog_name}'")
+                    logger.info(f"[COACH] Using custom voice for '{dog_name}'")
                 self.audio.wait_for_completion(timeout=5.0)
+                logger.info(f"[COACH] Name audio finished for '{dog_name}'")
 
         if not name_played:
-            # Fallback: try default name audio file
-            name_audio = f'{dog_name.lower()}.mp3'
+            # Fallback: try name-specific file, then generic greeting
             base_path = '/home/morgan/dogbot/VOICEMP3/talks'
-            if not os.path.exists(os.path.join(base_path, name_audio)):
-                name_audio = 'dogs_come.mp3'
-                logger.info(f"No audio for '{dog_name}', using generic greeting")
-            self._play_audio(name_audio, wait=True, timeout=5.0)
+
+            if has_aruco_name:
+                # Known dog but custom voice failed — try default mp3
+                name_audio = f'{dog_name.lower()}.mp3'
+                if os.path.exists(os.path.join(base_path, name_audio)):
+                    logger.info(f"[COACH] Playing default name audio: {name_audio}")
+                    self._play_audio(name_audio, wait=True, timeout=5.0)
+                    name_played = True
+
+            if not name_played:
+                # Generic greeting — use treat.mp3 for unidentified dogs
+                generic = 'treat.mp3'
+                logger.info(f"[COACH] Playing generic greeting: {generic}")
+                self._play_audio(generic, wait=True, timeout=5.0)
+
+        logger.info(f"[COACH] Greeting audio complete")
 
         time.sleep(0.5)  # Brief pause between name and command
 
+        logger.info("[COACH] Greeting complete → COMMAND")
         self.fsm_state = CoachState.COMMAND
 
     def _state_command(self):
@@ -686,7 +725,7 @@ class CoachingEngine:
 
         self.current_session.command_time = time.time()
         self.fsm_state = CoachState.WATCHING
-        logger.info(f"Command given: {trick} (target_behavior={target_behavior})")
+        logger.info(f"[COACH] Command issued: {trick} (target={target_behavior}) → WATCHING")
 
     def _state_watching(self):
         """Watch for behavior response using BehaviorInterpreter (Layer 1)"""

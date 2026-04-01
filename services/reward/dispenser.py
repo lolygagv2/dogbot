@@ -170,7 +170,8 @@ class DispenserService:
 
     def _step(self, steps, direction, delay=None):
         """
-        Step the motor. Checks _abort flag every step — aborts immediately if set.
+        Step the motor. Only checks _abort flag (set by emergency_stop).
+        _refill_stop_requested is checked separately by refill code.
         """
         if delay is None:
             delay = self.step_delay
@@ -179,7 +180,7 @@ class DispenserService:
         time.sleep(0.001)
 
         for i in range(steps):
-            if self._abort or self._refill_stop_requested:
+            if self._abort:
                 return False
             lgpio.gpio_write(self.gpio_chip, self.step_pin, 1)
             time.sleep(delay)
@@ -366,7 +367,11 @@ class DispenserService:
                         'timestamp': now
                     }, 'dispenser_service')
 
-                    self.logger.info(f"Treat dispensed for {dog_id or 'unknown'} ({reason})")
+                    remaining = max(0, self.treats_loaded - self.treats_dispensed_session)
+                    self.logger.info(
+                        f"[TREAT] Dispensing treat #{self.treats_dispensed_today} of 44 | "
+                        f"Remaining: {remaining} | Dog: {dog_id or 'unknown'} | Reason: {reason}"
+                    )
                     return True
                 else:
                     self.logger.error("Carousel rotation failed")
@@ -470,12 +475,25 @@ class DispenserService:
             time.sleep(0.05)
             self._refill_active = True
 
-        self._step(self.steps_per_slot, self.CW, delay=0.004)
+        self._refill_step_motor(self.steps_per_slot, self.CW, delay=0.004)
 
         if self._abort or self._refill_stop_requested:
             self._disable_motor()
             self._refill_active = False
             return False
+        return True
+
+    def _refill_step_motor(self, steps, direction, delay):
+        """Step for refill — checks both _abort AND _refill_stop_requested every step."""
+        lgpio.gpio_write(self.gpio_chip, self.dir_pin, direction)
+        time.sleep(0.001)
+        for i in range(steps):
+            if self._abort or self._refill_stop_requested:
+                return False
+            lgpio.gpio_write(self.gpio_chip, self.step_pin, 1)
+            time.sleep(delay)
+            lgpio.gpio_write(self.gpio_chip, self.step_pin, 0)
+            time.sleep(delay)
         return True
 
     def refill_continuous(self):
@@ -497,8 +515,7 @@ class DispenserService:
         self.logger.info("Refill continuous: started")
         try:
             while not self._abort and not self._refill_stop_requested:
-                self._step(self.steps_per_slot, self.CW, delay=0.004)
-                # _step checks _abort every step, so it will exit fast
+                self._refill_step_motor(self.steps_per_slot, self.CW, 0.004)
         except Exception as e:
             self.logger.error(f"Refill continuous error: {e}")
         finally:

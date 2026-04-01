@@ -194,13 +194,26 @@ class TreatBotWebSocketServer:
                 return
 
             # Handle push-to-talk audio message (play from app)
-            if data.get("type") == "audio_message":
+            # Accept both "audio_message" (relay protocol) and "ptt_play" (app command)
+            msg_type = data.get("type") or data.get("command")
+            if msg_type in ("audio_message", "ptt_play"):
                 await self._handle_audio_message(websocket, data)
                 return
 
             # Handle audio request (record and send back)
-            if data.get("type") == "audio_request":
+            if msg_type == "audio_request":
                 await self._handle_audio_request(websocket, data)
+                return
+
+            # Handle WebRTC signaling (for local mode — app connects to /ws directly)
+            if msg_type == "webrtc_request":
+                await self._handle_webrtc_request(websocket, data)
+                return
+            if msg_type == "webrtc_answer":
+                await self._handle_webrtc_answer(websocket, data)
+                return
+            if msg_type == "webrtc_ice":
+                await self._handle_webrtc_ice(websocket, data)
                 return
 
             # Handle contract-style commands (API Contract format)
@@ -720,12 +733,15 @@ class TreatBotWebSocketServer:
             audio_format = data.get("format", "aac")
 
             if not audio_data:
+                self.logger.warning("[PTT] Local WS audio message missing data field")
                 await self.manager.send_to_one(websocket, {
                     "type": "audio_played",
                     "success": False,
                     "error": "Missing audio data"
                 })
                 return
+
+            self.logger.info(f"[PTT] Received from local WS: format={audio_format}, base64_len={len(audio_data)}")
 
             # Play the audio
             result = ptt_service.play_audio_base64(audio_data, audio_format)
@@ -736,10 +752,12 @@ class TreatBotWebSocketServer:
             })
 
             if result.get("success"):
-                self.logger.info(f"PTT audio played: {result.get('size_bytes')} bytes")
+                self.logger.info(f"[PTT] Local WS ACK sent (size={result.get('size_bytes')} bytes)")
+            else:
+                self.logger.error(f"[PTT] Local WS playback failed: {result.get('error')}")
 
         except Exception as e:
-            self.logger.error(f"Audio message error: {e}")
+            self.logger.error(f"[PTT] Local WS audio error: {e}")
             await self.manager.send_to_one(websocket, {
                 "type": "audio_played",
                 "success": False,
@@ -783,6 +801,89 @@ class TreatBotWebSocketServer:
                 "type": "audio_error",
                 "error": str(e)
             })
+
+    async def _handle_webrtc_request(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle WebRTC stream request (local mode signaling via /ws)
+
+        Robot creates peer connection + offer and sends back to app.
+        Local mode: no TURN servers needed (same LAN).
+        """
+        session_id = data.get("session_id", "local")
+        self.logger.info(f"[LOCAL] WebRTC request via /ws: session={session_id}")
+
+        try:
+            from services.streaming.webrtc import get_webrtc_service
+            webrtc = get_webrtc_service()
+
+            # ICE candidate callback — trickle candidates back over this WS
+            async def on_ice_candidate(candidate):
+                if candidate:
+                    try:
+                        await self.manager.send_to_one(websocket, {
+                            "type": "webrtc_ice",
+                            "session_id": session_id,
+                            "candidate": {
+                                "candidate": candidate.candidate,
+                                "sdpMid": candidate.sdpMid,
+                                "sdpMLineIndex": candidate.sdpMLineIndex
+                            }
+                        })
+                    except Exception:
+                        pass
+
+            # Local-only ICE config: STUN only, no TURN needed on LAN
+            local_ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
+
+            offer = await webrtc.create_offer(
+                session_id=session_id,
+                ice_servers=local_ice_servers,
+                on_ice_candidate=on_ice_candidate
+            )
+
+            await self.manager.send_to_one(websocket, {
+                "type": "webrtc_credentials",
+                "session_id": session_id,
+                "ice_servers": local_ice_servers
+            })
+            await self.manager.send_to_one(websocket, {
+                "type": "webrtc_offer",
+                "session_id": session_id,
+                "sdp": offer
+            })
+            self.logger.info(f"[LOCAL] WebRTC offer sent for session {session_id}")
+
+        except Exception as e:
+            self.logger.error(f"[LOCAL] WebRTC request error: {e}")
+            await self.manager.send_to_one(websocket, {
+                "type": "webrtc_error",
+                "session_id": session_id,
+                "error": str(e)
+            })
+
+    async def _handle_webrtc_answer(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle SDP answer from app (local mode signaling via /ws)"""
+        session_id = data.get("session_id", "local")
+        sdp = data.get("sdp")
+        self.logger.info(f"[LOCAL] WebRTC answer received: session={session_id}")
+
+        try:
+            from services.streaming.webrtc import get_webrtc_service
+            webrtc = get_webrtc_service()
+            await webrtc.handle_answer(session_id, sdp)
+        except Exception as e:
+            self.logger.error(f"[LOCAL] WebRTC answer error: {e}")
+
+    async def _handle_webrtc_ice(self, websocket: WebSocket, data: Dict[str, Any]):
+        """Handle ICE candidate from app (local mode signaling via /ws)"""
+        session_id = data.get("session_id", "local")
+        candidate = data.get("candidate")
+
+        try:
+            from services.streaming.webrtc import get_webrtc_service
+            webrtc = get_webrtc_service()
+            await webrtc.add_ice_candidate(session_id, candidate)
+        except Exception as e:
+            self.logger.error(f"[LOCAL] WebRTC ICE error: {e}")
 
     async def _execute_command(self, command: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a command from the client"""

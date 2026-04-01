@@ -348,6 +348,20 @@ class BehaviorInterpreter:
         """Get list of all defined tricks"""
         return list(self.trick_rules.keys())
 
+    def get_confidence_thresholds(self) -> Dict[str, float]:
+        """Get all current confidence thresholds"""
+        return dict(self.confidence_thresholds)
+
+    def get_confidence_threshold(self, behavior: str) -> float:
+        """Get confidence threshold for a specific behavior"""
+        return self.confidence_thresholds.get(behavior, 0.7)
+
+    def set_confidence_threshold(self, behavior: str, value: float):
+        """Set confidence threshold for a behavior at runtime"""
+        if behavior not in self.confidence_thresholds:
+            raise ValueError(f"Unknown behavior: {behavior}. Valid: {list(self.confidence_thresholds.keys())}")
+        self.confidence_thresholds[behavior] = value
+
     def get_status(self) -> Dict[str, Any]:
         """Get current interpreter status (for logging/debug)"""
         with self._lock:

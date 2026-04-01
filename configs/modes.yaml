@@ -4,10 +4,10 @@
 modes:
   silent_guardian:
     description: "Primary mode - bark-focused passive monitoring"
-    resolution: [1280, 720]   # HD for ArUco detection
+    resolution: [1280, 720]   # HD for presence detection
     fps: 15
     ai_enabled: false         # No heavy AI inference - bark detection is primary
-    aruco_enabled: true       # Dog identification via markers
+    aruco_enabled: false      # No dog ID needed — SG only uses bark detection
     bark_detection: true      # Primary input method
     scan_pattern: "fixed"     # Camera stays stationary
     power_saving: true

@@ -156,36 +156,43 @@ class BatteryMonitorService:
             self.critical_warning_sent = False
 
     def _check_charging(self) -> None:
-        """Check if charging (voltage increasing OR near full charge)"""
+        """Check if charging (voltage must be actively rising over multiple readings).
+
+        Only Method 2 (voltage trend) is reliable. Method 1 (high voltage) and
+        Method 3 (high percentage) both false-positive on a fully-charged battery
+        that is NOT plugged in, causing the startup 'Wimz_charging' announcement.
+        """
         # Track voltage history
         self.voltage_history.append(self.voltage)
-        if len(self.voltage_history) > 3:
+        if len(self.voltage_history) > 5:
             self.voltage_history.pop(0)
 
         now = time.time()
         was_charging = self.charging_detected
 
-        # Method 1: Voltage is very high (near full charge = charger connected)
-        # 4S LiPo full charge is 16.8V, consider >16.5V as "on charger"
-        if self.voltage >= 16.5:
+        # Need at least 4 readings (~20s at 5s interval) before making charging decisions.
+        # This prevents false positives on startup when history is empty.
+        if len(self.voltage_history) < 4:
+            return
+
+        # Only reliable method: voltage is consistently rising over several readings
+        # Compare oldest vs newest in our 5-sample window
+        v_oldest = self.voltage_history[0]
+        v_newest = self.voltage_history[-1]
+        voltage_trend = v_newest - v_oldest
+
+        if voltage_trend >= 0.05:
+            # Voltage rising = charger connected
             self.charging_detected = True
-        # Method 2: Voltage is increasing (charger connected, not yet full)
-        elif len(self.voltage_history) >= 3:
-            v1, v2, v3 = self.voltage_history
-            voltage_increase = v3 - v1
-            if voltage_increase >= 0.05:
-                self.charging_detected = True
-            elif voltage_increase < -0.1:
-                # Voltage dropping significantly = not charging
-                self.charging_detected = False
-        # Method 3: Voltage is stable and high (95%+) = likely on charger
-        elif self.percentage >= 95:
-            self.charging_detected = True
+        elif voltage_trend < -0.05:
+            # Voltage dropping = not charging
+            self.charging_detected = False
+        # else: voltage stable — keep current state (hysteresis)
 
         # Announce charging started
         if self.charging_detected and not was_charging:
             if now - self.last_charging_announce >= self.charging_announce_cooldown:
-                self.logger.info(f"Charging detected: {self.voltage:.2f}V ({self.percentage}%)")
+                self.logger.info(f"Charging detected: {self.voltage:.2f}V ({self.percentage}%), trend=+{voltage_trend:.3f}V")
                 self._play_charging_audio()
                 self.last_charging_announce = now
 
@@ -196,7 +203,7 @@ class BatteryMonitorService:
 
         # Log charging stopped
         if was_charging and not self.charging_detected:
-            self.logger.info("Charging stopped: voltage decreasing")
+            self.logger.info(f"Charging stopped: voltage trend {voltage_trend:+.3f}V")
 
     def _play_charging_audio(self) -> None:
         """Play charging started audio"""

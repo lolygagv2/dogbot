@@ -133,8 +133,7 @@ class PushToTalkService:
             if ext not in ('aac', 'mp3', 'wav', 'opus', 'm4a'):
                 ext = 'aac'
 
-            duration_est_ms = int(len(audio_data) / 16 * 1000 / 1000)  # rough estimate
-            self.logger.info(f"PTT_PLAY: received {duration_est_ms}ms ({len(audio_data)} bytes), format={ext}")
+            self.logger.info(f"[PTT] Audio data received from network: {len(audio_data)} bytes, format={ext}")
 
             # Queue the audio for playback
             with self._queue_lock:
@@ -142,7 +141,7 @@ class PushToTalkService:
                 queue_depth = len(self._play_queue)
 
             if queue_depth > 1:
-                self.logger.info(f"PTT_PLAY: queued (position {queue_depth})")
+                self.logger.info(f"[PTT] Queued at position {queue_depth}")
 
             # Start queue worker if not already running
             self._ensure_queue_worker()
@@ -156,7 +155,7 @@ class PushToTalkService:
             }
 
         except Exception as e:
-            self.logger.error(f"PTT play error: {e}")
+            self.logger.error(f"[PTT] Error queuing audio: {e}")
             return {"success": False, "error": str(e)}
 
     def _ensure_queue_worker(self):
@@ -176,15 +175,18 @@ class PushToTalkService:
                 with self._queue_lock:
                     if not self._play_queue:
                         self._queue_worker_running = False
+                        self.logger.debug("[PTT] Queue empty, worker exiting")
                         return
                     audio_data, ext = self._play_queue.pop(0)
+                    remaining = len(self._play_queue)
 
+                self.logger.info(f"[PTT] Queue worker processing {len(audio_data)} bytes ({ext}), {remaining} remaining")
                 # Play this item (blocking until done)
                 self._playing = True
                 self._play_single(audio_data, ext)
                 self._playing = False
         except Exception as e:
-            self.logger.error(f"PTT queue worker error: {e}")
+            self.logger.error(f"[PTT] Queue worker error: {e}")
         finally:
             self._playing = False
             with self._queue_lock:
@@ -198,29 +200,34 @@ class PushToTalkService:
             # Write incoming audio to temp file
             with open(input_file, 'wb') as f:
                 f.write(audio_data)
+            self.logger.info(f"[PTT] Wrote {len(audio_data)} bytes to {input_file}")
 
             # Mute WebRTC audio track during PTT playback (echo suppression)
             try:
                 from services.streaming.audio_track import mute_audio_for_ptt
                 estimated_duration = len(audio_data) / 16000
                 mute_audio_for_ptt(max(estimated_duration, 3.0) + 1.0)
+                self.logger.debug(f"[PTT] WebRTC audio muted for {estimated_duration:.1f}s")
             except Exception as e:
-                self.logger.debug(f"Could not mute audio track for PTT: {e}")
+                self.logger.debug(f"[PTT] Could not mute audio track: {e}")
 
             # Determine playable file path
             if ext in ('wav', 'mp3'):
                 play_file = input_file
+                self.logger.info(f"[PTT] Playing {ext} directly (no conversion)")
             else:
                 # Convert AAC/opus/m4a to WAV for pygame compatibility
                 play_file = INCOMING_AUDIO.with_suffix('.wav')
+                self.logger.info(f"[PTT] Converting {ext} → WAV via ffmpeg")
                 result = subprocess.run(
                     ['ffmpeg', '-y', '-i', str(input_file),
                      '-ar', '44100', '-ac', '2', str(play_file)],
                     capture_output=True, timeout=10
                 )
                 if result.returncode != 0:
-                    self.logger.error(f"Audio conversion failed: {result.stderr.decode()}")
+                    self.logger.error(f"[PTT] ffmpeg conversion FAILED: {result.stderr.decode()}")
                     return
+                self.logger.info(f"[PTT] Conversion OK → {play_file}")
 
             # Route through USBAudio service to avoid device conflicts
             from services.media.usb_audio import get_usb_audio_service
@@ -228,17 +235,18 @@ class PushToTalkService:
 
             if usb_audio.is_busy():
                 usb_audio.stop()
-                self.logger.info("PTT: Stopped current audio for priority playback")
+                self.logger.info("[PTT] Stopped current audio for priority playback")
 
+            self.logger.info(f"[PTT] Playback started: {play_file}")
             result = usb_audio.play_file(str(play_file))
 
             if result.get('success'):
                 # Wait for playback to finish before processing next in queue
                 while usb_audio.is_busy():
                     time.sleep(0.1)
-                self.logger.info("PTT_DONE: playback complete")
+                self.logger.info("[PTT] Playback completed")
             else:
-                self.logger.error(f"PTT playback failed: {result.get('error')}")
+                self.logger.error(f"[PTT] Playback FAILED: {result.get('error')}")
 
             # Notify done callback (for sending ack after actual playback)
             if self._on_play_done:
@@ -248,9 +256,9 @@ class PushToTalkService:
                     pass
 
         except subprocess.TimeoutExpired:
-            self.logger.error("Audio conversion timed out")
+            self.logger.error("[PTT] ffmpeg conversion timed out")
         except Exception as e:
-            self.logger.error(f"PTT playback error: {e}")
+            self.logger.error(f"[PTT] Playback error: {e}")
 
     def play_audio_base64(self, base64_data: str, format: str = "aac") -> Dict[str, Any]:
         """
@@ -265,9 +273,10 @@ class PushToTalkService:
         """
         try:
             audio_data = base64.b64decode(base64_data)
+            self.logger.info(f"[PTT] Base64 decoded: {len(base64_data)} chars → {len(audio_data)} bytes")
             return self.play_audio(audio_data, format)
         except Exception as e:
-            self.logger.error(f"Base64 decode error: {e}")
+            self.logger.error(f"[PTT] Base64 decode FAILED: {e}")
             return {"success": False, "error": f"Invalid base64 data: {e}"}
 
     def record_audio(self, duration: float = DEFAULT_DURATION, format: str = "aac") -> Dict[str, Any]:

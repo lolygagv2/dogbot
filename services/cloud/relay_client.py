@@ -759,12 +759,12 @@ class RelayClient:
             audio_format = data.get('format', 'aac')
 
             if not audio_data:
-                self.logger.warning("Audio message missing data")
+                self.logger.warning("[PTT] Audio message missing data field")
                 return
 
             import base64
             raw_size = len(base64.b64decode(audio_data))
-            self.logger.info(f"PTT_PLAY: received {raw_size} bytes ({audio_format}) from app")
+            self.logger.info(f"[PTT] Received from relay: {raw_size} bytes, format={audio_format}")
 
             result = ptt_service.play_audio_base64(audio_data, audio_format)
 
@@ -776,10 +776,10 @@ class RelayClient:
                 'error': result.get('error'),
                 'queue_depth': result.get('queue_depth', 1)
             })
-            self.logger.info(f"PTT_ACK: sent audio_played (success={result.get('success')})")
+            self.logger.info(f"[PTT] ACK sent to relay (success={result.get('success')})")
 
         except Exception as e:
-            self.logger.error(f"Audio message error: {e}")
+            self.logger.error(f"[PTT] Relay audio message error: {e}")
             # Always send ack even on error
             try:
                 await self._send({

@@ -17,18 +17,51 @@ class ArUcoDetector(BaseDetector):
         super().__init__(config)
         self.logger = logging.getLogger('ArUcoDetector')
 
-        # ArUco configuration
-        self.dictionary = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_250)
+        # ArUco configuration — must match DICT_4X4_1000 used by runtime detector
+        # IDs 315 (Elsa) and 832 (Bezik) require at least 1000-entry dictionary
+        self.dictionary = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_1000)
         self.parameters = cv2.aruco.DetectorParameters_create()
 
-        # Dog ID mapping (from marker IDs to dog names)
-        self.dog_id_mapping = {
-            1: "elsa",
-            2: "bezik"
-        }
+        # Dog ID mapping — loaded dynamically from dog profiles, no hardcoded IDs
+        self.dog_id_mapping = {}
+        self._load_dog_mappings()
 
         self.initialized = True
-        self.logger.info("ArUco detector initialized")
+        self.logger.info(f"ArUco detector initialized (mappings: {self.dog_id_mapping})")
+
+    def _load_dog_mappings(self):
+        """Load marker ID → dog name mappings from all available sources"""
+        # Source 1: Dog profile manager (SQLite-persisted, updated by app)
+        try:
+            from core.dog_profile_manager import get_dog_profile_manager
+            pm = get_dog_profile_manager()
+            for profile in pm.get_all_profiles():
+                if profile.aruco_id is not None:
+                    self.dog_id_mapping[profile.aruco_id] = profile.name.lower()
+        except Exception as e:
+            self.logger.warning(f"Could not load profiles for ArUco mapping: {e}")
+
+        # Source 2: config.json dogs list (fallback if profiles not yet synced)
+        if not self.dog_id_mapping:
+            try:
+                import json
+                config_path = '/home/morgan/dogbot/config/config.json'
+                with open(config_path) as f:
+                    cfg = json.load(f)
+                for dog in cfg.get('dogs', []):
+                    mid = dog.get('marker_id')
+                    name = dog.get('id', '')
+                    if mid is not None:
+                        self.dog_id_mapping[int(mid)] = name.lower()
+            except Exception as e:
+                self.logger.warning(f"Could not load config.json for ArUco mapping: {e}")
+
+        self.logger.info(f"[ARUCO] Dog mappings loaded: {self.dog_id_mapping}")
+
+    def reload_mappings(self):
+        """Reload mappings (call when profiles update)"""
+        self.dog_id_mapping.clear()
+        self._load_dog_mappings()
 
     def detect(self, frame: np.ndarray) -> Dict[str, Any]:
         """
@@ -66,6 +99,7 @@ class ArUcoDetector(BaseDetector):
 
                     # Get dog name if mapped
                     dog_name = self.dog_id_mapping.get(int(marker_id), f"unknown_dog_{marker_id}")
+                    self.logger.info(f"[ARUCO] Detected marker ID: {int(marker_id)}, mapped to dog: {dog_name}")
 
                     marker_info = {
                         'id': int(marker_id),
@@ -234,7 +268,7 @@ class ArUcoDetector(BaseDetector):
         """Get detector status"""
         status = super().get_status()
         status.update({
-            'dictionary': 'DICT_6X6_250',
+            'dictionary': 'DICT_4X4_1000',
             'mapped_dogs': list(self.dog_id_mapping.values())
         })
         return status

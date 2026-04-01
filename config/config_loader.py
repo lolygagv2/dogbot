@@ -190,10 +190,6 @@ class DispenserConfig:
     def dispense_duration(self) -> float:
         return self._config.get('dispense_duration', 0.12)
 
-    @property
-    def vibrator_enabled(self) -> bool:
-        return self._config.get('vibrator_enabled', False)
-
 
 class ServoConfig:
     """Servo-related configuration."""

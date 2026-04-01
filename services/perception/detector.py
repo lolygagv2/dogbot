@@ -40,10 +40,33 @@ except ImportError:
 
 # ArUco detection
 ARUCO_DICT = cv2.aruco.DICT_4X4_1000
-DOG_MARKERS = {
-    # Dog markers are loaded dynamically from dog profiles
-    # ArUco ID -> dog name mappings come from DogProfileManager
-}
+DOG_MARKERS = {}  # Populated at runtime from dog profiles
+
+
+def _load_dog_markers():
+    """Load ArUco marker → dog name mappings from profiles and config"""
+    global DOG_MARKERS
+    try:
+        from core.dog_profile_manager import get_dog_profile_manager
+        pm = get_dog_profile_manager()
+        for profile in pm.get_all_profiles():
+            if profile.aruco_id is not None:
+                DOG_MARKERS[profile.aruco_id] = profile.name.lower()
+    except Exception:
+        pass
+    # Fallback to config.json if profiles empty
+    if not DOG_MARKERS:
+        try:
+            import json
+            with open('/home/morgan/dogbot/config/config.json') as f:
+                cfg = json.load(f)
+            for dog in cfg.get('dogs', []):
+                mid = dog.get('marker_id')
+                name = dog.get('id', '')
+                if mid is not None:
+                    DOG_MARKERS[int(mid)] = name.lower()
+        except Exception:
+            pass
 
 
 class DetectorService:
@@ -78,6 +101,10 @@ class DetectorService:
         self._aruco_consecutive = {}  # {marker_id: consecutive_frame_count} for validation
         self._aruco_min_frames = 3  # Require 3 consecutive frames before accepting
 
+        # Load dog marker mappings from profiles/config
+        _load_dog_markers()
+        self.logger.info(f"[ARUCO] Dog markers loaded: {DOG_MARKERS}")
+
         # Detection state
         self.running = False
         self.detection_thread = None
@@ -94,6 +121,20 @@ class DetectorService:
         self.frame_count = 0
         self.last_fps_time = time.time()
         self.current_fps = 0.0
+
+        # --- R3: AI diagnostics ---
+        self._heartbeat_time = time.time()
+        self._heartbeat_detections = 0
+        self._heartbeat_last_class = ""
+        self._heartbeat_last_confidence = 0.0
+        self._frames_processed_total = 0
+        self._last_detection_info = {}  # Last detection for status endpoint
+
+        # Failure counters (per 60s window)
+        self._stats_window_start = time.time()
+        self._cat_a_errors = 0    # Pipeline not running
+        self._cat_b_misses = 0    # Below threshold
+        self._cat_c_fails = 0     # Classification fails
 
         # Rate limiting for detection events (prevent log spam)
         self._last_detection_event_time = 0
@@ -516,8 +557,8 @@ class DetectorService:
 
                     markers.append((mid, cx, cy))
 
-                    if marker_id in DOG_MARKERS:
-                        self.logger.info(f"ArUco marker {mid} ({DOG_MARKERS[mid]}) at ({cx:.0f}, {cy:.0f})")
+                    dog_name = DOG_MARKERS.get(mid, 'unknown')
+                    self.logger.info(f"[ARUCO] Detected marker ID: {mid}, mapped to dog: {dog_name} at ({cx:.0f}, {cy:.0f})")
 
             # Reset counters for markers NOT seen this frame
             for mid in list(self._aruco_consecutive.keys()):
@@ -646,7 +687,9 @@ class DetectorService:
 
                 if (run_full_ai or lightweight_ai_mode) and not self._ai_paused:
                     # Detect ArUco markers for dog identification
-                    aruco_markers = self._detect_aruco_markers(frame)
+                    # Silent Guardian: skip ArUco (only needs bark detection, not dog ID)
+                    if not lightweight_ai_mode:
+                        aruco_markers = self._detect_aruco_markers(frame)
 
                     # Publish ArUco marker event for video recorder
                     if aruco_markers:
@@ -673,12 +716,57 @@ class DetectorService:
 
                 # Update FPS
                 self.frame_count += 1
+                self._frames_processed_total += 1
                 now = time.time()
                 if now - self.last_fps_time >= 1.0:
                     self.current_fps = self.frame_count / (now - self.last_fps_time)
                     self.frame_count = 0
                     self.last_fps_time = now
                     self.logger.debug(f"Detection FPS: {self.current_fps:.1f}")
+
+                # Track detections for heartbeat and failure categories
+                if dogs:
+                    self._heartbeat_detections += len(dogs)
+                    if behaviors:
+                        best = max(behaviors, key=lambda b: b.confidence)
+                        self._heartbeat_last_class = best.behavior
+                        self._heartbeat_last_confidence = best.confidence
+                        self._last_detection_info = {
+                            'class': best.behavior,
+                            'confidence': round(best.confidence, 3),
+                            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')
+                        }
+                        # Cat B: dog detected but behavior confidence below threshold
+                        for b in behaviors:
+                            if b.confidence < 0.5:  # Near-miss threshold
+                                self._cat_b_misses += 1
+                    else:
+                        # Cat C: dog detected but behavior classifier produced nothing
+                        if run_full_ai:
+                            self._cat_c_fails += 1
+
+                # R3.1: Heartbeat every 5 seconds
+                if now - self._heartbeat_time >= 5.0:
+                    self.logger.info(
+                        f"[AI] Pipeline active | FPS: {self.current_fps:.1f} | "
+                        f"Detections last 5s: {self._heartbeat_detections} | "
+                        f"Last: {self._heartbeat_last_class or 'none'} @ "
+                        f"{self._heartbeat_last_confidence*100:.0f}%"
+                    )
+                    self._heartbeat_detections = 0
+                    self._heartbeat_time = now
+
+                # R3.4: 60-second failure stats
+                if now - self._stats_window_start >= 60.0:
+                    self.logger.info(
+                        f"[AI] 60s stats — Pipeline errors: {self._cat_a_errors} | "
+                        f"Below-threshold: {self._cat_b_misses} | "
+                        f"Classification fails: {self._cat_c_fails}"
+                    )
+                    self._cat_a_errors = 0
+                    self._cat_b_misses = 0
+                    self._cat_c_fails = 0
+                    self._stats_window_start = now
 
                 # CRITICAL: Minimum loop interval to prevent Hailo driver exhaustion
                 # Primary rate limiting is in AI controller, this is a safety backstop
@@ -708,7 +796,8 @@ class DetectorService:
                 # and this was adding unnecessary latency to every detection cycle
 
             except Exception as e:
-                self.logger.error(f"Detection loop error: {e}")
+                self.logger.error(f"[AI] PIPELINE ERROR: {e}")
+                self._cat_a_errors += 1
                 time.sleep(0.1)
 
         self.logger.info("Detection loop stopped")
