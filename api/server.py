@@ -4122,27 +4122,122 @@ async def enter_cloud_mode():
 
 @app.get("/system/network-status")
 async def get_network_status():
-    """Get current network status (AP mode vs client mode)"""
+    """Get current network status — AP mode vs WiFi mode, with internet check."""
     try:
         from services.network.wifi_manager import WiFiManager
 
         wifi = WiFiManager()
+
+        if wifi.is_ap_mode():
+            return {
+                "mode": "ap",
+                "ssid": "WIMZ-Demo",
+                "ip": wifi.HOTSPOT_IP,
+                "internet": False
+            }
+
         status = wifi.get_connection_status()
-
-        # Check if we're in hotspot mode
-        is_hotspot = status.get('ssid', '').startswith('WIMZ-')
-
         return {
-            "mode": "local" if is_hotspot else "cloud",
-            "connected": status.get('connected', False),
+            "mode": "wifi",
             "ssid": status.get('ssid'),
             "ip": status.get('ip_address'),
+            "internet": wifi.check_internet(timeout=3),
             "signal": status.get('signal')
         }
 
     except Exception as e:
         logger.error(f"Network status error: {e}")
-        return {"mode": "unknown", "error": str(e)}
+        return {"mode": "unknown", "ssid": None, "ip": None, "internet": False, "error": str(e)}
+
+
+@app.get("/system/wifi/scan")
+async def wifi_scan():
+    """Scan for available WiFi networks.
+
+    In AP mode: briefly stops the AP, scans, then restarts it.
+    This causes a ~5s interruption for connected clients.
+    The app should warn the user before calling this in AP mode.
+    """
+    try:
+        from services.network.wifi_manager import WiFiManager
+
+        wifi = WiFiManager()
+        in_ap = wifi.is_ap_mode()
+
+        if in_ap:
+            # Stop AP → scan → restart AP
+            logger.info("[LOCAL] WiFi scan requested in AP mode — cycling interface")
+            wifi.stop_hotspot()
+            time.sleep(1)
+            networks = wifi._do_scan()
+            # Restart demo AP
+            wifi.start_demo_hotspot()
+        else:
+            networks = wifi.scan_networks()
+
+        return {
+            "success": True,
+            "networks": [
+                {
+                    "ssid": n["ssid"],
+                    "signal": n["signal"],
+                    "security": n["security"],
+                    "secured": n["secured"]
+                }
+                for n in networks
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"WiFi scan error: {e}")
+        return {"success": False, "networks": [], "error": str(e)}
+
+
+@app.post("/system/wifi/connect")
+async def wifi_connect(request: dict):
+    """Connect to a WiFi network. Shuts down WIMZ-Demo AP if active.
+
+    Body: {"ssid": "NetworkName", "password": "secret"}
+    """
+    ssid = request.get("ssid", "").strip()
+    password = request.get("password", "")
+
+    if not ssid:
+        raise HTTPException(status_code=400, detail="ssid is required")
+
+    try:
+        from services.network.wifi_manager import WiFiManager
+
+        wifi = WiFiManager()
+        logger.info(f"[LOCAL] WiFi configured via API — connecting to {ssid}, shutting down WIMZ-Demo")
+
+        # save_credentials() stops the hotspot, connects to WiFi, and tests internet
+        result = wifi.save_credentials(ssid, password)
+
+        if result["success"]:
+            status = wifi.get_connection_status()
+            ip = status.get("ip_address", "unknown")
+            logger.info(f"[LOCAL] WiFi connected — relay mode at {ip}:8000")
+            return {
+                "success": True,
+                "message": result["message"],
+                "ip": ip,
+                "has_internet": result["has_internet"]
+            }
+        else:
+            # Connection failed — restart demo AP so the user can retry
+            logger.warning(f"WiFi connect to '{ssid}' failed: {result['message']}")
+            if result.get("should_restart_ap"):
+                logger.info("[LOCAL] Restarting WIMZ-Demo AP after failed WiFi connect")
+                wifi.start_demo_hotspot()
+            return {
+                "success": False,
+                "message": result["message"]
+            }
+
+    except Exception as e:
+        logger.error(f"WiFi connect error: {e}")
+        return {"success": False, "message": str(e)}
 
 
 # ============================================================================

@@ -278,12 +278,20 @@ class CaptivePortal:
     def run(self, host: str = "0.0.0.0", port: int = 80):
         """Run the captive portal server (blocking)"""
         logger.info(f"Starting captive portal on {host}:{port}")
-        uvicorn.run(
+        config = uvicorn.Config(
             self.app,
             host=host,
             port=port,
             log_level="warning"
         )
+        self._server = uvicorn.Server(config)
+        self._server.run()
+
+    def stop(self):
+        """Stop the captive portal server (call from another thread)"""
+        if self._server:
+            logger.info("Stopping captive portal server...")
+            self._server.should_exit = True
 
     async def start_async(self, host: str = "0.0.0.0", port: int = 80):
         """Start the captive portal server (async)"""

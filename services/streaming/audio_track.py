@@ -93,13 +93,40 @@ class WIMZAudioTrack(MediaStreamTrack):
         self.logger.info(f"WIMZAudioTrack initialized (device={self._device_index}, muted={self._muted})")
 
     def _find_usb_audio_device(self) -> Optional[int]:
-        """Find USB Audio Device index for input"""
+        """Find the best audio input device.
+
+        Prefers the PipeWire default device (which routes through echo
+        cancellation when configured) over direct ALSA hardware access.
+        Falls back to raw USB device if PipeWire isn't available.
+        """
         try:
             devices = sd.query_devices()
+            usb_direct = None
+
             for i, dev in enumerate(devices):
-                if 'USB' in dev.get('name', '') and dev.get('max_input_channels', 0) > 0:
-                    self.logger.info(f"Found USB audio input: {dev['name']} (device {i})")
-                    return i
+                if dev.get('max_input_channels', 0) <= 0:
+                    continue
+                name = dev.get('name', '')
+
+                # Direct USB ALSA device (fallback)
+                if 'USB' in name and usb_direct is None:
+                    usb_direct = i
+
+            # Prefer PipeWire default — it routes through echo cancellation
+            default_idx = sd.default.device[0]  # default input device index
+            if default_idx is not None and default_idx >= 0:
+                default_dev = devices[default_idx]
+                default_name = default_dev.get('name', '')
+                # Use PipeWire default if it's 'default' or 'pulse' (both go through PW)
+                if default_name in ('default', 'pulse') or 'pipewire' in default_name.lower():
+                    self.logger.info(f"Using PipeWire default input: {default_name} (device {default_idx}) — echo cancellation active")
+                    return default_idx
+
+            # Fallback to direct USB
+            if usb_direct is not None:
+                self.logger.info(f"Using direct USB audio input: {devices[usb_direct]['name']} (device {usb_direct}) — no echo cancellation")
+                return usb_direct
+
         except Exception as e:
             self.logger.warning(f"Could not query audio devices: {e}")
         return None

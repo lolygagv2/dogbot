@@ -9,6 +9,9 @@ User=morgan
 Group=morgan
 WorkingDirectory=/home/morgan/dogbot
 Environment=PYTHONPATH=/home/morgan/dogbot
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+Environment=PIPEWIRE_RUNTIME_DIR=/run/user/1000
 ExecStartPre=/bin/sleep 10
 ExecStart=/home/morgan/dogbot/env_new/bin/python /home/morgan/dogbot/main_treatbot.py
 Restart=on-failure

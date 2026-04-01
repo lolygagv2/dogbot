@@ -27,9 +27,16 @@ def _detect_usb_audio_card() -> int:
 # Detect USB audio card dynamically (can be 0, 1, or 2 depending on boot order)
 USB_AUDIO_CARD = _detect_usb_audio_card()
 
-# Set audio environment BEFORE importing pygame
-os.environ['SDL_AUDIODRIVER'] = 'alsa'
-os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
+# Route pygame through PipeWire (via pipewire-pulse) for echo cancellation support.
+# PipeWire's echo-cancel module needs both playback and capture to flow through it.
+# Falls back to direct ALSA if PipeWire isn't running.
+_use_pipewire = os.path.exists('/usr/bin/pipewire-pulse')
+if _use_pipewire:
+    os.environ['SDL_AUDIODRIVER'] = 'pulseaudio'
+    # Don't set AUDIODEV — let PipeWire route to the echo-cancel sink (default)
+else:
+    os.environ['SDL_AUDIODRIVER'] = 'alsa'
+    os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
 
 import pygame
 

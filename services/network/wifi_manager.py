@@ -38,6 +38,14 @@ class WiFiManager:
         self._cached_networks = []  # Cache scan results before AP mode
         self._in_ap_mode = False
 
+    def is_ap_mode(self) -> bool:
+        """Detect if the interface is currently in AP mode by checking for hostapd process."""
+        if self._in_ap_mode:
+            return True
+        # Check if hostapd is running with our config
+        success, output = self._run_cmd(["pgrep", "-f", f"hostapd.*{HOSTAPD_CONF}"])
+        return success
+
     def _run_cmd(self, cmd: List[str], timeout: int = 30) -> Tuple[bool, str]:
         """Run a shell command and return (success, output)"""
         try:
@@ -315,6 +323,93 @@ class WiFiManager:
 
         logger.warning(f"SSID '{ssid}' not found after {timeout}s ({attempt} attempts)")
         return False
+
+    def start_demo_hotspot(self, ssid: str = "WIMZ-Demo", password: str = "wimzdemo") -> bool:
+        """Start a clean WiFi AP for direct robot control (no captive portal, no DNS hijack).
+
+        Unlike start_hotspot(), this creates a plain WiFi network:
+        - No DNS redirect (address=/#/...)
+        - DHCP range limited to 192.168.4.10-50
+        - Designed for the app to connect directly to treatbot at 192.168.4.1:8000
+        """
+        logger.info(f"[LOCAL] Starting demo hotspot: {ssid}")
+
+        # Cache scan results before taking over the interface
+        logger.info("Caching WiFi scan results before demo AP mode...")
+        self._cached_networks = self._do_scan()
+        logger.info(f"Cached {len(self._cached_networks)} networks")
+
+        # Step 1: Tell NetworkManager to stop managing wlan0
+        self._run_nmcli(["device", "disconnect", self.interface])
+        self._run_nmcli(["device", "set", self.interface, "managed", "no"])
+        time.sleep(0.5)
+
+        # Step 2: Configure interface with static IP
+        self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
+        self._run_cmd(["sudo", "ip", "addr", "add", f"{self.HOTSPOT_IP}/24", "dev", self.interface])
+        self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
+        time.sleep(0.5)
+
+        # Step 3: Write hostapd config
+        hostapd_config = f"""interface={self.interface}
+driver=nl80211
+ssid={ssid}
+hw_mode=g
+channel=6
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=2
+wpa_passphrase={password}
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+"""
+        try:
+            with open(HOSTAPD_CONF, 'w') as f:
+                f.write(hostapd_config)
+        except Exception as e:
+            logger.error(f"Failed to write hostapd config: {e}")
+            return False
+
+        # Step 4: Write dnsmasq config — DHCP only, NO DNS hijack
+        dnsmasq_config = f"""interface={self.interface}
+bind-interfaces
+dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,24h
+"""
+        try:
+            with open(DNSMASQ_CONF, 'w') as f:
+                f.write(dnsmasq_config)
+        except Exception as e:
+            logger.error(f"Failed to write dnsmasq config: {e}")
+            return False
+
+        # Step 5: Start hostapd
+        success, output = self._run_cmd([
+            "sudo", "hostapd", "-B", "-P", HOSTAPD_PID, HOSTAPD_CONF
+        ], timeout=10)
+
+        if not success:
+            logger.error(f"Failed to start hostapd: {output}")
+            self._cleanup_ap()
+            return False
+
+        # Step 6: Start dnsmasq for DHCP only
+        self._run_cmd(["pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
+        time.sleep(0.3)
+
+        success, output = self._run_cmd([
+            "sudo", "dnsmasq", "-C", DNSMASQ_CONF, "--pid-file=" + DNSMASQ_PID
+        ], timeout=10)
+
+        if not success:
+            logger.error(f"Failed to start dnsmasq: {output}")
+            self._cleanup_ap()
+            return False
+
+        logger.info(f"[LOCAL] Demo hotspot started: {ssid} @ {self.HOTSPOT_IP}")
+        self._in_ap_mode = True
+        return True
 
     def start_hotspot(self, ssid: str, password: str) -> bool:
         """Start WiFi hotspot using hostapd + dnsmasq (bypasses NM's broken AP mode)"""

@@ -1,0 +1,19 @@
+[Unit]
+Description=WIM-Z WiFi Provisioning
+Documentation=https://github.com/wimzai/dogbot
+After=NetworkManager.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/morgan/dogbot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/morgan/dogbot/env_new/bin/python /home/morgan/dogbot/wifi_provision_main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

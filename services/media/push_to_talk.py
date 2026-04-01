@@ -202,12 +202,12 @@ class PushToTalkService:
                 f.write(audio_data)
             self.logger.info(f"[PTT] Wrote {len(audio_data)} bytes to {input_file}")
 
-            # Mute WebRTC audio track during PTT playback (echo suppression)
+            # Brief mic mute for PTT playback. PipeWire echo cancellation handles
+            # speaker→mic bleed; this short mute covers the initial transient.
             try:
                 from services.streaming.audio_track import mute_audio_for_ptt
-                estimated_duration = len(audio_data) / 16000
-                mute_audio_for_ptt(max(estimated_duration, 3.0) + 1.0)
-                self.logger.debug(f"[PTT] WebRTC audio muted for {estimated_duration:.1f}s")
+                mute_audio_for_ptt(0.2)
+                self.logger.debug("[PTT] WebRTC audio muted 200ms (AEC handles the rest)")
             except Exception as e:
                 self.logger.debug(f"[PTT] Could not mute audio track: {e}")
 
