@@ -19,22 +19,20 @@ logger = logging.getLogger(__name__)
 
 def find_usb_audio_device():
     """
-    Find the USB audio device card number
-    Returns device string like 'hw:0,0' or 'default' if not found
+    Find the USB audio device for bark detection.
+    Always returns 'default' so arecord goes through PipeWire's ALSA
+    emulation layer. Direct hw: access fails with 'Device or resource busy'
+    because PipeWire holds an exclusive lock on the hardware device.
     """
+    # Verify USB audio exists (for logging), but always use 'default'
     try:
         result = subprocess.run(['arecord', '-l'], capture_output=True, text=True)
-        lines = result.stdout.split('\n')
-        for line in lines:
+        for line in result.stdout.split('\n'):
             if 'USB Audio Device' in line or 'USB Audio' in line:
-                # Extract card number from line like "card 0: Device [USB Audio Device]"
-                if 'card ' in line:
-                    card_num = line.split('card ')[1].split(':')[0]
-                    device = f'hw:{card_num},0'
-                    logger.info(f"Found USB audio device at {device}")
-                    return device
+                logger.info(f"USB audio hardware present ({line.strip()}), using 'default' (PipeWire)")
+                return 'default'
     except Exception as e:
-        logger.warning(f"Error finding USB audio device: {e}")
+        logger.warning(f"Error checking USB audio: {e}")
 
     logger.info("Using default audio device")
     return 'default'
