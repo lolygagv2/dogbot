@@ -3789,14 +3789,34 @@ async def websocket_local(websocket: WebSocket):
         await websocket.send_json({
             "type": "connected",
             "mode": "local",
-            "current_mode": state.current_mode.value,
+            "current_mode": state.get_mode().value,
             "api_version": "1.0"
         })
 
         while True:
             data = await websocket.receive_json()
+
+            # Unwrap app command wrapper format:
+            # {"type": "command", "device_id": "local_robot", "command": "ptt_play", "data": {"data": "<b64>", ...}}
+            # Flatten inner "data" to top level so handlers find params directly
+            if data.get("type") == "command" and "command" in data:
+                inner_cmd = data["command"]
+                inner_data = data.get("data") or {}
+                data = {**inner_data, "type": inner_cmd, "command": inner_cmd}
+                logger.debug(f"[LOCAL] Unwrapped command: {inner_cmd}")
+
             # Accept both "command" field (local protocol) and "type" field (relay protocol)
             command = data.get("command") or data.get("type")
+
+            # Handle ping/pong
+            if command == "ping":
+                await websocket.send_json({"type": "pong", "timestamp": data.get("timestamp")})
+                continue
+
+            # Handle auth (local mode always succeeds)
+            if command == "auth":
+                await websocket.send_json({"type": "auth_result", "success": True})
+                continue
 
             if command == "motor":
                 left = data.get("left", 0)
@@ -3830,13 +3850,16 @@ async def websocket_local(websocket: WebSocket):
                 await websocket.send_json({"type": "camera_ack", "position": pantilt_service.get_position()})
 
             elif command == "stop":
-                motor_service.emergency_stop()
+                motor_bus = get_motor_bus()
+                if motor_bus and motor_bus.running:
+                    cmd = create_motor_command(0, 0, CommandSource.API)
+                    motor_bus.send_command(cmd)
                 await websocket.send_json({"type": "stop_ack", "message": "Motors stopped"})
 
-            elif command == "treat":
+            elif command in ("treat", "dispense_treat"):
                 dispenser = get_dispenser_service()
                 dispenser.dispense_treat(reason="local_mode")
-                await websocket.send_json({"type": "treat_ack", "message": "Treat dispensed"})
+                await websocket.send_json({"type": "command_response", "data": {"success": True, "command": command}})
 
             elif command == "treat_unjam":
                 dispenser = get_dispenser_service()
@@ -3854,24 +3877,66 @@ async def websocket_local(websocket: WebSocket):
                 dispenser.reset_treat_counter()
                 await websocket.send_json({"type": "treat_counter_ack", "treats_loaded": 0, "treats_remaining": 0})
 
-            elif command == "set_mode":
+            elif command in ("set_mode", "mode"):
                 mode_name = data.get("mode", "").lower()
+                # Map contract mode names to internal modes
+                mode_map = {
+                    "idle": "idle", "silent_guardian": "silent_guardian",
+                    "guardian": "silent_guardian", "coach": "coach",
+                    "training": "coach", "mission": "mission",
+                    "manual": "manual", "docking": "idle"
+                }
+                internal_name = mode_map.get(mode_name, mode_name)
                 try:
-                    new_mode = SystemMode(mode_name)
+                    new_mode = SystemMode(internal_name)
                     state.set_mode(new_mode, f"Local mode: {mode_name}")
-                    await websocket.send_json({"type": "mode_ack", "mode": mode_name, "success": True})
+                    await websocket.send_json({"type": "command_response", "data": {"success": True, "command": command, "mode": mode_name}})
                 except ValueError:
-                    await websocket.send_json({"type": "mode_ack", "mode": mode_name, "success": False, "error": "Invalid mode"})
+                    await websocket.send_json({"type": "command_response", "data": {"success": False, "command": command, "error": f"Invalid mode: {mode_name}"}})
+
+            elif command == "led":
+                pattern = data.get("pattern", "idle")
+                pattern_map = {
+                    "breathing": "idle", "rainbow": "gradient_flow",
+                    "celebration": "treat_launching", "searching": "searching",
+                    "alert": "error", "idle": "idle"
+                }
+                mode = pattern_map.get(pattern, pattern)
+                from services.media.led import get_led_service
+                led_service = get_led_service()
+                if led_service:
+                    led_service.set_pattern(mode)
+                await websocket.send_json({"type": "command_response", "data": {"success": True, "command": "led", "pattern": mode}})
+
+            elif command == "audio":
+                audio_file = data.get("file")
+                if audio_file:
+                    from services.media.sfx import get_sfx_service
+                    sfx = get_sfx_service()
+                    if sfx:
+                        sfx.play_sound(audio_file)
+                await websocket.send_json({"type": "command_response", "data": {"success": True, "command": "audio"}})
+
+            elif command == "servo":
+                pan = data.get("pan")
+                tilt = data.get("tilt")
+                if pantilt_service:
+                    if pan is not None:
+                        pan_internal = int(90 + pan)
+                        pantilt_service.set_pan(pan_internal)
+                    if tilt is not None:
+                        tilt_internal = int(90 + tilt)
+                        pantilt_service.set_tilt(tilt_internal)
+                await websocket.send_json({"type": "command_response", "data": {"success": True, "command": "servo"}})
 
             elif command == "get_status":
                 status = {
-                    "type": "status",
-                    "mode": state.current_mode.value,
+                    "type": "status_response",
+                    "robot_online": True,
+                    "device_paired": True,
+                    "mode": state.get_mode().value,
                     "network_mode": "local",
-                    "services": {
-                        "motor": motor_service is not None,
-                        "pantilt": pantilt_service is not None
-                    }
+                    "timestamp": time.time()
                 }
                 await websocket.send_json(status)
 
@@ -3947,8 +4012,9 @@ async def websocket_local(websocket: WebSocket):
                         except Exception:
                             pass
 
-                # Local-only ICE config: no TURN servers needed on LAN
-                local_ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
+                # Local LAN: no STUN/TURN needed — both devices on same AP.
+                # Empty list forces host-only ICE candidates (direct LAN IPs).
+                local_ice_servers = []
 
                 offer = await webrtc.create_offer(
                     session_id=session_id,
@@ -3956,11 +4022,11 @@ async def websocket_local(websocket: WebSocket):
                     on_ice_candidate=on_ice_candidate
                 )
 
-                # Send credentials (local-only, no TURN) + offer back to app
+                # Send credentials + offer back to app
                 await websocket.send_json({
                     "type": "webrtc_credentials",
                     "session_id": session_id,
-                    "ice_servers": local_ice_servers
+                    "ice_servers": {"iceServers": local_ice_servers}
                 })
                 await websocket.send_json({
                     "type": "webrtc_offer",
@@ -3986,20 +4052,25 @@ async def websocket_local(websocket: WebSocket):
                 candidate = data.get("candidate")
                 await webrtc.add_ice_candidate(session_id, candidate)
 
-            elif command == "ping":
-                await websocket.send_json({"type": "pong", "timestamp": data.get("timestamp")})
-
             else:
                 await websocket.send_json({"type": "error", "message": f"Unknown command: {command}"})
 
     except WebSocketDisconnect:
         logger.debug("Local mode WebSocket disconnected")
-        if motor_service:
-            motor_service.emergency_stop()
+        try:
+            motor_bus = get_motor_bus()
+            if motor_bus and motor_bus.running:
+                cmd = create_motor_command(0, 0, CommandSource.API)
+                motor_bus.send_command(cmd)
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"Local mode WebSocket error: {e}")
-        await websocket.send_json({"type": "error", "message": str(e)})
-        await websocket.close()
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # System endpoints
