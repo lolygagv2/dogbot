@@ -57,6 +57,9 @@ class WiFiProvisioningService:
     DEMO_SSID = "WIMZ-Demo"
     DEMO_PASSWORD = "wimzdemo"
 
+    # State file: if this exists, we were in demo AP mode and should resume it
+    DEMO_STATE_FILE = "/tmp/wimz-demo-ap-active"
+
     def __init__(self):
         self.wifi_manager = WiFiManager()
         self.captive_portal: Optional[CaptivePortal] = None
@@ -201,6 +204,14 @@ class WiFiProvisioningService:
         self._init_led_controller()
 
         try:
+            # Step 0: Check if we were previously in demo AP mode
+            # If the state file exists, skip WiFi and go straight to demo AP
+            if os.path.exists(self.DEMO_STATE_FILE):
+                logger.info("[LOCAL] Demo AP state file found — resuming WIMZ-Demo AP mode")
+                self._init_led_controller()
+                self._start_demo_mode()
+                return False
+
             # Step 1: Set LED to searching pattern
             self._set_led_searching()
 
@@ -332,6 +343,13 @@ class WiFiProvisioningService:
 
         logger.info(f"[LOCAL] WIMZ-Demo AP started at {self.wifi_manager.HOTSPOT_IP}:8000")
         self._in_demo_mode = True
+
+        # Write state file so we resume AP mode if the service restarts
+        try:
+            with open(self.DEMO_STATE_FILE, 'w') as f:
+                f.write("demo_ap_active")
+        except Exception as e:
+            logger.warning(f"Could not write demo state file: {e}")
 
         # Block here — keep the service alive so hostapd/dnsmasq/ios-server persist
         # The treatbot service runs independently and serves the API at :8000

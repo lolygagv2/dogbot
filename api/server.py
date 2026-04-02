@@ -3783,7 +3783,7 @@ async def websocket_local(websocket: WebSocket):
         pantilt_service = get_pantilt_service()
         state = get_state()
 
-        logger.debug("Local mode WebSocket connection established")
+        logger.info("[LOCAL] WebSocket connection established on /ws/local")
 
         # Send initial status
         await websocket.send_json({
@@ -3803,7 +3803,7 @@ async def websocket_local(websocket: WebSocket):
                 inner_cmd = data["command"]
                 inner_data = data.get("data") or {}
                 data = {**inner_data, "type": inner_cmd, "command": inner_cmd}
-                logger.debug(f"[LOCAL] Unwrapped command: {inner_cmd}")
+                logger.info(f"[LOCAL] Unwrapped command: {inner_cmd}")
 
             # Accept both "command" field (local protocol) and "type" field (relay protocol)
             command = data.get("command") or data.get("type")
@@ -3818,36 +3818,52 @@ async def websocket_local(websocket: WebSocket):
                 await websocket.send_json({"type": "auth_result", "success": True})
                 continue
 
+            # Handle get_status (app polls every 30s)
+            if command == "get_status":
+                await websocket.send_json({
+                    "type": "status_response",
+                    "robot_online": True,
+                    "device_paired": True,
+                    "mode": state.get_mode().value,
+                    "network_mode": "local",
+                    "timestamp": time.time()
+                })
+                continue
+
             if command == "motor":
-                left = data.get("left", 0)
-                right = data.get("right", 0)
+                # App sends -1.0 to 1.0, motor bus expects -100 to 100
+                left = float(data.get("left", 0))
+                right = float(data.get("right", 0))
+                left = max(-1.0, min(1.0, left))
+                right = max(-1.0, min(1.0, right))
+                left_pct = int(left * 100)
+                right_pct = int(right * 100)
                 motor_bus = get_motor_bus()
                 if motor_bus and motor_bus.running:
-                    cmd = create_motor_command(left, right, CommandSource.API)
+                    cmd = create_motor_command(left_pct, right_pct, CommandSource.API)
                     motor_bus.send_command(cmd)
-                await websocket.send_json({"type": "motor_ack", "left": left, "right": right})
+                await websocket.send_json({"type": "command_response", "data": {"success": True, "command": "motor"}})
 
             elif command == "joystick":
-                x = data.get("x", 0)
-                y = data.get("y", 0)
-                left = int((y + x) * 100)
-                right = int((y - x) * 100)
-                left = max(-100, min(100, left))
-                right = max(-100, min(100, right))
+                x = float(data.get("x", 0))
+                y = float(data.get("y", 0))
+                left_pct = int((y + x) * 100)
+                right_pct = int((y - x) * 100)
+                left_pct = max(-100, min(100, left_pct))
+                right_pct = max(-100, min(100, right_pct))
                 motor_bus = get_motor_bus()
                 if motor_bus and motor_bus.running:
-                    cmd = create_motor_command(left, right, CommandSource.API)
+                    cmd = create_motor_command(left_pct, right_pct, CommandSource.API)
                     motor_bus.send_command(cmd)
-                await websocket.send_json({"type": "joystick_ack", "motors": {"left": left, "right": right}})
+                await websocket.send_json({"type": "command_response", "data": {"success": True, "command": "joystick"}})
 
             elif command == "camera":
+                # Raw absolute angles (legacy)
                 pan = data.get("pan")
                 tilt = data.get("tilt")
-                if pan is not None:
-                    pantilt_service.set_pan(pan)
-                if tilt is not None:
-                    pantilt_service.set_tilt(tilt)
-                await websocket.send_json({"type": "camera_ack", "position": pantilt_service.get_position()})
+                if pantilt_service:
+                    pantilt_service.move_camera(pan=pan, tilt=tilt)
+                await websocket.send_json({"type": "command_response", "data": {"success": True, "command": "camera"}})
 
             elif command == "stop":
                 motor_bus = get_motor_bus()
@@ -3902,11 +3918,24 @@ async def websocket_local(websocket: WebSocket):
                     "alert": "error", "idle": "idle"
                 }
                 mode = pattern_map.get(pattern, pattern)
-                from services.media.led import get_led_service
-                led_service = get_led_service()
-                if led_service:
-                    led_service.set_pattern(mode)
-                await websocket.send_json({"type": "command_response", "data": {"success": True, "command": "led", "pattern": mode}})
+                led_ok = False
+                try:
+                    from services.media.led import get_led_service
+                    led_svc = get_led_service()
+                    if led_svc and led_svc.led_initialized:
+                        led_ok = led_svc.set_pattern(mode)
+                except Exception:
+                    pass
+                if not led_ok:
+                    # Fallback: direct NeoPixel control if LED service failed (GPIO conflict in AP mode)
+                    try:
+                        neo = get_led_controller()
+                        if neo:
+                            neo.set_mode(mode)
+                            led_ok = True
+                    except Exception:
+                        pass
+                await websocket.send_json({"type": "command_response", "data": {"success": led_ok, "command": "led", "pattern": mode}})
 
             elif command == "audio":
                 audio_file = data.get("file")
@@ -3918,27 +3947,14 @@ async def websocket_local(websocket: WebSocket):
                 await websocket.send_json({"type": "command_response", "data": {"success": True, "command": "audio"}})
 
             elif command == "servo":
+                # App contract: degrees from center (-90 to 90) → convert to absolute
                 pan = data.get("pan")
                 tilt = data.get("tilt")
+                pan_abs = int(90 + pan) if pan is not None else None
+                tilt_abs = int(90 + tilt) if tilt is not None else None
                 if pantilt_service:
-                    if pan is not None:
-                        pan_internal = int(90 + pan)
-                        pantilt_service.set_pan(pan_internal)
-                    if tilt is not None:
-                        tilt_internal = int(90 + tilt)
-                        pantilt_service.set_tilt(tilt_internal)
+                    pantilt_service.move_camera(pan=pan_abs, tilt=tilt_abs)
                 await websocket.send_json({"type": "command_response", "data": {"success": True, "command": "servo"}})
-
-            elif command == "get_status":
-                status = {
-                    "type": "status_response",
-                    "robot_online": True,
-                    "device_paired": True,
-                    "mode": state.get_mode().value,
-                    "network_mode": "local",
-                    "timestamp": time.time()
-                }
-                await websocket.send_json(status)
 
             elif command == "cloud_mode":
                 # Request to switch back to cloud mode
@@ -4056,7 +4072,7 @@ async def websocket_local(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "message": f"Unknown command: {command}"})
 
     except WebSocketDisconnect:
-        logger.debug("Local mode WebSocket disconnected")
+        logger.info("[LOCAL] WebSocket disconnected from /ws/local")
         try:
             motor_bus = get_motor_bus()
             if motor_bus and motor_bus.running:
@@ -4165,6 +4181,12 @@ async def enter_cloud_mode():
         wifi = WiFiManager()
 
         logger.info("Switching to Cloud Mode (stopping hotspot)")
+
+        # Clear demo AP state file
+        try:
+            os.remove("/tmp/wimz-demo-ap-active")
+        except FileNotFoundError:
+            pass
 
         # Stop hotspot (returns to client mode)
         wifi.stop_hotspot()
@@ -4289,6 +4311,11 @@ async def wifi_connect(request: dict):
             status = wifi.get_connection_status()
             ip = status.get("ip_address", "unknown")
             logger.info(f"[LOCAL] WiFi connected — relay mode at {ip}:8000")
+            # Clear demo AP state file so provisioning doesn't resume AP on restart
+            try:
+                os.remove("/tmp/wimz-demo-ap-active")
+            except FileNotFoundError:
+                pass
             return {
                 "success": True,
                 "message": result["message"],
