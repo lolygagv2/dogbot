@@ -138,8 +138,10 @@ class LedService:
             bool: True if pattern started successfully
         """
         if not self.led_initialized:
-            self.logger.error("LEDs not initialized")
-            return False
+            # Retry init — GPIO may have been released since boot
+            self.initialize()
+            if not self.led_initialized:
+                return False
 
         if pattern_name not in self.patterns:
             self.logger.warning(f"Unknown pattern: {pattern_name}")
