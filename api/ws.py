@@ -112,29 +112,37 @@ class TreatBotWebSocketServer:
         self.bus.subscribe("mission", self._on_mission_event)
 
     def _get_services(self):
-        """Lazy load services to avoid circular imports"""
-        if self.dispenser is None:
-            try:
-                self.dispenser = get_dispenser_service()
-                self.motor = get_motor_service()
-                self.pantilt = get_pantilt_service()
-                self.sfx = get_sfx_service()
-                self.led = get_led_service()
+        """Lazy load services to avoid circular imports.
+        Each service loaded independently so one failure doesn't block the rest."""
+        if self.dispenser is not None and self.led is not None:
+            return  # All critical services loaded
 
-                # Auto-initialize services if not already done
-                if self.motor and not self.motor.initialized:
-                    self.logger.info("Auto-initializing motor service")
-                    if self.motor.initialize():
-                        # Ensure motor is in manual mode for web control
-                        from services.motion.motor import MovementMode
-                        self.motor.set_movement_mode(MovementMode.MANUAL)
+        for name, getter in [
+            ("dispenser", get_dispenser_service),
+            ("motor", get_motor_service),
+            ("pantilt", get_pantilt_service),
+            ("sfx", get_sfx_service),
+            ("led", get_led_service),
+        ]:
+            if getattr(self, name) is None:
+                try:
+                    setattr(self, name, getter())
+                except Exception as e:
+                    self.logger.warning(f"Could not load {name}: {e}")
 
-                if self.pantilt and not self.pantilt.servo_initialized:
-                    self.logger.info("Auto-initializing pan/tilt service")
-                    self.pantilt.initialize()
+        # Auto-initialize services if not already done
+        try:
+            if self.motor and not self.motor.initialized:
+                self.logger.info("Auto-initializing motor service")
+                if self.motor.initialize():
+                    from services.motion.motor import MovementMode
+                    self.motor.set_movement_mode(MovementMode.MANUAL)
 
-            except Exception as e:
-                self.logger.warning(f"Could not load services: {e}")
+            if self.pantilt and not self.pantilt.servo_initialized:
+                self.logger.info("Auto-initializing pan/tilt service")
+                self.pantilt.initialize()
+        except Exception as e:
+            self.logger.warning(f"Service auto-init error: {e}")
 
     async def handle_websocket(self, websocket: WebSocket):
         """Handle a WebSocket connection (used by both /ws and /ws/local)"""
@@ -381,31 +389,35 @@ class TreatBotWebSocketServer:
 
             elif command == "led":
                 # {"command": "led", "pattern": "celebration"}
+                # Call LED service directly (not via self.led) to avoid lazy-load issues
                 pattern = data.get("pattern", "idle")
-                if self.led:
-                    pattern_map = {
-                        "breathing": "idle",
-                        "rainbow": "rainbow",
-                        "gradient_flow": "gradient_flow",
-                        "celebration": "treat_launching",
-                        "searching": "searching",
-                        "alert": "error",
-                        "idle": "idle",
-                        "fire": "fire",
-                        "chase": "chase",
-                        "off": "off",
-                        "blue": "solid_blue",
-                        "red": "solid_red",
-                        "green": "solid_green",
-                        "white": "solid_white",
-                        "blue_on": "blue_led_on",
-                        "blue_off": "blue_led_off",
-                    }
-                    mode = pattern_map.get(pattern, pattern)
-                    self.led.set_pattern(mode)
+                pattern_map = {
+                    "breathing": "idle",
+                    "rainbow": "rainbow",
+                    "gradient_flow": "gradient_flow",
+                    "celebration": "treat_launching",
+                    "searching": "searching",
+                    "alert": "error",
+                    "idle": "idle",
+                    "fire": "fire",
+                    "chase": "chase",
+                    "off": "off",
+                    "blue": "solid_blue",
+                    "red": "solid_red",
+                    "green": "solid_green",
+                    "white": "solid_white",
+                    "blue_on": "blue_led_on",
+                    "blue_off": "blue_led_off",
+                    "ambient": "ambient",
+                }
+                mode = pattern_map.get(pattern, pattern)
+                try:
+                    led_svc = get_led_service()
+                    led_svc.set_pattern(mode)
                     result["pattern"] = mode
-                else:
-                    result = {"success": False, "command": command, "error": "LED service not available"}
+                except Exception as e:
+                    self.logger.error(f"LED command error: {e}")
+                    result = {"success": False, "command": command, "error": str(e)}
 
             elif command == "audio":
                 # {"command": "audio", "file": "good.mp3"}
@@ -462,7 +474,7 @@ class TreatBotWebSocketServer:
                 # Controls the BLUE LED TUBE (GPIO25), NOT NeoPixels
                 action = data.get("action", "toggle").lower()
                 try:
-                    from core.hardware.led_controller import get_led_controller
+                    from api.server import get_led_controller
                     leds = get_led_controller()
                     if action == "on":
                         leds.blue_on()
@@ -479,20 +491,23 @@ class TreatBotWebSocketServer:
                     result = {"success": False, "command": command, "error": str(e)}
 
             elif command in ("led_color", "led_off"):
-                # {"command": "led_color", "color": "red"} or {"command": "led_off"}
-                if self.led:
+                # {"command": "led_color", "r": 255, "g": 0, "b": 0} or {"command": "led_off"}
+                try:
+                    led_svc = get_led_service()
                     if command == "led_off":
-                        self.led.set_pattern("off")
+                        led_svc.set_pattern("off")
                     else:
                         color = data.get("color", "white")
-                        # Map color names to solid_* patterns
                         color_map = {
                             "blue": "solid_blue", "red": "solid_red",
                             "green": "solid_green", "white": "solid_white",
                             "fire": "fire", "rainbow": "rainbow",
                             "chase": "chase", "off": "off",
                         }
-                        self.led.set_pattern(color_map.get(color, f"solid_{color}"))
+                        led_svc.set_pattern(color_map.get(color, f"solid_{color}"))
+                except Exception as e:
+                    self.logger.error(f"led_color error: {e}")
+                    result = {"success": False, "command": command, "error": str(e)}
 
             elif command == "audio_volume":
                 # {"command": "audio_volume", "level": 50}
