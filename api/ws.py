@@ -137,8 +137,9 @@ class TreatBotWebSocketServer:
                 self.logger.warning(f"Could not load services: {e}")
 
     async def handle_websocket(self, websocket: WebSocket):
-        """Handle a WebSocket connection"""
+        """Handle a WebSocket connection (used by both /ws and /ws/local)"""
         await self.manager.connect(websocket)
+        self.logger.info(f"WebSocket connected. Path: {websocket.url.path}")
 
         # Signal that an app client is connected (LED idle, publish event)
         self._on_app_connected()
@@ -146,6 +147,14 @@ class TreatBotWebSocketServer:
         # Start telemetry if this is the first connection
         if len(self.manager.active_connections) == 1:
             await self._start_telemetry()
+
+        # Send connected message (app expects this from /ws/local)
+        await self.manager.send_to_one(websocket, {
+            "type": "connected",
+            "mode": "local",
+            "current_mode": self.state.get_mode().value,
+            "api_version": "1.0"
+        })
 
         # Send initial status
         await self._send_initial_status(websocket)
