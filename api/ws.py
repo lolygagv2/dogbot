@@ -31,7 +31,7 @@ class ConnectionManager:
 
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger('TreatBotAPI')
 
     async def connect(self, websocket: WebSocket):
         """Accept a new WebSocket connection"""
@@ -87,7 +87,7 @@ class TreatBotWebSocketServer:
         self.state = get_state()
         self.store = get_store()
         self.mission_engine = get_mission_engine()
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger('TreatBotAPI')
 
         # Service references
         self.dispenser = None
