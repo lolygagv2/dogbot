@@ -103,13 +103,31 @@ class TreatBotWebSocketServer:
         self.telemetry_task = None
 
     def _setup_event_handlers(self):
-        """Subscribe to relevant events from the bus"""
-        self.bus.subscribe("vision", self._on_vision_event)
-        self.bus.subscribe("audio", self._on_audio_event)
-        self.bus.subscribe("motion", self._on_motion_event)
-        self.bus.subscribe("reward", self._on_reward_event)
-        self.bus.subscribe("system", self._on_system_event)
-        self.bus.subscribe("mission", self._on_mission_event)
+        """Subscribe to relevant events from the bus.
+        EventBus calls from threads, so wrap async handlers to schedule
+        onto the asyncio event loop instead of creating unawaited coroutines."""
+        import asyncio
+
+        def _make_sync_wrapper(async_handler):
+            """Wrap async handler for sync EventBus callback"""
+            def wrapper(event):
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.ensure_future(async_handler(event))
+                    else:
+                        loop.run_until_complete(async_handler(event))
+                except RuntimeError:
+                    # No event loop in this thread — create task from main loop
+                    pass
+            return wrapper
+
+        self.bus.subscribe("vision", _make_sync_wrapper(self._on_vision_event))
+        self.bus.subscribe("audio", _make_sync_wrapper(self._on_audio_event))
+        self.bus.subscribe("motion", _make_sync_wrapper(self._on_motion_event))
+        self.bus.subscribe("reward", _make_sync_wrapper(self._on_reward_event))
+        self.bus.subscribe("system", _make_sync_wrapper(self._on_system_event))
+        self.bus.subscribe("mission", _make_sync_wrapper(self._on_mission_event))
 
     def _get_services(self):
         """Lazy load services to avoid circular imports.
