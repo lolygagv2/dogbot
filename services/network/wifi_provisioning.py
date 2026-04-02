@@ -208,7 +208,6 @@ class WiFiProvisioningService:
             # If the state file exists, skip WiFi and go straight to demo AP
             if os.path.exists(self.DEMO_STATE_FILE):
                 logger.info("[LOCAL] Demo AP state file found — resuming WIMZ-Demo AP mode")
-                self._init_led_controller()
                 self._start_demo_mode()
                 return False
 
@@ -350,6 +349,10 @@ class WiFiProvisioningService:
                 f.write("demo_ap_active")
         except Exception as e:
             logger.warning(f"Could not write demo state file: {e}")
+
+        # Release LED controller so treatbot's LED service can claim GPIO25 + NeoPixels
+        self._cleanup_led()
+        self.led_controller = None
 
         # Block here — keep the service alive so hostapd/dnsmasq/ios-server persist
         # The treatbot service runs independently and serves the API at :8000
