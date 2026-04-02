@@ -163,6 +163,16 @@ class TreatBotWebSocketServer:
         finally:
             self.manager.disconnect(websocket)
 
+            # Stop motors on disconnect (safety — same as Xbox controller)
+            try:
+                from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+                motor_bus = get_motor_bus()
+                if motor_bus and motor_bus.running:
+                    cmd = create_motor_command(0, 0, CommandSource.API)
+                    motor_bus.send_command(cmd)
+            except Exception:
+                pass
+
             # Stop telemetry if no more connections
             if len(self.manager.active_connections) == 0:
                 await self._stop_telemetry()
@@ -306,15 +316,22 @@ class TreatBotWebSocketServer:
 
         try:
             if command == "motor":
-                # {"command": "motor", "left": 0.5, "right": 0.5}
-                left = data.get("left", 0.0)
-                right = data.get("right", 0.0)
-                if self.motor:
-                    left_pct = int(left * 100)
-                    right_pct = int(right * 100)
-                    self.motor.set_speed(left_pct, right_pct)
-                else:
-                    result = {"success": False, "command": command, "error": "Motor service not available"}
+                # {"command": "motor", "left": -1.0..1.0, "right": -1.0..1.0}
+                # Use motor_bus directly (same path as Xbox controller) for low latency
+                left = max(-1.0, min(1.0, float(data.get("left", 0.0))))
+                right = max(-1.0, min(1.0, float(data.get("right", 0.0))))
+                left_pct = int(left * 100)
+                right_pct = int(right * 100)
+                try:
+                    from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+                    motor_bus = get_motor_bus()
+                    if motor_bus and motor_bus.running:
+                        cmd = create_motor_command(left_pct, right_pct, CommandSource.API)
+                        motor_bus.send_command(cmd)
+                    else:
+                        result = {"success": False, "command": command, "error": "Motor bus not running"}
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
 
             elif command == "servo":
                 # {"command": "servo", "pan": 15.0, "tilt": -10.0}
