@@ -4191,6 +4191,62 @@ async def enter_cloud_mode():
         return {"status": "error", "message": str(e)}
 
 
+@app.post("/system/hotspot/start")
+async def hotspot_start():
+    """Immediately start WIMZ-Demo AP (skip credential AP phase).
+
+    Disconnects from WiFi and starts the demo hotspot at 192.168.4.1.
+    For testing — lets you switch to local mode without rebooting.
+    """
+    try:
+        from services.network.wifi_manager import WiFiManager
+        wifi = WiFiManager()
+
+        logger.info("[HOTSPOT] Starting WIMZ-Demo AP (test shortcut)")
+        wifi.start_demo_hotspot()
+
+        return {
+            "status": "ap_started",
+            "ssid": "WIMZ-Demo",
+            "password": "wimzdemo",
+            "ip": wifi.HOTSPOT_IP,
+            "ws": f"ws://{wifi.HOTSPOT_IP}:8000/ws/local",
+            "message": "WIMZ-Demo AP started. Connect phone to WIMZ-Demo WiFi."
+        }
+    except Exception as e:
+        logger.error(f"Hotspot start error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/system/hotspot/stop")
+async def hotspot_stop():
+    """Stop the demo hotspot and reconnect to last known WiFi."""
+    try:
+        from services.network.wifi_manager import WiFiManager
+        wifi = WiFiManager()
+
+        logger.info("[HOTSPOT] Stopping AP, reconnecting to WiFi")
+        wifi.stop_hotspot()
+        connected = wifi.try_connect_known(timeout=30)
+
+        if connected:
+            status = wifi.get_connection_status()
+            return {
+                "status": "wifi_connected",
+                "ssid": status.get('ssid'),
+                "ip": status.get('ip_address'),
+                "message": "Reconnected to WiFi"
+            }
+        else:
+            return {
+                "status": "disconnected",
+                "message": "Hotspot stopped but could not reconnect to WiFi"
+            }
+    except Exception as e:
+        logger.error(f"Hotspot stop error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 @app.get("/system/network-status")
 async def get_network_status():
     """Get current network status — AP mode vs WiFi mode, with internet check."""
