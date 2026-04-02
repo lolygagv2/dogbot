@@ -448,31 +448,110 @@ class TreatBotWebSocketServer:
                         result = {"success": False, "command": command, "error": str(e)}
 
             elif command == "mood_led":
-                # {"command": "mood_led", "action": "happy"}
+                # {"command": "mood_led", "action": "on"/"off"/"happy"/etc}
                 action = data.get("action", "idle")
                 if self.led:
                     mood_map = {
+                        "on": "idle", "off": "off",
                         "happy": "treat_launching",
                         "excited": "gradient_flow",
                         "calm": "idle",
                         "alert": "error",
-                        "off": "off"
                     }
                     pattern = mood_map.get(action, action)
                     self.led.set_pattern(pattern)
                 result["action"] = action
 
-            elif command == "audio_toggle":
-                # {"command": "audio_toggle"} — toggle robot mic mute
+            elif command in ("led_color", "led_off"):
+                # {"command": "led_color", "color": "red"} or {"command": "led_off"}
+                if self.led:
+                    if command == "led_off":
+                        self.led.set_pattern("off")
+                    else:
+                        color = data.get("color", "white")
+                        self.led.set_pattern(color)
+
+            elif command == "audio_volume":
+                # {"command": "audio_volume", "level": 50}
+                level = data.get("level", 50)
                 try:
                     usb_audio = get_usb_audio_service()
-                    # Toggle mute state
-                    result["toggled"] = True
+                    usb_audio.set_volume(int(level))
+                    result["volume"] = int(level)
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
 
+            elif command == "audio_next":
+                try:
+                    usb_audio = get_usb_audio_service()
+                    usb_audio.play_next()
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "audio_prev":
+                try:
+                    usb_audio = get_usb_audio_service()
+                    usb_audio.play_previous()
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "audio_toggle":
+                try:
+                    usb_audio = get_usb_audio_service()
+                    usb_audio.toggle()
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "audio_stop":
+                try:
+                    usb_audio = get_usb_audio_service()
+                    usb_audio.stop()
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "set_mode":
+                # {"command": "set_mode", "mode": "manual"}
+                mode_name = data.get("mode", "").lower()
+                if mode_name:
+                    from orchestrators.mode_fsm import get_mode_fsm
+                    from core.state import SystemMode
+                    mode_fsm = get_mode_fsm()
+                    mode_map = {
+                        "idle": SystemMode.IDLE,
+                        "silent_guardian": SystemMode.SILENT_GUARDIAN,
+                        "guardian": SystemMode.SILENT_GUARDIAN,
+                        "coach": SystemMode.COACH,
+                        "training": SystemMode.COACH,
+                        "mission": SystemMode.MISSION,
+                        "manual": SystemMode.MANUAL,
+                    }
+                    internal_mode = mode_map.get(mode_name)
+                    if internal_mode:
+                        mode_fsm.force_mode(internal_mode, "websocket_command")
+                        result["mode"] = mode_name
+
+            elif command == "start_coach":
+                from orchestrators.coaching_engine import get_coaching_engine
+                engine = get_coaching_engine()
+                running = engine.running if engine else False
+                result["running"] = running
+
+            elif command == "stop_coach":
+                from orchestrators.coaching_engine import get_coaching_engine
+                engine = get_coaching_engine()
+                result["stopped"] = True
+
+            elif command == "force_trick":
+                trick = data.get("trick")
+                if trick:
+                    BEHAVIOR_TO_TRICK = {'stand': 'come', 'lie': 'laydown', 'down': 'laydown'}
+                    trick = BEHAVIOR_TO_TRICK.get(trick, trick)
+                    from orchestrators.coaching_engine import get_coaching_engine
+                    engine = get_coaching_engine()
+                    if engine and engine.running:
+                        engine.set_forced_trick(trick)
+
             elif command == "reload_dogs":
-                # {"command": "reload_dogs", "profiles": [...]}
                 # App sends dog profiles on connect — acknowledge
                 result["reloaded"] = True
 
