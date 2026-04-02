@@ -3871,12 +3871,6 @@ async def enter_cloud_mode():
 
         logger.info("Switching to Cloud Mode (stopping hotspot)")
 
-        # Clear demo AP state file
-        try:
-            os.remove("/var/lib/wimz/demo-ap-active")
-        except FileNotFoundError:
-            pass
-
         # Stop hotspot (returns to client mode)
         wifi.stop_hotspot()
 
@@ -4001,10 +3995,6 @@ async def wifi_connect(request: dict):
             ip = status.get("ip_address", "unknown")
             logger.info(f"[LOCAL] WiFi connected — relay mode at {ip}:8000")
             # Clear demo AP state file so provisioning doesn't resume AP on restart
-            try:
-                os.remove("/var/lib/wimz/demo-ap-active")
-            except FileNotFoundError:
-                pass
             return {
                 "success": True,
                 "message": result["message"],
