@@ -364,6 +364,7 @@ class DispenserService:
                         'confidence': confidence,
                         'treats_dispensed': 1,
                         'total_today': self.treats_dispensed_today,
+                        'remaining': self.treats_remaining,
                         'timestamp': now
                     }, 'dispenser_service')
 

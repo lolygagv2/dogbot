@@ -385,11 +385,21 @@ class TreatBotWebSocketServer:
                 if self.led:
                     pattern_map = {
                         "breathing": "idle",
-                        "rainbow": "gradient_flow",
+                        "rainbow": "rainbow",
+                        "gradient_flow": "gradient_flow",
                         "celebration": "treat_launching",
                         "searching": "searching",
                         "alert": "error",
-                        "idle": "idle"
+                        "idle": "idle",
+                        "fire": "fire",
+                        "chase": "chase",
+                        "off": "off",
+                        "blue": "solid_blue",
+                        "red": "solid_red",
+                        "green": "solid_green",
+                        "white": "solid_white",
+                        "blue_on": "blue_led_on",
+                        "blue_off": "blue_led_off",
                     }
                     mode = pattern_map.get(pattern, pattern)
                     self.led.set_pattern(mode)
@@ -448,19 +458,25 @@ class TreatBotWebSocketServer:
                         result = {"success": False, "command": command, "error": str(e)}
 
             elif command == "mood_led":
-                # {"command": "mood_led", "action": "on"/"off"/"happy"/etc}
-                action = data.get("action", "idle")
-                if self.led:
-                    mood_map = {
-                        "on": "idle", "off": "off",
-                        "happy": "treat_launching",
-                        "excited": "gradient_flow",
-                        "calm": "idle",
-                        "alert": "error",
-                    }
-                    pattern = mood_map.get(action, action)
-                    self.led.set_pattern(pattern)
-                result["action"] = action
+                # {"command": "mood_led", "action": "on"/"off"/"toggle"}
+                # Controls the BLUE LED TUBE (GPIO25), NOT NeoPixels
+                action = data.get("action", "toggle").lower()
+                try:
+                    from core.hardware.led_controller import get_led_controller
+                    leds = get_led_controller()
+                    if action == "on":
+                        leds.blue_on()
+                    elif action == "off":
+                        leds.blue_off()
+                    elif action == "toggle":
+                        if getattr(leds, 'blue_is_on', False):
+                            leds.blue_off()
+                        else:
+                            leds.blue_on()
+                    result["action"] = action
+                except Exception as e:
+                    self.logger.error(f"mood_led error: {e}")
+                    result = {"success": False, "command": command, "error": str(e)}
 
             elif command in ("led_color", "led_off"):
                 # {"command": "led_color", "color": "red"} or {"command": "led_off"}
@@ -469,7 +485,14 @@ class TreatBotWebSocketServer:
                         self.led.set_pattern("off")
                     else:
                         color = data.get("color", "white")
-                        self.led.set_pattern(color)
+                        # Map color names to solid_* patterns
+                        color_map = {
+                            "blue": "solid_blue", "red": "solid_red",
+                            "green": "solid_green", "white": "solid_white",
+                            "fire": "fire", "rainbow": "rainbow",
+                            "chase": "chase", "off": "off",
+                        }
+                        self.led.set_pattern(color_map.get(color, f"solid_{color}"))
 
             elif command == "audio_volume":
                 # {"command": "audio_volume", "level": 50}
@@ -531,14 +554,24 @@ class TreatBotWebSocketServer:
                         result["mode"] = mode_name
 
             elif command == "start_coach":
+                # App sends this after set_mode — coaching engine started via _on_mode_change.
+                # If mode is already COACH but engine isn't running, start it.
                 from orchestrators.coaching_engine import get_coaching_engine
                 engine = get_coaching_engine()
-                running = engine.running if engine else False
-                result["running"] = running
+                if engine and not engine.running:
+                    engine.start()
+                result["running"] = engine.running if engine else False
 
             elif command == "stop_coach":
+                # Must actually stop the coaching engine AND switch mode to IDLE
                 from orchestrators.coaching_engine import get_coaching_engine
+                from orchestrators.mode_fsm import get_mode_fsm
+                from core.state import SystemMode
                 engine = get_coaching_engine()
+                if engine and engine.running:
+                    engine.stop()
+                mode_fsm = get_mode_fsm()
+                mode_fsm.force_mode(SystemMode.IDLE, "stop_coach_command")
                 result["stopped"] = True
 
             elif command == "force_trick":

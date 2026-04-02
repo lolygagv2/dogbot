@@ -317,7 +317,7 @@ class PushToTalkService:
                 self.logger.info(f"Recording {duration}s from USB mic (card {USB_AUDIO_CARD})...")
                 record_cmd = [
                     'arecord',
-                    '-D', f'plughw:{USB_AUDIO_CARD},0',
+                    '-D', 'default',
                     '-f', 'S16_LE',
                     '-r', str(SAMPLE_RATE),
                     '-c', str(CHANNELS),
@@ -454,7 +454,7 @@ class PushToTalkService:
                 self.logger.info(f"[MIC] Capturing {duration}s from USB mic (card {USB_AUDIO_CARD})")
                 record_cmd = [
                     'arecord',
-                    '-D', f'plughw:{USB_AUDIO_CARD},0',
+                    '-D', 'default',
                     '-f', 'S16_LE',
                     '-r', str(SAMPLE_RATE),
                     '-c', str(CHANNELS),
@@ -576,7 +576,7 @@ class PushToTalkService:
 
             # Play the beep
             result = subprocess.run(
-                ['aplay', '-D', f'plughw:{USB_AUDIO_CARD},0', str(beep_file)],
+                ['aplay', '-D', 'default', str(beep_file)],
                 capture_output=True,
                 timeout=5
             )
