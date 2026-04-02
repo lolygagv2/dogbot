@@ -4192,30 +4192,44 @@ async def enter_cloud_mode():
 
 
 @app.post("/system/hotspot/start")
-async def hotspot_start():
+async def hotspot_start(background_tasks: BackgroundTasks):
     """Immediately start WIMZ-Demo AP (skip credential AP phase).
 
-    Disconnects from WiFi and starts the demo hotspot at 192.168.4.1.
-    For testing — lets you switch to local mode without rebooting.
+    Sends the response FIRST, then disconnects WiFi and starts the AP
+    in the background (since WiFi drop kills the HTTP connection).
     """
-    try:
-        from services.network.wifi_manager import WiFiManager
-        wifi = WiFiManager()
+    from services.network.wifi_manager import WiFiManager
+    wifi = WiFiManager()
 
-        logger.info("[HOTSPOT] Starting WIMZ-Demo AP (test shortcut)")
+    def _start_ap():
+        """Background: wait for response to flush, then switch to AP."""
+        import time, subprocess
+        time.sleep(1)  # Let HTTP response reach the client
+        logger.info("[HOTSPOT] Disconnecting WiFi...")
+        subprocess.run(["nmcli", "device", "disconnect", "wlan0"],
+                       capture_output=True, timeout=10)
+        # Wait for wlan0 to actually disconnect
+        for _ in range(10):
+            result = subprocess.run(
+                ["nmcli", "-t", "-f", "STATE", "device", "show", "wlan0"],
+                capture_output=True, text=True, timeout=5)
+            if "disconnected" in result.stdout.lower():
+                break
+            time.sleep(0.5)
+        logger.info("[HOTSPOT] Starting WIMZ-Demo AP...")
         wifi.start_demo_hotspot()
+        logger.info("[HOTSPOT] WIMZ-Demo AP started at 192.168.4.1")
 
-        return {
-            "status": "ap_started",
-            "ssid": "WIMZ-Demo",
-            "password": "wimzdemo",
-            "ip": wifi.HOTSPOT_IP,
-            "ws": f"ws://{wifi.HOTSPOT_IP}:8000/ws/local",
-            "message": "WIMZ-Demo AP started. Connect phone to WIMZ-Demo WiFi."
-        }
-    except Exception as e:
-        logger.error(f"Hotspot start error: {e}")
-        return {"status": "error", "message": str(e)}
+    background_tasks.add_task(_start_ap)
+
+    return {
+        "status": "ap_starting",
+        "ssid": "WIMZ-Demo",
+        "password": "wimzdemo",
+        "ip": wifi.HOTSPOT_IP,
+        "ws": f"ws://{wifi.HOTSPOT_IP}:8000/ws/local",
+        "message": "Response sent. AP will start in ~2s. Connect phone to WIMZ-Demo WiFi."
+    }
 
 
 @app.post("/system/hotspot/stop")
