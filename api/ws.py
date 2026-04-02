@@ -207,7 +207,10 @@ class TreatBotWebSocketServer:
         Also sets GPIO25 blue LED to solid on (not flashing).
         """
         self._get_services()
-        # Set NeoPixels to idle via the LED service
+        # Retry LED init if it failed at boot (wifi provisioning may have released GPIO since)
+        if self.led and not self.led.led_initialized:
+            self.logger.info("Retrying LED initialization (may have been blocked at boot)")
+            self.led.initialize()
         if self.led:
             self.led.set_pattern('idle')
         # Set blue LED solid on via direct GPIO (stops the "flashing" look)
@@ -245,6 +248,22 @@ class TreatBotWebSocketServer:
             # Handle get_status request
             if data.get("type") == "get_status":
                 await self._handle_get_status(websocket)
+                return
+
+            # Ignore debug_log messages from app (just logging, no action needed)
+            if data.get("type") == "debug_log":
+                return
+
+            # Handle webrtc_close (app closing video session)
+            if data.get("type") == "webrtc_close":
+                session_id = data.get("session_id", "local")
+                try:
+                    from services.streaming.webrtc import get_webrtc_service
+                    webrtc = get_webrtc_service()
+                    await webrtc._cleanup_connection(session_id)
+                    self.logger.info(f"[LOCAL] WebRTC session {session_id} closed by app")
+                except Exception as e:
+                    self.logger.warning(f"WebRTC close error: {e}")
                 return
 
             # Unwrap app command wrapper format:
@@ -416,11 +435,14 @@ class TreatBotWebSocketServer:
                 if voice_type:
                     try:
                         voice_manager = get_voice_manager()
-                        played = voice_manager.play_voice(dog_id, voice_type)
-                        if not played:
-                            # Fallback to SFX
-                            if self.sfx:
-                                self.sfx.play_sound(voice_type)
+                        voice_path = voice_manager.get_voice_path(dog_id or "default", voice_type)
+                        if voice_path:
+                            usb_audio = get_usb_audio_service()
+                            usb_audio.play_file(voice_path)
+                        elif self.sfx:
+                            self.sfx.play_sound(voice_type)
+                        else:
+                            result = {"success": False, "command": command, "error": f"Voice not found: {voice_type}"}
                     except Exception as e:
                         self.logger.error(f"play_voice error: {e}")
                         result = {"success": False, "command": command, "error": str(e)}
@@ -443,12 +465,16 @@ class TreatBotWebSocketServer:
             elif command == "audio_toggle":
                 # {"command": "audio_toggle"} — toggle robot mic mute
                 try:
-                    from services.media.usb_audio import get_usb_audio_service
                     usb_audio = get_usb_audio_service()
                     # Toggle mute state
                     result["toggled"] = True
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "reload_dogs":
+                # {"command": "reload_dogs", "profiles": [...]}
+                # App sends dog profiles on connect — acknowledge
+                result["reloaded"] = True
 
             elif command == "take_photo":
                 # {"command": "take_photo", "with_hud": true}
