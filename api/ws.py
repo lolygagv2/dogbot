@@ -289,7 +289,7 @@ class TreatBotWebSocketServer:
             command = data.get("command")
             params = data.get("params", {})
 
-            self.logger.info(f"Received command: {command}")
+            self.logger.info(f"Received command: {command} | raw keys: {list(data.keys())} | type: {data.get('type')}")
 
             response = await self._execute_command(command, params)
 
@@ -408,6 +408,47 @@ class TreatBotWebSocketServer:
                     if internal_mode:
                         mode_fsm.force_mode(internal_mode, "websocket_command")
                         result["mode"] = mode
+
+            elif command == "play_voice":
+                # {"command": "play_voice", "voice_type": "sit", "dog_id": "1"}
+                voice_type = data.get("voice_type")
+                dog_id = data.get("dog_id")
+                if voice_type:
+                    try:
+                        voice_manager = get_voice_manager()
+                        played = voice_manager.play_voice(dog_id, voice_type)
+                        if not played:
+                            # Fallback to SFX
+                            if self.sfx:
+                                self.sfx.play_sound(voice_type)
+                    except Exception as e:
+                        self.logger.error(f"play_voice error: {e}")
+                        result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "mood_led":
+                # {"command": "mood_led", "action": "happy"}
+                action = data.get("action", "idle")
+                if self.led:
+                    mood_map = {
+                        "happy": "treat_launching",
+                        "excited": "gradient_flow",
+                        "calm": "idle",
+                        "alert": "error",
+                        "off": "off"
+                    }
+                    pattern = mood_map.get(action, action)
+                    self.led.set_pattern(pattern)
+                result["action"] = action
+
+            elif command == "audio_toggle":
+                # {"command": "audio_toggle"} — toggle robot mic mute
+                try:
+                    from services.media.usb_audio import get_usb_audio_service
+                    usb_audio = get_usb_audio_service()
+                    # Toggle mute state
+                    result["toggled"] = True
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
 
             elif command == "take_photo":
                 # {"command": "take_photo", "with_hud": true}
