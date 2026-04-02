@@ -3873,7 +3873,7 @@ async def enter_cloud_mode():
 
         # Clear demo AP state file
         try:
-            os.remove("/tmp/wimz-demo-ap-active")
+            os.remove("/var/lib/wimz/demo-ap-active")
         except FileNotFoundError:
             pass
 
@@ -4002,7 +4002,7 @@ async def wifi_connect(request: dict):
             logger.info(f"[LOCAL] WiFi connected — relay mode at {ip}:8000")
             # Clear demo AP state file so provisioning doesn't resume AP on restart
             try:
-                os.remove("/tmp/wimz-demo-ap-active")
+                os.remove("/var/lib/wimz/demo-ap-active")
             except FileNotFoundError:
                 pass
             return {

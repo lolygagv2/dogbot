@@ -58,7 +58,8 @@ class WiFiProvisioningService:
     DEMO_PASSWORD = "wimzdemo"
 
     # State file: if this exists, we were in demo AP mode and should resume it
-    DEMO_STATE_FILE = "/tmp/wimz-demo-ap-active"
+    # Uses /var/lib instead of /tmp because /tmp is cleaned on boot
+    DEMO_STATE_FILE = "/var/lib/wimz/demo-ap-active"
 
     def __init__(self):
         self.wifi_manager = WiFiManager()
@@ -206,7 +207,9 @@ class WiFiProvisioningService:
         try:
             # Step 0: Check if we were previously in demo AP mode
             # If the state file exists, skip WiFi and go straight to demo AP
-            if os.path.exists(self.DEMO_STATE_FILE):
+            state_file_exists = os.path.exists(self.DEMO_STATE_FILE)
+            logger.info(f"[LOCAL] Demo AP state file check: exists={state_file_exists} path={self.DEMO_STATE_FILE}")
+            if state_file_exists:
                 logger.info("[LOCAL] Demo AP state file found — resuming WIMZ-Demo AP mode")
                 self._start_demo_mode()
                 return False
@@ -345,8 +348,10 @@ class WiFiProvisioningService:
 
         # Write state file so we resume AP mode if the service restarts
         try:
+            os.makedirs(os.path.dirname(self.DEMO_STATE_FILE), exist_ok=True)
             with open(self.DEMO_STATE_FILE, 'w') as f:
                 f.write("demo_ap_active")
+            logger.info(f"[LOCAL] Demo AP state file written: {self.DEMO_STATE_FILE}")
         except Exception as e:
             logger.warning(f"Could not write demo state file: {e}")
 
