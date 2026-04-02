@@ -1294,6 +1294,23 @@ class TreatBotWebSocketServer:
             success = self.mission_engine.stop_mission("user_requested")
             return {"success": success}
 
+        elif command == "treat_counter_set":
+            # {"command": "treat_counter_set", "count": 44}
+            count = data.get("count")
+            if count is not None:
+                try:
+                    self.dispenser.set_treat_count(int(count))
+                    remaining = self.dispenser.treats_remaining
+                    # Send immediate status update so app display refreshes
+                    await self._broadcast_contract_event("treat_counter", {
+                        "remaining": remaining,
+                        "set_to": int(count)
+                    })
+                    return {"success": True, "treats_remaining": remaining}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+            return {"success": False, "error": "count required"}
+
         else:
             return {"success": False, "error": f"Unknown command: {command}"}
 
@@ -1491,8 +1508,38 @@ class TreatBotWebSocketServer:
             "timestamp": time.time()
         })
 
+        # Contract format: mode_changed (same format as relay sends)
+        if event.subtype == "mode_changed":
+            mode_map = {
+                "idle": "idle", "silent_guardian": "silent_guardian",
+                "coach": "coach", "mission": "mission",
+                "manual": "manual", "photography": "manual",
+                "emergency": "manual"
+            }
+            new_mode = event.data.get("to_mode", event.data.get("mode", "idle"))
+            prev_mode = event.data.get("from_mode", event.data.get("previous_mode", "idle"))
+            await self.manager.send_to_all({
+                "event": "mode_changed",
+                "mode": mode_map.get(new_mode, new_mode),
+                "previous_mode": mode_map.get(prev_mode, prev_mode),
+                "locked": event.data.get("locked", False),
+                "reason": event.data.get("reason", "unknown"),
+                "timestamp": time.time()
+            })
+
+        # Contract format: battery_status
+        elif event.subtype == "battery_status":
+            voltage = event.data.get("voltage", 0)
+            pct = ((voltage - 12.0) / 4.8 * 100) if voltage else 0
+            pct = min(100, max(0, pct))
+            await self._broadcast_contract_event("battery", {
+                "level": round(pct, 1),
+                "voltage": round(voltage, 2),
+                "charging": event.data.get("charging", False)
+            })
+
         # Contract format for errors
-        if event.subtype in ["low_battery", "overheat", "motor_fault", "camera_fault", "network_error"]:
+        elif event.subtype in ["low_battery", "overheat", "motor_fault", "camera_fault", "network_error"]:
             error_codes = {
                 "low_battery": "LOW_BATTERY",
                 "overheat": "OVERHEAT",

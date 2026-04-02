@@ -488,10 +488,6 @@ class LEDController:
             'neopixels_initialized': self.pixels is not None
         }
     
-    def is_initialized(self):
-        """Check if LED system is properly initialized"""
-        return self.blue_chip is not None and self.pixels is not None
-    
     def cleanup(self):
         """Clean shutdown of LED system"""
         print("Cleaning up LED controller...")
