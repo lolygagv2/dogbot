@@ -58,10 +58,12 @@ tricks:
     description: "Dog barks on command"
     required_behavior: "bark"     # Special: uses bark detection, not pose
     hold_duration_sec: 0          # N/A for barking
-    detection_window_sec: 5       # Quick response expected
+    detection_window_sec: 10      # Give dog time after audio plays
     alternative_behaviors: []
     confidence_threshold: 0.60
     difficulty: 2
+    min_barks: 1
+    max_barks: 3
     audio_command: "speak.mp3"
     # Speak-specific settings
     min_barks: 1
