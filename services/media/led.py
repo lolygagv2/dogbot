@@ -108,10 +108,7 @@ class LedService:
             if self.led.is_initialized():
                 self.led_initialized = True
                 self.logger.info("LED system initialized")
-
-                # Set initial pattern
                 self.set_pattern('idle')
-
                 self.state.update_hardware(leds_initialized=True)
                 return True
             else:
@@ -138,7 +135,7 @@ class LedService:
             bool: True if pattern started successfully
         """
         if not self.led_initialized:
-            # Retry init — GPIO may have been released since boot
+            # Retry init
             self.initialize()
             if not self.led_initialized:
                 return False

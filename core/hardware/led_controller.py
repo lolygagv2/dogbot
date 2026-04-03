@@ -31,69 +31,168 @@ class LEDMode(Enum):
     CHASE = "chase"
     FIRE = "fire"
 
+class NeoPixelSPI:
+    """WS2812 NeoPixel control via SPI (no GPIO bitbang, no conflicts).
+
+    Drop-in replacement for Adafruit neopixel.NeoPixel — same interface:
+      pixels[i] = (r, g, b)
+      pixels.fill((r, g, b))
+      pixels.show()
+      pixels.brightness = 0.5
+      pixels.deinit()
+
+    Uses /dev/spidev0.0 at 6.4MHz. Each WS2812 bit is encoded as one SPI
+    byte: 0xFC for 1-bit, 0xC0 for 0-bit. GRB byte order.
+    """
+
+    def __init__(self, num_pixels, brightness=0.3, spi_bus=0, spi_device=0):
+        import spidev
+        import subprocess
+
+        # GPIO10 must be in SPI0_MOSI mode (alt0) — not guaranteed at boot
+        # if another process (wifi-provision) claimed it via lgpio bitbang
+        try:
+            subprocess.run(['pinctrl', 'set', '10', 'a0'],
+                           capture_output=True, timeout=2)
+        except Exception:
+            pass  # pinctrl may not exist on all systems
+
+        self._spi = spidev.SpiDev()
+        self._spi.open(spi_bus, spi_device)
+        self._spi.max_speed_hz = 6_400_000
+        self._spi.mode = 0
+        self._num = num_pixels
+        self._brightness = brightness
+        self._pixels = [(0, 0, 0)] * num_pixels
+
+    @property
+    def brightness(self):
+        return self._brightness
+
+    @brightness.setter
+    def brightness(self, val):
+        self._brightness = max(0.0, min(1.0, val))
+
+    def __len__(self):
+        return self._num
+
+    def __setitem__(self, idx, color):
+        if isinstance(idx, slice):
+            for i, c in zip(range(*idx.indices(self._num)), color):
+                self._pixels[i] = c
+        else:
+            self._pixels[idx] = color
+
+    def __getitem__(self, idx):
+        return self._pixels[idx]
+
+    def fill(self, color):
+        if isinstance(color, int):
+            # Handle packed integer color (0xRRGGBB)
+            r = (color >> 16) & 0xFF
+            g = (color >> 8) & 0xFF
+            b = color & 0xFF
+            color = (r, g, b)
+        self._pixels = [color] * self._num
+
+    def show(self):
+        buf = []
+        b = self._brightness
+        for r, g, bb in self._pixels:
+            # GRB order, scaled by brightness
+            for byte_val in [int(g * b), int(r * b), int(bb * b)]:
+                for bit in range(7, -1, -1):
+                    buf.append(0xFC if (byte_val >> bit) & 1 else 0xC0)
+        # Reset: 50µs low ≈ 40 zero bytes at 6.4MHz
+        buf.extend([0x00] * 40)
+        # spidev has a max transfer size; send in chunks if needed
+        chunk = 4096
+        for i in range(0, len(buf), chunk):
+            self._spi.xfer2(buf[i:i+chunk])
+
+    def deinit(self):
+        try:
+            self._spi.close()
+        except Exception:
+            pass
+
+
 class LEDController:
     """LED system management with proven NeoPixel and Blue LED control"""
     
     def __init__(self, neopixel_count=None, neopixel_brightness=None):
         self.pins = TreatBotPins()
         self.settings = SystemSettings()
-        
+
         # Use provided values or defaults from settings
         self.neopixel_count = neopixel_count or self.settings.NEOPIXEL_COUNT
         self.neopixel_brightness = neopixel_brightness or self.settings.NEOPIXEL_BRIGHTNESS
-        
+
         # State management
         self.current_mode = LEDMode.OFF
         self.animation_active = False
         self.animation_thread = None
         self.blue_is_on = False
-        
-        # Hardware initialization
+
+        # Hardware — initialized once, never recreated
         self.blue_chip = None
         self.pixels = None
-        
-        # Initialize hardware
+
+        # Try hardware init (may fail in AP mode if wifi-provision holds GPIO)
         self._initialize_blue_led()
         self._initialize_neopixels()
-    
+
+    def retry_init(self):
+        """Retry initializing hardware that failed on first attempt.
+        Safe to call multiple times — skips already-initialized hardware."""
+        if self.blue_chip is None:
+            self._initialize_blue_led()
+        if self.pixels is None:
+            self._initialize_neopixels()
+
     def _initialize_blue_led(self):
         """Initialize blue LED using proven lgpio method"""
+        if self.blue_chip is not None:
+            return True  # Already initialized
+        chip = None
         try:
-            self.blue_chip = lgpio.gpiochip_open(0)
-            lgpio.gpio_claim_output(self.blue_chip, self.pins.BLUE_LED, lgpio.SET_PULL_NONE)
-            lgpio.gpio_write(self.blue_chip, self.pins.BLUE_LED, 0)  # Start OFF
+            chip = lgpio.gpiochip_open(0)
+            lgpio.gpio_claim_output(chip, self.pins.BLUE_LED, lgpio.SET_PULL_NONE)
+            lgpio.gpio_write(chip, self.pins.BLUE_LED, 0)  # Start OFF
+            self.blue_chip = chip
             self.blue_is_on = False
             print(f"Blue LED initialized on GPIO{self.pins.BLUE_LED}")
             return True
-            
+
         except Exception as e:
             print(f"Blue LED initialization failed: {e}")
+            if chip is not None:
+                try:
+                    lgpio.gpiochip_close(chip)
+                except Exception:
+                    pass
             self.blue_chip = None
             return False
-    
+
     def _initialize_neopixels(self):
-        """Initialize NeoPixel ring using proven method"""
+        """Initialize NeoPixel ring via SPI (no GPIO conflicts)"""
+        if self.pixels is not None:
+            return True  # Already initialized
         try:
-            import board
-            import neopixel
-            
-            self.pixels = neopixel.NeoPixel(
-                board.D10,  # GPIO10 (Pin 19) - SPI MOSI for Pi 5
+            self.pixels = NeoPixelSPI(
                 self.neopixel_count,
                 brightness=self.neopixel_brightness,
-                auto_write=False,
-                pixel_order=neopixel.GRB
             )
-            
+
             # Start with all LEDs off
             self.pixels.fill(Colors.OFF)
             self.pixels.show()
-            
-            print(f"NeoPixel ring initialized: {self.neopixel_count} LEDs on GPIO{self.pins.NEOPIXEL}")
+
+            print(f"NeoPixel SPI initialized: {self.neopixel_count} LEDs via /dev/spidev0.0")
             return True
-            
+
         except Exception as e:
-            print(f"NeoPixel initialization failed: {e}")
+            print(f"NeoPixel SPI initialization failed: {e}")
             self.pixels = None
             return False
 
@@ -507,6 +606,15 @@ class LEDController:
         # Turn off blue LED
         self.blue_off()
         
+        # Release NeoPixel GPIO
+        if self.pixels:
+            try:
+                self.pixels.deinit()
+                self.pixels = None
+                print("NeoPixels deinitialized")
+            except Exception as e:
+                print(f"NeoPixel deinit error: {e}")
+
         # Close GPIO
         if self.blue_chip:
             try:
