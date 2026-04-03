@@ -57,32 +57,54 @@ except ImportError:
 # Direct GPIO control for blue LED to avoid conflicts
 _gpio_handle = None
 _gpio_lock = threading.Lock()
+_blue_led_state = False
 BLUE_LED_PIN = 25
 
 def get_gpio_handle():
     global _gpio_handle
     with _gpio_lock:
         if _gpio_handle is None:
+            chip = None
             try:
-                _gpio_handle = lgpio.gpiochip_open(0)
-                lgpio.gpio_claim_output(_gpio_handle, BLUE_LED_PIN)
+                chip = lgpio.gpiochip_open(0)
+                lgpio.gpio_claim_output(chip, BLUE_LED_PIN)
+                _gpio_handle = chip
                 logger.debug("Direct GPIO control initialized for blue LED")
             except Exception as e:
-                logger.error(f"GPIO init failed: {e}")
+                logger.debug(f"GPIO init deferred: {e}")
+                if chip is not None:
+                    try:
+                        lgpio.gpiochip_close(chip)
+                    except Exception:
+                        pass
                 _gpio_handle = None
         return _gpio_handle
 
 def blue_led_direct_control(state):
-    """Direct GPIO control for blue LED"""
+    """Direct GPIO control for blue LED. Retries handle if previously failed."""
+    global _blue_led_state
     try:
         handle = get_gpio_handle()
         if handle is not None:
             lgpio.gpio_write(handle, BLUE_LED_PIN, 1 if state else 0)
+            _blue_led_state = state
             logger.debug(f"Blue LED {'ON' if state else 'OFF'} via direct GPIO")
             return True
         return False
     except Exception as e:
+        # Handle may have gone stale — reset and retry once
+        global _gpio_handle
+        _gpio_handle = None
+        try:
+            handle = get_gpio_handle()
+            if handle is not None:
+                lgpio.gpio_write(handle, BLUE_LED_PIN, 1 if state else 0)
+                _blue_led_state = state
+                return True
+        except Exception:
+            pass
         logger.error(f"Direct GPIO error: {e}")
+        return False
         return False
 
 # LED controller singleton — always uses main LED service

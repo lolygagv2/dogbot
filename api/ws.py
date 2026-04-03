@@ -492,17 +492,14 @@ class TreatBotWebSocketServer:
                 # Controls the BLUE LED TUBE (GPIO25), NOT NeoPixels
                 action = data.get("action", "toggle").lower()
                 try:
-                    from api.server import get_led_controller
-                    leds = get_led_controller()
+                    from api.server import blue_led_direct_control
+                    import api.server as srv
                     if action == "on":
-                        leds.blue_on()
+                        blue_led_direct_control(True)
                     elif action == "off":
-                        leds.blue_off()
+                        blue_led_direct_control(False)
                     elif action == "toggle":
-                        if getattr(leds, 'blue_is_on', False):
-                            leds.blue_off()
-                        else:
-                            leds.blue_on()
+                        blue_led_direct_control(not srv._blue_led_state)
                     result["action"] = action
                 except Exception as e:
                     self.logger.error(f"mood_led error: {e}")
@@ -616,6 +613,25 @@ class TreatBotWebSocketServer:
                     engine = get_coaching_engine()
                     if engine and engine.running:
                         engine.set_forced_trick(trick)
+
+            elif command == "treat_counter_set":
+                # {"command": "treat_counter_set", "count": 44}
+                count = data.get("count")
+                if count is not None:
+                    try:
+                        from services.reward.dispenser import get_dispenser_service
+                        dispenser = get_dispenser_service()
+                        dispenser.set_treat_count(int(count))
+                        remaining = dispenser.treats_remaining
+                        await self._broadcast_contract_event("treat_counter", {
+                            "remaining": remaining,
+                            "set_to": int(count)
+                        })
+                        result = {"success": True, "treats_remaining": remaining}
+                    except Exception as e:
+                        result = {"success": False, "error": str(e)}
+                else:
+                    result = {"success": False, "error": "count required"}
 
             elif command == "reload_dogs":
                 # App sends dog profiles on connect — acknowledge
