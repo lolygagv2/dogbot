@@ -707,9 +707,12 @@ class CoachingEngine:
         # Set target behavior so interpreter is "sticky" on what we're looking for.
         # This prevents classifier flicker (e.g., lie↔sit at boundary aspect ratios)
         # from resetting the hold timer during the watching window.
+        # Skip sticky target for tricks with alternatives (e.g., 'come' accepts stand OR sit)
+        # — sticky mode on one behavior blocks detection of the other.
         trick_rules = self.interpreter.get_trick_rules(trick)
         target_behavior = trick_rules.get('required_behavior')
-        if target_behavior and trick != 'speak':
+        alternatives = trick_rules.get('alternative_behaviors', [])
+        if target_behavior and trick != 'speak' and not alternatives:
             self.interpreter.set_target_behavior(target_behavior)
 
         # Start listening for barks if speak trick

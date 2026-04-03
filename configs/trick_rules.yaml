@@ -30,12 +30,12 @@ tricks:
     audio_command: "lie_down.mp3"
 
   come:
-    description: "Dog comes to robot (stands facing)"
+    description: "Dog comes to robot (stands or sits after approaching)"
     required_behavior: "stand"
-    hold_duration_sec: 1.5        # Shorter than old stand - just needs to arrive
+    hold_duration_sec: 1.5
     detection_window_sec: 10
-    alternative_behaviors: []
-    confidence_threshold: 0.65
+    alternative_behaviors: ["sit"]
+    confidence_threshold: 0.60
     difficulty: 1
     audio_command: "come.mp3"
 

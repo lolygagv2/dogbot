@@ -1660,8 +1660,8 @@ class TreatBotMain:
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('mission_config_updated', updated)
 
-                elif command == 'treat_unjam':
-                    # Anti-jam wiggle sequence
+                elif command in ('treat_unjam', 'carousel_rotate'):
+                    # Anti-jam wiggle sequence (app sends carousel_rotate)
                     from services.reward.dispenser import get_dispenser_service
                     dispenser = get_dispenser_service()
                     def _do_unjam():

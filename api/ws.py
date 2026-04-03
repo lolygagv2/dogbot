@@ -642,6 +642,17 @@ class TreatBotWebSocketServer:
                 except Exception as e:
                     result = {"success": False, "error": str(e)}
 
+            elif command in ("treat_unjam", "carousel_rotate"):
+                # Anti-jam wiggle sequence
+                try:
+                    from services.reward.dispenser import get_dispenser_service
+                    import threading
+                    dispenser = get_dispenser_service()
+                    threading.Thread(target=dispenser.anti_jam_wiggle, daemon=True, name="TreatUnjam").start()
+                    result = {"success": True, "message": "Unjam sequence started"}
+                except Exception as e:
+                    result = {"success": False, "error": str(e)}
+
             elif command == "reload_dogs":
                 # App sends dog profiles on connect — acknowledge
                 result["reloaded"] = True
