@@ -623,15 +623,24 @@ class TreatBotWebSocketServer:
                         dispenser = get_dispenser_service()
                         dispenser.set_treat_count(int(count))
                         remaining = dispenser.treats_remaining
-                        await self._broadcast_contract_event("treat_counter", {
-                            "remaining": remaining,
-                            "set_to": int(count)
-                        })
+                        # Send immediate status so app display updates
+                        await self._broadcast_contract_status()
                         result = {"success": True, "treats_remaining": remaining}
                     except Exception as e:
                         result = {"success": False, "error": str(e)}
                 else:
                     result = {"success": False, "error": "count required"}
+
+            elif command == "treat_counter_reset":
+                # {"command": "treat_counter_reset"} — reset to 0
+                try:
+                    from services.reward.dispenser import get_dispenser_service
+                    dispenser = get_dispenser_service()
+                    dispenser.reset_treat_counter()
+                    await self._broadcast_contract_status()
+                    result = {"success": True, "treats_remaining": 0}
+                except Exception as e:
+                    result = {"success": False, "error": str(e)}
 
             elif command == "reload_dogs":
                 # App sends dog profiles on connect — acknowledge
