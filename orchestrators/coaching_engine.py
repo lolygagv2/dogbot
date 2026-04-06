@@ -171,6 +171,10 @@ class CoachingEngine:
         # Testing/debug: force specific trick (None = random)
         self._forced_trick: Optional[str] = None
 
+        # Demo mode: force specific dog identity (None = ArUco/auto)
+        self._forced_dog: Optional[str] = None
+        self.KNOWN_DOGS = ['elsa', 'bezik']
+
         # Bark tracking for 'speak' trick
         self.bark_count = 0
         self.bark_timestamps: List[float] = []
@@ -216,15 +220,9 @@ class CoachingEngine:
             self.state.set_mode(SystemMode.COACH, "Coaching engine started")
             logger.info("[COACH] Step 1: Mode set to COACH")
 
-            # Step 2: Play announcement and WAIT for it to finish
-            logger.info("[COACH] Step 2: Playing coach mode announcement")
-            if self.audio:
-                announcement = '/home/morgan/dogbot/VOICEMP3/wimz/CoachMode.mp3'
-                self.audio.play_file(announcement)
-                self.audio.wait_for_completion(timeout=5.0)
-                logger.info("[COACH] Step 2: Announcement finished")
-            else:
-                logger.warning("[COACH] Step 2: Audio service not available")
+            # Step 2: Audio announcement handled by main_treatbot._announce_mode()
+            # Do NOT play here — causes double announcement with mode change handler
+            logger.info("[COACH] Step 2: Skipping announcement (handled by mode change handler)")
 
             # Step 3: Now initialize detection and engine
             logger.info("[COACH] Step 3: Initializing detection pipeline")
@@ -310,12 +308,17 @@ class CoachingEngine:
             now = time.time()
             if dog_id not in self.dogs_in_view:
                 # New dog - initialize tracking
+                # Use forced dog name if set (demo mode), otherwise ArUco name
+                if self._forced_dog:
+                    resolved_name = self._forced_dog
+                else:
+                    resolved_name = dog_name if dog_name not in ['unknown', None] else None
                 self.dogs_in_view[dog_id] = {
                     'first_seen': now,
                     'last_seen': now,
                     'frames_seen': 1,
                     'frames_total': 1,
-                    'name': dog_name if dog_name not in ['unknown', None] else None
+                    'name': resolved_name
                 }
                 display_name = dog_name if dog_name and dog_name not in ['unknown', None] else dog_id
                 logger.debug(f"Dog entered view for coaching: {display_name}")
@@ -326,8 +329,9 @@ class CoachingEngine:
                 entry['frames_seen'] += 1
                 entry['frames_total'] += 1  # Increment both counters together
 
-                # Update name if ArUco identified (can happen anytime)
-                if dog_name and dog_name not in ['unknown', None] and entry['name'] is None:
+                # Update name if ArUco identified (can happen anytime) — skip if forced dog is set
+                if (not self._forced_dog and
+                    dog_name and dog_name not in ['unknown', None] and entry['name'] is None):
                     entry['name'] = dog_name
                     logger.debug(f"Dog {dog_id} identified as {dog_name}")
 
@@ -378,6 +382,10 @@ class CoachingEngine:
 
     def _get_dog_name(self, dog_id: str) -> str:
         """Get friendly name for dog"""
+        # Forced dog override (demo mode) takes priority over everything
+        if self._forced_dog:
+            return self._forced_dog
+
         # First check ArUco-identified name from dogs_in_view tracking
         if dog_id in self.dogs_in_view:
             tracked_name = self.dogs_in_view[dog_id].get('name')
@@ -1181,7 +1189,8 @@ class CoachingEngine:
             'sessions_today': self.sessions_today,
             'successes_today': self.successes_today,
             'success_rate': self.successes_today / self.sessions_today if self.sessions_today > 0 else 0,
-            'global_cooldown_remaining': global_cooldown_remaining
+            'global_cooldown_remaining': global_cooldown_remaining,
+            'forced_dog': self._forced_dog
         }
 
     def reset_cooldowns(self, dog_id: str = None) -> Dict[str, Any]:
@@ -1265,6 +1274,56 @@ class CoachingEngine:
         else:
             logger.info("Forced trick cleared")
             return {'forced_trick': None, 'message': "Random trick selection restored"}
+
+    def set_forced_dog(self, dog_name: str = None) -> Dict[str, Any]:
+        """Force a specific dog identity for demos (None to clear)"""
+        if dog_name and dog_name not in self.KNOWN_DOGS:
+            return {'error': f'Invalid dog: {dog_name}', 'valid_dogs': self.KNOWN_DOGS}
+
+        self._forced_dog = dog_name
+
+        # Apply override to all currently tracked dogs in coaching engine
+        if dog_name:
+            for dog_id, info in self.dogs_in_view.items():
+                info['name'] = dog_name
+        else:
+            for dog_id, info in self.dogs_in_view.items():
+                info['name'] = None
+
+        # Also override the dog tracker's display name (video overlay bounding boxes)
+        try:
+            from services.perception.detector import get_detector_service
+            detector = get_detector_service()
+            if detector and detector.ai and detector.ai.dog_tracker:
+                detector.ai.dog_tracker.forced_display_name = dog_name
+        except Exception as e:
+            logger.warning(f"[COACH] Could not set dog tracker override: {e}")
+
+        if dog_name:
+            logger.info(f"[COACH] Forced dog set: {dog_name}")
+            return {'forced_dog': dog_name, 'message': f"All dogs identified as '{dog_name}'"}
+        else:
+            logger.info("[COACH] Forced dog cleared — ArUco identification restored")
+            return {'forced_dog': None, 'message': "Dog identification restored to automatic"}
+
+    def cycle_dog(self) -> Dict[str, Any]:
+        """Cycle forced dog: None -> elsa -> bezik -> None (for demo recording)"""
+        if self._forced_dog is None:
+            next_dog = self.KNOWN_DOGS[0]
+        else:
+            try:
+                idx = self.KNOWN_DOGS.index(self._forced_dog)
+                next_idx = idx + 1
+                next_dog = self.KNOWN_DOGS[next_idx] if next_idx < len(self.KNOWN_DOGS) else None
+            except ValueError:
+                next_dog = self.KNOWN_DOGS[0]
+
+        result = self.set_forced_dog(next_dog)
+
+        # Restart session so greeting replays with correct name
+        self.reset_session_cooldown()
+
+        return result
 
     def cleanup(self):
         """Clean up resources"""

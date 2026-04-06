@@ -60,6 +60,9 @@ class DogTracker:
         self.aruco_grace_period = config.get('aruco_grace_period', 0.0)  # seconds (was 10.0)
         self.unidentified_dogs = {}  # {detection_idx: first_seen_time}
 
+        # Demo override: force all dogs to display as this name (None = normal)
+        self.forced_display_name: Optional[str] = None
+
         # Tracking state
         self.frame_count = 0
         self.active_dogs = set()
@@ -414,9 +417,13 @@ class DogTracker:
             dog_name = self.valid_dog_ids.get(marker_id, f"dog_{marker_id}")
             # Display "Dog" for unidentified dogs instead of internal IDs
             id_method = tracking.get('id_method', 'persistence')
-            display_name = dog_name
-            if id_method == "unknown" or dog_name.startswith("dog_"):
+            # Demo override: force all dogs to display as chosen name
+            if self.forced_display_name:
+                display_name = self.forced_display_name
+            elif id_method == "unknown" or dog_name.startswith("dog_"):
                 display_name = "Dog"
+            else:
+                display_name = dog_name
 
             result[dog_name] = {
                 'bbox': tracking.get('bbox', []),

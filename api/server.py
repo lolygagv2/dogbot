@@ -632,6 +632,24 @@ async def reset_session_cooldown():
     result = engine.reset_session_cooldown()
     return result
 
+@app.post("/coaching/cycle_dog")
+async def cycle_coaching_dog():
+    """Cycle forced dog identity: auto -> elsa -> bezik -> auto (for demo recording)"""
+    engine = get_coaching_engine()
+    return engine.cycle_dog()
+
+@app.post("/coaching/force_dog/{dog_name}")
+async def force_coaching_dog(dog_name: str):
+    """Force a specific dog identity (e.g., 'elsa', 'bezik')"""
+    engine = get_coaching_engine()
+    return engine.set_forced_dog(dog_name)
+
+@app.post("/coaching/clear_forced_dog")
+async def clear_forced_dog():
+    """Clear forced dog - return to ArUco identification"""
+    engine = get_coaching_engine()
+    return engine.set_forced_dog(None)
+
 # Behavior Interpreter endpoints (Layer 1)
 @app.get("/behavior/status")
 async def get_behavior_status():

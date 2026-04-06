@@ -139,7 +139,7 @@ class PanTiltService:
 
         self.running = True
         self._stop_event.clear()
-        self.tracking_enabled = True
+        self.tracking_enabled = False  # Off by default — app enables explicitly
 
         self.control_thread = threading.Thread(
             target=self._control_loop,
@@ -170,6 +170,7 @@ class PanTiltService:
     def _control_loop(self) -> None:
         """Main control loop"""
         last_update = time.time()
+        previous_mode = None
 
         while not self._stop_event.wait(0.05):  # 20Hz control loop
             try:
@@ -185,6 +186,12 @@ class PanTiltService:
                     pass
 
                 current_mode = self.state.get_mode()
+
+                # Recenter camera once on entering Coach/Mission mode
+                if current_mode in (SystemMode.COACH, SystemMode.MISSION) and previous_mode != current_mode:
+                    self.center_camera(reason=f"{current_mode.value}_mode_entry")
+                    self.logger.info(f"Entering {current_mode.value}: camera centered")
+                previous_mode = current_mode
 
                 # Skip entire control loop in MANUAL mode to prevent conflicts
                 if current_mode == SystemMode.MANUAL:
@@ -223,9 +230,9 @@ class PanTiltService:
 
         Auto-enables tracking in COACH mode (user can still disable via settings).
         """
+        # Respect app tracking toggle — if user turned it off, don't nudge
         if not self.tracking_enabled:
-            self.logger.info("Auto-enabling tracking for COACH mode")
-            self.tracking_enabled = True
+            return
 
         now = time.time()
 

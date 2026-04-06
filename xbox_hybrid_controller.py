@@ -347,6 +347,10 @@ class XboxHybridControllerFixed:
         self._last_trick_cycle_time = 0
         self._trick_cycle_cooldown = 1.0  # 1 second cooldown
 
+        # Dog identity cycling (D-pad up in coach mode) - for demo recording
+        self._last_dog_cycle_time = 0
+        self._dog_cycle_cooldown = 1.0
+
         # LED state tracking
         self.led_enabled = False
         self.current_led_mode = 0
@@ -1590,10 +1594,8 @@ class XboxHybridControllerFixed:
         result = self.api_request_blocking('POST', '/mode/set', {"mode": new_mode}, timeout=2)
         if result and result.get('success'):
             logger.info(f"Mode changed to: {new_mode}")
-            # Play mode announcement audio
-            audio_file = self.mode_audio.get(new_mode)
-            if audio_file:
-                self.api_request('POST', '/audio/play/file', {"filepath": audio_file})
+            # Audio announcement handled by main_treatbot._announce_mode() via mode_change event
+            # Do NOT play audio here — double-fire causes repeated/overlapping announcements
         else:
             logger.warning(f"Mode change may have failed: {result}")
 
@@ -1631,6 +1633,30 @@ class XboxHybridControllerFixed:
         # Play trick audio as feedback so user knows what's queued
         audio_file = self._trick_audio.get(trick, f'{trick}.mp3')
         self.api_request('POST', '/audio/play/file', {'filepath': f'/talks/{audio_file}'})
+
+    def cycle_dog(self):
+        """Cycle dog identity override: auto -> elsa -> bezik -> auto (coach mode only)"""
+        current_time = time.time()
+
+        if current_time - self._last_dog_cycle_time < self._dog_cycle_cooldown:
+            logger.debug("Dog cycle ignored (cooldown)")
+            return
+
+        self._last_dog_cycle_time = current_time
+
+        result = self.api_request_blocking('POST', '/coaching/cycle_dog', timeout=2)
+        if result and not result.get('error'):
+            forced = result.get('forced_dog')
+            display = forced if forced else 'auto'
+            logger.info(f"D-pad up: Dog identity set to: {display}")
+
+            # Audio feedback so user knows which dog is selected
+            if forced:
+                self.api_request('POST', '/audio/play/file', {'filepath': f'/talks/{forced}.mp3'})
+            else:
+                self.api_request('POST', '/audio/play/file', {'filepath': '/talks/treat.mp3'})
+        else:
+            logger.warning(f"Failed to cycle dog: {result}")
 
     def toggle_led(self):
         """Toggle blue LED with cooldown to prevent double-triggers"""
@@ -1719,9 +1745,13 @@ class XboxHybridControllerFixed:
             if current_time - self.last_dpad_time < self.dpad_cooldown:
                 return
 
-            if value < 0:  # Up - Stop audio
-                logger.info("D-pad up: Stop audio")
-                self.api_request('POST', '/audio/stop')
+            if value < 0:  # Up - Cycle dog in coach mode, stop audio otherwise
+                actual_mode = self._get_current_mode()
+                if actual_mode == 'coach':
+                    self.cycle_dog()
+                else:
+                    logger.info("D-pad up: Stop audio")
+                    self.api_request('POST', '/audio/stop')
                 self.last_dpad_time = current_time
             elif value > 0:  # Down - Play the QUEUED track
                 if self.queued_track is not None:
