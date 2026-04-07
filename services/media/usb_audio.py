@@ -29,19 +29,25 @@ USB_AUDIO_CARD = _detect_usb_audio_card()
 
 # Route pygame through PipeWire (via pipewire-pulse) for echo cancellation support.
 # PipeWire's echo-cancel module needs both playback and capture to flow through it.
-# Falls back to direct ALSA if PipeWire isn't running.
-_use_pipewire = os.path.exists('/usr/bin/pipewire-pulse')
-if _use_pipewire:
+# Falls back to direct ALSA if PipeWire socket is unavailable (e.g. systemd service context).
+_audio_backend = 'alsa'
+if os.path.exists('/usr/bin/pipewire-pulse'):
     os.environ['SDL_AUDIODRIVER'] = 'pulseaudio'
-    # Don't set AUDIODEV — let PipeWire route to the echo-cancel sink (default)
+    import pygame
+    try:
+        pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+        pygame.mixer.quit()
+        _audio_backend = 'pulseaudio'
+    except Exception:
+        os.environ['SDL_AUDIODRIVER'] = 'alsa'
+        os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
 else:
     os.environ['SDL_AUDIODRIVER'] = 'alsa'
     os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
-
-import pygame
+    import pygame
 
 logger = logging.getLogger('USBAudio')
-logger.info(f"USB Audio detected on card {USB_AUDIO_CARD}")
+logger.info(f"USB Audio detected on card {USB_AUDIO_CARD}, backend: {_audio_backend}")
 
 class USBAudioService:
     """USB Audio service using pygame mixer"""

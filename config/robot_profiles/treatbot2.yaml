@@ -9,13 +9,20 @@ description: "Backup unit with motor compensation required"
 camera:
   rotation: 0  # No rotation needed on this unit
 
-# Dispenser settings (dispenser.py)
+# Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py)
 dispenser:
-  dispense_duration: 0.3
+  steps_per_slot: 137       # Microsteps to advance one treat slot (calibrated)
+  step_delay: 0.006         # Half-period per step in seconds (12ms/step = MEDIUM speed)
+  max_retries: 3            # Anti-jam retry attempts per dispense
+  reverse_steps: 40         # Steps to reverse during anti-jam
+  irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
+  ihold: 5                  # TMC2209 hold current (low to save battery)
+  microstepping: 8          # Microstepping multiplier (MRES=5)
+  sgthrs: 0                 # StallGuard disabled — SG_RESULT=0 at low RPM
 
-# Servo settings (servo_controller.py)
+# Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:
-  slow_pulse: 1600        # rotate_winch 'slow' direction pulse value (wider than treatbot)
+  slow_pulse: 1600  # legacy — no longer used for dispenser
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:
