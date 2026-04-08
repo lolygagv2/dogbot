@@ -29,15 +29,11 @@ USB_AUDIO_CARD = _detect_usb_audio_card()
 
 # Route pygame through PipeWire (via pipewire-pulse) for echo cancellation support.
 # PipeWire's echo-cancel module needs both playback and capture to flow through it.
-# Falls back to direct ALSA if PipeWire isn't available.
-#
-# NOTE: Do NOT call pygame.mixer.init() here at module level — it can hang or crash
-# if PipeWire isn't ready yet, which kills the entire treatbot process at import time.
-# The actual init happens in USBAudioService.__init__() with proper error handling.
-_audio_backend = 'alsa'
-if os.path.exists('/usr/bin/pipewire-pulse'):
+# Falls back to direct ALSA if PipeWire isn't running.
+_use_pipewire = os.path.exists('/usr/bin/pipewire-pulse')
+if _use_pipewire:
     os.environ['SDL_AUDIODRIVER'] = 'pulseaudio'
-    _audio_backend = 'pulseaudio'
+    # Don't set AUDIODEV — let PipeWire route to the echo-cancel sink (default)
 else:
     os.environ['SDL_AUDIODRIVER'] = 'alsa'
     os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
@@ -45,7 +41,7 @@ else:
 import pygame
 
 logger = logging.getLogger('USBAudio')
-logger.info(f"USB Audio detected on card {USB_AUDIO_CARD}, backend: {_audio_backend}")
+logger.info(f"USB Audio detected on card {USB_AUDIO_CARD}")
 
 class USBAudioService:
     """USB Audio service using pygame mixer"""
@@ -81,23 +77,10 @@ class USBAudioService:
             # Initialize pygame mixer for audio playback (USB audio device)
             pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
             self.initialized = True
-            self.logger.info(f"USB Audio service initialized successfully (backend: {_audio_backend})")
+            self.logger.info("USB Audio service initialized successfully (plughw:0,0)")
         except Exception as e:
-            if _audio_backend == 'pulseaudio':
-                # PulseAudio/PipeWire failed — fall back to direct ALSA
-                self.logger.warning(f"PulseAudio init failed ({e}), falling back to ALSA")
-                os.environ['SDL_AUDIODRIVER'] = 'alsa'
-                os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
-                try:
-                    pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
-                    self.initialized = True
-                    self.logger.info("USB Audio service initialized successfully (backend: alsa fallback)")
-                except Exception as e2:
-                    self.logger.error(f"ALSA fallback also failed: {e2}")
-                    self.initialized = False
-            else:
-                self.logger.error(f"USB Audio initialization failed: {e}")
-                self.initialized = False
+            self.logger.error(f"USB Audio initialization failed: {e}")
+            self.initialized = False
 
     def _build_playlist(self, dog_id: str = None):
         """Build playlist from songs folder, combining default and all dog-specific songs
