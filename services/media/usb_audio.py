@@ -77,10 +77,22 @@ class USBAudioService:
             # Initialize pygame mixer for audio playback (USB audio device)
             pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
             self.initialized = True
-            self.logger.info("USB Audio service initialized successfully (plughw:0,0)")
+            self.logger.info(f"USB Audio service initialized (backend: {os.environ.get('SDL_AUDIODRIVER', 'default')})")
         except Exception as e:
-            self.logger.error(f"USB Audio initialization failed: {e}")
-            self.initialized = False
+            if os.environ.get('SDL_AUDIODRIVER') == 'pulseaudio':
+                self.logger.warning(f"PulseAudio init failed ({e}), falling back to ALSA")
+                os.environ['SDL_AUDIODRIVER'] = 'alsa'
+                os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
+                try:
+                    pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+                    self.initialized = True
+                    self.logger.info("USB Audio service initialized (backend: alsa fallback)")
+                except Exception as e2:
+                    self.logger.error(f"ALSA fallback also failed: {e2}")
+                    self.initialized = False
+            else:
+                self.logger.error(f"USB Audio initialization failed: {e}")
+                self.initialized = False
 
     def _build_playlist(self, dog_id: str = None):
         """Build playlist from songs folder, combining default and all dog-specific songs
