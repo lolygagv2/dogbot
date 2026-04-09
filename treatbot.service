@@ -12,6 +12,8 @@ Environment=PYTHONPATH=/home/morgan/dogbot
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 Environment=PIPEWIRE_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+EnvironmentFile=/home/morgan/dogbot/.env
 ExecStartPre=/bin/sleep 10
 ExecStart=/home/morgan/dogbot/env_new/bin/python /home/morgan/dogbot/main_treatbot.py
 Restart=on-failure

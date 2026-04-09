@@ -19,6 +19,7 @@ dispenser:
   ihold: 5                  # TMC2209 hold current (low to save battery)
   microstepping: 8          # Microstepping multiplier (MRES=5)
   sgthrs: 0                 # StallGuard disabled — SG_RESULT=0 at low RPM
+  shaft_invert: true        # TMC2209 shaft bit — reverses internal step sequence for this motor batch
 
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:

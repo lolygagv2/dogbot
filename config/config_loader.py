@@ -185,6 +185,14 @@ class DispenserConfig:
     def sgthrs(self) -> int:
         return self._config.get('sgthrs', 50)
 
+    @property
+    def direction_invert(self) -> bool:
+        return self._config.get('direction_invert', False)
+
+    @property
+    def shaft_invert(self) -> bool:
+        return self._config.get('shaft_invert', False)
+
     # Legacy properties for backward compat during transition
     @property
     def dispense_duration(self) -> float:
