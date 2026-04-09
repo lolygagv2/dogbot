@@ -91,8 +91,9 @@ class SafetyMonitor:
 
         # Safety status
         self.current_level = SafetyLevel.NORMAL
-        self.last_heartbeat = time.time()
-        self.start_time = time.time()
+        self.last_heartbeat = time.monotonic()
+        self.start_time = time.monotonic()
+        self.heartbeat_misses = 0
         self.emergency_callbacks: list[Callable] = []
 
         # Measurement tracking
@@ -102,7 +103,7 @@ class SafetyMonitor:
             'cpu_usage': 0.0,
             'memory_usage': 0.0,
             'disk_usage': 0.0,
-            'timestamp': time.time()
+            'timestamp': time.monotonic()
         }
 
         # Alert suppression (prevent spam)
@@ -130,8 +131,9 @@ class SafetyMonitor:
 
             self.monitoring = True
             self._stop_event.clear()
-            self.start_time = time.time()
-            self.last_heartbeat = time.time()
+            self.start_time = time.monotonic()
+            self.last_heartbeat = time.monotonic()
+            self.heartbeat_misses = 0
 
             self.monitor_thread = threading.Thread(
                 target=self._monitor_loop,
@@ -190,7 +192,7 @@ class SafetyMonitor:
     def _get_system_measurements(self) -> Dict[str, Any]:
         """Get current system measurements"""
         measurements = {
-            'timestamp': time.time(),
+            'timestamp': time.monotonic(),
             'cpu_usage': psutil.cpu_percent(interval=0.1),
             'memory_usage': psutil.virtual_memory().percent,
             'disk_usage': psutil.disk_usage('/').percent
@@ -257,7 +259,7 @@ class SafetyMonitor:
         """Check CPU usage"""
         # Startup grace period - CPU spikes to 100% when loading AI models/Hailo
         # 90s needed: Pi 5 + Hailo model load + all services can peg CPU for >60s
-        if time.time() - self.start_time < 90.0:
+        if time.monotonic() - self.start_time < 90.0:
             return
 
         if cpu_pct >= self.thresholds.cpu_critical:
@@ -275,7 +277,7 @@ class SafetyMonitor:
     def _check_memory_usage(self, mem_pct: float) -> None:
         """Check memory usage"""
         # Startup grace period - memory can spike when loading models or starting tools
-        if time.time() - self.start_time < 90.0:
+        if time.monotonic() - self.start_time < 90.0:
             return
 
         if mem_pct >= self.thresholds.memory_critical:
@@ -302,20 +304,33 @@ class SafetyMonitor:
                               f"Disk usage high: {disk_pct:.1f}%", {'disk_usage': disk_pct})
 
     def _check_heartbeat(self) -> None:
-        """Check main loop heartbeat"""
-        # Don't check heartbeat if we're already in emergency or shutdown
+        """Check main loop heartbeat.
+
+        Requires 2 consecutive missed checks before triggering emergency.
+        A single miss (e.g. transient GIL stall from camera C extensions)
+        logs a warning and gives the main loop one more interval to recover.
+        """
         current_mode = self.state.get_mode()
         if current_mode in [SystemMode.EMERGENCY, SystemMode.SHUTDOWN]:
-            return  # Already handling emergency/shutdown, don't trigger again
+            return
 
-        time_since_heartbeat = time.time() - self.last_heartbeat
+        time_since_heartbeat = time.monotonic() - self.last_heartbeat
         if time_since_heartbeat > self.thresholds.max_no_heartbeat:
-            self._trigger_emergency("Main loop not responding",
-                                   {'time_since_heartbeat': time_since_heartbeat})
+            self.heartbeat_misses += 1
+            if self.heartbeat_misses >= 2:
+                self._trigger_emergency("Main loop not responding",
+                                       {'time_since_heartbeat': time_since_heartbeat,
+                                        'consecutive_misses': self.heartbeat_misses})
+            else:
+                self.logger.warning(
+                    f"Heartbeat missed ({time_since_heartbeat:.1f}s), "
+                    f"strike {self.heartbeat_misses}/2")
+        else:
+            self.heartbeat_misses = 0
 
     def _check_runtime_limits(self) -> None:
         """Check runtime limits"""
-        runtime = time.time() - self.start_time
+        runtime = time.monotonic() - self.start_time
         if runtime > self.thresholds.max_continuous_runtime:
             self._trigger_alert(SafetyLevel.WARNING, 'runtime_limit',
                               f"Runtime limit reached: {runtime/3600:.1f} hours",
@@ -346,7 +361,7 @@ class SafetyMonitor:
     def _trigger_alert(self, level: SafetyLevel, alert_type: str, message: str, data: Dict[str, Any]) -> None:
         """Trigger a safety alert"""
         # Check alert cooldown
-        now = time.time()
+        now = time.monotonic()
         if alert_type in self.last_alerts:
             if now - self.last_alerts[alert_type] < self.alert_cooldown:
                 return  # Suppress duplicate alert
@@ -387,7 +402,7 @@ class SafetyMonitor:
         self._publish_safety_event('emergency', {
             'reason': reason,
             'data': data,
-            'timestamp': time.time()
+            'timestamp': time.monotonic()
         })
 
         # Call emergency callbacks
@@ -409,7 +424,7 @@ class SafetyMonitor:
 
     def _play_hot_audio(self) -> None:
         """Play hot temperature audio alert (with cooldown)"""
-        now = time.time()
+        now = time.monotonic()
         if now - self.last_temp_audio < self.audio_cooldown:
             return  # Cooldown not elapsed
 
@@ -491,7 +506,7 @@ class SafetyMonitor:
 
     def heartbeat(self) -> None:
         """Update heartbeat timestamp (called by main loop)"""
-        self.last_heartbeat = time.time()
+        self.last_heartbeat = time.monotonic()
 
     def add_emergency_callback(self, callback: Callable[[str, Dict[str, Any]], None]) -> None:
         """Add callback for emergency events"""
@@ -512,9 +527,9 @@ class SafetyMonitor:
             return {
                 'monitoring': self.monitoring,
                 'level': self.current_level.value,
-                'uptime': time.time() - self.start_time,
+                'uptime': time.monotonic() - self.start_time,
                 'last_heartbeat': self.last_heartbeat,
-                'time_since_heartbeat': time.time() - self.last_heartbeat,
+                'time_since_heartbeat': time.monotonic() - self.last_heartbeat,
                 'measurements': self.last_measurements.copy(),
                 'thresholds': {
                     'battery_warning': self.thresholds.battery_warning,
