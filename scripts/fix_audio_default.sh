@@ -3,10 +3,11 @@
 # Usage: sudo bash fix_audio_default.sh
 # Safe to run on any treatbot — auto-detects USB card number
 
-CARD=$(grep -l "USB Audio" /proc/asound/card*/id 2>/dev/null | head -1 | grep -oP 'card\K[0-9]+')
+CARD=$(grep "USB-Audio" /proc/asound/cards 2>/dev/null | head -1 | grep -oP '^\s*\K[0-9]+')
 
 if [ -z "$CARD" ]; then
-    echo "ERROR: No USB Audio device found in /proc/asound/"
+    echo "ERROR: No USB Audio device found in /proc/asound/cards"
+    cat /proc/asound/cards
     exit 1
 fi
 
