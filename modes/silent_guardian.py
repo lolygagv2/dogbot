@@ -409,6 +409,20 @@ class SilentGuardianMode:
         if not self.running:
             return
 
+        if event.subtype == 'bark_false_positive':
+            logger.info(f"ML says not a bark (notbark={event.data.get('confidence', 0):.2f}) — "
+                       f"cancelling any pending intervention")
+            # Reset bark tracker count so false positive doesn't accumulate toward threshold
+            try:
+                bark_config = self.config.get('bark_detection', {})
+                threshold = bark_config.get('threshold', 2)
+                dog_id = event.data.get('dog_id', 'unknown')
+                if hasattr(self, 'bark_tracker'):
+                    self.bark_tracker.reset_dog(dog_id)
+            except Exception:
+                pass
+            return
+
         if event.subtype != 'bark_detected':
             return
 

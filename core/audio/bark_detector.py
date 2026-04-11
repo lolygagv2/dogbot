@@ -188,8 +188,8 @@ class BarkDetector:
         if self._audio_buffer:
             buffered = np.concatenate(self._audio_buffer[-3:])  # Last ~1s of audio
             bark_score = self._spectral_bark_score(buffered)
-            if bark_score < 0.3:
-                logger.debug(f"Spectral reject: bark_score={bark_score:.2f} (need >=0.3)")
+            if bark_score < 0.45:
+                logger.info(f"Spectral reject: bark_score={bark_score:.2f} (need >=0.45)")
                 return None
             logger.debug(f"Spectral pass: bark_score={bark_score:.2f}")
 
@@ -314,13 +314,19 @@ class BarkDetector:
             result = self._classifier.predict(audio, confidence_threshold=0.3)
             logger.info(f"Classifier raw result: {result}")
 
-            # Filter out 'notbark' - we already know it's a bark from Stage 1
             probs = result['all_probabilities']
+
+            # Use notbark as a veto — if ML says it's not a bark, trust it
+            notbark_conf = probs.get('notbark', 0.0)
+            if notbark_conf > 0.5:
+                logger.info(f"ML veto: notbark={notbark_conf:.2f} — rejecting as false positive")
+                return {'emotion': 'notbark', 'confidence': notbark_conf, 'all_emotions': probs}
+
             bark_emotions = {k: v for k, v in probs.items() if k != 'notbark'}
 
             if not bark_emotions:
                 logger.info("Classifier returned only 'notbark' — no bark emotions")
-                return None
+                return {'emotion': 'notbark', 'confidence': notbark_conf, 'all_emotions': probs}
 
             top_emotion = max(bark_emotions, key=bark_emotions.get)
             logger.info(f"Bark emotions: {bark_emotions}, top={top_emotion}")
@@ -368,13 +374,17 @@ class BarkDetector:
                 elapsed_ms = (time.time() - t0) * 1000
 
                 if emotion_result:
+                    is_false_positive = emotion_result['emotion'] == 'notbark'
+                    event_type = 'bark_false_positive' if is_false_positive else 'bark_emotion'
+
                     logger.info(f"Emotion (bg): {emotion_result['emotion']} "
-                               f"({emotion_result['confidence']:.2f}) in {elapsed_ms:.0f}ms")
+                               f"({emotion_result['confidence']:.2f}) in {elapsed_ms:.0f}ms"
+                               f"{' — FALSE POSITIVE' if is_false_positive else ''}")
 
                     # Publish follow-up event on the bus
                     try:
                         from core.bus import publish_audio_event
-                        publish_audio_event('bark_emotion', {
+                        publish_audio_event(event_type, {
                             'emotion': emotion_result['emotion'],
                             'confidence': emotion_result['confidence'],
                             'all_emotions': emotion_result.get('all_emotions', {}),
@@ -384,7 +394,7 @@ class BarkDetector:
                             'bark_timestamp': bark_event.timestamp
                         })
                     except Exception as e:
-                        logger.warning(f"Failed to publish bark_emotion event: {e}")
+                        logger.warning(f"Failed to publish {event_type} event: {e}")
                 else:
                     logger.info(f"Emotion (bg): None in {elapsed_ms:.0f}ms")
 
@@ -430,11 +440,18 @@ class BarkDetector:
             logger.info(f"Classifier raw result: {result}")
 
             probs = result['all_probabilities']
+
+            # Use notbark as a veto — if ML says it's not a bark, trust it
+            notbark_conf = probs.get('notbark', 0.0)
+            if notbark_conf > 0.5:
+                logger.info(f"ML veto: notbark={notbark_conf:.2f} — rejecting as false positive")
+                return {'emotion': 'notbark', 'confidence': notbark_conf, 'all_emotions': probs}
+
             bark_emotions = {k: v for k, v in probs.items() if k != 'notbark'}
 
             if not bark_emotions:
                 logger.info("Classifier returned only 'notbark'")
-                return None
+                return {'emotion': 'notbark', 'confidence': notbark_conf, 'all_emotions': probs}
 
             top_emotion = max(bark_emotions, key=bark_emotions.get)
             logger.info(f"Bark emotions: {bark_emotions}, top={top_emotion}")
