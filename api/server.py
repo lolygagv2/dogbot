@@ -3918,7 +3918,7 @@ async def start_audio_recording():
 
         logger.debug("Recording now - speak for 2 seconds")
         record_cmd = [
-            'arecord', '-D', 'hw:2,0', '-f', 'S16_LE', '-r', '44100',
+            'arecord', '-D', 'default', '-f', 'S16_LE', '-r', '44100',
             '-c', '1', '-d', '2', wav_path
         ]
         result = subprocess.run(record_cmd, capture_output=True, timeout=5)
