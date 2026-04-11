@@ -188,8 +188,8 @@ class BarkDetector:
         if self._audio_buffer:
             buffered = np.concatenate(self._audio_buffer[-3:])  # Last ~1s of audio
             bark_score = self._spectral_bark_score(buffered)
-            if bark_score < 0.45:
-                logger.info(f"Spectral reject: bark_score={bark_score:.2f} (need >=0.45)")
+            if bark_score < 0.38:
+                logger.info(f"Spectral reject: bark_score={bark_score:.2f} (need >=0.38)")
                 return None
             logger.debug(f"Spectral pass: bark_score={bark_score:.2f}")
 

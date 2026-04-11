@@ -21,10 +21,10 @@ class BarkGateConfig:
     # Energy thresholds - tuned for USB mic with ~0.02 ambient baseline
     # TUNED 2026-01-18: Raised thresholds to reduce false positives
     # Actual barks typically 0.12+ after bandpass filtering (400-2500Hz)
-    base_threshold: float = 0.12      # Raised from 0.08 to reduce false positives
+    base_threshold: float = 0.18      # Raised from 0.12 — TV speech hits 0.12-0.16
     thresh_close: float = 0.35        # Close/loud bark (raised from 0.30)
     thresh_mid: float = 0.20          # Medium distance bark (raised from 0.15)
-    thresh_far: float = 0.12          # Far/quiet bark (raised from 0.08)
+    thresh_far: float = 0.18          # Far/quiet bark — must match base_threshold
 
     # Timing (in milliseconds)
     min_bark_duration_ms: int = 150   # Barks are typically 100-500ms (raised to filter clicks)

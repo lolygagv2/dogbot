@@ -174,13 +174,13 @@ class BarkDetectorService:
 
         try:
             # Initialize 3-stage bark detector with emotion classification enabled
-            # TUNED 2026-01-18: Raised thresholds to reduce false positives on non-bark sounds
-            # Ambient noise ~0.02, actual barks typically 0.12+ after bandpass filtering
+            # TUNED 2026-04-11: TV speech hits 0.12-0.16, real barks 0.24+
+            # Raised base/far to 0.18 to eliminate TV false positives
             gate_config = BarkGateConfig(
-                base_threshold=0.12,      # Raised to reduce false positives (was 0.08)
-                thresh_close=0.35,        # Loud bark (raised from 0.30)
-                thresh_mid=0.20,          # Medium bark (raised from 0.15)
-                thresh_far=0.12,          # Quiet bark (raised from 0.08)
+                base_threshold=0.18,      # TV speech floor is 0.12-0.16
+                thresh_close=0.35,        # Loud bark
+                thresh_mid=0.20,          # Medium bark
+                thresh_far=0.18,          # Quiet bark — matches base
                 min_bark_duration_ms=150, # Barks are typically 100-500ms (raised from 100 to filter clicks)
                 max_bark_duration_ms=1500,# Cap duration (barks rarely exceed 1.5s)
                 grace_period_ms=150,      # Wait for bark tail
