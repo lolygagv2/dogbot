@@ -42,18 +42,17 @@ cat > /etc/systemd/system/wifi-provision.service << 'EOF'
 [Unit]
 Description=WIM-Z WiFi Provisioning
 Documentation=https://github.com/wimzai/dogbot
-Before=treatbot.service
 After=NetworkManager.service network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
 User=root
 WorkingDirectory=/home/morgan/dogbot
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/morgan/dogbot/env_new/bin/python /home/morgan/dogbot/wifi_provision_main.py
-TimeoutStartSec=180
+Restart=on-failure
+RestartSec=10
 StandardOutput=journal
 StandardError=journal
 
@@ -73,19 +72,14 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
-# Modify treatbot.service to depend on wifi-provision
+# treatbot.service runs in parallel with wifi-provision (no ordering/dependency)
+# so the main bot API + Xbox controller come up immediately on boot regardless
+# of WiFi state. If a prior install injected these, strip them.
 TREATBOT_SERVICE="/etc/systemd/system/treatbot.service"
 if [ -f "$TREATBOT_SERVICE" ]; then
-    echo "Updating treatbot.service dependencies..."
-    # Check if already has the dependency
-    if ! grep -q "After=.*wifi-provision.service" "$TREATBOT_SERVICE"; then
-        # Add wifi-provision.service to After= line
-        sed -i '/^\[Unit\]/,/^\[/ s/^After=\(.*\)/After=\1 wifi-provision.service/' "$TREATBOT_SERVICE"
-    fi
-    if ! grep -q "Requires=wifi-provision.service" "$TREATBOT_SERVICE"; then
-        # Add Requires line after After
-        sed -i '/^After=/a Requires=wifi-provision.service' "$TREATBOT_SERVICE"
-    fi
+    echo "Ensuring treatbot.service is decoupled from wifi-provision..."
+    sed -i 's/ *wifi-provision\.service//g' "$TREATBOT_SERVICE"
+    sed -i '/^Requires=wifi-provision\.service$/d' "$TREATBOT_SERVICE"
 fi
 
 # Reload systemd
