@@ -3620,9 +3620,10 @@ async def get_network_status():
         wifi = WiFiManager()
 
         if wifi.is_ap_mode():
+            ap_ssid = wifi.get_active_ap_ssid() or f"WIMZ-Demo-{wifi.get_device_serial()}"
             return {
                 "mode": "ap",
-                "ssid": "WIMZ-Demo",
+                "ssid": ap_ssid,
                 "ip": wifi.HOTSPOT_IP,
                 "internet": False
             }

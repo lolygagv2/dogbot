@@ -46,6 +46,17 @@ class WiFiManager:
         success, output = self._run_cmd(["pgrep", "-f", f"hostapd.*{HOSTAPD_CONF}"])
         return success
 
+    def get_active_ap_ssid(self) -> Optional[str]:
+        """Return SSID of the currently running AP by parsing the hostapd config."""
+        try:
+            with open(HOSTAPD_CONF, 'r') as f:
+                for line in f:
+                    if line.startswith('ssid='):
+                        return line.split('=', 1)[1].strip()
+        except Exception:
+            pass
+        return None
+
     def _run_cmd(self, cmd: List[str], timeout: int = 30) -> Tuple[bool, str]:
         """Run a shell command and return (success, output)"""
         try:

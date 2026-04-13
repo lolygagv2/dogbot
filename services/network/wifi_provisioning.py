@@ -54,7 +54,7 @@ class WiFiProvisioningService:
     CONNECTION_TIMEOUT = 15  # seconds to wait for known WiFi
     CREDENTIAL_AP_TIMEOUT = 300  # 5 minutes for credential AP before switching to demo
 
-    DEMO_SSID = "WIMZ-Demo"
+    DEMO_SSID_PREFIX = "WIMZ-Demo"
     DEMO_PASSWORD = "wimzdemo"
 
     def __init__(self):
@@ -146,6 +146,11 @@ class WiFiProvisioningService:
         """Generate hotspot SSID using device serial"""
         serial = self.wifi_manager.get_device_serial()
         return f"WIMZ-{serial}"
+
+    def _generate_demo_ssid(self) -> str:
+        """Generate per-unit demo SSID so TB1/TB2 don't collide."""
+        serial = self.wifi_manager.get_device_serial()
+        return f"{self.DEMO_SSID_PREFIX}-{serial}"
 
     def _on_credentials_saved(self, ssid: str):
         """Callback when WiFi credentials are saved"""
@@ -316,21 +321,22 @@ class WiFiProvisioningService:
         This AP stays up permanently until the robot is powered off
         or WiFi is configured via the /system/wifi/connect API endpoint.
         """
-        logger.info("[LOCAL] Starting WIMZ-Demo AP...")
+        demo_ssid = self._generate_demo_ssid()
+        logger.info(f"[LOCAL] Starting {demo_ssid} AP...")
 
         # Start clean AP (no DNS hijack, no captive portal)
         if not self.wifi_manager.start_demo_hotspot(
-            ssid=self.DEMO_SSID,
+            ssid=demo_ssid,
             password=self.DEMO_PASSWORD
         ):
-            logger.error("[LOCAL] Failed to start WIMZ-Demo AP")
+            logger.error(f"[LOCAL] Failed to start {demo_ssid} AP")
             self._set_led_error()
             return
 
         # Start iOS captive portal suppression on port 80
         self._start_ios_server()
 
-        logger.info(f"[LOCAL] WIMZ-Demo AP started at {self.wifi_manager.HOTSPOT_IP}:8000")
+        logger.info(f"[LOCAL] {demo_ssid} AP started at {self.wifi_manager.HOTSPOT_IP}:8000")
         self._in_demo_mode = True
 
         # Release LED controller so treatbot's LED service can claim GPIO25 + NeoPixels
