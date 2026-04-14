@@ -42,7 +42,7 @@ controller:
 
   # Xbox controller calibration - NEEDS TUNING
   xbox:
-    joystick_deadzone: 0.15   # May need adjustment after diagnostics
+    joystick_deadzone: 0.30   # Increased for stick drift
     joystick_scale: 1.0       # May need adjustment after diagnostics
 
   # PID tuning parameters - NEEDS TUNING

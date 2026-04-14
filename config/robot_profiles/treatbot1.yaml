@@ -38,7 +38,7 @@ controller:
 
   # Xbox controller calibration
   xbox:
-    joystick_deadzone: 0.1    # Ignore stick values below this
+    joystick_deadzone: 0.30   # Ignore stick values below this (increased for drift)
     joystick_scale: 1.0       # Multiply stick output (if controller doesn't reach 1.0)
 
   # PID tuning parameters

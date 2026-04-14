@@ -473,9 +473,10 @@ class XboxHybridControllerFixed:
             self.MIN_PWM_THRESHOLD = controller_config.min_pwm_threshold
 
             logger.info(f"[Config] Robot profile loaded: {config.robot_id}")
+            logger.info(f"[Config] DEADZONE={self.DEADZONE}")
             logger.debug(f"[Config] MAX_SPEED={self.MAX_SPEED}, MAX_RPM={self.MAX_RPM}")
             logger.debug(f"[Config] LEFT_MULT={self.LEFT_MOTOR_MULTIPLIER}, RIGHT_MULT={self.RIGHT_MOTOR_MULTIPLIER}")
-            logger.debug(f"[Config] DEADZONE={self.DEADZONE}, MIN_PWM_THRESHOLD={self.MIN_PWM_THRESHOLD}")
+            logger.debug(f"[Config] MIN_PWM_THRESHOLD={self.MIN_PWM_THRESHOLD}")
             logger.debug(f"[Config] USE_PID_CONTROL={self.USE_PID_CONTROL}")
 
         except Exception as e:
