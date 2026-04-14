@@ -3,6 +3,7 @@ Audio buffering for bark detection using arecord subprocess
 Replaces PyAudio with arecord to avoid USB freezing issues
 """
 
+import re
 import subprocess
 import tempfile
 import threading
@@ -17,24 +18,72 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-def find_usb_audio_device():
-    """
-    Find the USB audio device for bark detection.
-    Always returns 'default' so arecord goes through PipeWire's ALSA
-    emulation layer. Direct hw: access fails with 'Device or resource busy'
-    because PipeWire holds an exclusive lock on the hardware device.
-    """
-    # Verify USB audio exists (for logging), but always use 'default'
+def _find_usb_card_number() -> Optional[int]:
+    """Return the ALSA card number of the USB audio device, or None."""
     try:
         result = subprocess.run(['arecord', '-l'], capture_output=True, text=True)
         for line in result.stdout.split('\n'):
-            if 'USB Audio Device' in line or 'USB Audio' in line:
-                logger.info(f"USB audio hardware present ({line.strip()}), using 'default' (PipeWire)")
-                return 'default'
+            if 'USB Audio' in line:
+                m = re.match(r'card\s+(\d+)', line.strip())
+                if m:
+                    return int(m.group(1))
     except Exception as e:
-        logger.warning(f"Error checking USB audio: {e}")
+        logger.warning(f"Error enumerating ALSA capture devices: {e}")
+    return None
 
-    logger.info("Using default audio device")
+
+def _probe_device_has_signal(device: str, seconds: float = 0.4) -> bool:
+    """Record a short probe and check whether any non-zero samples arrived."""
+    tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+    try:
+        r = subprocess.run(
+            ['arecord', '-D', device, '-f', 'S16_LE', '-r', '44100',
+             '-c', '1', '-d', '1', tmp_path],
+            capture_output=True, timeout=seconds + 2.0
+        )
+        if r.returncode != 0 or not os.path.exists(tmp_path):
+            return False
+        with wave.open(tmp_path, 'rb') as w:
+            frames = w.readframes(w.getnframes())
+        arr = np.frombuffer(frames, dtype=np.int16)
+        return bool(np.any(arr != 0))
+    except Exception as e:
+        logger.warning(f"Probe of device '{device}' failed: {e}")
+        return False
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def find_usb_audio_device() -> str:
+    """
+    Pick the best arecord device for bark detection.
+
+    Prefers 'default' (PipeWire) so AEC stays in the capture path. If PipeWire's
+    default source is dead (as seen on TB2 when WirePlumber hasn't adopted the
+    USB device — arecord succeeds but every sample is zero), falls back to
+    plughw:{card},0 against the USB card directly.
+    """
+    usb_card = _find_usb_card_number()
+
+    if _probe_device_has_signal('default'):
+        logger.info("Bark capture using 'default' (PipeWire healthy)")
+        return 'default'
+
+    if usb_card is not None:
+        fallback = f'plughw:{usb_card},0'
+        logger.warning(
+            f"PipeWire 'default' source produced silence on probe — "
+            f"falling back to {fallback}. AEC will be bypassed for bark detection."
+        )
+        return fallback
+
+    logger.warning("No USB audio card found; using 'default' and hoping for the best")
     return 'default'
 
 
@@ -71,6 +120,8 @@ class BarkAudioBufferArecord:
         # Statistics
         self.chunks_recorded = 0
         self.chunks_failed = 0
+        self.silent_chunks = 0
+        self._silent_warned = False
 
         logger.info(f"BarkAudioBufferArecord initialized: device={self.device}, {sample_rate}Hz, {chunk_duration}s chunks, gain={gain}x")
 
@@ -119,6 +170,23 @@ class BarkAudioBufferArecord:
                 audio_data = self._record_chunk()
 
                 if audio_data is not None:
+                    # Watchdog: detect a silent mic / dead capture route.
+                    # arecord can return success with all-zero samples when
+                    # PipeWire's default source is routed to a Dummy sink.
+                    if not np.any(audio_data):
+                        self.silent_chunks += 1
+                        if self.silent_chunks >= 10 and not self._silent_warned:
+                            logger.warning(
+                                f"Bark capture has produced {self.silent_chunks} all-zero chunks "
+                                f"in a row from device={self.device}. Mic is dead or audio routing "
+                                f"is broken (check 'wpctl status' / 'arecord -l'). "
+                                f"Bark detection will not trigger until this is resolved."
+                            )
+                            self._silent_warned = True
+                    else:
+                        self.silent_chunks = 0
+                        self._silent_warned = False
+
                     # Put in queue if not full
                     if not self.audio_queue.full():
                         self.audio_queue.put(audio_data)

@@ -1935,16 +1935,12 @@ class TreatBotMain:
                     except Exception:
                         pass
 
-                    # Wait for any current audio to finish (max 3 seconds)
-                    # This prevents mode announcements from interrupting important audio
-                    wait_count = 0
-                    while self.usb_audio.is_busy() and wait_count < 30:
-                        time.sleep(0.1)
-                        wait_count += 1
-
-                    if wait_count >= 30:
-                        self.logger.debug(f"Skipping mode announcement - audio still playing after 3s")
-                        return
+                    # Interrupt any currently-playing audio. Per-press feedback must be
+                    # immediate and must match the *current* mode — waiting for prior audio
+                    # causes delayed/stale announcements when the user cycles rapidly.
+                    if self.usb_audio.is_busy():
+                        self.usb_audio.stop()
+                        time.sleep(0.1)  # brief gap so pygame releases before next load
 
                     # Suppress bark detection BEFORE playing to prevent speaker echo
                     # triggering false bark events (especially entering SG/Coach modes)

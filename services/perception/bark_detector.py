@@ -197,6 +197,7 @@ class BarkDetectorService:
             self.audio_buffer = BarkAudioBuffer(
                 sample_rate=44100,  # USB device native rate
                 chunk_duration=1.0,  # 1 second chunks (arecord minimum)
+                device=self.config.get('device'),  # Optional override; None = auto-detect
                 gain=self.config.get('audio_gain', 30.0)  # Amplification for quiet mic
             )
 

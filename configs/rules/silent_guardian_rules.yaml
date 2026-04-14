@@ -28,6 +28,11 @@ bark_detection:
   window_seconds: 60              # Time window for counting barks (longer window more forgiving)
   confidence_minimum: 0.45        # Raised - only confident bark detections (was 0.10)
   loudness_threshold_db: -21      # 5% stricter than -20 (was -35 → -20 → -21)
+  # device: plughw:0,0            # Optional arecord device override. Unset = auto-probe 'default'
+                                  # then fall back to plughw:{card},0 if PipeWire is silent.
+                                  # Set on units where PipeWire is known flaky (e.g. TB2).
+                                  # then fall back to plughw:{card},0 if PipeWire is silent.
+                                  # Set on units where PipeWire is known flaky (e.g. TB2).
 
 # Intervention sequences by escalation level
 intervention_sequences:
