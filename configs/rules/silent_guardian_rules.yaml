@@ -28,9 +28,10 @@ bark_detection:
   window_seconds: 60              # Time window for counting barks (longer window more forgiving)
   confidence_minimum: 0.45        # Raised - only confident bark detections (was 0.10)
   loudness_threshold_db: -21      # 5% stricter than -20 (was -35 → -20 → -21)
-  # device: plughw:0,0            # Optional arecord device override. Unset = auto-probe 'default'
-                                  # then fall back to plughw:{card},0 if PipeWire is silent.
-                                  # Set on units where PipeWire is known flaky (e.g. TB2).
+  device: plughw:0,0              # Force USB hardware directly — PipeWire's 'default' source
+                                  # is flaky on this Pi image (Dummy-sink fallback produces
+                                  # all-zero samples). Bark detection doesn't need AEC anyway
+                                  # (speaker echo is handled via bark suppression during playback).
                                   # then fall back to plughw:{card},0 if PipeWire is silent.
                                   # Set on units where PipeWire is known flaky (e.g. TB2).
 
