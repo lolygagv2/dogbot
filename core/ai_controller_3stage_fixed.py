@@ -322,6 +322,14 @@ class AI3StageControllerFixed:
         # Get basic detections
         detections, poses, behaviors = self.process_frame(frame_4k, skip_behavior=skip_behavior)
 
+        # Suppress phantom duplicate boxes that overlap an ARUCO-identified dog.
+        # YOLO NMS at IOU 0.5 can leave ~0.45-IOU overlaps; when two boxes contain
+        # the same ARUCO marker, downstream stages wrongly treat them as two dogs.
+        if aruco_markers:
+            detections, poses, behaviors = self._deduplicate_aruco_overlaps(
+                detections, poses, behaviors, aruco_markers
+            )
+
         result = {
             'detections': detections,
             'poses': poses,
@@ -687,6 +695,64 @@ class AI3StageControllerFixed:
         union_area = area1 + area2 - inter_area
 
         return inter_area / union_area if union_area > 0 else 0
+
+    def _deduplicate_aruco_overlaps(self, detections, poses, behaviors, aruco_markers,
+                                     iou_threshold: float = 0.3):
+        """Drop phantom boxes that overlap an ARUCO-identified dog.
+
+        Two passes:
+          1. If multiple boxes contain the same marker center, keep the highest-
+             confidence one and drop the others.
+          2. For each remaining ARUCO-tagged box, drop any other box whose IOU
+             with it exceeds `iou_threshold` (default 0.3). Preserves a genuine
+             second untagged dog that sits apart from the tagged one.
+        """
+        if not detections or not aruco_markers:
+            return detections, poses, behaviors
+
+        def point_in_box(cx, cy, det):
+            return det.x1 <= cx <= det.x2 and det.y1 <= cy <= det.y2
+
+        drop = set()
+        aruco_box_indices = {}  # marker_id -> kept detection index
+
+        # Pass 1: per-marker dedup
+        for marker_id, cx, cy in aruco_markers:
+            containing = [i for i, d in enumerate(detections)
+                          if i not in drop and point_in_box(cx, cy, d)]
+            if not containing:
+                continue
+            best = max(containing, key=lambda i: detections[i].confidence)
+            aruco_box_indices[marker_id] = best
+            for i in containing:
+                if i != best:
+                    drop.add(i)
+                    logger.debug(
+                        f"Suppressed phantom dog box {i} (conf={detections[i].confidence:.2f}) "
+                        f"sharing ARUCO {marker_id} with box {best}"
+                    )
+
+        # Pass 2: IOU suppression against ARUCO-tagged boxes
+        for marker_id, aruco_idx in aruco_box_indices.items():
+            for i, det in enumerate(detections):
+                if i == aruco_idx or i in drop:
+                    continue
+                iou = self._compute_iou(detections[aruco_idx], det)
+                if iou >= iou_threshold:
+                    drop.add(i)
+                    logger.debug(
+                        f"Suppressed phantom dog box {i} IOU={iou:.2f} "
+                        f"overlap with ARUCO {marker_id} (box {aruco_idx})"
+                    )
+
+        if not drop:
+            return detections, poses, behaviors
+
+        keep = [i for i in range(len(detections)) if i not in drop]
+        new_dets = [detections[i] for i in keep]
+        new_poses = [poses[i] for i in keep] if poses and len(poses) == len(detections) else poses
+        new_behs = [behaviors[i] for i in keep] if behaviors and len(behaviors) == len(detections) else behaviors
+        return new_dets, new_poses, new_behs
 
     def _stage3_analyze_behavior(self, poses: List[PoseKeypoints], frame: np.ndarray = None) -> List[BehaviorResult]:
         """Stage 3: Temporal behavior analysis using TorchScript model with pose validation"""
