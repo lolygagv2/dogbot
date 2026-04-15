@@ -323,7 +323,7 @@ class XboxHybridControllerFixed:
         self.cycle_modes = ['manual', 'idle', 'coach', 'silent_guardian']
         self.current_mode_index = 0  # Start with manual
         self.last_mode_cycle_time = 0
-        self.mode_cycle_cooldown = 1.0  # 1 second cooldown to prevent rapid cycling
+        self.mode_cycle_cooldown = 0.15  # 150ms debounce - fast mode cycling allowed
 
         # Audio announcements for mode changes (in /VOICEMP3/wimz/)
         self.mode_audio = {
@@ -346,6 +346,11 @@ class XboxHybridControllerFixed:
         }
         self._last_trick_cycle_time = 0
         self._trick_cycle_cooldown = 1.0  # 1 second cooldown
+
+        # Shutdown combo: Hold A+B for 3 seconds
+        self._shutdown_combo_start = 0
+        self._shutdown_combo_thread = None
+        self._shutdown_in_progress = False
 
         # Dog identity cycling (D-pad up in coach mode) - for demo recording
         self._last_dog_cycle_time = 0
@@ -855,8 +860,22 @@ class XboxHybridControllerFixed:
             if ready:
                 event_data = self.device.read(8)
                 if event_data:
+                    # Device is working - clear disconnect state
+                    if getattr(self, '_device_disconnected', False):
+                        logger.info("Xbox controller reconnected")
+                        self._device_disconnected = False
                     timestamp, value, event_type, number = struct.unpack('IhBB', event_data)
                     return (timestamp, value, event_type, number)
+        except OSError as e:
+            # Errno 19 = No such device (controller disconnected)
+            if e.errno == 19:
+                if not getattr(self, '_device_disconnected', False):
+                    logger.warning("Xbox controller disconnected (will retry every 5s)")
+                    self._device_disconnected = True
+                # Slow poll when disconnected to avoid log spam
+                time.sleep(5.0)
+            else:
+                logger.error(f"Error reading event: {e}")
         except Exception as e:
             logger.error(f"Error reading event: {e}")
         return None
@@ -1269,6 +1288,84 @@ class XboxHybridControllerFixed:
         # Also send via API as backup
         self.api_request('POST', '/motor/stop', {"reason": "emergency"})
 
+    def _check_shutdown_combo(self):
+        """Check if A+B are both held and start/stop shutdown timer"""
+        both_held = self.state.a_button and self.state.b_button
+
+        if both_held and not self._shutdown_in_progress:
+            # Start tracking combo hold time
+            if self._shutdown_combo_start == 0:
+                self._shutdown_combo_start = time.time()
+                logger.info("Shutdown combo detected (A+B) - hold for 3 seconds to shutdown")
+                # Start background thread to monitor hold duration
+                if self._shutdown_combo_thread is None or not self._shutdown_combo_thread.is_alive():
+                    self._shutdown_combo_thread = Thread(target=self._shutdown_combo_monitor, daemon=True)
+                    self._shutdown_combo_thread.start()
+        else:
+            # Combo released - reset
+            if self._shutdown_combo_start > 0 and not self._shutdown_in_progress:
+                logger.debug("Shutdown combo released before 3 seconds")
+            self._shutdown_combo_start = 0
+
+    def _shutdown_combo_monitor(self):
+        """Background thread that monitors A+B hold duration"""
+        while self._shutdown_combo_start > 0 and not self._shutdown_in_progress:
+            elapsed = time.time() - self._shutdown_combo_start
+
+            if elapsed >= 3.0:
+                # Combo held for 3 seconds - trigger shutdown
+                self._trigger_shutdown()
+                return
+
+            # Check every 100ms
+            time.sleep(0.1)
+
+    def _trigger_shutdown(self):
+        """Gracefully shutdown the Raspberry Pi"""
+        if self._shutdown_in_progress:
+            return
+
+        self._shutdown_in_progress = True
+        logger.warning("=" * 50)
+        logger.warning("SHUTDOWN TRIGGERED - A+B held for 3 seconds")
+        logger.warning("=" * 50)
+
+        try:
+            # Stop motors first
+            self.emergency_stop()
+
+            # Play shutdown announcement (use lowpower as fallback if no shutdown audio)
+            logger.info("Playing shutdown announcement...")
+            import os
+            shutdown_audio = "/home/morgan/dogbot/VOICEMP3/wimz/shutting_down.mp3"
+            fallback_audio = "/home/morgan/dogbot/VOICEMP3/wimz/Wimz_lowpower.mp3"
+
+            if os.path.exists(shutdown_audio):
+                audio_file = "/wimz/shutting_down.mp3"
+            elif os.path.exists(fallback_audio):
+                audio_file = "/wimz/Wimz_lowpower.mp3"
+            else:
+                audio_file = None
+
+            if audio_file:
+                self.api_request_blocking('POST', '/audio/play/file',
+                    {"filepath": audio_file}, timeout=3)
+                time.sleep(2.0)  # Wait for audio
+            else:
+                logger.warning("No shutdown audio file found")
+                time.sleep(0.5)
+
+            # Trigger system shutdown
+            logger.warning("Executing sudo poweroff...")
+            import subprocess
+            subprocess.run(['sudo', 'poweroff'], check=False)
+
+        except Exception as e:
+            logger.error(f"Shutdown error: {e}")
+            # Try shutdown anyway
+            import subprocess
+            subprocess.run(['sudo', 'poweroff'], check=False)
+
     def process_button(self, number: int, pressed: bool):
         """Process button press with proper cooldowns"""
         if pressed:
@@ -1276,17 +1373,21 @@ class XboxHybridControllerFixed:
             # NOTE: notify_manual_input() removed here - buttons should NOT auto-switch to MANUAL
             # Joystick movement and triggers already call notify_manual_input() in process_axis()
 
-        if number == 0:  # A button - Emergency stop
+        if number == 0:  # A button - Emergency stop (also part of shutdown combo)
             self.state.a_button = pressed
             if pressed:
                 logger.info("A button: Emergency stop")
                 self.emergency_stop()
+            # Check shutdown combo (A+B held)
+            self._check_shutdown_combo()
 
-        elif number == 1:  # B button - Play "sit" command
+        elif number == 1:  # B button - Play "sit" command (also part of shutdown combo)
             self.state.b_button = pressed
             if pressed:
                 logger.info("B button: Playing 'sit' command")
                 self.api_request('POST', '/audio/play/file', {"filepath": "/talks/default/sit.mp3"})
+            # Check shutdown combo (A+B held)
+            self._check_shutdown_combo()
 
         elif number == 2:  # X button - Toggle LED
             self.state.x_button = pressed
@@ -1591,14 +1692,9 @@ class XboxHybridControllerFixed:
 
         logger.info(f"SELECT button: Cycling from {actual_mode} to {new_mode.upper()} mode")
 
-        # Call API to change mode (use blocking request to ensure it completes)
-        result = self.api_request_blocking('POST', '/mode/set', {"mode": new_mode}, timeout=2)
-        if result and result.get('success'):
-            logger.info(f"Mode changed to: {new_mode}")
-            # Audio announcement handled by main_treatbot._announce_mode() via mode_change event
-            # Do NOT play audio here — double-fire causes repeated/overlapping announcements
-        else:
-            logger.warning(f"Mode change may have failed: {result}")
+        # Call API to change mode (async - don't block controller on mode change)
+        # Audio announcement handled by main_treatbot._announce_mode() via mode_change event
+        self.api_request('POST', '/mode/set', {"mode": new_mode})
 
     def cycle_trick(self):
         """Cycle through tricks and set forced trick (coach mode only)"""

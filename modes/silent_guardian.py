@@ -975,7 +975,7 @@ class SilentGuardianMode:
                     # This prevents the mic from picking up the speaker output
                     try:
                         bark_svc = get_bark_detector_service()
-                        bark_svc.suppress_detection(7.0)  # Max 5s audio + 2s echo buffer
+                        bark_svc.suppress_detection(3.0)  # Short audio (~2s) + echo buffer
                     except Exception:
                         pass  # Don't let suppression failure block audio
 

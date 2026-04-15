@@ -1948,7 +1948,7 @@ class TreatBotMain:
                         from services.perception.bark_detector import get_bark_detector_service
                         bark_svc = get_bark_detector_service()
                         if bark_svc:
-                            bark_svc.suppress_detection(7.0)  # Audio + echo buffer
+                            bark_svc.suppress_detection(3.0)  # Mode audio (~2s) + echo buffer
                     except Exception:
                         pass
 

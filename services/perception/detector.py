@@ -747,12 +747,19 @@ class DetectorService:
 
                 # R3.1: Heartbeat every 5 seconds
                 if now - self._heartbeat_time >= 5.0:
-                    self.logger.info(
-                        f"[AI] Pipeline active | FPS: {self.current_fps:.1f} | "
-                        f"Detections last 5s: {self._heartbeat_detections} | "
-                        f"Last: {self._heartbeat_last_class or 'none'} @ "
-                        f"{self._heartbeat_last_confidence*100:.0f}%"
-                    )
+                    if lightweight_ai_mode:
+                        # SG mode: detection only, no behavior - don't show stale behavior label
+                        self.logger.info(
+                            f"[AI] Pipeline active (SG) | FPS: {self.current_fps:.1f} | "
+                            f"Dogs last 5s: {self._heartbeat_detections}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"[AI] Pipeline active | FPS: {self.current_fps:.1f} | "
+                            f"Detections last 5s: {self._heartbeat_detections} | "
+                            f"Last: {self._heartbeat_last_class or 'none'} @ "
+                            f"{self._heartbeat_last_confidence*100:.0f}%"
+                        )
                     self._heartbeat_detections = 0
                     self._heartbeat_time = now
 
