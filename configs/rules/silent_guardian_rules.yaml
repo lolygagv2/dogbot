@@ -21,13 +21,12 @@ dog_identification:
     audio_come: "dogs_come.mp3"
 
 # Bark detection thresholds
-# TUNED 2026-01-18: Raised thresholds to reduce false positives on non-bark sounds
-# TUNED 2026-03-22: +5% stricter dB threshold (-20 → -21)
+# TUNED 2026-04-15: Lowered thresholds - dogs weren't triggering enough, too strict
 bark_detection:
-  threshold: 3                    # Barks to trigger intervention (raised to reduce false triggers)
-  window_seconds: 60              # Time window for counting barks (longer window more forgiving)
-  confidence_minimum: 0.45        # Raised - only confident bark detections (was 0.10)
-  loudness_threshold_db: -21      # 5% stricter than -20 (was -35 → -20 → -21)
+  threshold: 2                    # Barks to trigger intervention (lowered from 3)
+  window_seconds: 60              # Time window for counting barks
+  confidence_minimum: 0.35        # Lowered from 0.45 for more sensitivity
+  loudness_threshold_db: -28      # Much more sensitive (was -21, dogs had to be VERY loud)
   device: plughw:0,0              # Force USB hardware directly — PipeWire's 'default' source
                                   # is flaky on this Pi image (Dummy-sink fallback produces
                                   # all-zero samples). Bark detection doesn't need AEC anyway
