@@ -1,10 +1,10 @@
 # WIM-Z Development TODO List
-*Last Updated: February 2, 2026*
+*Last Updated: April 17, 2026*
 
-## Current Status: Build 40 Complete - Awaiting Testing
+## Current Status: Build 83 Complete
 
 **Build Phase:** COMPLETE - All core systems operational
-**Current Focus:** Validating Build 40 fixes (mission fields, AI display, tracking, coach events)
+**Current Focus:** Production validation and manufacturing prep
 
 ---
 
@@ -18,10 +18,10 @@
 - [x] Coach progress/reward events added
 - [x] GET /missions endpoint added
 
-### ❓ UNKNOWN - Needs Live Testing
+### ✅ Live Testing Complete
 - [x] Mission progress events reaching relay with correct field names
-- [ ] Video overlay showing "sit 34%" confidence labels
-- [ ] Servo tracking checkbox working in app
+- [x] Video overlay showing "sit 34%" confidence labels
+- [x] Servo tracking checkbox working in app
 - [x] MP3 upload flow working end-to-end (app → relay → robot)
 - [x] Coach mode events visible in app
 
@@ -43,10 +43,10 @@
 - [x] Is app displaying mission progress?
 - [x] Are WebRTC video streams stable?
 
-### ❓ Hardware Status
-- [ ] Servo calibration still accurate?
-- [x] Treat dispenser working reliably?
-- [x] Audio playback consistent?
+### ✅ Hardware Status
+- [x] Servo calibration accurate (needs tweaking per unit)
+- [x] Treat dispenser working reliably
+- [x] Audio playback consistent
 
 ---
 
@@ -98,15 +98,15 @@
 ## PRIORITY 3: Needs Rework/Testing
 
 ### Weekly Summary System (`core/weekly_summary.py`)
-**Status:** Implemented, untested with live data
-- [ ] ❓ Has this been tested?
+**Status:** Tested, not 100% accurate
+- [x] Tested with live data (not fully accurate)
 - [ ] Verify `generate_weekly_report()` returns accurate data
 - [ ] Test API endpoints: `GET /reports/weekly`, `GET /reports/trends`
 
 ### Mission Scheduler (`core/mission_scheduler.py`)
-**Status:** Implemented, type logic added in Build 35
-- [x] ❓ Has auto-scheduling been tested?
-- [x] Test time window enforcement
+**Status:** Implemented, type logic added in Build 35, NOT TESTED
+- [ ] Auto-scheduling not yet tested
+- [ ] Test time window enforcement
 - [ ] Verify missions auto-start correctly
 
 ---
@@ -116,7 +116,7 @@
 ### Analytics System
 - [ ] Daily summary endpoint
 - [ ] Bark frequency trends
-- [ ] Treat usage stats
+- [x] Treat usage stats (treat inventory tracking implemented)
 - [ ] Bone score rating (1-5)
 
 ### Session Management
@@ -213,8 +213,11 @@ curl -X POST http://localhost:8000/mode/set -H "Content-Type: application/json" 
 ## Dropped Features
 
 - **IR Navigation/Docking** - Hardware caused Pi startup failures
-- **WebSocket Server** - REST API sufficient
+
+## ✅ Previously "Dropped" - Now Implemented
+
+- **Direct LAN Connection** - Phone connects directly to robot WiFi (WIMZ-*) without relay
 
 ---
 
-*Updated: February 2, 2026 - Build 40 session start*
+*Updated: April 17, 2026 - Build 83*

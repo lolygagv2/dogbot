@@ -1,5 +1,5 @@
 # WIM-Z (Watchful Intelligent Mobile Zen) Product Roadmap
-*Last Updated: February 2, 2026*
+*Last Updated: April 17, 2026*
 
 ## Mission Statement
 Build the world's first autonomous AI-powered pet training robot - the WIM-Z (Watchful Intelligent Mobile Zen) - that combines mobility, edge AI inference, and behavioral learning to create a premium pet care experience.
@@ -72,27 +72,27 @@ All core hardware and software systems are operational. Build 40 implemented cri
 
 ---
 
-## ❓ Unknown Status (Need User Input)
+## ✅ Verified Working (April 2026)
 
 ### App/Relay Integration
-- [x] ❓ Is relay forwarding mission_progress events correctly?
-- [x] ❓ Is app displaying video overlay with AI confidence?
-- [ ] ❓ Is servo tracking checkbox working in app?
-- [x] ❓ Is MP3 upload/download flow working?
+- [x] Relay forwarding mission_progress events (not all missions tested yet)
+- [x] App displaying video overlay with AI confidence
+- [x] Servo tracking checkbox working in app
+- [x] MP3 upload/download flow working
 
 ### Coach Mode Live Testing
-- [x] ❓ Bark filter rejecting claps/voice?
-- [x] ❓ Pose thresholds accurate (sitting ≠ down)?
-- [x] ❓ Full coaching session working end-to-end?
+- [x] Bark filter rejecting claps/voice (mostly)
+- [x] Pose thresholds accurate (sitting ≠ down)
+- [x] Full coaching session working end-to-end
 
 ### Silent Guardian Live Testing
-- [x] ❓ Bark → intervention → reward flow working?
-- [x] ❓ Escalation and cooldown working?
+- [x] Bark → intervention → reward flow working
+- [x] Escalation and cooldown working
 
 ### Hardware Status
-- [ ] ❓ Servo calibration still accurate?
-- [x] ❓ Treat dispenser reliable?
-- [x] ❓ Audio playback consistent?
+- [x] Servo calibration accurate (needs tweaking per unit during manufacturing)
+- [x] Treat dispenser reliable
+- [x] Audio playback consistent
 
 ---
 
@@ -127,12 +127,12 @@ All core hardware and software systems are operational. Build 40 implemented cri
 ## 🔄 Needs Testing/Rework
 
 ### Weekly Summary (`core/weekly_summary.py`)
-- [ ] ❓ Has this ever been tested with real data?
-- [ ] Mission stats added in Build 38
+- [x] Tested with real data (not 100% accurate)
+- [x] Mission stats added in Build 38 (works mostly)
 
 ### Mission Scheduler (`core/mission_scheduler.py`)
-- [x] ❓ Has auto-scheduling been tested?
-- [x] Type logic (once/daily/weekly) added in Build 35
+- [ ] Auto-scheduling not yet tested
+- [ ] Type logic (once/daily/weekly) not yet tested
 
 ---
 
@@ -153,6 +153,8 @@ All core hardware and software systems are operational. Build 40 implemented cri
 | Select | Cycle modes |
 | Guide | Cycle tricks (Coach mode only) |
 | D-pad | Audio control (Left/Right: cycle, Down: play, Up: stop) |
+| Right Stick Push | Center camera |
+| Left Stick Push | Anti-jam action for treat dispenser |
 
 ---
 
@@ -186,15 +188,18 @@ All core hardware and software systems are operational. Build 40 implemented cri
 ### IR Navigation/Docking
 **Status:** DROPPED - Hardware caused Pi startup failures
 
-### Direct LAN WebSocket Server
-**Status:** Deferred - Not needed since all clients connect via relay
+### Direct LAN Connection
+**Status:** IMPLEMENTED (April 2026)
 
-**Note:** WebSocket IS used in production:
-- Robot ↔ AWS Lightsail Relay (WebSocket connection)
-- App ↔ AWS Lightsail Relay (WebSocket connection)
-- WebRTC signaling via TURN server through CloudFlare
+Phone can connect directly to robot WiFi hotspot (WIMZ-*) without internet:
+- Local API on `192.168.4.1:8000`
+- WebSocket at `/ws`
+- WebRTC at `/ws/webrtc/{session_id}`
 
-What was deferred: A direct WebSocket server on the robot for local LAN clients (bypassing relay)
+**Production connections:**
+- Robot ↔ AWS Lightsail Relay (WebSocket) — for remote access
+- App ↔ AWS Lightsail Relay (WebSocket) — for remote access
+- App ↔ Robot direct (local WiFi) — no internet required
 
 ---
 

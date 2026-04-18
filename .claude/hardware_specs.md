@@ -2,33 +2,26 @@
 
 ## 🔧 SERVO SYSTEM - 3 Servos Total
 
-### ⚠️ CRITICAL: Treat Carousel (Continuous Rotation)
-**Servo:** Hacked MG996R (originally 180° position servo)
-**Modification:** Converted to continuous rotation servo
-**Channel:** 2 (PCA9685)
+### ⚠️ CRITICAL: Treat Carousel (NEMA 17 Stepper)
+**Motor:** NEMA 17 Stepper Motor with TMC2209 driver
+**Features:** Anti-jam detection and recovery
 **Function:** **TREAT DISPENSING** - rotates to dispense treats
-**Control Method:** `kit.continuous_servo[2].throttle` (NOT `kit.servo[2].angle`)
+**Control Method:** Step/direction via TMC2209 UART
 
 **Treat Dispensing Specifications:**
-- **Treat Positions:** 8 compartments around carousel
-- **Rotation per treat:** 45° (360° ÷ 8 positions)
-- **Dispensing method:** Brief rotation to advance to next treat slot
-- **Duration:** 0.05 seconds per treat (50ms) - CALIBRATED
-- **Pulse Width:** 1700μs (slow forward rotation) - CALIBRATED
-- **Control:** `winch.duty_cycle = pulse_to_duty(1700)` for controlled dispensing
+- **Treat Positions:** 11 compartments around 4 carousels = 44 treat slots
+- **Rotation per treat:** 32.7° (360° ÷ 11 positions)
+- **Dispensing method:** Precise stepper rotation to advance to next treat slot
+- **Anti-jam:** Left stick push on Xbox controller triggers anti-jam sequence
+- **Control:** TMC2209 UART via GPIO (see pin mapping)
 
-**Safe Control:**
-```python
-# ✅ CORRECT - Treat Dispensing (CALIBRATED VALUES)
-def dispense_one_treat():
-    winch.duty_cycle = pulse_to_duty(1700)  # 1700μs pulse
-    time.sleep(0.05)                        # 50ms duration
-    controller.stop_carousel(gradual=True)  # Safe stop with ramp-down
+**Control via TMC2209:**
+- **STEP Pin:** GPIO12
+- **DIR Pin:** GPIO16  
+- **EN Pin:** GPIO24
+- **UART:** GPIO14 (TX) / GPIO15 (RX) with 1k resistor
 
-# ❌ NEVER DO THIS
-controller.set_servo_angle('carousel', angle)  # Will spin continuously!
-kit.continuous_servo[2].throttle = 0.0  # Abrupt stop causes screech
-```
+See `docs/TMC2209_UART_SETUP.md` for full configuration.
 
 ### 📹 Camera Pan Servo (MG996R)
 **Servo:** MG996R high-torque servo (extended range)
@@ -76,7 +69,7 @@ kit.continuous_servo[2].throttle = 0.0  # Abrupt stop causes screech
 ## 🧠 Core Computing
 
 ### Raspberry Pi 5
-- **Model:** 8GB RAM variant
+- **Model:** 8GB RAM variant (4GB also supported)
 - **OS:** Raspberry Pi OS (64-bit)
 - **Power:** 5V @ 5A via buck converter
 - **Cooling:** Active heatsink + fan
@@ -84,47 +77,56 @@ kit.continuous_servo[2].throttle = 0.0  # Abrupt stop causes screech
 ### GPIO Pin Mapping (Current Build)
 ```
 Pin # | Assignment
-------|--------------------------------------------------
+------|-------------------------------------------------
   1   | 3.3V → PCA9685 LOGIC V+
   2   | 5V (unused here, available for 5V power rail)
   3   | SDA1 → PCA9685 SDA
   4   | 5V → 5V supply
   5   | SCL1 → PCA9685 SCL
-  6   | GND → Pi to GND HUB Direct (black wire)
-  7   | GPIO4 → Encoder A1 (Motor 1)
-  8   | GPIO14 (TXD) → AVAILABLE
-  9   | GND
- 10   | GPIO15 (RXD) → AVAILABLE
+  6   | GND → PCA9685 GND
+  7   | GPIO4 → Encoder A1 (Motor 1 GREEN WIRE LEFT)
+  8   | GPIO14 (TXD) → TMC2209 UART (1k resistor wire)
+  9   | GND → battery analyzer (black wire)
+ 10   | GPIO15 (RXD) → TMC2209 UART (split from TMC2209 Pin 4)
  11   | GPIO17 → PWM IN1
  12   | GPIO18 → PWM IN2
- 13   | GPIO27 → PWM IN3
- 14   | GND → PCA9685 GND
+ 13   | GPIO27 → PWM IN3 
+ 14   | GND 
  15   | GPIO22 → PWM IN4
- 16   | GPIO23 → ENCODER B1 (Motor 1 left - right side of L298N)
- 17   | 3.3V → encoder VCC rail (encoders )
- 18   | GPIO24
+ 16   | GPIO23 → ENCODER B1 (Motor 1 YELLOW WIRE LEFT)
+ 17   | 3.3V → sensor/encoder VCC rail
+ 18   | GPIO24 → TMC2209 EN (enable)
  19   | GPIO10 (MOSI) → NeoPixel signal (black wire base)
  20   | GND
  21   | GPIO9 (MISO)
- 22   | GPIO25 → Blue LED (GREEN Wire, MOSFET controlled)
- 23   | GPIO11 (SCLK)
+ 22   | GPIO25 → Blue LED (MOSFET controlled)
+ 23   | GPIO11 (SCLK) 
  24   | GPIO8 (CE0)
  25   | GND
  26   | GPIO7 (CE1)
  27   | ID_SD (reserved)
  28   | ID_SC (reserved)
- 29   | GPIO5 → ENCODER A2 (Motor 2)
+ 29   | GPIO5 → ENCODER A2 (Motor 2 GREEN WIRE RIGHT)
  30   | GND
- 31   | GPIO6 → ENCODER B2 (Motor 2)
- 32   | GPIO12 → AVAILABLE
+ 31   | GPIO6 → ENCODER B2 (Motor 2 YELLOW WIRE RIGHT)
+ 32   | GPIO12 → TMC2209 STEP pin
  33   | GPIO13 → PWM ENA
- 34   | GND
+ 34   | GND  
  35   | GPIO19 → PWM ENB
- 36   | GPIO16 → AVAILABLE (Audio relay removed)
- 37   | GPIO26 → Left IR OUT (disabled)
- 38   | GPIO20 → Center IR OUT (disabled)
+ 36   | GPIO16 → TMC2209 DIR pin
+ 37   | GPIO26 
+ 38   | GPIO20
  39   | GND
- 40   | GPIO21 → Right IR OUT (disabled)
+ 40   | GPIO21
+
+Motor Mapping:
+- LEFT MOTOR = MOTOR A (OUTPUT 1/2)
+- RIGHT MOTOR = MOTOR B (OUTPUT 3/4)
+
+Key Notes:
+- SDA/SCL (Pins 3 & 5) used by PCA9685
+- Pin 19 (GPIO10) → NeoPixel: 330Ω resistor near Pi, 1000µF cap at strip input
+- All GND pins tied to central GND rail
 ```
 
 ### Hailo-8 AI Accelerator HAT
@@ -137,14 +139,19 @@ Pin # | Assignment
 
 ## 📷 Vision System
 
-### IMX500 AI Camera
+### Camera Options
+**Option A: Sony IMX500 AI Camera**
 - **Sensor:** Sony IMX500 (12.3MP)
 - **Resolution:** 4056 x 3040 pixels
+- **Features:** On-sensor AI processing, built-in ISP, HDR
+
+**Option B: Raspberry Pi Camera Module 3 Wide**
+- **Sensor:** Sony IMX708 (11.9MP)
+- **Resolution:** 4608 x 2592 pixels
+- **Features:** Wide angle lens, autofocus, HDR
+
+**Common:**
 - **Interface:** CSI-2 (4-lane)
-- **Features:** 
-  - On-sensor AI processing
-  - Built-in ISP
-  - HDR support
 
 ### Camera Mount System
 - **Type:** 2-axis pan/tilt gimbal
@@ -188,11 +195,7 @@ Pin # | Assignment
 - `scooby_intro.mp3` - Fun character sounds
 
 **Background Audio (`/VOICEMP3/songs/`):**
-- `mozart_piano.mp3`, `mozart_concerto.mp3` - Classical music
-- `who_let_dogs_out.mp3`, `scooby_snacks.mp3` - Dog-themed songs
-- `*_scan.mp3` files - System/robot status sounds
-- `milkshake.mp3`, `cake_by_ocean.mp3` - Celebration music
-- `trancewimz.mp3`, `Wimz_theme.mp3` - Wimz Theme Songs
+- Various music and system sounds (many files)
 
 #### Removed Components
 - ❌ **DFPlayer Pro MP3 Module** - Replaced by USB solution
@@ -236,17 +239,17 @@ Pin # | Assignment
 ## 🍪 Treat Dispensing System
 
 ### Carousel Mechanism
-- **Design:** 3D-printed rotating disc
+- **Design:** 3D-printed rotating disc (4 stacked carousels)
 - **Diameter:** 110mm
-- **Treat Capacity:** 6-8 treats per load
-- **Rotation:** Servo-controlled (MG996R)
+- **Treat Capacity:** 44 treats (11 compartments × 4 carousels)
+- **Rotation:** NEMA 17 stepper with TMC2209 driver
 - **Dispensing:** Gravity-fed through slot
 
-### Servo Motor (Treat Dispenser)
-- **Model:** MG996R or similar (high-torque)
-- **Torque:** 10+ kg·cm
-- **Control:** PCA9685 PWM driver
-- **Rotation:** 45° per treat dispense
+### Stepper Motor (Treat Dispenser)
+- **Model:** NEMA 17 stepper motor
+- **Driver:** TMC2209 (UART mode)
+- **Features:** Anti-jam detection and recovery
+- **Rotation:** 32.7° per treat dispense (360° ÷ 11)
 
 ---
 
@@ -398,14 +401,14 @@ Pin # | Assignment
 ## 🔧 Peripheral Modules
 
 ### PCA9685 PWM Driver
-- **Channels:** 16 (using 3 for servos)
+- **Channels:** 16 (using 2 for servos)
 - **Interface:** I2C
 - **Address:** 0x40 (default)
 - **Frequency:** 50Hz (servo standard)
-- **Control:** 
-  - Channel 0: Treat dispenser servo
-  - Channel 1: Camera pan servo
-  - Channel 2: Camera tilt servo
+- **Channel Mapping:**
+  - Channel 0: Camera pan servo
+  - Channel 1: Camera tilt servo
+  - Channel 2+: Not in use (treat dispenser now uses TMC2209 stepper)
 
 ---
 
@@ -500,6 +503,6 @@ Pin # | Assignment
 
 ---
 
-**Last Hardware Update:** Audio system revised - Ugreen USB adapter with conference microphone
-**Software Status:** Build 41 complete (Feb 3, 2026) - Mission events, AI display, coach events, servo tracking all implemented
-**Next Phase:** Live testing 
+**Last Hardware Update:** April 17, 2026 - Stepper motor, GPIO mapping, camera options
+**Software Status:** Build 83 complete (April 2026) - All core systems validated
+**Next Phase:** Manufacturing prep and per-unit calibration
