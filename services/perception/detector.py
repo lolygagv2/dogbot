@@ -101,6 +101,12 @@ class DetectorService:
         self._aruco_consecutive = {}  # {marker_id: consecutive_frame_count} for validation
         self._aruco_min_frames = 3  # Require 3 consecutive frames before accepting
 
+        # Dog identity persistence: once ARUCO identifies dog_0 as "elsa", keep that
+        # mapping even when ARUCO isn't visible (intermittent detection)
+        self._dog_identity_cache: Dict[int, str] = {}  # dog_index -> aruco_name
+        self._dog_last_seen: Dict[int, float] = {}  # dog_index -> last_seen_time
+        self._identity_persist_timeout = 5.0  # Keep identity for 5s after dog leaves frame
+
         # Load dog marker mappings from profiles/config
         _load_dog_markers()
         self.logger.info(f"[ARUCO] Dog markers loaded: {DOG_MARKERS}")
@@ -789,7 +795,8 @@ class DetectorService:
                 if dogs:
                     self._process_detections(dogs, poses, behaviors, dog_assignments, dog_id_methods)
                 else:
-                    # No dogs detected
+                    # No dogs detected - clear stale identities
+                    self._clear_stale_identities(time.time(), set())
                     self.state.update_detection(
                         dogs_detected=0,
                         active_dog_id=None,
@@ -824,28 +831,42 @@ class DetectorService:
         if dog_id_methods is None:
             dog_id_methods = {}
 
-        # Update state
+        # Rate limit detection events to prevent log spam
+        current_time = time.time()
+
+        # Update state with primary dog info
         num_dogs = len(dogs)
-        # Get primary dog name and id method (first detection)
-        primary_dog_name = dog_assignments.get(0, "")
-        primary_id_method = dog_id_methods.get(0, "")
+        # Get primary dog name - use cached identity if available
+        aruco_name_this_frame = dog_assignments.get(0, "")
+        if aruco_name_this_frame:
+            # ARUCO detected this frame - will be cached in _get_stable_dog_identity
+            primary_dog_name = aruco_name_this_frame
+            primary_id_method = dog_id_methods.get(0, "aruco")
+        elif 0 in self._dog_identity_cache:
+            # Use cached identity
+            primary_dog_name = self._dog_identity_cache[0]
+            primary_id_method = "aruco_cached"
+        else:
+            primary_dog_name = ""
+            primary_id_method = "unknown"
+
         display_name = primary_dog_name.capitalize() if primary_dog_name else "Dog"
         self.state.update_detection(
             dogs_detected=num_dogs,
-            last_detection_time=time.time(),
+            last_detection_time=current_time,
             dog_name=display_name,
-            id_method=primary_id_method if primary_dog_name else "unknown"
+            id_method=primary_id_method
         )
-
-        # Rate limit detection events to prevent log spam
-        current_time = time.time()
         should_publish_event = (current_time - self._last_detection_event_time) >= self._detection_event_interval
+
+        # Track which dog indices are active this frame for stale identity cleanup
+        active_indices = set(range(len(dogs)))
 
         # Process each dog (Detection dataclass)
         for i, dog in enumerate(dogs):
-            # Use ArUco-identified name if available, otherwise generic ID
-            dog_name = dog_assignments.get(i)
-            dog_id = dog_name if dog_name else f"dog_{i}"
+            # Get stable identity: dog_id is always "dog_0", dog_name is cached ARUCO name
+            aruco_name_this_frame = dog_assignments.get(i)
+            dog_id, dog_name = self._get_stable_dog_identity(i, aruco_name_this_frame, current_time)
 
             bbox = [dog.x1, dog.y1, dog.x2, dog.y2]
             center = dog.center
@@ -854,7 +875,7 @@ class DetectorService:
             if should_publish_event:
                 publish_vision_event('dog_detected', {
                     'dog_id': dog_id,
-                    'dog_name': dog_name,  # Will be None if not identified
+                    'dog_name': dog_name,  # Cached ARUCO name or None
                     'confidence': dog.confidence,
                     'bbox': bbox,
                     'center': list(center),
@@ -872,6 +893,9 @@ class DetectorService:
             # Update dog seen in store (always update, just don't spam logs)
             self.store.update_dog_seen(dog_id)
 
+        # Clear identities for dogs that have left the frame
+        self._clear_stale_identities(current_time, active_indices)
+
         # Update last event time if we published
         if should_publish_event and num_dogs > 0:
             self._last_detection_event_time = current_time
@@ -879,9 +903,9 @@ class DetectorService:
         # Process poses if available (PoseKeypoints dataclass) - rate limited
         if poses and should_publish_event:
             for i, pose in enumerate(poses):
-                # Use ArUco-identified name if available
-                dog_name = dog_assignments.get(i)
-                dog_id = dog_name if dog_name else f"dog_{i}"
+                # Use stable identity (already cached from dog detection loop above)
+                dog_id = f"dog_{i}"
+                dog_name = self._dog_identity_cache.get(i)
                 keypoints = pose.keypoints.tolist() if hasattr(pose.keypoints, 'tolist') else list(pose.keypoints)
 
                 publish_vision_event('pose_detected', {
@@ -896,15 +920,21 @@ class DetectorService:
         # Process behaviors if available (BehaviorResult dataclass)
         if behaviors:
             for i, behavior in enumerate(behaviors):
-                # Use ArUco-identified name if available
-                dog_name = dog_assignments.get(i)
-                dog_id = dog_name if dog_name else f"dog_{i}"
+                # Use stable identity (already cached from dog detection loop above)
+                dog_id = f"dog_{i}"
+                dog_name = self._dog_identity_cache.get(i)
                 behavior_name = behavior.behavior
                 confidence = behavior.confidence
 
                 # Update state with primary dog's behavior
                 if i == 0:
-                    id_method = dog_id_methods.get(i, "")
+                    # Use proper id_method based on whether identity is from current frame or cache
+                    if dog_id_methods.get(i):
+                        id_method = dog_id_methods[i]
+                    elif dog_name:
+                        id_method = "aruco_cached"
+                    else:
+                        id_method = "unknown"
                     self.state.update_detection(
                         active_dog_id=dog_id,
                         dog_name=dog_name.capitalize() if dog_name else "",
@@ -938,6 +968,63 @@ class DetectorService:
                     'behavior': behavior_name,
                     'confidence': confidence
                 })
+
+    def _get_stable_dog_identity(self, dog_index: int, aruco_name: Optional[str], current_time: float) -> Tuple[str, Optional[str]]:
+        """Get stable dog identity with persistence across intermittent ARUCO detection.
+
+        Args:
+            dog_index: The spatial detection index (0, 1, 2, ...)
+            aruco_name: Current frame's ARUCO-identified name (or None)
+            current_time: Current timestamp
+
+        Returns:
+            Tuple of (dog_id, dog_name) where:
+            - dog_id is always stable (dog_0, dog_1, etc.)
+            - dog_name is the ARUCO name if known (current or cached), else None
+        """
+        dog_id = f"dog_{dog_index}"
+
+        # Update last seen time for this dog index
+        self._dog_last_seen[dog_index] = current_time
+
+        # If ARUCO identifies the dog this frame, cache it
+        # Filter out generic names like 'dog_0', 'dog_1' - those are NOT real ARUCO identifications
+        is_real_aruco_name = (aruco_name and
+                              aruco_name not in ['unknown', ''] and
+                              not aruco_name.startswith('dog_'))
+        if is_real_aruco_name:
+            if dog_index not in self._dog_identity_cache or self._dog_identity_cache[dog_index] != aruco_name:
+                self.logger.info(f"[IDENTITY] dog_{dog_index} identified as '{aruco_name}' - caching")
+            self._dog_identity_cache[dog_index] = aruco_name
+            return (dog_id, aruco_name)
+
+        # No ARUCO this frame - check cache
+        if dog_index in self._dog_identity_cache:
+            cached_name = self._dog_identity_cache[dog_index]
+            return (dog_id, cached_name)
+
+        # No identification available
+        return (dog_id, None)
+
+    def _clear_stale_identities(self, current_time: float, active_indices: set):
+        """Clear identity cache for dogs that have left the frame.
+
+        Args:
+            current_time: Current timestamp
+            active_indices: Set of dog indices seen this frame
+        """
+        stale_indices = []
+        for dog_index, last_seen in list(self._dog_last_seen.items()):
+            # If dog wasn't seen this frame and timeout exceeded, clear it
+            if dog_index not in active_indices:
+                if current_time - last_seen > self._identity_persist_timeout:
+                    stale_indices.append(dog_index)
+
+        for idx in stale_indices:
+            if idx in self._dog_identity_cache:
+                name = self._dog_identity_cache.pop(idx)
+                self.logger.info(f"[IDENTITY] Cleared cached identity for dog_{idx} (was '{name}')")
+            self._dog_last_seen.pop(idx, None)
 
     def _get_bbox_center(self, bbox: List[float]) -> List[float]:
         """Get center point of bounding box"""

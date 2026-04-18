@@ -129,6 +129,9 @@ class TreatBotMain:
         self._startup_time = time.time()
         self._startup_grace_period = 5.0  # seconds - ignore commands during this window
 
+        # Mode change generation counter - prevents overlapping mode change handlers
+        self._mode_change_gen = 0
+
         # Performance tracking
         self.start_time = time.time()
         self.loop_count = 0
@@ -1744,6 +1747,11 @@ class TreatBotMain:
             new_mode = data.get('new_mode')  # String value
             reason = data.get('reason', 'unknown')  # Reason for mode change
 
+            # Skip if mode isn't actually changing (e.g. mode handler re-asserting its mode)
+            if previous_mode == new_mode:
+                self.logger.debug(f"Mode unchanged ({new_mode}), skipping handler")
+                return
+
             # Log with reason and traceback for debugging
             import traceback
             caller_info = "".join(traceback.format_stack()[-5:-1]).strip().replace('\n', ' | ')
@@ -1771,9 +1779,6 @@ class TreatBotMain:
                     'timestamp': time.time()
                 })
                 self.logger.debug(f"Mode changed event sent: {contract_prev} -> {contract_new} (locked={locked})")
-
-            # NOTE: Mode announcement moved to END of handler to avoid ALSA race
-            # condition with audio_track.pause_capture() (both touch same USB device)
 
             # Stop Silent Guardian if leaving that mode
             if previous_mode == 'silent_guardian':
@@ -1851,9 +1856,8 @@ class TreatBotMain:
                     else:
                         self.logger.warning("Bark detection failed to start - speak trick may not work")
 
-            # Play voice announcement LAST — after audio track capture is released.
-            # Must come after bark detection management to avoid ALSA mutex deadlock
-            # (audio_track.pause_capture closes sounddevice while pygame opens same device).
+            # Announce mode after all setup is done
+            # Classifier loading is now non-blocking so this should be fast
             self._announce_mode(new_mode)
 
         except Exception as e:

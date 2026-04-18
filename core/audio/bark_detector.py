@@ -98,26 +98,43 @@ class BarkDetector:
         logger.info(f"BarkDetector initialized (emotion={enable_emotion}, spectral_threshold={spectral_threshold})")
 
     def start(self):
-        """Start the detector"""
+        """Start the detector (non-blocking)"""
         self.is_running = True
-        # Pre-load classifier at startup (not on first bark) to avoid
-        # blocking the detection loop for ~10s while tensorflow initializes
+
+        # Load classifier in background thread to avoid blocking mode changes
+        # TensorFlow initialization takes 10-20 seconds
         if self.enable_emotion and not self._classifier_loaded:
-            logger.info("Pre-loading emotion classifier...")
-            self._load_classifier()
-
-        # Start background emotion classification thread
-        if self.enable_emotion and self._classifier:
-            self._emotion_stop.clear()
-            self._emotion_thread = threading.Thread(
-                target=self._emotion_worker,
+            logger.info("Starting emotion classifier load in background...")
+            loader_thread = threading.Thread(
+                target=self._load_classifier_and_start_worker,
                 daemon=True,
-                name="EmotionClassifier"
+                name="ClassifierLoader"
             )
-            self._emotion_thread.start()
-            logger.info("Emotion classifier background thread started")
+            loader_thread.start()
+        elif self.enable_emotion and self._classifier:
+            # Classifier already loaded, just start the worker
+            self._start_emotion_worker()
 
-        logger.info(f"BarkDetector started (emotion={self.enable_emotion}, classifier={'loaded' if self._classifier else 'FAILED'})")
+        logger.info(f"BarkDetector started (emotion={self.enable_emotion}, classifier={'loading' if not self._classifier_loaded else ('loaded' if self._classifier else 'FAILED')})")
+
+    def _load_classifier_and_start_worker(self):
+        """Background thread to load classifier then start emotion worker"""
+        self._load_classifier()
+        if self._classifier and self.is_running:
+            self._start_emotion_worker()
+
+    def _start_emotion_worker(self):
+        """Start the emotion classification worker thread"""
+        if self._emotion_thread and self._emotion_thread.is_alive():
+            return  # Already running
+        self._emotion_stop.clear()
+        self._emotion_thread = threading.Thread(
+            target=self._emotion_worker,
+            daemon=True,
+            name="EmotionClassifier"
+        )
+        self._emotion_thread.start()
+        logger.info("Emotion classifier background thread started")
 
     def stop(self):
         """Stop the detector"""
