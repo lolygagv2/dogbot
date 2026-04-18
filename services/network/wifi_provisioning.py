@@ -60,7 +60,7 @@ class WiFiProvisioningService:
     def __init__(self):
         self.wifi_manager = WiFiManager()
         self.captive_portal: Optional[CaptivePortal] = None
-        self.led_controller = None
+        self._led_service = None
         self._running = False
         self._credentials_saved = False
         self._ios_server: Optional[HTTPServer] = None
@@ -82,65 +82,63 @@ class WiFiProvisioningService:
             self.captive_portal.stop()
 
     def _init_led_controller(self):
-        """Initialize LED controller for status indication"""
+        """Initialize LED service (uses singleton to prevent conflicts with main system)"""
         try:
-            from core.hardware.led_controller import LEDController, LEDMode
-            from config.settings import Colors
-            self.led_controller = LEDController()
-            self.LEDMode = LEDMode
-            self.Colors = Colors
-            logger.info("LED controller initialized")
+            # Use singleton LedService instead of creating separate LEDController
+            # This prevents SPI bus conflicts when both wifi_provisioning and treatbot run
+            from services.media.led import get_led_service
+            self._led_service = get_led_service()
+            if not self._led_service.led_initialized:
+                self._led_service.initialize()
+            logger.info("LED service initialized (singleton - no conflicts)")
             return True
         except Exception as e:
-            logger.warning(f"Could not initialize LED controller: {e}")
-            self.led_controller = None
+            logger.warning(f"Could not initialize LED service: {e}")
+            self._led_service = None
             return False
 
     def _set_led_searching(self):
         """Set LED pattern for searching/connecting"""
-        if self.led_controller:
+        if self._led_service:
             try:
-                self.led_controller.set_mode(self.LEDMode.SEARCHING)
+                self._led_service.set_pattern('searching')
             except Exception as e:
                 logger.warning(f"LED error: {e}")
 
     def _set_led_ap_mode(self):
         """Set LED pattern for AP mode (pulsing blue)"""
-        if self.led_controller:
+        if self._led_service:
             try:
-                self.led_controller.start_animation(
-                    self.led_controller.pulse_color,
-                    self.Colors.BLUE,
-                    20,
-                    0.05
-                )
+                self._led_service.set_pattern('pulse_blue')
             except Exception as e:
                 logger.warning(f"LED error: {e}")
 
     def _set_led_connected(self):
         """Set LED pattern for connected (solid green)"""
-        if self.led_controller:
+        if self._led_service:
             try:
-                self.led_controller.stop_animation()
-                self.led_controller.set_solid_color(self.Colors.GREEN)
+                self._led_service.set_pattern('solid_green')
             except Exception as e:
                 logger.warning(f"LED error: {e}")
 
     def _set_led_error(self):
         """Set LED pattern for error"""
-        if self.led_controller:
+        if self._led_service:
             try:
-                self.led_controller.set_mode(self.LEDMode.ERROR)
+                self._led_service.set_pattern('error')
             except Exception as e:
                 logger.warning(f"LED error: {e}")
 
     def _cleanup_led(self):
-        """Cleanup LED controller"""
-        if self.led_controller:
+        """Release LED to idle (singleton persists for main system)"""
+        # Don't cleanup the singleton - just set to idle so main system can take over
+        if self._led_service:
             try:
-                self.led_controller.cleanup()
+                self._led_service.set_pattern('idle')
+                logger.info("LED set to idle (singleton persists)")
             except Exception as e:
-                logger.warning(f"LED cleanup error: {e}")
+                logger.warning(f"LED release error: {e}")
+        self._led_service = None
 
     def _generate_hotspot_ssid(self) -> str:
         """Generate hotspot SSID using device serial"""
@@ -341,7 +339,7 @@ class WiFiProvisioningService:
 
         # Release LED controller so treatbot's LED service can claim GPIO25 + NeoPixels
         self._cleanup_led()
-        self.led_controller = None
+        self._led_service = None
 
         # Block here — keep the service alive so hostapd/dnsmasq/ios-server persist
         # The treatbot service runs independently and serves the API at :8000

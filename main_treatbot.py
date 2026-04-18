@@ -1842,9 +1842,14 @@ class TreatBotMain:
                     audio_track = get_audio_track()
                     if audio_track:
                         audio_track.pause_capture()
-                        time.sleep(0.5)  # Wait for ALSA device release
+                        time.sleep(0.8)  # Wait for ALSA device release (increased from 0.5s)
                     self.bark_detector.start()
-                    self.logger.info("Bark detection started (needed for current mode)")
+                    # Verify bark detector actually started
+                    time.sleep(0.2)
+                    if self.bark_detector.is_running:
+                        self.logger.info("Bark detection started (needed for current mode)")
+                    else:
+                        self.logger.warning("Bark detection failed to start - speak trick may not work")
 
             # Play voice announcement LAST — after audio track capture is released.
             # Must come after bark detection management to avoid ALSA mutex deadlock

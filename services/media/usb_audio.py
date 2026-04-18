@@ -137,6 +137,51 @@ class USBAudioService:
         self._playlist = playlist
         self.logger.info(f"Built playlist with {len(self._playlist)} tracks (default + {len(playlist) - len([p for p in playlist if p.startswith('default/')])} uploaded)")
 
+    def _check_audio_health(self) -> bool:
+        """Check if pygame.mixer is still functional"""
+        try:
+            # Try to get mixer state - this will fail if mixer died
+            pygame.mixer.music.get_busy()
+            pygame.mixer.music.get_volume()
+            return True
+        except Exception as e:
+            self.logger.warning(f"Audio health check failed: {e}")
+            return False
+
+    def reinitialize(self) -> bool:
+        """Reinitialize pygame.mixer after failure"""
+        self.logger.info("Attempting to reinitialize audio system...")
+        try:
+            # Quit existing mixer if possible
+            try:
+                pygame.mixer.quit()
+            except Exception:
+                pass
+
+            # Small delay for cleanup
+            import time
+            time.sleep(0.3)
+
+            # Reinitialize
+            pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+            self.initialized = True
+            self.logger.info("Audio system reinitialized successfully")
+            return True
+        except Exception as e:
+            self.logger.error(f"Audio reinitialize failed: {e}")
+            # Try ALSA fallback
+            try:
+                os.environ['SDL_AUDIODRIVER'] = 'alsa'
+                os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
+                pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+                self.initialized = True
+                self.logger.info("Audio reinitialized via ALSA fallback")
+                return True
+            except Exception as e2:
+                self.logger.error(f"Audio reinitialize ALSA fallback failed: {e2}")
+                self.initialized = False
+                return False
+
     def play_file(self, filepath: str, loop: bool = False) -> Dict[str, Any]:
         """Play an audio file
 
@@ -146,6 +191,12 @@ class USBAudioService:
         """
         if not self.initialized:
             return {"success": False, "error": "Audio not initialized"}
+
+        # Health check - auto-reinitialize if pygame.mixer died
+        if not self._check_audio_health():
+            self.logger.warning("Audio system unhealthy, attempting reinitialize...")
+            if not self.reinitialize():
+                return {"success": False, "error": "Audio system dead, reinitialize failed"}
 
         with self._lock:
             try:
@@ -224,6 +275,12 @@ class USBAudioService:
 
             except Exception as e:
                 self.logger.error(f"Audio playback error: {e}")
+                self._loading = False
+                # Attempt recovery on playback failure
+                if "mixer" in str(e).lower() or "audio" in str(e).lower():
+                    self.logger.warning("Audio mixer error, attempting reinitialize...")
+                    if self.reinitialize():
+                        self.logger.info("Audio recovered, but playback request lost - retry manually")
                 return {"success": False, "error": str(e)}
 
     def stop(self) -> Dict[str, Any]:
