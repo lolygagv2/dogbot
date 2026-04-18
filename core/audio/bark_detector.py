@@ -57,16 +57,19 @@ class BarkDetector:
     """
 
     def __init__(self, config: Optional[BarkGateConfig] = None,
-                 enable_emotion: bool = True):
+                 enable_emotion: bool = True,
+                 spectral_threshold: float = 0.15):
         """
         Initialize bark detector.
 
         Args:
             config: Optional BarkGate configuration
             enable_emotion: Whether to run emotion classification (Stage 2)
+            spectral_threshold: Minimum spectral bark score to accept (0.0-1.0)
         """
         # Stage 1: Signal processing
         self.gate = BarkGate(config)
+        self.spectral_threshold = spectral_threshold
 
         # Stage 2: Emotion classification (lazy loaded)
         self.enable_emotion = enable_emotion
@@ -92,7 +95,7 @@ class BarkDetector:
         # State
         self.is_running = False
 
-        logger.info(f"BarkDetector initialized (emotion={enable_emotion})")
+        logger.info(f"BarkDetector initialized (emotion={enable_emotion}, spectral_threshold={spectral_threshold})")
 
     def start(self):
         """Start the detector"""
@@ -188,8 +191,8 @@ class BarkDetector:
         if self._audio_buffer:
             buffered = np.concatenate(self._audio_buffer[-3:])  # Last ~1s of audio
             bark_score = self._spectral_bark_score(buffered)
-            if bark_score < 0.38:
-                logger.info(f"Spectral reject: bark_score={bark_score:.2f} (need >=0.38)")
+            if bark_score < self.spectral_threshold:
+                logger.info(f"Spectral reject: bark_score={bark_score:.2f} (need >={self.spectral_threshold:.2f})")
                 return None
             logger.debug(f"Spectral pass: bark_score={bark_score:.2f}")
 
