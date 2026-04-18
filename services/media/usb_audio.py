@@ -198,90 +198,106 @@ class USBAudioService:
             if not self.reinitialize():
                 return {"success": False, "error": "Audio system dead, reinitialize failed"}
 
-        with self._lock:
+        # Try to acquire lock with timeout to detect deadlocks
+        lock_acquired = self._lock.acquire(timeout=2.0)
+        if not lock_acquired:
+            self.logger.error("AUDIO DEADLOCK DETECTED - lock held >2s, forcing reinitialize")
             try:
-                # Set loading flag to prevent false state sync during load
-                self._loading = True
+                pygame.mixer.quit()
+            except:
+                pass
+            self.initialized = False
+            if not self.reinitialize():
+                return {"success": False, "error": "Audio deadlock recovery failed"}
+            lock_acquired = self._lock.acquire(timeout=1.0)
+            if not lock_acquired:
+                return {"success": False, "error": "Audio lock still blocked after recovery"}
 
-                # Handle relative paths by prepending base path
-                if not filepath.startswith('/'):
-                    full_path = os.path.join(self.base_path, filepath.lstrip('/'))
-                elif filepath.startswith('/talks/') or filepath.startswith('/songs/') or filepath.startswith('/02/'):
-                    # Map short paths to full paths
-                    full_path = os.path.join(self.base_path, filepath[1:])
+        try:
+            # Set loading flag to prevent false state sync during load
+            self._loading = True
 
-                    # For /talks/ and /songs/, check default/ subfolder first (consolidation)
-                    if filepath.startswith('/talks/') and '/default/' not in filepath:
-                        filename = os.path.basename(filepath)
-                        default_path = os.path.join(self.base_path, 'talks', 'default', filename)
-                        if os.path.exists(default_path):
-                            full_path = default_path
-                    elif filepath.startswith('/songs/') and '/default/' not in filepath:
-                        filename = os.path.basename(filepath)
-                        default_path = os.path.join(self.base_path, 'songs', 'default', filename)
-                        if os.path.exists(default_path):
-                            full_path = default_path
-                else:
-                    full_path = filepath
+            # Handle relative paths by prepending base path
+            if not filepath.startswith('/'):
+                full_path = os.path.join(self.base_path, filepath.lstrip('/'))
+            elif filepath.startswith('/talks/') or filepath.startswith('/songs/') or filepath.startswith('/02/'):
+                # Map short paths to full paths
+                full_path = os.path.join(self.base_path, filepath[1:])
 
-                # Check if file exists
-                if not os.path.exists(full_path):
-                    self.logger.error(f"Audio file not found: {full_path}")
-                    self._loading = False
-                    return {"success": False, "error": f"File not found: {full_path}"}
+                # For /talks/ and /songs/, check default/ subfolder first (consolidation)
+                if filepath.startswith('/talks/') and '/default/' not in filepath:
+                    filename = os.path.basename(filepath)
+                    default_path = os.path.join(self.base_path, 'talks', 'default', filename)
+                    if os.path.exists(default_path):
+                        full_path = default_path
+                elif filepath.startswith('/songs/') and '/default/' not in filepath:
+                    filename = os.path.basename(filepath)
+                    default_path = os.path.join(self.base_path, 'songs', 'default', filename)
+                    if os.path.exists(default_path):
+                        full_path = default_path
+            else:
+                full_path = filepath
 
-                # Play the audio file
-                pygame.mixer.music.load(full_path)
-                # -1 = loop indefinitely, 0 = play once
-                pygame.mixer.music.play(-1 if loop else 0)
-
-                # Track current playing file
-                self._current_track = os.path.basename(full_path)
-                self._is_looping = loop
-                self._last_play_time = time.time()
-                is_music = False
-
-                # Update music player state if this is a playlist song
-                if '/songs/' in full_path or full_path.startswith(os.path.join(self.base_path, 'songs')):
-                    track_name = os.path.basename(full_path)
-                    # Check if track (with or without prefix) is in playlist
-                    for i, pl_track in enumerate(self._playlist):
-                        if pl_track.endswith(track_name):
-                            self._current_index = i
-                            self._playlist_track = pl_track
-                            break
-                    self._music_playing = True
-                    is_music = True
-
+            # Check if file exists
+            if not os.path.exists(full_path):
+                self.logger.error(f"Audio file not found: {full_path}")
                 self._loading = False
+                return {"success": False, "error": f"File not found: {full_path}"}
 
-                loop_msg = " (looping)" if loop else ""
-                # Log with call stack to trace where audio is triggered from
-                import traceback
-                caller_info = "".join(traceback.format_stack()[-4:-1]).strip().replace('\n', ' | ')
-                self.logger.debug(f"AUDIO PLAY{loop_msg}: {full_path} [source: {caller_info[:200]}...]")
+            # Play the audio file
+            pygame.mixer.music.load(full_path)
+            # -1 = loop indefinitely, 0 = play once
+            pygame.mixer.music.play(-1 if loop else 0)
 
-                # Send audio state event to app (only for music, not voice clips)
-                if is_music:
-                    self._send_audio_event('playing', self._playlist_track)
+            # Track current playing file
+            self._current_track = os.path.basename(full_path)
+            self._is_looping = loop
+            self._last_play_time = time.time()
+            is_music = False
 
-                return {
-                    "success": True,
-                    "filepath": filepath,
-                    "track": self._current_track,
-                    "loop": loop,
-                    "message": f"Playing {filepath}{loop_msg}"
-                }
+            # Update music player state if this is a playlist song
+            if '/songs/' in full_path or full_path.startswith(os.path.join(self.base_path, 'songs')):
+                track_name = os.path.basename(full_path)
+                # Check if track (with or without prefix) is in playlist
+                for i, pl_track in enumerate(self._playlist):
+                    if pl_track.endswith(track_name):
+                        self._current_index = i
+                        self._playlist_track = pl_track
+                        break
+                self._music_playing = True
+                is_music = True
 
-            except Exception as e:
-                self.logger.error(f"Audio playback error: {e}")
-                self._loading = False
-                # Attempt recovery on playback failure
-                if "mixer" in str(e).lower() or "audio" in str(e).lower():
-                    self.logger.warning("Audio mixer error, attempting reinitialize...")
-                    if self.reinitialize():
-                        self.logger.info("Audio recovered, but playback request lost - retry manually")
-                return {"success": False, "error": str(e)}
+            self._loading = False
+
+            loop_msg = " (looping)" if loop else ""
+            # Log with call stack to trace where audio is triggered from
+            import traceback
+            caller_info = "".join(traceback.format_stack()[-4:-1]).strip().replace('\n', ' | ')
+            self.logger.debug(f"AUDIO PLAY{loop_msg}: {full_path} [source: {caller_info[:200]}...]")
+
+            # Send audio state event to app (only for music, not voice clips)
+            if is_music:
+                self._send_audio_event('playing', self._playlist_track)
+
+            return {
+                "success": True,
+                "filepath": filepath,
+                "track": self._current_track,
+                "loop": loop,
+                "message": f"Playing {filepath}{loop_msg}"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Audio playback error: {e}")
+            self._loading = False
+            # Attempt recovery on playback failure
+            if "mixer" in str(e).lower() or "audio" in str(e).lower():
+                self.logger.warning("Audio mixer error, attempting reinitialize...")
+                if self.reinitialize():
+                    self.logger.info("Audio recovered, but playback request lost - retry manually")
+            return {"success": False, "error": str(e)}
+        finally:
+            self._lock.release()
 
     def stop(self) -> Dict[str, Any]:
         """Stop audio playback"""
