@@ -173,7 +173,7 @@ class CoachingEngine:
 
         # Demo mode: force specific dog identity (None = ArUco/auto)
         self._forced_dog: Optional[str] = None
-        self.KNOWN_DOGS = ['elsa', 'bezik']
+        # KNOWN_DOGS now fetched dynamically from DogProfileManager (includes app-added dogs)
 
         # Bark tracking for 'speak' trick
         self.bark_count = 0
@@ -1275,12 +1275,24 @@ class CoachingEngine:
             logger.info("Forced trick cleared")
             return {'forced_trick': None, 'message': "Random trick selection restored"}
 
+    def _get_known_dogs(self) -> List[str]:
+        """Get list of known dogs from DogProfileManager (includes app-added dogs)"""
+        try:
+            from core.dog_profile_manager import get_dog_profile_manager
+            manager = get_dog_profile_manager()
+            profiles = manager.get_all_profiles()
+            return [p.name.lower() for p in profiles]
+        except Exception as e:
+            logger.warning(f"Could not get dogs from profile manager: {e}")
+            return []
+
     def set_forced_dog(self, dog_name: str = None) -> Dict[str, Any]:
         """Force a specific dog identity for demos (None to clear)"""
-        if dog_name and dog_name not in self.KNOWN_DOGS:
-            return {'error': f'Invalid dog: {dog_name}', 'valid_dogs': self.KNOWN_DOGS}
+        known_dogs = self._get_known_dogs()
+        if dog_name and dog_name.lower() not in [d.lower() for d in known_dogs]:
+            return {'error': f'Invalid dog: {dog_name}', 'valid_dogs': known_dogs}
 
-        self._forced_dog = dog_name
+        self._forced_dog = dog_name.lower() if dog_name else None
 
         # Apply override to all currently tracked dogs in coaching engine
         if dog_name:
@@ -1307,21 +1319,30 @@ class CoachingEngine:
             return {'forced_dog': None, 'message': "Dog identification restored to automatic"}
 
     def cycle_dog(self) -> Dict[str, Any]:
-        """Cycle forced dog: None -> elsa -> bezik -> None (for demo recording)"""
+        """Cycle forced dog: None -> dog1 -> dog2 -> ... -> None
+        Dogs are fetched dynamically from DogProfileManager (includes app-added dogs)"""
+        known_dogs = self._get_known_dogs()
+
+        if not known_dogs:
+            return {'error': 'No dogs configured', 'forced_dog': None}
+
         if self._forced_dog is None:
-            next_dog = self.KNOWN_DOGS[0]
+            next_dog = known_dogs[0]
         else:
             try:
-                idx = self.KNOWN_DOGS.index(self._forced_dog)
+                idx = [d.lower() for d in known_dogs].index(self._forced_dog.lower())
                 next_idx = idx + 1
-                next_dog = self.KNOWN_DOGS[next_idx] if next_idx < len(self.KNOWN_DOGS) else None
+                next_dog = known_dogs[next_idx] if next_idx < len(known_dogs) else None
             except ValueError:
-                next_dog = self.KNOWN_DOGS[0]
+                next_dog = known_dogs[0]
 
         result = self.set_forced_dog(next_dog)
 
         # Restart session so greeting replays with correct name
         self.reset_session_cooldown()
+
+        # Add list of all available dogs to response
+        result['available_dogs'] = known_dogs
 
         return result
 

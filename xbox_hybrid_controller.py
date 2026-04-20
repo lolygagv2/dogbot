@@ -356,6 +356,27 @@ class XboxHybridControllerFixed:
         self._last_dog_cycle_time = 0
         self._dog_cycle_cooldown = 1.0
 
+        # Command cycling (B button) - Sit, Speak, Stay, Quiet, LieDown, Spin
+        self._command_cycle_index = 0
+        self._command_sounds = [
+            ("/talks/default/sit.mp3", "Sit"),
+            ("/talks/default/speak.mp3", "Speak"),
+            ("/talks/default/stay.mp3", "Stay"),
+            ("/talks/default/quiet.mp3", "Quiet"),
+            ("/talks/default/lie_down.mp3", "Lie Down"),
+            ("/talks/default/spin.mp3", "Spin"),
+        ]
+        self._command_pending_timer: Optional[Timer] = None
+
+        # Reward cycling (RT) - Good, No, Quiet
+        self._reward_cycle_index = 0
+        self._reward_sounds = [
+            ("/talks/default/good_dog.mp3", "Good Dog"),
+            ("/talks/default/no.mp3", "No"),
+            ("/talks/default/quiet.mp3", "Quiet"),
+        ]
+        self._reward_pending_timer: Optional[Timer] = None
+
         # LED state tracking
         self.led_enabled = False
         self.current_led_mode = 0
@@ -936,18 +957,31 @@ class XboxHybridControllerFixed:
             self.state.right_y = -normalized
             # Store for smooth camera update loop
 
-        elif number == 5:  # Right trigger (RT) - play "good dog" audio
+        elif number == 5:  # Right trigger (RT) - cycle reward sounds: Good→No→Quiet
             # RT ranges from 0 to 32767 (not -32767 to 32767)
             normalized_trigger = value / 32767.0
             if normalized_trigger > self.TRIGGER_DEADZONE:
                 self.state.right_trigger = normalized_trigger
-                # Play good.mp3 with cooldown to prevent spam
+                # Cycle reward sounds with cooldown for rapid press detection
                 current_time = time.time()
                 if not hasattr(self, '_last_rt_time'):
                     self._last_rt_time = 0
-                if current_time - self._last_rt_time > 1.0:  # 1 second cooldown
-                    logger.debug("RT: Playing good_dog.mp3")
-                    self.api_request('POST', '/audio/play/file', {"filepath": "/talks/default/good_dog.mp3"})
+                if current_time - self._last_rt_time > 0.1:  # 100ms minimum between presses
+                    # Cancel any pending playback timer
+                    if self._reward_pending_timer:
+                        self._reward_pending_timer.cancel()
+                    # Stop any playing audio
+                    self.api_request('POST', '/audio/stop')
+                    # Advance to next reward sound
+                    filepath, name = self._reward_sounds[self._reward_cycle_index]
+                    self._reward_cycle_index = (self._reward_cycle_index + 1) % len(self._reward_sounds)
+                    logger.debug(f"RT: Queued '{name}' (0.3s delay)")
+                    # Schedule playback after 0.3s delay (allows rapid cycling)
+                    def play_reward():
+                        logger.debug(f"RT: Playing '{name}'")
+                        self.api_request('POST', '/audio/play/file', {"filepath": filepath})
+                    self._reward_pending_timer = Timer(0.3, play_reward)
+                    self._reward_pending_timer.start()
                     self._last_rt_time = current_time
             else:
                 self.state.right_trigger = 0.0
@@ -1381,11 +1415,24 @@ class XboxHybridControllerFixed:
             # Check shutdown combo (A+B held)
             self._check_shutdown_combo()
 
-        elif number == 1:  # B button - Play "sit" command (also part of shutdown combo)
+        elif number == 1:  # B button - Cycle commands: Sit→Speak→Stay→Quiet→LieDown→Spin
             self.state.b_button = pressed
             if pressed:
-                logger.info("B button: Playing 'sit' command")
-                self.api_request('POST', '/audio/play/file', {"filepath": "/talks/default/sit.mp3"})
+                # Cancel any pending playback timer
+                if self._command_pending_timer:
+                    self._command_pending_timer.cancel()
+                # Stop any playing audio
+                self.api_request('POST', '/audio/stop')
+                # Advance to next command
+                filepath, name = self._command_sounds[self._command_cycle_index]
+                self._command_cycle_index = (self._command_cycle_index + 1) % len(self._command_sounds)
+                logger.debug(f"B button: Queued '{name}' (0.3s delay)")
+                # Schedule playback after 0.3s delay (allows rapid cycling)
+                def play_command():
+                    logger.info(f"B button: Playing '{name}'")
+                    self.api_request('POST', '/audio/play/file', {"filepath": filepath})
+                self._command_pending_timer = Timer(0.3, play_command)
+                self._command_pending_timer.start()
             # Check shutdown combo (A+B held)
             self._check_shutdown_combo()
 
