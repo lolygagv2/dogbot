@@ -367,6 +367,8 @@ class XboxHybridControllerFixed:
             ("/talks/default/spin.mp3", "Spin"),
         ]
         self._command_pending_timer: Optional[Timer] = None
+        self._command_last_cycle_time = 0  # For auto-reset after idle
+        self._CYCLE_RESET_TIMEOUT = 2.0  # Reset to first track after 2s idle
 
         # Reward cycling (RT) - Good, No, Quiet
         self._reward_cycle_index = 0
@@ -376,6 +378,7 @@ class XboxHybridControllerFixed:
             ("/talks/default/quiet.mp3", "Quiet"),
         ]
         self._reward_pending_timer: Optional[Timer] = None
+        self._reward_last_cycle_time = 0  # For auto-reset after idle
 
         # LED state tracking
         self.led_enabled = False
@@ -967,12 +970,16 @@ class XboxHybridControllerFixed:
                 if not hasattr(self, '_last_rt_time'):
                     self._last_rt_time = 0
                 if current_time - self._last_rt_time > 0.1:  # 100ms minimum between presses
+                    # Reset to first track if idle for 2+ seconds
+                    if current_time - self._reward_last_cycle_time > self._CYCLE_RESET_TIMEOUT:
+                        self._reward_cycle_index = 0
+                    self._reward_last_cycle_time = current_time
                     # Cancel any pending playback timer
                     if self._reward_pending_timer:
                         self._reward_pending_timer.cancel()
                     # Stop any playing audio
                     self.api_request('POST', '/audio/stop')
-                    # Advance to next reward sound
+                    # Play current reward sound, then advance index
                     filepath, name = self._reward_sounds[self._reward_cycle_index]
                     self._reward_cycle_index = (self._reward_cycle_index + 1) % len(self._reward_sounds)
                     logger.debug(f"RT: Queued '{name}' (0.3s delay)")
@@ -1100,12 +1107,8 @@ class XboxHybridControllerFixed:
                 logger.debug(f"Motor API error: {e}")
             return
 
-        # PID MODE (legacy path - not used when USE_PID_CONTROL=false)
-        # Apply old calibration for PID mode
-        left = int(left * self.LEFT_MOTOR_MULTIPLIER)
-        right = int(right * self.RIGHT_MOTOR_MULTIPLIER)
-        left = max(-self.MAX_SPEED, min(self.MAX_SPEED, left))
-        right = max(-self.MAX_SPEED, min(self.MAX_SPEED, right))
+        # PID MODE (USE_PID_CONTROL=true)
+        # NOTE: Multipliers already applied in update_motor_control() - do NOT apply again here
 
         if self.MIN_PWM_THRESHOLD > 0:
             if left > 0 and left < self.MIN_PWM_THRESHOLD:
@@ -1418,12 +1421,17 @@ class XboxHybridControllerFixed:
         elif number == 1:  # B button - Cycle commands: Sit→Speak→Stay→Quiet→LieDown→Spin
             self.state.b_button = pressed
             if pressed:
+                current_time = time.time()
+                # Reset to first track if idle for 2+ seconds
+                if current_time - self._command_last_cycle_time > self._CYCLE_RESET_TIMEOUT:
+                    self._command_cycle_index = 0
+                self._command_last_cycle_time = current_time
                 # Cancel any pending playback timer
                 if self._command_pending_timer:
                     self._command_pending_timer.cancel()
                 # Stop any playing audio
                 self.api_request('POST', '/audio/stop')
-                # Advance to next command
+                # Play current command, then advance index
                 filepath, name = self._command_sounds[self._command_cycle_index]
                 self._command_cycle_index = (self._command_cycle_index + 1) % len(self._command_sounds)
                 logger.debug(f"B button: Queued '{name}' (0.3s delay)")

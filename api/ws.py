@@ -487,6 +487,33 @@ class TreatBotWebSocketServer:
                         self.logger.error(f"play_voice error: {e}")
                         result = {"success": False, "command": command, "error": str(e)}
 
+            elif command == "call_dog":
+                # {"command": "call_dog", "dog_id": "dog_123"} - plays 'come' command
+                # Same logic as relay path in main_treatbot.py
+                from services.media.voice_lookup import get_voice_path
+                dog_id = data.get("dog_id")
+                try:
+                    audio_path = get_voice_path("come", dog_id)
+                    if audio_path:
+                        usb_audio = get_usb_audio_service()
+                        if usb_audio and usb_audio.is_initialized:
+                            usb_audio.play_file(audio_path)
+                            self.logger.info(f"call_dog: playing {audio_path}")
+                        else:
+                            result = {"success": False, "command": command, "error": "USB audio not initialized"}
+                    else:
+                        # Fallback to default come.mp3
+                        fallback = "/home/morgan/dogbot/VOICEMP3/talks/default/come.mp3"
+                        usb_audio = get_usb_audio_service()
+                        if usb_audio and usb_audio.is_initialized:
+                            usb_audio.play_file(fallback)
+                            self.logger.info(f"call_dog: fallback {fallback}")
+                        else:
+                            result = {"success": False, "command": command, "error": "Voice not found and USB audio not initialized"}
+                except Exception as e:
+                    self.logger.error(f"call_dog error: {e}")
+                    result = {"success": False, "command": command, "error": str(e)}
+
             elif command == "mood_led":
                 # {"command": "mood_led", "action": "on"/"off"/"toggle"}
                 # Controls the BLUE LED TUBE (GPIO25), NOT NeoPixels
@@ -686,6 +713,71 @@ class TreatBotWebSocketServer:
             elif command == "delete_dog":
                 await self._handle_delete_dog(websocket, data)
                 return
+
+            elif command == "servo_center":
+                try:
+                    from services.motion.pan_tilt import get_pan_tilt_service
+                    pan_tilt = get_pan_tilt_service()
+                    pan_tilt.center()
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "list_songs":
+                try:
+                    from services.media.voice_lookup import get_songs_folder
+                    import os
+                    dog_id = data.get("dog_id")
+                    folder = get_songs_folder(dog_id)
+                    songs = [f for f in os.listdir(folder) if f.endswith('.mp3')] if os.path.isdir(folder) else []
+                    result = {"success": True, "songs": songs, "folder": folder}
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "list_missions":
+                try:
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    missions = engine.get_available_missions()
+                    result = {"success": True, "missions": missions}
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "cancel_mission":
+                try:
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    success = engine.stop_mission("app_cancelled")
+                    result = {"success": success, "reason": "app_cancelled"}
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "mission_status":
+                try:
+                    from orchestrators.mission_engine import get_mission_engine
+                    engine = get_mission_engine()
+                    status = engine.get_mission_status()
+                    result = {"success": True, **status}
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "play_command":
+                # {"command": "play_command", "voice_type": "sit", "dog_id": "dog_123"}
+                from services.media.voice_lookup import get_voice_path
+                voice_type = data.get("voice_type") or data.get("command_type")
+                dog_id = data.get("dog_id")
+                try:
+                    audio_path = get_voice_path(voice_type, dog_id)
+                    if audio_path:
+                        usb_audio = get_usb_audio_service()
+                        if usb_audio and usb_audio.is_initialized:
+                            usb_audio.play_file(audio_path)
+                            result = {"success": True, "played": audio_path}
+                        else:
+                            result = {"success": False, "command": command, "error": "USB audio not initialized"}
+                    else:
+                        result = {"success": False, "command": command, "error": f"Voice not found: {voice_type}"}
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
 
             else:
                 self.logger.warning(f"Unknown contract command: {command}")
@@ -1362,6 +1454,54 @@ class TreatBotWebSocketServer:
         elif command == "stop_mission":
             success = self.mission_engine.stop_mission("user_requested")
             return {"success": success}
+
+        elif command == "cancel_mission":
+            success = self.mission_engine.stop_mission("app_cancelled")
+            return {"success": success, "reason": "app_cancelled"}
+
+        elif command == "mission_status":
+            status = self.mission_engine.get_mission_status()
+            return {"success": True, **status}
+
+        elif command == "list_missions":
+            missions = self.mission_engine.get_available_missions()
+            return {"success": True, "missions": missions}
+
+        elif command == "servo_center":
+            try:
+                from services.motion.pan_tilt import get_pan_tilt_service
+                pan_tilt = get_pan_tilt_service()
+                pan_tilt.center()
+                return {"success": True}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        elif command == "list_songs":
+            try:
+                from services.media.voice_lookup import get_songs_folder
+                import os
+                dog_id = data.get("dog_id")
+                folder = get_songs_folder(dog_id)
+                songs = [f for f in os.listdir(folder) if f.endswith('.mp3')] if os.path.isdir(folder) else []
+                return {"success": True, "songs": songs, "folder": folder}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        elif command == "play_command":
+            # {"command": "play_command", "voice_type": "sit", "dog_id": "dog_123"}
+            from services.media.voice_lookup import get_voice_path
+            voice_type = data.get("voice_type") or data.get("command_type")
+            dog_id = data.get("dog_id")
+            try:
+                audio_path = get_voice_path(voice_type, dog_id)
+                if audio_path:
+                    usb_audio = get_usb_audio_service()
+                    if usb_audio and usb_audio.is_initialized:
+                        usb_audio.play_file(audio_path)
+                        return {"success": True, "played": audio_path}
+                return {"success": False, "error": f"Voice not found: {voice_type}"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
         elif command == "treat_counter_set":
             # {"command": "treat_counter_set", "count": 44}
