@@ -1,5 +1,90 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-04-25 — Gimbal Calibration API
+
+**Goal:** Add configurable gimbal limits and API endpoints
+**Status:** COMPLETE
+
+---
+
+### What Was Accomplished
+
+1. **Gimbal limits now configurable** in `config/robot_profiles/treatbot1.yaml` under `camera:` section
+2. **pan_tilt.py updated** to load limits from robot config at startup
+3. **New API endpoints added:**
+   - `GET /camera/gimbal` - View current limits
+   - `POST /camera/gimbal/calibrate` - Adjust limits at runtime with optional save
+4. **Xbox controller docs updated** (`XBOX_CONTROLLER_USAGE.md`) with current button mapping (RT=Good, RB=No, etc.)
+
+### Files Modified
+- `config/robot_profiles/treatbot1.yaml` — Added gimbal config params
+- `services/motion/pan_tilt.py` — Load limits from config
+- `api/server.py` — New gimbal calibration endpoints
+- `XBOX_CONTROLLER_USAGE.md` — Updated button mapping
+
+### Config Parameters Added
+```yaml
+camera:
+  pan_min: 10
+  pan_max: 200
+  tilt_min: 20
+  tilt_max: 160
+  pan_center: 110
+  tilt_center: 90
+  coach_pan_min: 55
+  coach_pan_max: 145
+  coach_tilt_min: 25
+  coach_tilt_max: 85
+```
+
+---
+
+## Session: 2026-04-25 — WiFiManager Race Condition Fix
+
+**Goal:** Investigate and fix system freezes within 2 minutes of launch on internet
+**Status:** COMPLETE
+
+---
+
+### What Was Accomplished
+
+#### 1. Root Cause Identified
+- System was freezing (hard lock, required power cycle) within ~2 minutes of launch
+- Initial wrong diagnosis: LED/SPI bus hammering from rapid pattern changes
+- **Actual cause:** Race condition in WiFiManager — multiple threads (WiFi monitor + relay client) creating separate WiFiManager instances and calling nmcli/pgrep concurrently
+- Kernel wireless driver deadlocked when hit from multiple threads simultaneously
+
+#### 2. Fix Implemented (c64a160)
+- Added `get_wifi_manager()` singleton factory function with global lock
+- Added `_op_lock` RLock to WiFiManager to serialize all wireless operations
+- Wrapped critical methods: `is_ap_mode()`, `get_connection_status()`, `try_connect_known()`, `start_hotspot()`, `start_demo_hotspot()`, `stop_hotspot()`
+- Updated main_treatbot.py and relay_client.py to use singleton
+- Fixed WiFi monitor bug: moved thread start to after `self.running=True` (was exiting immediately)
+
+#### 3. CLAUDE.md Updated
+- Added "Embodied Context" notice — Claude Code runs directly ON the robot, not external
+
+### Files Modified
+- `services/network/wifi_manager.py` — Singleton + thread locks (+277/-236 lines)
+- `main_treatbot.py` — Use singleton, fix WiFi monitor start order
+- `services/cloud/relay_client.py` — Use singleton (2 locations)
+- `.claude/CLAUDE.md` — Added embodied context notice
+
+### Commit
+`c64a160` — fix: WiFiManager race condition causing system freeze
+
+### Next Session
+- Restart treatbot service to apply fix: `sudo systemctl restart treatbot.service`
+- Monitor for 5+ minutes to verify no freezes
+- Check logs: `journalctl -u treatbot.service -f`
+
+### Important Notes
+- The crash happened specifically "on internet" because relay was active, increasing likelihood of race
+- WiFi monitor thread was also broken (exited immediately) — now fixed
+- Crashes correlated with LED pattern changes were coincidental, not causal
+
+---
+
 ## Session: 2026-04-17 — Documentation Update & Status Review
 
 **Goal:** Update project documentation with current status, verify all systems

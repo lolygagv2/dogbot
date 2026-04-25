@@ -14,37 +14,43 @@
 
 ## Xbox Controller Mapping
 
+*Updated: April 2026 (xbox_hybrid_controller.py)*
+
 ### Movement (Left Stick)
 - **Left Stick Y-axis**: Forward/Backward movement
 - **Left Stick X-axis**: Left/Right turning
-- **Right Trigger (RT)**: Variable speed control (30-100% throttle)
+- **Right Trigger (RT)**: Play "Good" audio (dog-aware path if dog detected)
 
 ### Camera Control (Right Stick)
 - **Right Stick X-axis**: Pan camera left/right
 - **Right Stick Y-axis**: Tilt camera up/down
 
 ### Actions
-- **Left Bumper (LB)**: Dispense treat
-- **Right Bumper (RB)**: Take photo (saved to /captures)
-- **Y Button**: Play selected sound effect
-- **A Button**: Emergency stop
-- **B Button**: Stop motors
+- **A Button**: Emergency Stop
+- **B Button**: Cycle trick commands (Sit → Speak → Stay → Quiet → LieDown → Spin)
+- **X Button**: Blue LED effect
+- **Y Button**: Play treat sound
 
-### Audio Control (D-Pad)
-- **D-Pad Left**: Previous sound effect
-- **D-Pad Right**: Next sound effect
-- **D-Pad Down**: Play current sound
-- **D-Pad Up**: Audio off
+### Audio & Treats
+- **Left Bumper (LB)**: Dispense treat (hold 5s for refill mode)
+- **Right Bumper (RB)**: Play "No" audio (dog-aware path if dog detected)
+- **Right Trigger (RT)**: Play "Good" audio (dog-aware path if dog detected)
+- **Left Trigger (LT)**: Cycle NeoPixel LED modes
 
-## Available Sound Effects
-1. success
-2. bark
-3. whistle
-4. celebrate
-5. startup
-6. shutdown
-7. alert
-8. reward
+### D-Pad
+- **D-Pad Left**: Cycle songs
+- **D-Pad Right**: Quiet/Come commands
+
+### System
+- **SELECT**: Cycle modes (MANUAL → IDLE → COACH → SILENT_GUARDIAN)
+- **START**: Shutdown robot
+
+## Dog-Aware Audio
+When a dog is detected (e.g., "Cooper"), RT/RB look for dog-specific audio:
+- `/VOICEMP3/talks/Cooper/good.mp3` (if exists)
+- Falls back to `/VOICEMP3/talks/default/good.mp3`
+
+Audio paths are resolved via `_get_active_dog()` which queries the `/status` API.
 
 ## Troubleshooting
 

@@ -7,6 +7,18 @@ description: "Primary demo unit with matched motors"
 # Camera settings (detector.py)
 camera:
   rotation: 0  # degrees clockwise (0, 90, 180, 270)
+  # Gimbal servo limits (pan_tilt.py)
+  pan_min: 10
+  pan_max: 200
+  tilt_min: 20
+  tilt_max: 160
+  pan_center: 110   # Calibrated center (may differ from mechanical 90)
+  tilt_center: 90
+  # Coach mode auto-tracking limits (tighter to avoid ceiling/floor)
+  coach_pan_min: 55
+  coach_pan_max: 145
+  coach_tilt_min: 25
+  coach_tilt_max: 85
 
 # Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py)
 dispenser:

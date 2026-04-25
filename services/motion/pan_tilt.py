@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional, Tuple
 from core.bus import get_bus, publish_motion_event
 from core.state import get_state, SystemMode
 from core.hardware.servo_controller import get_servo_controller
+from config.config_loader import get_config
 
 
 class PanTiltService:
@@ -58,21 +59,31 @@ class PanTiltService:
         self.frame_center = (320, 320)
         self.deadzone = 60  # pixels - Increased from 50 for less jitter
 
-        # Servo limits - Full range for Manual/Xbox control
-        # Coach mode applies its own limits when auto-tracking is enabled
-        self.pan_limits = (10, 200)   # degrees (full range)
-        self.tilt_limits = (20, 160)  # degrees (full range)
-        self.current_pan = 110  # Start at calibrated center (20° left of mechanical center)
-        self.current_tilt = 90  # Start at center
+        # Servo limits - defaults, overridden by robot config
+        self.pan_limits = (10, 200)
+        self.tilt_limits = (20, 160)
+        self.center_pan = 110
+        self.center_tilt = 90
+        self.COACH_PAN_LIMITS = (55, 145)
+        self.COACH_TILT_LIMITS = (25, 85)
 
-        # Coach-mode specific limits (applied only during auto-tracking)
-        self.COACH_PAN_LIMITS = (55, 145)   # Reduced range to prevent ceiling/floor pointing
-        self.COACH_TILT_LIMITS = (25, 85)   # Reduced range for safety
+        # Load gimbal config from robot profile
+        try:
+            config = get_config()
+            cam = getattr(config, 'camera', None) or {}
+            if cam:
+                self.pan_limits = (cam.get('pan_min', 10), cam.get('pan_max', 200))
+                self.tilt_limits = (cam.get('tilt_min', 20), cam.get('tilt_max', 160))
+                self.center_pan = cam.get('pan_center', 110)
+                self.center_tilt = cam.get('tilt_center', 90)
+                self.COACH_PAN_LIMITS = (cam.get('coach_pan_min', 55), cam.get('coach_pan_max', 145))
+                self.COACH_TILT_LIMITS = (cam.get('coach_tilt_min', 25), cam.get('coach_tilt_max', 85))
+                self.logger.info(f"Gimbal limits from config: pan={self.pan_limits}, tilt={self.tilt_limits}")
+        except Exception as e:
+            self.logger.warning(f"Could not load gimbal config, using defaults: {e}")
 
-        # Configurable center position (calibrated default viewing angle)
-        # These values are the actual servo positions for "looking straight ahead"
-        self.center_pan = 110   # Pan center position (calibrated for this robot, 20° left offset)
-        self.center_tilt = 90   # Tilt center position (internal servo units)
+        self.current_pan = self.center_pan
+        self.current_tilt = self.center_tilt
 
         # Servo command rate limiting (debounce)
         self.last_servo_command_time = 0.0

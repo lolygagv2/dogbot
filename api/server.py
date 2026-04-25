@@ -2059,6 +2059,144 @@ async def auto_calibrate_camera():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Camera Gimbal Calibration endpoints
+@app.get("/camera/gimbal")
+async def get_gimbal_calibration():
+    """Get current gimbal servo limits and center positions"""
+    try:
+        pantilt_service = get_pantilt_service()
+        return {
+            "success": True,
+            "settings": {
+                "pan_min": pantilt_service.pan_limits[0],
+                "pan_max": pantilt_service.pan_limits[1],
+                "tilt_min": pantilt_service.tilt_limits[0],
+                "tilt_max": pantilt_service.tilt_limits[1],
+                "pan_center": pantilt_service.center_pan,
+                "tilt_center": pantilt_service.center_tilt,
+                "coach_pan_min": pantilt_service.COACH_PAN_LIMITS[0],
+                "coach_pan_max": pantilt_service.COACH_PAN_LIMITS[1],
+                "coach_tilt_min": pantilt_service.COACH_TILT_LIMITS[0],
+                "coach_tilt_max": pantilt_service.COACH_TILT_LIMITS[1],
+            },
+            "current_position": {
+                "pan": pantilt_service.current_pan,
+                "tilt": pantilt_service.current_tilt,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Gimbal calibration read error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/camera/gimbal/calibrate")
+async def set_gimbal_calibration(request: Request):
+    """Set gimbal servo limits and center positions
+
+    Accepts JSON with any of:
+    - pan_min, pan_max: int (full range limits)
+    - tilt_min, tilt_max: int (full range limits)
+    - pan_center, tilt_center: int (default center positions)
+    - coach_pan_min, coach_pan_max: int (auto-tracking limits)
+    - coach_tilt_min, coach_tilt_max: int (auto-tracking limits)
+    - save: bool (persist to robot config)
+    """
+    try:
+        pantilt_service = get_pantilt_service()
+        body = await request.json()
+        applied = {}
+
+        # Apply limits
+        if "pan_min" in body or "pan_max" in body:
+            pan_min = body.get("pan_min", pantilt_service.pan_limits[0])
+            pan_max = body.get("pan_max", pantilt_service.pan_limits[1])
+            pantilt_service.pan_limits = (pan_min, pan_max)
+            applied["pan_limits"] = pantilt_service.pan_limits
+
+        if "tilt_min" in body or "tilt_max" in body:
+            tilt_min = body.get("tilt_min", pantilt_service.tilt_limits[0])
+            tilt_max = body.get("tilt_max", pantilt_service.tilt_limits[1])
+            pantilt_service.tilt_limits = (tilt_min, tilt_max)
+            applied["tilt_limits"] = pantilt_service.tilt_limits
+
+        if "pan_center" in body:
+            pantilt_service.center_pan = body["pan_center"]
+            applied["pan_center"] = pantilt_service.center_pan
+
+        if "tilt_center" in body:
+            pantilt_service.center_tilt = body["tilt_center"]
+            applied["tilt_center"] = pantilt_service.center_tilt
+
+        if "coach_pan_min" in body or "coach_pan_max" in body:
+            coach_pan_min = body.get("coach_pan_min", pantilt_service.COACH_PAN_LIMITS[0])
+            coach_pan_max = body.get("coach_pan_max", pantilt_service.COACH_PAN_LIMITS[1])
+            pantilt_service.COACH_PAN_LIMITS = (coach_pan_min, coach_pan_max)
+            applied["coach_pan_limits"] = pantilt_service.COACH_PAN_LIMITS
+
+        if "coach_tilt_min" in body or "coach_tilt_max" in body:
+            coach_tilt_min = body.get("coach_tilt_min", pantilt_service.COACH_TILT_LIMITS[0])
+            coach_tilt_max = body.get("coach_tilt_max", pantilt_service.COACH_TILT_LIMITS[1])
+            pantilt_service.COACH_TILT_LIMITS = (coach_tilt_min, coach_tilt_max)
+            applied["coach_tilt_limits"] = pantilt_service.COACH_TILT_LIMITS
+
+        if not applied:
+            raise HTTPException(status_code=400, detail="No valid gimbal settings provided")
+
+        logger.info(f"Gimbal calibration applied: {applied}")
+
+        # Optionally save to robot config
+        if body.get("save", False):
+            try:
+                from config.config_loader import get_config
+                import yaml
+
+                config = get_config()
+                profile_path = f"/home/morgan/dogbot/config/robot_profiles/{config.robot_id}.yaml"
+
+                with open(profile_path, 'r') as f:
+                    profile_data = yaml.safe_load(f)
+
+                if "camera" not in profile_data:
+                    profile_data["camera"] = {}
+
+                # Update gimbal settings
+                profile_data["camera"]["pan_min"] = pantilt_service.pan_limits[0]
+                profile_data["camera"]["pan_max"] = pantilt_service.pan_limits[1]
+                profile_data["camera"]["tilt_min"] = pantilt_service.tilt_limits[0]
+                profile_data["camera"]["tilt_max"] = pantilt_service.tilt_limits[1]
+                profile_data["camera"]["pan_center"] = pantilt_service.center_pan
+                profile_data["camera"]["tilt_center"] = pantilt_service.center_tilt
+                profile_data["camera"]["coach_pan_min"] = pantilt_service.COACH_PAN_LIMITS[0]
+                profile_data["camera"]["coach_pan_max"] = pantilt_service.COACH_PAN_LIMITS[1]
+                profile_data["camera"]["coach_tilt_min"] = pantilt_service.COACH_TILT_LIMITS[0]
+                profile_data["camera"]["coach_tilt_max"] = pantilt_service.COACH_TILT_LIMITS[1]
+
+                with open(profile_path, 'w') as f:
+                    yaml.dump(profile_data, f, default_flow_style=False)
+
+                logger.info(f"Gimbal calibration saved to {profile_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save gimbal calibration: {e}")
+                return {
+                    "success": True,
+                    "applied": applied,
+                    "saved": False,
+                    "save_error": str(e)
+                }
+
+        return {
+            "success": True,
+            "applied": applied,
+            "saved": body.get("save", False)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Gimbal calibration error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Camera Pan/Tilt Control endpoints
 @app.post("/camera/pantilt")
 async def camera_pantilt(request: PanTiltRequest):
