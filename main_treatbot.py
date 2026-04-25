@@ -132,6 +132,11 @@ class TreatBotMain:
         # Mode change generation counter - prevents overlapping mode change handlers
         self._mode_change_gen = 0
 
+        # WiFi monitor for auto AP fallback
+        self._wifi_monitor_thread = None
+        self._wifi_disconnected_since = None
+        self._wifi_ap_active = False
+
         # Performance tracking
         self.start_time = time.time()
         self.loop_count = 0
@@ -551,6 +556,15 @@ class TreatBotMain:
             self.dog_event_logger = get_dog_event_logger()
             self.dog_event_logger.start()
             self.logger.info("Dog event logger started")
+
+            # Start WiFi monitor for auto AP fallback (when taken out of WiFi range)
+            self._wifi_monitor_thread = threading.Thread(
+                target=self._wifi_monitor_loop,
+                daemon=True,
+                name="WiFiMonitor"
+            )
+            self._wifi_monitor_thread.start()
+            self.logger.info("WiFi monitor started (auto AP fallback enabled)")
 
             self.logger.info("All subsystems started")
             return True
@@ -2031,6 +2045,90 @@ class TreatBotMain:
 
         self.logger.info("TreatBot main system started")
         return True
+
+    def _wifi_monitor_loop(self) -> None:
+        """Monitor WiFi connection and auto-start AP mode if disconnected.
+
+        Behavior:
+        - Check WiFi status every 30 seconds
+        - If disconnected for 60+ seconds, start demo AP mode
+        - While in AP mode, periodically try to reconnect to known networks
+        - Xbox controller always works (Bluetooth independent of WiFi)
+        """
+        from services.network.wifi_manager import WiFiManager
+
+        wifi = WiFiManager()
+        check_interval = 30  # seconds between checks
+        disconnect_threshold = 60  # seconds before AP fallback
+        reconnect_interval = 120  # try to reconnect every 2 minutes while in AP
+
+        self.logger.info("WiFi monitor started")
+
+        while self.running and not self._stop_event.is_set():
+            try:
+                time.sleep(check_interval)
+
+                if wifi.is_ap_mode() or self._wifi_ap_active:
+                    # Already in AP mode - periodically try to reconnect
+                    if time.time() - (self._wifi_disconnected_since or 0) > reconnect_interval:
+                        self.logger.info("WiFi monitor: Attempting to reconnect to known networks...")
+                        # Stop AP temporarily to scan/connect
+                        wifi.stop_hotspot()
+                        self._wifi_ap_active = False
+
+                        if wifi.try_connect_known(timeout=15):
+                            status = wifi.get_connection_status()
+                            self.logger.info(f"WiFi reconnected: {status.get('ssid')} ({status.get('ip_address')})")
+                            self._wifi_disconnected_since = None
+                            # Announce reconnection
+                            try:
+                                self.usb_audio.play_file("/wimz/wifi_connected.mp3")
+                            except:
+                                pass
+                        else:
+                            # No known networks - restart AP
+                            self.logger.info("WiFi monitor: No known networks, restarting AP mode")
+                            serial = wifi.get_device_serial()
+                            ssid = f"WIMZ-{serial}"
+                            wifi.start_demo_hotspot(ssid=ssid, password="wimz1234")
+                            self._wifi_ap_active = True
+                            self._wifi_disconnected_since = time.time()
+                    continue
+
+                # Normal mode - check connection
+                if wifi.is_connected():
+                    # Connected - reset disconnect timer
+                    if self._wifi_disconnected_since is not None:
+                        self.logger.info("WiFi connection restored")
+                        self._wifi_disconnected_since = None
+                else:
+                    # Disconnected
+                    if self._wifi_disconnected_since is None:
+                        self._wifi_disconnected_since = time.time()
+                        self.logger.warning("WiFi disconnected - will start AP mode in 60s if not reconnected")
+                    else:
+                        elapsed = time.time() - self._wifi_disconnected_since
+                        if elapsed >= disconnect_threshold:
+                            # Start AP mode for direct connection
+                            self.logger.warning(f"WiFi disconnected for {elapsed:.0f}s - starting AP mode")
+                            serial = wifi.get_device_serial()
+                            ssid = f"WIMZ-{serial}"
+                            if wifi.start_demo_hotspot(ssid=ssid, password="wimz1234"):
+                                self._wifi_ap_active = True
+                                self.logger.info(f"AP mode started: {ssid} (password: wimz1234)")
+                                # Play announcement
+                                try:
+                                    self.usb_audio.play_file("/wimz/ap_mode.mp3")
+                                except:
+                                    pass
+                            else:
+                                self.logger.error("Failed to start AP mode")
+
+            except Exception as e:
+                self.logger.error(f"WiFi monitor error: {e}")
+                time.sleep(30)
+
+        self.logger.info("WiFi monitor stopped")
 
     def _main_loop(self) -> None:
         """Main system loop"""

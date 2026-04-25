@@ -347,9 +347,7 @@ class XboxHybridControllerFixed:
         self._last_trick_cycle_time = 0
         self._trick_cycle_cooldown = 1.0  # 1 second cooldown
 
-        # Shutdown combo: Hold A+B for 3 seconds
-        self._shutdown_combo_start = 0
-        self._shutdown_combo_thread = None
+        # Shutdown via Start button (removed A+B combo)
         self._shutdown_in_progress = False
 
         # Dog identity cycling (D-pad up in coach mode) - for demo recording
@@ -357,28 +355,15 @@ class XboxHybridControllerFixed:
         self._dog_cycle_cooldown = 1.0
 
         # Command cycling (B button) - Sit, Speak, Stay, Quiet, LieDown, Spin
+        # Uses sound names for dog-aware path resolution
         self._command_cycle_index = 0
-        self._command_sounds = [
-            ("/talks/default/sit.mp3", "Sit"),
-            ("/talks/default/speak.mp3", "Speak"),
-            ("/talks/default/stay.mp3", "Stay"),
-            ("/talks/default/quiet.mp3", "Quiet"),
-            ("/talks/default/lie_down.mp3", "Lie Down"),
-            ("/talks/default/spin.mp3", "Spin"),
-        ]
+        self._command_names = ["sit", "speak", "stay", "quiet", "lie_down", "spin"]
         self._command_pending_timer: Optional[Timer] = None
         self._command_last_cycle_time = 0  # For auto-reset after idle
         self._CYCLE_RESET_TIMEOUT = 2.0  # Reset to first track after 2s idle
 
-        # Reward cycling (RT) - Good, No, Quiet
-        self._reward_cycle_index = 0
-        self._reward_sounds = [
-            ("/talks/default/good_dog.mp3", "Good Dog"),
-            ("/talks/default/no.mp3", "No"),
-            ("/talks/default/quiet.mp3", "Quiet"),
-        ]
-        self._reward_pending_timer: Optional[Timer] = None
-        self._reward_last_cycle_time = 0  # For auto-reset after idle
+        # RT now only plays "Good" (no cycling)
+        # RB now plays "No" (instead of photo)
 
         # LED state tracking
         self.led_enabled = False
@@ -574,6 +559,78 @@ class XboxHybridControllerFixed:
         logger.info(f"Audio tracks discovered: {len(self.TALK_TRACKS)} talks, {len(self.SONG_TRACKS)} songs")
         logger.debug(f"Talks: {[t[1] for t in self.TALK_TRACKS]}")
         logger.debug(f"Songs: {[s[1] for s in self.SONG_TRACKS]}")
+
+        # Cache for active dog (updated from API periodically)
+        self._active_dog = None
+        self._last_dog_check = 0
+
+    def _get_active_dog(self) -> Optional[str]:
+        """Get the currently active dog name from coaching engine or last detection.
+
+        Caches result for 10 seconds to avoid excessive API calls.
+        Returns None if no dog is active or offline.
+        """
+        current_time = time.time()
+        if current_time - self._last_dog_check < 10.0:
+            return self._active_dog
+
+        try:
+            result = self.api_request_blocking('GET', '/coaching/status', timeout=1)
+            if result:
+                # Check forced dog first (for demo recording)
+                forced = result.get('forced_dog')
+                if forced:
+                    self._active_dog = forced.lower()
+                    self._last_dog_check = current_time
+                    return self._active_dog
+                # Check current session's dog
+                session = result.get('current_session')
+                if session and session.get('dog_name'):
+                    dog_name = session['dog_name']
+                    if dog_name.lower() not in ['dog', 'unknown']:
+                        self._active_dog = dog_name.lower()
+                        self._last_dog_check = current_time
+                        return self._active_dog
+        except Exception:
+            pass
+
+        self._active_dog = None
+        self._last_dog_check = current_time
+        return None
+
+    def _get_dog_audio_path(self, sound_name: str) -> str:
+        """Get audio path, checking for dog-specific version first.
+
+        Priority:
+        1. /talks/<dog_name>/<sound>.mp3 (dog-specific folder)
+        2. /talks/<dog_name>_<sound>.mp3 (dog-specific file in root)
+        3. /talks/default/<sound>.mp3 (default fallback)
+
+        Args:
+            sound_name: Sound name without extension (e.g., "good", "no", "quiet")
+
+        Returns:
+            API path like "/talks/default/good.mp3"
+        """
+        import os
+        base_path = "/home/morgan/dogbot/VOICEMP3"
+
+        dog = self._get_active_dog()
+        if dog:
+            # Try dog-specific folder first: /talks/elsa/good.mp3
+            dog_folder_path = f"{base_path}/talks/{dog}/{sound_name}.mp3"
+            if os.path.exists(dog_folder_path):
+                logger.debug(f"Using dog-specific audio: {dog}/{sound_name}.mp3")
+                return f"/talks/{dog}/{sound_name}.mp3"
+
+            # Try dog-prefixed file: /talks/elsa_good.mp3
+            dog_prefixed_path = f"{base_path}/talks/{dog}_{sound_name}.mp3"
+            if os.path.exists(dog_prefixed_path):
+                logger.debug(f"Using dog-prefixed audio: {dog}_{sound_name}.mp3")
+                return f"/talks/{dog}_{sound_name}.mp3"
+
+        # Default fallback
+        return f"/talks/default/{sound_name}.mp3"
 
     def _start_api_worker(self):
         """Start the async API worker thread"""
@@ -960,35 +1017,18 @@ class XboxHybridControllerFixed:
             self.state.right_y = -normalized
             # Store for smooth camera update loop
 
-        elif number == 5:  # Right trigger (RT) - cycle reward sounds: Good→No→Quiet
+        elif number == 5:  # Right trigger (RT) - play "Good" only (no cycling)
             # RT ranges from 0 to 32767 (not -32767 to 32767)
             normalized_trigger = value / 32767.0
             if normalized_trigger > self.TRIGGER_DEADZONE:
                 self.state.right_trigger = normalized_trigger
-                # Cycle reward sounds with cooldown for rapid press detection
                 current_time = time.time()
                 if not hasattr(self, '_last_rt_time'):
                     self._last_rt_time = 0
-                if current_time - self._last_rt_time > 0.1:  # 100ms minimum between presses
-                    # Reset to first track if idle for 2+ seconds
-                    if current_time - self._reward_last_cycle_time > self._CYCLE_RESET_TIMEOUT:
-                        self._reward_cycle_index = 0
-                    self._reward_last_cycle_time = current_time
-                    # Cancel any pending playback timer
-                    if self._reward_pending_timer:
-                        self._reward_pending_timer.cancel()
-                    # Stop any playing audio
-                    self.api_request('POST', '/audio/stop')
-                    # Play current reward sound, then advance index
-                    filepath, name = self._reward_sounds[self._reward_cycle_index]
-                    self._reward_cycle_index = (self._reward_cycle_index + 1) % len(self._reward_sounds)
-                    logger.debug(f"RT: Queued '{name}' (0.3s delay)")
-                    # Schedule playback after 0.3s delay (allows rapid cycling)
-                    def play_reward():
-                        logger.debug(f"RT: Playing '{name}'")
-                        self.api_request('POST', '/audio/play/file', {"filepath": filepath})
-                    self._reward_pending_timer = Timer(0.3, play_reward)
-                    self._reward_pending_timer.start()
+                if current_time - self._last_rt_time > 0.3:  # 300ms cooldown
+                    audio_path = self._get_dog_audio_path("good")
+                    logger.info(f"RT: Playing 'Good' ({audio_path})")
+                    self.api_request('POST', '/audio/play/file', {"filepath": audio_path})
                     self._last_rt_time = current_time
             else:
                 self.state.right_trigger = 0.0
@@ -1325,38 +1365,6 @@ class XboxHybridControllerFixed:
         # Also send via API as backup
         self.api_request('POST', '/motor/stop', {"reason": "emergency"})
 
-    def _check_shutdown_combo(self):
-        """Check if A+B are both held and start/stop shutdown timer"""
-        both_held = self.state.a_button and self.state.b_button
-
-        if both_held and not self._shutdown_in_progress:
-            # Start tracking combo hold time
-            if self._shutdown_combo_start == 0:
-                self._shutdown_combo_start = time.time()
-                logger.info("Shutdown combo detected (A+B) - hold for 3 seconds to shutdown")
-                # Start background thread to monitor hold duration
-                if self._shutdown_combo_thread is None or not self._shutdown_combo_thread.is_alive():
-                    self._shutdown_combo_thread = Thread(target=self._shutdown_combo_monitor, daemon=True)
-                    self._shutdown_combo_thread.start()
-        else:
-            # Combo released - reset
-            if self._shutdown_combo_start > 0 and not self._shutdown_in_progress:
-                logger.debug("Shutdown combo released before 3 seconds")
-            self._shutdown_combo_start = 0
-
-    def _shutdown_combo_monitor(self):
-        """Background thread that monitors A+B hold duration"""
-        while self._shutdown_combo_start > 0 and not self._shutdown_in_progress:
-            elapsed = time.time() - self._shutdown_combo_start
-
-            if elapsed >= 3.0:
-                # Combo held for 3 seconds - trigger shutdown
-                self._trigger_shutdown()
-                return
-
-            # Check every 100ms
-            time.sleep(0.1)
-
     def _trigger_shutdown(self):
         """Gracefully shutdown the Raspberry Pi"""
         if self._shutdown_in_progress:
@@ -1410,13 +1418,11 @@ class XboxHybridControllerFixed:
             # NOTE: notify_manual_input() removed here - buttons should NOT auto-switch to MANUAL
             # Joystick movement and triggers already call notify_manual_input() in process_axis()
 
-        if number == 0:  # A button - Emergency stop (also part of shutdown combo)
+        if number == 0:  # A button - Emergency stop
             self.state.a_button = pressed
             if pressed:
                 logger.info("A button: Emergency stop")
                 self.emergency_stop()
-            # Check shutdown combo (A+B held)
-            self._check_shutdown_combo()
 
         elif number == 1:  # B button - Cycle commands: Sit→Speak→Stay→Quiet→LieDown→Spin
             self.state.b_button = pressed
@@ -1431,18 +1437,18 @@ class XboxHybridControllerFixed:
                     self._command_pending_timer.cancel()
                 # Stop any playing audio
                 self.api_request('POST', '/audio/stop')
-                # Play current command, then advance index
-                filepath, name = self._command_sounds[self._command_cycle_index]
-                self._command_cycle_index = (self._command_cycle_index + 1) % len(self._command_sounds)
-                logger.debug(f"B button: Queued '{name}' (0.3s delay)")
+                # Get current command name and advance index
+                sound_name = self._command_names[self._command_cycle_index]
+                self._command_cycle_index = (self._command_cycle_index + 1) % len(self._command_names)
+                # Resolve dog-specific path
+                filepath = self._get_dog_audio_path(sound_name)
+                logger.debug(f"B button: Queued '{sound_name}' (0.3s delay)")
                 # Schedule playback after 0.3s delay (allows rapid cycling)
                 def play_command():
-                    logger.info(f"B button: Playing '{name}'")
+                    logger.info(f"B button: Playing '{sound_name}' ({filepath})")
                     self.api_request('POST', '/audio/play/file', {"filepath": filepath})
                 self._command_pending_timer = Timer(0.3, play_command)
                 self._command_pending_timer.start()
-            # Check shutdown combo (A+B held)
-            self._check_shutdown_combo()
 
         elif number == 2:  # X button - Toggle LED
             self.state.x_button = pressed
@@ -1474,10 +1480,12 @@ class XboxHybridControllerFixed:
                         pass
                     logger.info("LB released: Refill stopped")
 
-        elif number == 5:  # Right bumper - Take photo
+        elif number == 5:  # Right bumper - Play "No" audio
             self.state.right_bumper = pressed
             if pressed:
-                self.take_photo()
+                audio_path = self._get_dog_audio_path("no")
+                logger.info(f"RB: Playing 'No' ({audio_path})")
+                self.api_request('POST', '/audio/play/file', {"filepath": audio_path})
 
         elif number == 10:  # Right stick click - Center camera
             if pressed:
@@ -1487,18 +1495,10 @@ class XboxHybridControllerFixed:
             if pressed:
                 self.cycle_mode()
 
-        elif number == 7:  # Start/Menu button (☰) - Short: Audio record, Long: Video toggle
+        elif number == 7:  # Start/Menu button (☰) - Shutdown
             if pressed:
-                self._start_button_press_time = time.time()
-            else:
-                # Button released - check duration
-                press_duration = time.time() - getattr(self, '_start_button_press_time', 0)
-                if press_duration > 2.0:
-                    # Long press (>2s) - Toggle video recording
-                    self.toggle_video_recording()
-                else:
-                    # Short press (<2s) - Audio recording
-                    self.handle_record_button()
+                logger.info("START button: Triggering shutdown")
+                self._trigger_shutdown()
 
         elif number == 8:  # Xbox Guide button - Cycle tricks (coach mode only)
             if pressed:
@@ -1880,12 +1880,17 @@ class XboxHybridControllerFixed:
                 file_path, track_name = self.queued_track
                 logger.debug(f"Queued song: {track_name} - press DOWN to play")
                 self.last_dpad_time = current_time
-            elif value > 0:  # Right - Queue next TALK for playing
-                self.current_talk_index = (self.current_talk_index + 1) % len(self.TALK_TRACKS)
-                self.queued_track = self.TALK_TRACKS[self.current_talk_index]
-                self.queued_type = "talk"
-                file_path, track_name = self.queued_track
-                logger.debug(f"Queued talk: {track_name} - press DOWN to play")
+            elif value > 0:  # Right - Cycle only "Quiet" and "Come"
+                if not hasattr(self, '_dpad_right_index'):
+                    self._dpad_right_index = 0
+                # Sound names for dog-aware lookup
+                dpad_sounds = ["quiet", "come"]
+                sound_name = dpad_sounds[self._dpad_right_index]
+                self._dpad_right_index = (self._dpad_right_index + 1) % len(dpad_sounds)
+                # Get dog-specific path
+                audio_path = self._get_dog_audio_path(sound_name)
+                logger.info(f"D-pad right: Playing '{sound_name}' ({audio_path})")
+                self.api_request('POST', '/audio/play/file', {"filepath": audio_path})
                 self.last_dpad_time = current_time
 
         elif number == 7:  # D-pad Y axis
@@ -1926,13 +1931,15 @@ class XboxHybridControllerFixed:
         self.running = True
         logger.info("Xbox Fixed Controller ready!")
         logger.info("=== CONTROLS ===")
-        logger.info("Movement: Left stick = 60% power, RT = TURBO (100%)")
+        logger.info("Movement: Left stick")
         logger.info("Camera: Right stick")
-        logger.info("A = Emergency Stop, B = Play 'sit' command")
+        logger.info("A = Emergency Stop, B = Cycle commands (Sit/Speak/Stay/Quiet/LieDown/Spin)")
         logger.info("X = Blue LED, LT = NeoPixel modes")
-        logger.info("Y = Sound, LB = Treat (2s cooldown), RB = Photo")
+        logger.info("Y = Treat sound, LB = Dispense treat, RB = 'No' audio")
+        logger.info("RT = 'Good' audio")
+        logger.info("D-pad Right = Quiet/Come, D-pad Left = Songs")
         logger.info("SELECT = Cycle modes (MANUAL→IDLE→COACH→SILENT_GUARDIAN)")
-        logger.info("START = Record audio")
+        logger.info("START = Shutdown")
         logger.info("=== ASYNC API QUEUE ===")
         logger.info("Non-blocking button presses")
         logger.info("50ms command debouncing")

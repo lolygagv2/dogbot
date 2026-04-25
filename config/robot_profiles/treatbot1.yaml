@@ -28,7 +28,7 @@ controller:
   max_speed: 80           # Capped speed percentage
   turn_speed_factor: 0.8  # Multiplier for turn smoothness
   max_rpm: 110            # Target RPM for PID control
-  use_pid_control: true   # Enable closed-loop encoder feedback
+  use_pid_control: false  # DISABLED FOR TESTING - bypasses PID, uses direct PWM
   min_pwm_threshold: 0    # Minimum PWM to overcome motor deadzone (0 = no threshold)
 
   # Per-motor calibration for hardware imbalance
