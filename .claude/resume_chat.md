@@ -1,5 +1,40 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-04-25 — Dog Tracking Deduplication Fix
+
+**Goal:** Fix duplicate bounding boxes (both "Dog" and "Elsa" on same physical dog)
+**Status:** COMPLETE
+
+---
+
+### What Was Accomplished
+
+#### Bug Fix: Duplicate Detection Boxes
+**Root Cause:** When ArUco visibility is intermittent, both an ArUco-identified entry (e.g., "elsa" at marker_id=42) and a generic entry ("dog_0" at -1000) coexisted in `last_known_positions`, causing two boxes to render.
+
+**Not a regression** - gap from Build 38 (commit 3119962) which added generic entries but never implemented deduplication.
+
+**Fix Applied** (`core/dog_tracker.py`):
+1. When ArUco detected → delete any generic entry for that detection index
+2. Before creating generic entry → check for overlapping ArUco-identified dog via IoU (>0.3) and reuse that identity
+3. In `get_tracked_dogs()` → skip generic entries overlapping ArUco boxes (safety net)
+
+**New helper methods:** `_find_overlapping_tracked_dog()`, `_bbox_iou()`
+
+### Commits
+- `0bd343f` — fix: Deduplicate dog tracking to prevent duplicate bounding boxes
+
+### Also This Session
+- Gimbal calibration API added (commit `966b6b3`)
+- Xbox controller docs updated
+
+### Next Session
+- Restart treatbot to apply fix: `sudo systemctl restart treatbot`
+- Test with Elsa to verify single box renders
+- Lifecycle handler for clean disconnect (interrupted investigation)
+
+---
+
 ## Session: 2026-04-25 — Gimbal Calibration API
 
 **Goal:** Add configurable gimbal limits and API endpoints
