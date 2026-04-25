@@ -4,40 +4,41 @@
 When user has multiple robots (tb1, tb2), the status bar flashes between both treat counts instead of showing only the currently connected robot's count.
 
 ## Root Cause
-The app is receiving treat status events from all robots (via relay) and displaying all of them instead of filtering by the active `robot_id`.
+The app is receiving treat status events from all robots (via relay) and displaying all of them instead of filtering by the active `device_id`.
 
 ## Robot-Side Events (Already Correct)
-Each robot sends its own treat status with `robot_id`:
+Each robot sends events via relay with `device_id` added automatically:
 ```json
 {
-  "type": "treat_status",
-  "robot_id": "treatbot1",
-  "treats_loaded": 44,
-  "treats_remaining": 38,
-  "treats_low": false
+  "event": "treats_low",
+  "device_id": "abc123-device-uuid",
+  "treats_remaining": 4,
+  "timestamp": 1714012345.678
 }
 ```
 
-The robot also publishes events on dispense:
+The robot also publishes reward events:
 ```json
 {
-  "type": "reward",
-  "subtype": "treat_dispensed",
-  "robot_id": "treatbot1",
+  "event": "treat_dispensed",
+  "device_id": "abc123-device-uuid",
   "treats_remaining": 37,
-  "treats_low": false
+  "dog_id": "aruco_315",
+  "reason": "coach_success"
 }
 ```
+
+**Note:** The relay adds `device_id` automatically via `send_event()`. The robot's `device_id` comes from config (unique per robot).
 
 ## App-Side Fix
 
 ### 1. Track Active Robot
 ```dart
 class RobotConnection {
-  String? activeRobotId;  // Set when connecting to a robot
+  String? activeDeviceId;  // Set when connecting to a robot
   
   void onConnect(String robotId) {
-    activeRobotId = robotId;
+    activeDeviceId = robotId;
   }
 }
 ```
@@ -45,10 +46,10 @@ class RobotConnection {
 ### 2. Filter Treat Events by Robot ID
 ```dart
 void onTreatStatusEvent(Map<String, dynamic> event) {
-  final eventRobotId = event['robot_id'];
+  final eventDeviceId = event['device_id'];
   
   // Ignore events from other robots
-  if (eventRobotId != activeRobotId) {
+  if (eventDeviceId != activeDeviceId) {
     return;
   }
   
@@ -64,7 +65,7 @@ void onTreatStatusEvent(Map<String, dynamic> event) {
 ```dart
 void onRewardEvent(Map<String, dynamic> event) {
   if (event['subtype'] != 'treat_dispensed') return;
-  if (event['robot_id'] != activeRobotId) return;
+  if (event['device_id'] != activeDeviceId) return;
   
   setState(() {
     treatsRemaining = event['treats_remaining'];
@@ -77,7 +78,7 @@ void onRewardEvent(Map<String, dynamic> event) {
 When connecting to a robot, request current treat status:
 ```dart
 void onRobotConnected(String robotId) {
-  activeRobotId = robotId;
+  activeDeviceId = robotId;
   
   // Request current status
   sendCommand({'command': 'get_treat_status'});
@@ -89,7 +90,7 @@ The robot sends `treats_low: true` when < 5 treats remain:
 ```dart
 if (treatsLow && !_lowTreatAlertShown) {
   _lowTreatAlertShown = true;
-  showSnackBar('Treats running low on $activeRobotId!');
+  showSnackBar('Treats running low on $activeDeviceId!');
 }
 ```
 
@@ -98,14 +99,14 @@ For master users who want to see all robots:
 
 ```dart
 // Store treats per robot
-Map<String, int> treatsByRobot = {};
+Map<String, int> treatsByDevice = {};
 
 void onTreatStatusEvent(Map<String, dynamic> event) {
-  final robotId = event['robot_id'];
-  treatsByRobot[robotId] = event['treats_remaining'];
+  final robotId = event['device_id'];
+  treatsByDevice[robotId] = event['treats_remaining'];
   
   // Only update main display for active robot
-  if (robotId == activeRobotId) {
+  if (robotId == activeDeviceId) {
     treatsRemaining = event['treats_remaining'];
   }
 }
@@ -113,11 +114,11 @@ void onTreatStatusEvent(Map<String, dynamic> event) {
 // Dashboard widget showing all robots
 Widget buildFleetStatus() {
   return Column(
-    children: treatsByRobot.entries.map((e) => 
+    children: treatsByDevice.entries.map((e) => 
       ListTile(
         title: Text(e.key),
         trailing: Text('${e.value} treats'),
-        selected: e.key == activeRobotId,
+        selected: e.key == activeDeviceId,
       )
     ).toList(),
   );
