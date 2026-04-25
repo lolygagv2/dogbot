@@ -15,9 +15,28 @@ import re
 import time
 import signal
 import logging
+import threading
 from typing import Optional, List, Dict, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Thread-safe singleton pattern to prevent race conditions in wireless driver
+_wifi_manager_instance: Optional['WiFiManager'] = None
+_wifi_manager_lock = threading.Lock()
+
+
+def get_wifi_manager() -> 'WiFiManager':
+    """Get singleton WiFiManager instance (thread-safe).
+
+    Multiple threads creating separate WiFiManager instances and calling
+    nmcli/pgrep concurrently causes kernel wireless driver deadlock.
+    Use this factory function to ensure all code shares one instance.
+    """
+    global _wifi_manager_instance
+    with _wifi_manager_lock:
+        if _wifi_manager_instance is None:
+            _wifi_manager_instance = WiFiManager()
+        return _wifi_manager_instance
 
 # hostapd + dnsmasq config paths for AP mode
 HOSTAPD_CONF = "/tmp/wimz-hostapd.conf"
@@ -37,14 +56,17 @@ class WiFiManager:
         self.interface = interface or self.DEFAULT_INTERFACE
         self._cached_networks = []  # Cache scan results before AP mode
         self._in_ap_mode = False
+        # Serialize all wireless operations to prevent kernel driver deadlock
+        self._op_lock = threading.RLock()
 
     def is_ap_mode(self) -> bool:
         """Detect if the interface is currently in AP mode by checking for hostapd process."""
-        if self._in_ap_mode:
-            return True
-        # Check if hostapd is running with our config
-        success, output = self._run_cmd(["pgrep", "-f", f"hostapd.*{HOSTAPD_CONF}"])
-        return success
+        with self._op_lock:
+            if self._in_ap_mode:
+                return True
+            # Check if hostapd is running with our config
+            success, output = self._run_cmd(["pgrep", "-f", f"hostapd.*{HOSTAPD_CONF}"])
+            return success
 
     def get_active_ap_ssid(self) -> Optional[str]:
         """Return SSID of the currently running AP by parsing the hostapd config."""
@@ -145,53 +167,54 @@ class WiFiManager:
 
     def get_connection_status(self) -> Dict:
         """Get current WiFi connection status"""
-        status = {
-            'connected': False,
-            'ssid': None,
-            'ip_address': None,
-            'signal': None,
-            'state': 'disconnected'
-        }
+        with self._op_lock:
+            status = {
+                'connected': False,
+                'ssid': None,
+                'ip_address': None,
+                'signal': None,
+                'state': 'disconnected'
+            }
 
-        # Check device state
-        success, output = self._run_nmcli([
-            "-t", "-f", "GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS",
-            "device", "show", self.interface
-        ])
-
-        if not success:
-            return status
-
-        for line in output.strip().split('\n'):
-            if ':' not in line:
-                continue
-            key, _, value = line.partition(':')
-            if 'STATE' in key and '100' in value:
-                status['connected'] = True
-                status['state'] = 'connected'
-            elif 'CONNECTION' in key and value and value != '--':
-                status['ssid'] = value
-            elif 'IP4.ADDRESS' in key and value:
-                # Extract IP from CIDR notation
-                status['ip_address'] = value.split('/')[0]
-
-        # Get signal strength if connected
-        if status['connected']:
+            # Check device state
             success, output = self._run_nmcli([
-                "-t", "-f", "IN-USE,SIGNAL,SSID",
-                "device", "wifi", "list", "ifname", self.interface
+                "-t", "-f", "GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS",
+                "device", "show", self.interface
             ])
-            if success:
-                for line in output.strip().split('\n'):
-                    if line.startswith('*:'):
-                        parts = line.split(':')
-                        if len(parts) >= 2:
-                            try:
-                                status['signal'] = int(parts[1])
-                            except ValueError:
-                                pass
 
-        return status
+            if not success:
+                return status
+
+            for line in output.strip().split('\n'):
+                if ':' not in line:
+                    continue
+                key, _, value = line.partition(':')
+                if 'STATE' in key and '100' in value:
+                    status['connected'] = True
+                    status['state'] = 'connected'
+                elif 'CONNECTION' in key and value and value != '--':
+                    status['ssid'] = value
+                elif 'IP4.ADDRESS' in key and value:
+                    # Extract IP from CIDR notation
+                    status['ip_address'] = value.split('/')[0]
+
+            # Get signal strength if connected
+            if status['connected']:
+                success, output = self._run_nmcli([
+                    "-t", "-f", "IN-USE,SIGNAL,SSID",
+                    "device", "wifi", "list", "ifname", self.interface
+                ])
+                if success:
+                    for line in output.strip().split('\n'):
+                        if line.startswith('*:'):
+                            parts = line.split(':')
+                            if len(parts) >= 2:
+                                try:
+                                    status['signal'] = int(parts[1])
+                                except ValueError:
+                                    pass
+
+            return status
 
     def is_connected(self) -> bool:
         """Check if WiFi is connected to any network"""
@@ -199,50 +222,51 @@ class WiFiManager:
 
     def try_connect_known(self, timeout: int = 15) -> bool:
         """Try to connect to any known WiFi network"""
-        logger.info("Attempting to connect to known WiFi networks...")
+        with self._op_lock:
+            logger.info("Attempting to connect to known WiFi networks...")
 
-        # First check if already connected
-        if self.is_connected():
-            logger.info("Already connected to WiFi")
-            return True
-
-        # Get saved connections
-        saved = self.get_saved_connections()
-        if not saved:
-            logger.info("No saved WiFi connections found")
-            return False
-
-        logger.info(f"Found {len(saved)} saved WiFi connections")
-
-        # Try to bring up the device and auto-connect
-        nmcli_timeout = min(timeout, 10)
-        success, output = self._run_nmcli(
-            ["device", "connect", self.interface],
-            timeout=nmcli_timeout
-        )
-
-        if success:
-            status = self.get_connection_status()
-            logger.info(f"Connected to {status['ssid']} ({status['ip_address']})")
-            return True
-
-        # If nmcli says no network found, fail immediately - no point polling
-        if "could not be found" in output.lower() or "timed out" in output.lower():
-            logger.info("No known WiFi networks in range - skipping wait")
-            return False
-
-        # Poll for connection for remaining time (nmcli may have started a bg connect)
-        start_time = time.time()
-        remaining = timeout - nmcli_timeout
-        while time.time() - start_time < remaining:
+            # First check if already connected (RLock allows nested acquisition)
             if self.is_connected():
+                logger.info("Already connected to WiFi")
+                return True
+
+            # Get saved connections
+            saved = self.get_saved_connections()
+            if not saved:
+                logger.info("No saved WiFi connections found")
+                return False
+
+            logger.info(f"Found {len(saved)} saved WiFi connections")
+
+            # Try to bring up the device and auto-connect
+            nmcli_timeout = min(timeout, 10)
+            success, output = self._run_nmcli(
+                ["device", "connect", self.interface],
+                timeout=nmcli_timeout
+            )
+
+            if success:
                 status = self.get_connection_status()
                 logger.info(f"Connected to {status['ssid']} ({status['ip_address']})")
                 return True
-            time.sleep(2)
 
-        logger.warning(f"Failed to connect to any known network within {timeout}s")
-        return False
+            # If nmcli says no network found, fail immediately - no point polling
+            if "could not be found" in output.lower() or "timed out" in output.lower():
+                logger.info("No known WiFi networks in range - skipping wait")
+                return False
+
+            # Poll for connection for remaining time (nmcli may have started a bg connect)
+            start_time = time.time()
+            remaining = timeout - nmcli_timeout
+            while time.time() - start_time < remaining:
+                if self.is_connected():
+                    status = self.get_connection_status()
+                    logger.info(f"Connected to {status['ssid']} ({status['ip_address']})")
+                    return True
+                time.sleep(2)
+
+            logger.warning(f"Failed to connect to any known network within {timeout}s")
+            return False
 
     def scan_networks(self) -> List[Dict]:
         """Scan for available WiFi networks (returns cached results in AP mode)"""
@@ -343,26 +367,27 @@ class WiFiManager:
         - DHCP range limited to 192.168.4.10-50
         - Designed for the app to connect directly to treatbot at 192.168.4.1:8000
         """
-        logger.info(f"[LOCAL] Starting demo hotspot: {ssid}")
+        with self._op_lock:
+            logger.info(f"[LOCAL] Starting demo hotspot: {ssid}")
 
-        # Cache scan results before taking over the interface
-        logger.info("Caching WiFi scan results before demo AP mode...")
-        self._cached_networks = self._do_scan()
-        logger.info(f"Cached {len(self._cached_networks)} networks")
+            # Cache scan results before taking over the interface
+            logger.info("Caching WiFi scan results before demo AP mode...")
+            self._cached_networks = self._do_scan()
+            logger.info(f"Cached {len(self._cached_networks)} networks")
 
-        # Step 1: Tell NetworkManager to stop managing wlan0
-        self._run_nmcli(["device", "disconnect", self.interface])
-        self._run_nmcli(["device", "set", self.interface, "managed", "no"])
-        time.sleep(0.5)
+            # Step 1: Tell NetworkManager to stop managing wlan0
+            self._run_nmcli(["device", "disconnect", self.interface])
+            self._run_nmcli(["device", "set", self.interface, "managed", "no"])
+            time.sleep(0.5)
 
-        # Step 2: Configure interface with static IP
-        self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
-        self._run_cmd(["sudo", "ip", "addr", "add", f"{self.HOTSPOT_IP}/24", "dev", self.interface])
-        self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
-        time.sleep(0.5)
+            # Step 2: Configure interface with static IP
+            self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
+            self._run_cmd(["sudo", "ip", "addr", "add", f"{self.HOTSPOT_IP}/24", "dev", self.interface])
+            self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
+            time.sleep(0.5)
 
-        # Step 3: Write hostapd config
-        hostapd_config = f"""interface={self.interface}
+            # Step 3: Write hostapd config
+            hostapd_config = f"""interface={self.interface}
 driver=nl80211
 ssid={ssid}
 hw_mode=g
@@ -376,75 +401,76 @@ wpa_passphrase={password}
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 """
-        try:
-            with open(HOSTAPD_CONF, 'w') as f:
-                f.write(hostapd_config)
-        except Exception as e:
-            logger.error(f"Failed to write hostapd config: {e}")
-            return False
+            try:
+                with open(HOSTAPD_CONF, 'w') as f:
+                    f.write(hostapd_config)
+            except Exception as e:
+                logger.error(f"Failed to write hostapd config: {e}")
+                return False
 
-        # Step 4: Write dnsmasq config — DHCP only, NO DNS hijack
-        dnsmasq_config = f"""interface={self.interface}
+            # Step 4: Write dnsmasq config — DHCP only, NO DNS hijack
+            dnsmasq_config = f"""interface={self.interface}
 bind-interfaces
 dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,24h
 """
-        try:
-            with open(DNSMASQ_CONF, 'w') as f:
-                f.write(dnsmasq_config)
-        except Exception as e:
-            logger.error(f"Failed to write dnsmasq config: {e}")
-            return False
+            try:
+                with open(DNSMASQ_CONF, 'w') as f:
+                    f.write(dnsmasq_config)
+            except Exception as e:
+                logger.error(f"Failed to write dnsmasq config: {e}")
+                return False
 
-        # Step 5: Start hostapd
-        success, output = self._run_cmd([
-            "sudo", "hostapd", "-B", "-P", HOSTAPD_PID, HOSTAPD_CONF
-        ], timeout=10)
+            # Step 5: Start hostapd
+            success, output = self._run_cmd([
+                "sudo", "hostapd", "-B", "-P", HOSTAPD_PID, HOSTAPD_CONF
+            ], timeout=10)
 
-        if not success:
-            logger.error(f"Failed to start hostapd: {output}")
-            self._cleanup_ap()
-            return False
+            if not success:
+                logger.error(f"Failed to start hostapd: {output}")
+                self._cleanup_ap()
+                return False
 
-        # Step 6: Start dnsmasq for DHCP only
-        self._run_cmd(["pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
-        time.sleep(0.3)
+            # Step 6: Start dnsmasq for DHCP only
+            self._run_cmd(["pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
+            time.sleep(0.3)
 
-        success, output = self._run_cmd([
-            "sudo", "dnsmasq", "-C", DNSMASQ_CONF, "--pid-file=" + DNSMASQ_PID
-        ], timeout=10)
+            success, output = self._run_cmd([
+                "sudo", "dnsmasq", "-C", DNSMASQ_CONF, "--pid-file=" + DNSMASQ_PID
+            ], timeout=10)
 
-        if not success:
-            logger.error(f"Failed to start dnsmasq: {output}")
-            self._cleanup_ap()
-            return False
+            if not success:
+                logger.error(f"Failed to start dnsmasq: {output}")
+                self._cleanup_ap()
+                return False
 
-        logger.info(f"[LOCAL] Demo hotspot started: {ssid} @ {self.HOTSPOT_IP}")
-        self._in_ap_mode = True
-        return True
+            logger.info(f"[LOCAL] Demo hotspot started: {ssid} @ {self.HOTSPOT_IP}")
+            self._in_ap_mode = True
+            return True
 
     def start_hotspot(self, ssid: str, password: str) -> bool:
         """Start WiFi hotspot using hostapd + dnsmasq (bypasses NM's broken AP mode)"""
-        logger.info(f"Starting hotspot: {ssid}")
+        with self._op_lock:
+            logger.info(f"Starting hotspot: {ssid}")
 
-        # Cache scan results BEFORE we take over the interface
-        # (can't scan while in AP mode)
-        logger.info("Caching WiFi scan results before AP mode...")
-        self._cached_networks = self._do_scan()
-        logger.info(f"Cached {len(self._cached_networks)} networks")
+            # Cache scan results BEFORE we take over the interface
+            # (can't scan while in AP mode)
+            logger.info("Caching WiFi scan results before AP mode...")
+            self._cached_networks = self._do_scan()
+            logger.info(f"Cached {len(self._cached_networks)} networks")
 
-        # Step 1: Tell NetworkManager to stop managing wlan0
-        self._run_nmcli(["device", "disconnect", self.interface])
-        self._run_nmcli(["device", "set", self.interface, "managed", "no"])
-        time.sleep(0.5)
+            # Step 1: Tell NetworkManager to stop managing wlan0
+            self._run_nmcli(["device", "disconnect", self.interface])
+            self._run_nmcli(["device", "set", self.interface, "managed", "no"])
+            time.sleep(0.5)
 
-        # Step 2: Configure interface with static IP (needs sudo if not root)
-        self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
-        self._run_cmd(["sudo", "ip", "addr", "add", f"{self.HOTSPOT_IP}/24", "dev", self.interface])
-        self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
-        time.sleep(0.5)
+            # Step 2: Configure interface with static IP (needs sudo if not root)
+            self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
+            self._run_cmd(["sudo", "ip", "addr", "add", f"{self.HOTSPOT_IP}/24", "dev", self.interface])
+            self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
+            time.sleep(0.5)
 
-        # Step 3: Write hostapd config
-        hostapd_config = f"""interface={self.interface}
+            # Step 3: Write hostapd config
+            hostapd_config = f"""interface={self.interface}
 driver=nl80211
 ssid={ssid}
 hw_mode=g
@@ -458,58 +484,58 @@ wpa_passphrase={password}
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 """
-        try:
-            with open(HOSTAPD_CONF, 'w') as f:
-                f.write(hostapd_config)
-            logger.info("hostapd config written")
-        except Exception as e:
-            logger.error(f"Failed to write hostapd config: {e}")
-            return False
+            try:
+                with open(HOSTAPD_CONF, 'w') as f:
+                    f.write(hostapd_config)
+                logger.info("hostapd config written")
+            except Exception as e:
+                logger.error(f"Failed to write hostapd config: {e}")
+                return False
 
-        # Step 4: Write dnsmasq config (DHCP + DNS hijack for captive portal)
-        dnsmasq_config = f"""interface={self.interface}
+            # Step 4: Write dnsmasq config (DHCP + DNS hijack for captive portal)
+            dnsmasq_config = f"""interface={self.interface}
 bind-interfaces
 dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
 address=/#/{self.HOTSPOT_IP}
 """
-        try:
-            with open(DNSMASQ_CONF, 'w') as f:
-                f.write(dnsmasq_config)
-            logger.info("dnsmasq config written")
-        except Exception as e:
-            logger.error(f"Failed to write dnsmasq config: {e}")
-            return False
+            try:
+                with open(DNSMASQ_CONF, 'w') as f:
+                    f.write(dnsmasq_config)
+                logger.info("dnsmasq config written")
+            except Exception as e:
+                logger.error(f"Failed to write dnsmasq config: {e}")
+                return False
 
-        # Step 5: Start hostapd (needs sudo if not root)
-        success, output = self._run_cmd([
-            "sudo", "hostapd", "-B", "-P", HOSTAPD_PID, HOSTAPD_CONF
-        ], timeout=10)
+            # Step 5: Start hostapd (needs sudo if not root)
+            success, output = self._run_cmd([
+                "sudo", "hostapd", "-B", "-P", HOSTAPD_PID, HOSTAPD_CONF
+            ], timeout=10)
 
-        if not success:
-            logger.error(f"Failed to start hostapd: {output}")
-            self._cleanup_ap()
-            return False
+            if not success:
+                logger.error(f"Failed to start hostapd: {output}")
+                self._cleanup_ap()
+                return False
 
-        logger.info("hostapd started")
+            logger.info("hostapd started")
 
-        # Step 6: Start dnsmasq for DHCP + DNS
-        # Kill any existing dnsmasq on this interface first
-        self._run_cmd(["pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
-        time.sleep(0.3)
+            # Step 6: Start dnsmasq for DHCP + DNS
+            # Kill any existing dnsmasq on this interface first
+            self._run_cmd(["pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
+            time.sleep(0.3)
 
-        success, output = self._run_cmd([
-            "sudo", "dnsmasq", "-C", DNSMASQ_CONF, "--pid-file=" + DNSMASQ_PID
-        ], timeout=10)
+            success, output = self._run_cmd([
+                "sudo", "dnsmasq", "-C", DNSMASQ_CONF, "--pid-file=" + DNSMASQ_PID
+            ], timeout=10)
 
-        if not success:
-            logger.error(f"Failed to start dnsmasq: {output}")
-            self._cleanup_ap()
-            return False
+            if not success:
+                logger.error(f"Failed to start dnsmasq: {output}")
+                self._cleanup_ap()
+                return False
 
-        logger.info("dnsmasq started (DHCP + DNS)")
-        logger.info(f"Hotspot started: {ssid} @ {self.HOTSPOT_IP}")
-        self._in_ap_mode = True
-        return True
+            logger.info("dnsmasq started (DHCP + DNS)")
+            logger.info(f"Hotspot started: {ssid} @ {self.HOTSPOT_IP}")
+            self._in_ap_mode = True
+            return True
 
     def _cleanup_ap(self):
         """Kill hostapd and dnsmasq, clean up config files"""
@@ -562,31 +588,32 @@ address=/#/{self.HOTSPOT_IP}
 
     def stop_hotspot(self) -> bool:
         """Stop WiFi hotspot and return to client mode"""
-        logger.info("Stopping hotspot...")
+        with self._op_lock:
+            logger.info("Stopping hotspot...")
 
-        # Stop hostapd and dnsmasq
-        self._cleanup_ap()
+            # Stop hostapd and dnsmasq
+            self._cleanup_ap()
 
-        # Flush interface IP
-        self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
+            # Flush interface IP
+            self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
 
-        # Cycle interface down/up to force driver out of AP mode at kernel level
-        # Without this, the wireless driver stays in AP mode and NM scans fail
-        logger.info("Cycling interface to force station mode...")
-        self._run_cmd(["sudo", "ip", "link", "set", self.interface, "down"])
-        time.sleep(0.5)
-        self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
-        time.sleep(1)
+            # Cycle interface down/up to force driver out of AP mode at kernel level
+            # Without this, the wireless driver stays in AP mode and NM scans fail
+            logger.info("Cycling interface to force station mode...")
+            self._run_cmd(["sudo", "ip", "link", "set", self.interface, "down"])
+            time.sleep(0.5)
+            self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
+            time.sleep(1)
 
-        # Return interface to NetworkManager control
-        self._run_nmcli(["device", "set", self.interface, "managed", "yes"])
+            # Return interface to NetworkManager control
+            self._run_nmcli(["device", "set", self.interface, "managed", "yes"])
 
-        # Wait for NM to actually reclaim the interface and be ready to scan
-        self._wait_for_nm_ready(timeout=20)
+            # Wait for NM to actually reclaim the interface and be ready to scan
+            self._wait_for_nm_ready(timeout=20)
 
-        logger.info("Hotspot stopped")
-        self._in_ap_mode = False
-        return True
+            logger.info("Hotspot stopped")
+            self._in_ap_mode = False
+            return True
 
     def save_credentials(self, ssid: str, password: str) -> Dict:
         """

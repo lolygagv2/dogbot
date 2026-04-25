@@ -642,9 +642,9 @@ class RelayClient:
         This sends the hotspot info BEFORE switching (since we'll lose relay connection).
         """
         try:
-            from services.network.wifi_manager import WiFiManager
+            from services.network.wifi_manager import get_wifi_manager
 
-            wifi = WiFiManager()
+            wifi = get_wifi_manager()
             serial = wifi.get_device_serial()
             ssid = f"WIMZ-{serial}"
             password = "wimzsetup"
@@ -687,9 +687,9 @@ class RelayClient:
         This stops the hotspot and reconnects to saved WiFi.
         """
         try:
-            from services.network.wifi_manager import WiFiManager
+            from services.network.wifi_manager import get_wifi_manager
 
-            wifi = WiFiManager()
+            wifi = get_wifi_manager()
 
             self.logger.info("Switching to Cloud Mode")
 

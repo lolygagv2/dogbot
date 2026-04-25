@@ -557,14 +557,8 @@ class TreatBotMain:
             self.dog_event_logger.start()
             self.logger.info("Dog event logger started")
 
-            # Start WiFi monitor for auto AP fallback (when taken out of WiFi range)
-            self._wifi_monitor_thread = threading.Thread(
-                target=self._wifi_monitor_loop,
-                daemon=True,
-                name="WiFiMonitor"
-            )
-            self._wifi_monitor_thread.start()
-            self.logger.info("WiFi monitor started (auto AP fallback enabled)")
+            # NOTE: WiFi monitor thread is started in start() after self.running=True
+            # to ensure the thread loop doesn't exit immediately
 
             self.logger.info("All subsystems started")
             return True
@@ -2027,6 +2021,16 @@ class TreatBotMain:
         self.running = True
         self._stop_event.clear()
 
+        # Start WiFi monitor for auto AP fallback (when taken out of WiFi range)
+        # Must be after self.running=True or the thread loop exits immediately
+        self._wifi_monitor_thread = threading.Thread(
+            target=self._wifi_monitor_loop,
+            daemon=True,
+            name="WiFiMonitor"
+        )
+        self._wifi_monitor_thread.start()
+        self.logger.info("WiFi monitor started (auto AP fallback enabled)")
+
         # Start main loop
         self.main_thread = threading.Thread(
             target=self._main_loop,
@@ -2055,9 +2059,9 @@ class TreatBotMain:
         - While in AP mode, periodically try to reconnect to known networks
         - Xbox controller always works (Bluetooth independent of WiFi)
         """
-        from services.network.wifi_manager import WiFiManager
+        from services.network.wifi_manager import get_wifi_manager
 
-        wifi = WiFiManager()
+        wifi = get_wifi_manager()
         check_interval = 30  # seconds between checks
         disconnect_threshold = 60  # seconds before AP fallback
         reconnect_interval = 120  # try to reconnect every 2 minutes while in AP

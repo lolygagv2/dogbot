@@ -1,5 +1,15 @@
 # WIM-Z (Watchful Intelligent Mobile Zen) Project - Development Rules
 
+## IMPORTANT: Embodied Context
+**Claude Code is running DIRECTLY ON the WIM-Z robot** (Raspberry Pi 5).
+- This is NOT an external development machine or codebase
+- Changes you make affect the LIVE running robot immediately
+- Hardware (servos, motors, LEDs, camera) is physically connected and active
+- The robot may be running autonomously while you work
+- Check `systemctl status treatbot.service` for service state
+- Use `journalctl -f` to watch live logs
+- Hard crashes require physical power cycle (no SSH access)
+
 ## CRITICAL: USB Audio System
 - **Audio device**: USB Audio (card number detected dynamically - can be 0, 1, or 2)
 - **Dual jack**: Single USB port handles both microphone and speaker
