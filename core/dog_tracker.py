@@ -159,6 +159,11 @@ class DogTracker:
                 # Clear from unidentified tracking (ArUco found!)
                 if idx in self.unidentified_dogs:
                     del self.unidentified_dogs[idx]
+                # Clean up any generic entry for this detection index (prevents duplicate boxes)
+                generic_marker_id = -(idx + 1000)
+                if generic_marker_id in self.last_known_positions:
+                    del self.last_known_positions[generic_marker_id]
+                    self.valid_dog_ids.pop(generic_marker_id, None)
 
             else:
                 # No marker found - try color-based identification first
@@ -211,7 +216,22 @@ class DogTracker:
                         if idx in self.unidentified_dogs:
                             del self.unidentified_dogs[idx]
                 else:
-                    # Store unidentified dogs with generic name so bounding boxes can be drawn
+                    # Before creating a generic entry, check if there's an existing
+                    # tracked dog with overlapping bbox (prevents duplicate boxes)
+                    existing_dog = self._find_overlapping_tracked_dog(bbox, current_time)
+                    if existing_dog:
+                        # Reuse existing identity (ArUco-identified dog still in persistence window)
+                        dog_name = self.valid_dog_ids.get(existing_dog)
+                        if dog_name and not dog_name.startswith("dog_"):
+                            assignments[idx] = dog_name
+                            # Update tracking to refresh timestamp
+                            self._update_tracking(
+                                existing_dog, bbox, current_time,
+                                confidence=0.7, id_method="persistence"
+                            )
+                            continue  # Skip generic fallback
+
+                    # No existing identity - store as generic
                     generic_id = f"dog_{idx}"
                     assignments[idx] = generic_id
                     # Store in tracking with generic marker ID (negative to avoid collision with real ArUco)
@@ -305,6 +325,52 @@ class DogTracker:
                 best_match = dog_id
 
         return best_match
+
+    def _find_overlapping_tracked_dog(self, bbox: List[float], current_time: float) -> Optional[int]:
+        """Find an existing tracked dog whose bbox overlaps significantly with the given bbox.
+
+        Used to prevent creating duplicate generic entries for dogs already identified via ArUco.
+        Returns marker_id of the best overlapping dog, or None if no good overlap found.
+        """
+        best_match = None
+        best_iou = 0.3  # Minimum IoU threshold to consider a match
+
+        for dog_id, tracking in self.last_known_positions.items():
+            # Skip generic entries (negative IDs)
+            if dog_id < 0:
+                continue
+            # Check if tracking is still valid
+            if current_time - tracking['time'] > self.persistence_time:
+                continue
+            # Only consider ArUco-identified dogs
+            if tracking.get('id_method') not in ('aruco', 'color'):
+                continue
+
+            old_bbox = tracking['bbox']
+            iou = self._bbox_iou(bbox, old_bbox)
+
+            if iou > best_iou:
+                best_iou = iou
+                best_match = dog_id
+
+        return best_match
+
+    def _bbox_iou(self, bbox1: List[float], bbox2: List[float]) -> float:
+        """Calculate Intersection over Union between two bounding boxes"""
+        x1 = max(bbox1[0], bbox2[0])
+        y1 = max(bbox1[1], bbox2[1])
+        x2 = min(bbox1[2], bbox2[2])
+        y2 = min(bbox1[3], bbox2[3])
+
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+
+        intersection = (x2 - x1) * (y2 - y1)
+        area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
+        area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
+        union = area1 + area2 - intersection
+
+        return intersection / union if union > 0 else 0.0
 
     def _update_tracking(self, dog_id: int, bbox: List[float], timestamp: float, confidence: float, id_method: str = "persistence"):
         """Update persistence tracking for a dog (Rule 2).
@@ -409,14 +475,32 @@ class DogTracker:
         current_time = time.time()
         result = {}
 
+        # First pass: collect ArUco-identified dogs
+        aruco_bboxes = []
+        for marker_id, tracking in self.last_known_positions.items():
+            if marker_id < 0:  # Skip generic entries first pass
+                continue
+            if current_time - tracking['time'] > self.persistence_time:
+                continue
+            if tracking.get('id_method') in ('aruco', 'color'):
+                aruco_bboxes.append(tracking.get('bbox', []))
+
         for marker_id, tracking in self.last_known_positions.items():
             # Only include dogs with recent tracking (within persistence time)
             if current_time - tracking['time'] > self.persistence_time:
                 continue
 
             dog_name = self.valid_dog_ids.get(marker_id, f"dog_{marker_id}")
-            # Display "Dog" for unidentified dogs instead of internal IDs
             id_method = tracking.get('id_method', 'persistence')
+            bbox = tracking.get('bbox', [])
+
+            # Skip generic entries that overlap with ArUco-identified dogs (prevents duplicate boxes)
+            if marker_id < 0 and bbox and aruco_bboxes:
+                overlaps = any(self._bbox_iou(bbox, ab) > 0.3 for ab in aruco_bboxes if ab)
+                if overlaps:
+                    continue
+
+            # Display "Dog" for unidentified dogs instead of internal IDs
             # Demo override: force all dogs to display as chosen name
             if self.forced_display_name:
                 display_name = self.forced_display_name
@@ -426,7 +510,7 @@ class DogTracker:
                 display_name = dog_name
 
             result[dog_name] = {
-                'bbox': tracking.get('bbox', []),
+                'bbox': bbox,
                 'name': display_name,
                 'confidence': tracking.get('behavior_confidence', 0.0),
                 'id_method': id_method,
