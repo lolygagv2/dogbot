@@ -236,10 +236,14 @@ class DetectorService:
                 self.camera.configure(config)
                 self.camera.start()
 
-                # Wait for camera to stabilize and verify it's actually working
+                # Wait for camera to stabilize
                 time.sleep(0.5)
+
+                # Apply saved calibration from robot profile
+                self._apply_saved_calibration()
+
+                # Verify camera is actually working
                 try:
-                    # Test capture to verify camera is working
                     test_frame = self.camera.capture_array()
                     if test_frame is None:
                         self.logger.error("Camera test capture returned None")
@@ -266,6 +270,51 @@ class DetectorService:
             self.logger.error(f"Camera initialization error: {e}")
             self._camera_error_reason = str(e)
             return False
+
+    def _apply_saved_calibration(self):
+        """Apply saved camera calibration from robot profile"""
+        try:
+            config = get_config()
+            cam_config = config.camera
+
+            controls = {}
+            awb_modes = {
+                "auto": 0, "incandescent": 1, "tungsten": 2, "fluorescent": 3,
+                "indoor": 4, "daylight": 5, "cloudy": 6, "custom": 7
+            }
+
+            # Check for calibration settings in robot profile
+            if hasattr(cam_config, 'awb_mode') and cam_config.awb_mode:
+                mode = cam_config.awb_mode.lower()
+                if mode in awb_modes:
+                    controls["AwbMode"] = awb_modes[mode]
+
+            if hasattr(cam_config, 'brightness') and cam_config.brightness is not None:
+                controls["Brightness"] = float(cam_config.brightness)
+
+            if hasattr(cam_config, 'contrast') and cam_config.contrast is not None:
+                controls["Contrast"] = float(cam_config.contrast)
+
+            if hasattr(cam_config, 'saturation') and cam_config.saturation is not None:
+                controls["Saturation"] = float(cam_config.saturation)
+
+            if hasattr(cam_config, 'sharpness') and cam_config.sharpness is not None:
+                controls["Sharpness"] = float(cam_config.sharpness)
+
+            if hasattr(cam_config, 'exposure_time') and cam_config.exposure_time:
+                controls["ExposureTime"] = int(cam_config.exposure_time)
+
+            if hasattr(cam_config, 'analogue_gain') and cam_config.analogue_gain:
+                controls["AnalogueGain"] = float(cam_config.analogue_gain)
+
+            if controls:
+                self.camera.set_controls(controls)
+                self.logger.info(f"Applied saved camera calibration: {controls}")
+            else:
+                self.logger.debug("No saved camera calibration found")
+
+        except Exception as e:
+            self.logger.warning(f"Could not apply saved calibration: {e}")
 
     def _capture_frame(self):
         """Capture a frame from the camera"""

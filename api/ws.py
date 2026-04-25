@@ -447,6 +447,8 @@ class TreatBotWebSocketServer:
 
             elif command == "mode":
                 # {"command": "mode", "mode": "training"}
+                # Use set_mode_override() for parity with relay_client — protects
+                # SG/Coach from FSM auto-revert (coach_timeout, etc.)
                 mode = data.get("mode")
                 if mode:
                     from orchestrators.mode_fsm import get_mode_fsm
@@ -465,7 +467,7 @@ class TreatBotWebSocketServer:
                     }
                     internal_mode = mode_map.get(mode)
                     if internal_mode:
-                        mode_fsm.force_mode(internal_mode, "websocket_command")
+                        mode_fsm.set_mode_override(internal_mode)
                         result["mode"] = mode
 
             elif command == "play_voice":
@@ -591,6 +593,10 @@ class TreatBotWebSocketServer:
 
             elif command == "set_mode":
                 # {"command": "set_mode", "mode": "manual"}
+                # Use set_mode_override() to protect from FSM auto-transitions.
+                # Without override, the FSM loop can revert SG/Coach back to IDLE
+                # within seconds (e.g. coach_timeout with no dog detection).
+                # This matches the relay_client behavior for parity.
                 mode_name = data.get("mode", "").lower()
                 if mode_name:
                     from orchestrators.mode_fsm import get_mode_fsm
@@ -607,7 +613,7 @@ class TreatBotWebSocketServer:
                     }
                     internal_mode = mode_map.get(mode_name)
                     if internal_mode:
-                        mode_fsm.force_mode(internal_mode, "websocket_command")
+                        mode_fsm.set_mode_override(internal_mode)
                         result["mode"] = mode_name
 
             elif command == "start_coach":

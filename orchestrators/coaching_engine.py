@@ -28,6 +28,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Core imports
 from core.bus import get_bus, VisionEvent, publish_system_event
+from services.perception.bark_detector import get_bark_detector_service
 from core.state import get_state, SystemMode
 from core.store import get_store
 from core.behavior_interpreter import get_behavior_interpreter
@@ -705,6 +706,18 @@ class CoachingEngine:
         # Say the trick command using audio file from config (Layer 2)
         trick_rules = self.interpreter.get_trick_rules(trick)
         audio_file = trick_rules.get('audio_command', f'{trick}.mp3')
+
+        # For speak trick: suppress bark detection during audio playback to prevent
+        # speaker echo from triggering false bark events
+        speak_bark_svc = None
+        if trick == 'speak':
+            speak_bark_svc = get_bark_detector_service()
+            if speak_bark_svc:
+                # Suppress for estimated audio duration. We'll wait after audio
+                # to ensure suppression ends before we start listening.
+                speak_bark_svc.suppress_detection(2.5)
+                logger.debug("Bark detection suppressed for speak command audio")
+
         self._play_audio(audio_file, wait=True, timeout=5.0)
 
         # CRITICAL: Reset behavior tracking AFTER audio finishes
@@ -725,9 +738,11 @@ class CoachingEngine:
 
         # Start listening for barks if speak trick
         if trick == 'speak':
-            # Wait briefly to let any audio playback residue die down
-            # Otherwise the speaker audio gets picked up by bark detector
-            time.sleep(0.3)
+            # Wait for bark suppression to end + buffer for bark gate grace period.
+            # Suppression was 2.5s, audio is ~2s, so ~0.5s suppression remains.
+            # Add 0.7s buffer (covers remaining suppression + 150ms grace period + margin).
+            # Total wait: 1.2s after audio ends ensures clean slate for dog's bark.
+            time.sleep(1.2)
             self.bark_count = 0
             self.bark_timestamps = []
             self._listening_started_at = time.time()  # Record BEFORE enabling (for stale event filtering)

@@ -1848,6 +1848,217 @@ async def capture_photo_opencv():
         logger.error(f"Photo capture error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Camera Calibration endpoints
+@app.get("/camera/calibration")
+async def get_camera_calibration():
+    """Get current camera calibration settings"""
+    try:
+        from services.perception.detector import get_detector_service
+        detector = get_detector_service()
+
+        if not detector.camera_initialized or detector.camera is None:
+            return {
+                "success": False,
+                "error": "Camera not initialized",
+                "settings": None
+            }
+
+        # Get current controls from Picamera2
+        try:
+            metadata = detector.camera.capture_metadata()
+            controls = {
+                "awb_mode": metadata.get("AwbMode", "auto"),
+                "exposure_time": metadata.get("ExposureTime", 0),
+                "analogue_gain": metadata.get("AnalogueGain", 1.0),
+                "digital_gain": metadata.get("DigitalGain", 1.0),
+                "brightness": metadata.get("Brightness", 0.0),
+                "contrast": metadata.get("Contrast", 1.0),
+                "saturation": metadata.get("Saturation", 1.0),
+                "sharpness": metadata.get("Sharpness", 1.0),
+                "colour_gains": metadata.get("ColourGains", [1.0, 1.0]),
+                "lux": metadata.get("Lux", 0),
+                "colour_temperature": metadata.get("ColourTemperature", 0),
+            }
+            return {
+                "success": True,
+                "settings": controls,
+                "raw_metadata": metadata
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to read camera metadata: {e}",
+                "settings": None
+            }
+
+    except Exception as e:
+        logger.error(f"Camera calibration read error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/camera/calibrate")
+async def set_camera_calibration(request: Request):
+    """Set camera calibration settings
+
+    Accepts JSON with any of:
+    - awb_mode: "auto", "incandescent", "tungsten", "fluorescent", "indoor", "daylight", "cloudy"
+    - brightness: float (-1.0 to 1.0)
+    - contrast: float (0.0 to 2.0)
+    - saturation: float (0.0 to 2.0)
+    - sharpness: float (0.0 to 2.0)
+    - exposure_time: int (microseconds, 0 for auto)
+    - analogue_gain: float (1.0 to 16.0)
+    - save: bool (persist to robot config)
+    """
+    try:
+        from services.perception.detector import get_detector_service
+        detector = get_detector_service()
+
+        if not detector.camera_initialized or detector.camera is None:
+            raise HTTPException(status_code=400, detail="Camera not initialized")
+
+        body = await request.json()
+        controls = {}
+
+        # AWB mode mapping
+        awb_modes = {
+            "auto": 0, "incandescent": 1, "tungsten": 2, "fluorescent": 3,
+            "indoor": 4, "daylight": 5, "cloudy": 6, "custom": 7
+        }
+
+        if "awb_mode" in body:
+            mode = body["awb_mode"].lower()
+            if mode in awb_modes:
+                controls["AwbMode"] = awb_modes[mode]
+            else:
+                raise HTTPException(status_code=400, detail=f"Invalid AWB mode: {mode}")
+
+        # Direct controls
+        if "brightness" in body:
+            controls["Brightness"] = float(body["brightness"])
+        if "contrast" in body:
+            controls["Contrast"] = float(body["contrast"])
+        if "saturation" in body:
+            controls["Saturation"] = float(body["saturation"])
+        if "sharpness" in body:
+            controls["Sharpness"] = float(body["sharpness"])
+        if "exposure_time" in body:
+            controls["ExposureTime"] = int(body["exposure_time"])
+        if "analogue_gain" in body:
+            controls["AnalogueGain"] = float(body["analogue_gain"])
+
+        if not controls:
+            raise HTTPException(status_code=400, detail="No valid calibration settings provided")
+
+        # Apply controls
+        detector.camera.set_controls(controls)
+        logger.info(f"Camera calibration applied: {controls}")
+
+        # Optionally save to robot config
+        if body.get("save", False):
+            try:
+                from config.config_loader import get_config
+                import yaml
+
+                config = get_config()
+                profile_path = f"/home/morgan/dogbot/config/robot_profiles/{config.robot_id}.yaml"
+
+                with open(profile_path, 'r') as f:
+                    profile_data = yaml.safe_load(f)
+
+                # Add/update camera calibration section
+                if "camera" not in profile_data:
+                    profile_data["camera"] = {}
+
+                # Store human-readable values
+                if "awb_mode" in body:
+                    profile_data["camera"]["awb_mode"] = body["awb_mode"]
+                if "brightness" in body:
+                    profile_data["camera"]["brightness"] = body["brightness"]
+                if "contrast" in body:
+                    profile_data["camera"]["contrast"] = body["contrast"]
+                if "saturation" in body:
+                    profile_data["camera"]["saturation"] = body["saturation"]
+                if "sharpness" in body:
+                    profile_data["camera"]["sharpness"] = body["sharpness"]
+                if "exposure_time" in body:
+                    profile_data["camera"]["exposure_time"] = body["exposure_time"]
+                if "analogue_gain" in body:
+                    profile_data["camera"]["analogue_gain"] = body["analogue_gain"]
+
+                with open(profile_path, 'w') as f:
+                    yaml.dump(profile_data, f, default_flow_style=False)
+
+                logger.info(f"Camera calibration saved to {profile_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save calibration: {e}")
+                return {
+                    "success": True,
+                    "applied": controls,
+                    "saved": False,
+                    "save_error": str(e)
+                }
+
+        return {
+            "success": True,
+            "applied": controls,
+            "saved": body.get("save", False)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Camera calibration error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/camera/calibrate/auto")
+async def auto_calibrate_camera():
+    """Run auto-calibration sequence
+
+    Takes multiple samples and sets optimal AWB/exposure based on current scene.
+    """
+    try:
+        from services.perception.detector import get_detector_service
+        detector = get_detector_service()
+
+        if not detector.camera_initialized or detector.camera is None:
+            raise HTTPException(status_code=400, detail="Camera not initialized")
+
+        # Reset to auto mode first
+        detector.camera.set_controls({
+            "AwbEnable": True,
+            "AeEnable": True,
+        })
+
+        # Wait for auto-adjustment to settle
+        import time
+        time.sleep(2.0)
+
+        # Capture current auto-selected values
+        metadata = detector.camera.capture_metadata()
+
+        result = {
+            "success": True,
+            "auto_selected": {
+                "exposure_time": metadata.get("ExposureTime"),
+                "analogue_gain": metadata.get("AnalogueGain"),
+                "colour_gains": metadata.get("ColourGains"),
+                "colour_temperature": metadata.get("ColourTemperature"),
+                "lux": metadata.get("Lux"),
+            },
+            "message": "Auto-calibration complete. Use /camera/calibration to view current settings."
+        }
+
+        logger.info(f"Camera auto-calibration: {result['auto_selected']}")
+        return result
+
+    except Exception as e:
+        logger.error(f"Camera auto-calibration error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Camera Pan/Tilt Control endpoints
 @app.post("/camera/pantilt")
 async def camera_pantilt(request: PanTiltRequest):
@@ -3640,6 +3851,52 @@ async def get_network_status():
     except Exception as e:
         logger.error(f"Network status error: {e}")
         return {"mode": "unknown", "ssid": None, "ip": None, "internet": False, "error": str(e)}
+
+
+@app.post("/system/shutdown")
+async def system_shutdown():
+    """Gracefully shutdown the Raspberry Pi.
+
+    Plays shutdown announcement, stops all motors, then powers off.
+    Used by app Settings page for safe power-off.
+    """
+    import subprocess
+    import asyncio
+
+    try:
+        # Stop motors first
+        try:
+            from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+            motor_bus = get_motor_bus()
+            if motor_bus:
+                cmd = create_motor_command(0, 0, CommandSource.SYSTEM)
+                motor_bus.send_command(cmd)
+        except Exception as e:
+            logger.warning(f"Motor stop during shutdown: {e}")
+
+        # Play shutdown announcement
+        try:
+            from services.media.usb_audio import get_usb_audio_service
+            audio = get_usb_audio_service()
+            audio.play_file("/wimz/shutting_down.mp3")
+            await asyncio.sleep(2.0)  # Wait for audio
+        except Exception as e:
+            logger.warning(f"Shutdown audio error: {e}")
+
+        # Schedule poweroff in background (so we can return response first)
+        def do_poweroff():
+            import time
+            time.sleep(0.5)  # Brief delay for HTTP response
+            subprocess.run(['sudo', 'poweroff'], check=False)
+
+        import threading
+        threading.Thread(target=do_poweroff, daemon=True).start()
+
+        return {"success": True, "message": "Shutting down..."}
+
+    except Exception as e:
+        logger.error(f"Shutdown error: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/system/wifi/scan")

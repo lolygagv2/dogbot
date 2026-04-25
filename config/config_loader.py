@@ -146,6 +146,12 @@ class CameraConfig:
         """Camera rotation in degrees (0, 90, 180, 270). Default 90 for backward compat."""
         return self._config.get('rotation', 90)
 
+    def __getattr__(self, name: str):
+        """Allow access to any calibration setting (awb_mode, brightness, etc.)"""
+        if name.startswith('_'):
+            raise AttributeError(name)
+        return self._config.get(name)
+
 
 class DispenserConfig:
     """Dispenser-related configuration — stepper motor (NEMA 17 + TMC2209)."""
