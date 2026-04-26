@@ -615,12 +615,11 @@ class XboxHybridControllerFixed:
         return None
 
     def _get_dog_audio_path(self, sound_name: str) -> str:
-        """Get audio path, checking for dog-specific version first.
+        """Get audio path using centralized voice lookup.
 
-        Priority:
-        1. /talks/<dog_name>/<sound>.mp3 (dog-specific folder)
-        2. /talks/<dog_name>_<sound>.mp3 (dog-specific file in root)
-        3. /talks/default/<sound>.mp3 (default fallback)
+        Uses resolve_voice_file() with full fallback chain:
+        ArUco (5s TTL) > session dog > select_dog > default
+        Supports multi-extension (.wav, .mp3, .m4a, .aac)
 
         Args:
             sound_name: Sound name without extension (e.g., "good", "no", "quiet")
@@ -628,24 +627,19 @@ class XboxHybridControllerFixed:
         Returns:
             API path like "/talks/default/good.mp3"
         """
-        import os
-        base_path = "/home/morgan/dogbot/VOICEMP3"
+        try:
+            from services.media.voice_lookup import resolve_voice_file
+            full_path = resolve_voice_file(sound_name)
+            if full_path:
+                # Convert full path to API path
+                # /home/morgan/dogbot/VOICEMP3/talks/... -> /talks/...
+                api_path = full_path.replace("/home/morgan/dogbot/VOICEMP3", "")
+                logger.debug(f"Using voice file: {api_path}")
+                return api_path
+        except Exception as e:
+            logger.warning(f"Voice lookup failed: {e}")
 
-        dog = self._get_active_dog()
-        if dog:
-            # Try dog-specific folder first: /talks/elsa/good.mp3
-            dog_folder_path = f"{base_path}/talks/{dog}/{sound_name}.mp3"
-            if os.path.exists(dog_folder_path):
-                logger.debug(f"Using dog-specific audio: {dog}/{sound_name}.mp3")
-                return f"/talks/{dog}/{sound_name}.mp3"
-
-            # Try dog-prefixed file: /talks/elsa_good.mp3
-            dog_prefixed_path = f"{base_path}/talks/{dog}_{sound_name}.mp3"
-            if os.path.exists(dog_prefixed_path):
-                logger.debug(f"Using dog-prefixed audio: {dog}_{sound_name}.mp3")
-                return f"/talks/{dog}_{sound_name}.mp3"
-
-        # Default fallback
+        # Fallback
         return f"/talks/default/{sound_name}.mp3"
 
     def _start_api_worker(self):
