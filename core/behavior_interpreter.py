@@ -121,7 +121,7 @@ class BehaviorInterpreter:
 
         return {
             'sit': {'required_behavior': 'sit', 'hold_duration_sec': 1.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.65, 'audio_command': 'sit.mp3'},
-            'laydown': {'required_behavior': 'lie', 'hold_duration_sec': 1.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'lie_down.mp3'},
+            'laydown': {'required_behavior': 'lie', 'hold_duration_sec': 1.0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'laydown.mp3'},
             'come': {'required_behavior': 'stand', 'hold_duration_sec': 1.5, 'detection_window_sec': 10, 'alternative_behaviors': ['sit'], 'confidence_threshold': 0.60, 'audio_command': 'come.mp3'},
             'spin': {'required_behavior': 'spin', 'hold_duration_sec': 0.3, 'detection_window_sec': 15, 'alternative_behaviors': [], 'confidence_threshold': 0.70, 'audio_command': 'spin.mp3'},
             'speak': {'required_behavior': 'bark', 'hold_duration_sec': 0, 'detection_window_sec': 10, 'alternative_behaviors': [], 'confidence_threshold': 0.60, 'audio_command': 'speak.mp3', 'min_barks': 1, 'max_barks': 3},

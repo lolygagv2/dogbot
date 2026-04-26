@@ -158,7 +158,7 @@ class InteractiveTrainingGUI:
                 font=('Arial', 12, 'bold')).pack(pady=5)
 
         # Quick command buttons
-        quick_commands = ['sit', 'stay', 'lie_down', 'good_dog']
+        quick_commands = ['sit', 'stay', 'laydown', 'good_dog']
         for cmd in quick_commands:
             tk.Button(manual_frame, text=f"🔊 {cmd.replace('_', ' ').title()}",
                      command=lambda c=cmd: self.manual_command(c),
@@ -336,7 +336,7 @@ class InteractiveTrainingGUI:
             elif 'stay' in command:
                 self.initiate_training_sequence('stay')
             elif 'lie' in command or 'down' in command:
-                self.initiate_training_sequence('lie_down')
+                self.initiate_training_sequence('laydown')
 
         elif any(word in command for word in ['good', 'treat', 'reward']):
             # Immediate reward

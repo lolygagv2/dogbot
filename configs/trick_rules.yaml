@@ -27,7 +27,7 @@ tricks:
     alternative_behaviors: []         # Cross removed - unreliable detection
     confidence_threshold: 0.70        # Lowered - improved aspect ratio detection
     difficulty: 2
-    audio_command: "lie_down.mp3"
+    audio_command: "laydown.mp3"
 
   come:
     description: "Dog comes to robot (stands or sits after approaching)"

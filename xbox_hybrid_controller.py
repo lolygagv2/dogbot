@@ -339,7 +339,7 @@ class XboxHybridControllerFixed:
         # Audio files for each trick (from trick_rules.yaml)
         self._trick_audio = {
             'sit': 'sit.mp3',
-            'laydown': 'lie_down.mp3',
+            'laydown': 'laydown.mp3',
             'come': 'come.mp3',
             'spin': 'spin.mp3',
             'speak': 'speak.mp3'

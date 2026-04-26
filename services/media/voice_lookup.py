@@ -19,15 +19,6 @@ DEFAULT_DIR = 'default'
 # Real profile ids are timestamps like 'dog_1777167142852' (13+ digits).
 _GENERIC_TRACKER_RE = re.compile(r'^dog_-?\d{1,5}$')
 
-# Alias map: config names -> app upload names
-# Config uses lie_down.mp3, app uploads laydown.mp3
-COMMAND_ALIASES = {
-    'lie_down': 'laydown',
-    'good_dog': 'good',
-    'down': 'laydown',
-}
-
-
 def is_real_dog_id(d: Optional[str]) -> bool:
     """Check if dog_id is a real profile ID vs generic tracker ID."""
     if not d:
@@ -38,19 +29,11 @@ def is_real_dog_id(d: Optional[str]) -> bool:
 
 
 def _try_paths(dog_dir: str, command_id: str) -> Optional[str]:
-    """Try to find voice file with any supported extension, checking aliases."""
-    # Try exact command first
+    """Try to find voice file with any supported extension."""
     for ext in EXTENSIONS:
         p = os.path.join(VOICE_ROOT, dog_dir, f"{command_id}{ext}")
         if os.path.exists(p):
             return p
-    # Try alias (lie_down -> laydown, good_dog -> good)
-    alias = COMMAND_ALIASES.get(command_id)
-    if alias:
-        for ext in EXTENSIONS:
-            p = os.path.join(VOICE_ROOT, dog_dir, f"{alias}{ext}")
-            if os.path.exists(p):
-                return p
     return None
 
 
