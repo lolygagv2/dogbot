@@ -403,6 +403,15 @@ class CoachingEngine:
             if aruco_id in self.dog_names:
                 return self.dog_names[aruco_id]
 
+        # Fall back to app-selected dog name (for generic tracker IDs like dog_0)
+        try:
+            from core.state import get_state
+            state = get_state()
+            if state.current_dog_name:
+                return state.current_dog_name
+        except Exception:
+            pass
+
         return dog_id
 
     def _get_or_create_history(self, dog_id: str) -> DogHistory:
