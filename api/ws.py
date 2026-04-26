@@ -687,7 +687,16 @@ class TreatBotWebSocketServer:
                     result = {"success": False, "error": str(e)}
 
             elif command == "reload_dogs":
-                # App sends dog profiles on connect — acknowledge
+                # App sends dog profiles on connect — also set current dog for voice playback
+                from core.state import get_state
+                dog_data = data.get("data", data)
+                dog_id = dog_data.get("dog_id") or dog_data.get("id")
+                dog_name = dog_data.get("dog_name") or dog_data.get("name")
+                if dog_id:
+                    state = get_state()
+                    state.set_current_dog(dog_id, dog_name)
+                    result["selected_dog"] = {"dog_id": dog_id, "dog_name": dog_name}
+                    self.logger.info(f"[RELOAD_DOGS] Set current dog: {dog_name} ({dog_id})")
                 result["reloaded"] = True
 
             elif command == "select_dog":
