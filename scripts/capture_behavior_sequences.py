@@ -72,8 +72,10 @@ def main():
     ap.add_argument("--out", required=True, help="Output directory for .npz sequences")
     ap.add_argument("--dog", default="unknown", help="Dog name/id for filename")
     ap.add_argument("--condition", default="default", help="Lighting/scene tag for filename")
+    ap.add_argument("--session", default=None, help="Shared session id (use same value on both robots for paired captures)")
     ap.add_argument("--res", default="640x640", help="Capture resolution WxH")
     args = ap.parse_args()
+    session_id = args.session or str(int(time.time()))
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +130,7 @@ def main():
                         if len(buf) >= MIN_FRAMES:
                             seq_counter += 1
                             kpts_arr = np.stack(buf, axis=0).astype(np.float32)
-                            fname = f"{cam_type}_{BEHAVIORS[label]}_{args.dog}_{args.condition}_{int(time.time())}_{seq_counter}.npz"
+                            fname = f"{cam_type}_{BEHAVIORS[label]}_{args.dog}_{args.condition}_{session_id}_{seq_counter}.npz"
                             np.savez(out_dir / fname, kpts=kpts_arr, label=np.int64(label))
                             print(f"[capture] saved {fname}  frames={len(buf)}")
                         else:
