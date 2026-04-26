@@ -798,11 +798,8 @@ class MissionEngine:
                 self.audio.wait_for_completion(timeout=5.0)
 
         if not name_played:
-            name_audio = f'{dog_name.lower()}.mp3'
-            base_path = '/home/morgan/dogbot/VOICEMP3/talks'
-            if not os.path.exists(os.path.join(base_path, name_audio)):
-                name_audio = 'dogs_come.mp3'
-            self._play_audio(name_audio, wait=True, timeout=5.0)
+            # Play dog's name audio (app uploads as name.mp3)
+            self._play_audio('name.mp3', wait=True, timeout=5.0)
 
         time.sleep(0.5)
         session.state = MissionState.COMMAND
