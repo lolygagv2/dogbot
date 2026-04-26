@@ -140,7 +140,7 @@ class GeometricClassifier:
 
         # Fallback to aspect ratio only
         behavior, conf = self._classify_by_aspect(aspect_ratio)
-        return behavior, conf * 0.6, "aspect_only"  # Lower confidence for aspect-only
+        return behavior, conf, "aspect_only"
 
     def _normalize_keypoints(self, keypoints: np.ndarray, bbox: Tuple) -> np.ndarray:
         """Normalize keypoints to 0-1 within bounding box"""
