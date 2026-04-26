@@ -1433,10 +1433,6 @@ class TreatBotMain:
                                 self.logger.error(f"{command} error: {e}", exc_info=True)
                         else:
                             self.logger.warning(f"{command}: no audio file found for {voice_type}")
-                                except Exception as e:
-                                    self.logger.error(f"call_dog fallback error: {e}", exc_info=True)
-                            else:
-                                self.logger.error(f"{command}: voice file not found for type={voice_type}, dog={dog_id}")
 
                 # Scheduler commands
                 elif command == 'get_schedules':
