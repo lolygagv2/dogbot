@@ -787,11 +787,11 @@ class TreatBotWebSocketServer:
 
             elif command == "play_command":
                 # {"command": "play_command", "voice_type": "sit", "dog_id": "dog_123"}
-                from services.media.voice_lookup import get_voice_path
+                from services.media.voice_lookup import resolve_voice_file
                 voice_type = data.get("voice_type") or data.get("command_type")
                 dog_id = data.get("dog_id")
                 try:
-                    audio_path = get_voice_path(voice_type, dog_id)
+                    audio_path = resolve_voice_file(voice_type, dog_id_override=dog_id)
                     if audio_path:
                         usb_audio = get_usb_audio_service()
                         if usb_audio and usb_audio.is_initialized:
@@ -1514,11 +1514,11 @@ class TreatBotWebSocketServer:
 
         elif command == "play_command":
             # {"command": "play_command", "voice_type": "sit", "dog_id": "dog_123"}
-            from services.media.voice_lookup import get_voice_path
+            from services.media.voice_lookup import resolve_voice_file
             voice_type = data.get("voice_type") or data.get("command_type")
             dog_id = data.get("dog_id")
             try:
-                audio_path = get_voice_path(voice_type, dog_id)
+                audio_path = resolve_voice_file(voice_type, dog_id_override=dog_id)
                 if audio_path:
                     usb_audio = get_usb_audio_service()
                     if usb_audio and usb_audio.is_initialized:
