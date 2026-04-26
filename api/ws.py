@@ -690,6 +690,22 @@ class TreatBotWebSocketServer:
                 # App sends dog profiles on connect — acknowledge
                 result["reloaded"] = True
 
+            elif command == "select_dog":
+                # {"command": "select_dog", "data": {"dog_id": "dog_123", "dog_name": "Elsa"}}
+                # C3.1: Cache selected dog for per-dog voice playback
+                from core.state import get_state
+                dog_data = data.get("data", data)  # Support both nested and flat format
+                dog_id = dog_data.get("dog_id")
+                dog_name = dog_data.get("dog_name", dog_id)
+                if dog_id:
+                    state = get_state()
+                    state.set_current_dog(dog_id, dog_name)
+                    result["selected_dog"] = {"dog_id": dog_id, "dog_name": dog_name}
+                    self.logger.info(f"[SELECT_DOG] Selected: {dog_name} ({dog_id})")
+                else:
+                    result["success"] = False
+                    result["error"] = "dog_id required"
+
             elif command == "take_photo":
                 # {"command": "take_photo", "with_hud": true}
                 with_hud = data.get("with_hud", True)

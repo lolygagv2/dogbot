@@ -937,6 +937,8 @@ class SilentGuardianMode:
     def _play_audio(self, filename: str, wait: bool = True):
         """Play audio file from talks directory with speaker echo suppression.
 
+        Uses C3.2 voice resolution: intervention_dog_id > ArUco > session > select_dog > default
+
         Suppresses bark detection during playback + 2s buffer to prevent
         the robot's own speaker output from being classified as a bark.
 
@@ -951,22 +953,18 @@ class SilentGuardianMode:
             if filename.startswith('/'):
                 full_path = filename
             else:
-                # Check for dog-specific custom recording first
-                # e.g. VOICEMP3/talks/dog_1769842864722/quiet.mp3
-                full_path = None
-                if self.intervention_dog_id:
-                    custom_path = os.path.join(base, self.intervention_dog_id, filename)
-                    if os.path.exists(custom_path):
-                        full_path = custom_path
-                        logger.debug(f"Using custom voice: {custom_path}")
+                # C3.2: Use resolve_voice_file with fallback chain
+                # Strip .mp3 extension to get command name
+                command_id = filename.replace('.mp3', '').replace('.wav', '')
+                from services.media.voice_lookup import resolve_voice_file
+                full_path = resolve_voice_file(command_id, dog_id_override=self.intervention_dog_id)
 
-                # Fall back to default
+                # Legacy fallback if resolve_voice_file returns None
                 if full_path is None:
                     default_path = os.path.join(base, 'default', filename)
                     if os.path.exists(default_path):
                         full_path = default_path
                     else:
-                        # Legacy: try directly in talks dir
                         full_path = os.path.join(base, filename)
 
             if os.path.exists(full_path):

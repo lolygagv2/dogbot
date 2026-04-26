@@ -185,6 +185,16 @@ class StateManager:
         self._mode_locked = False
         self._mode_lock_reason = None
 
+        # Current dog selection (C3.1 - persisted across restarts)
+        # Priority: ArUco (5s) > session dog_id > select_dog > None
+        self._current_dog_id: Optional[str] = None
+        self._current_dog_name: Optional[str] = None
+        self._last_aruco_dog_id: Optional[str] = None
+        self._last_aruco_time: float = 0.0
+        self._session_dog_id: Optional[str] = None  # From start_coach/start_mission
+        self._STATE_FILE = "/home/morgan/dogbot/data/robot_state.json"
+        self._load_persisted_state()
+
     def lock_mode(self, reason: str):
         """Lock mode - only mission system should call this."""
         with self._lock:
@@ -204,6 +214,99 @@ class StateManager:
         """Check if mode is locked."""
         with self._lock:
             return self._mode_locked
+
+    # === Dog Selection (C3.1) ===
+
+    def _load_persisted_state(self):
+        """Load persisted state from disk (called on init)."""
+        try:
+            with open(self._STATE_FILE, 'r') as f:
+                data = json.load(f)
+                self._current_dog_id = data.get('current_dog_id')
+                self._current_dog_name = data.get('current_dog_name')
+                if self._current_dog_id:
+                    self.logger.info(f"[STATE] Loaded persisted dog: {self._current_dog_name} ({self._current_dog_id})")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            self.logger.warning(f"[STATE] Could not load persisted state: {e}")
+
+    def _save_persisted_state(self):
+        """Save current_dog_id to disk for restart persistence."""
+        try:
+            data = {
+                'current_dog_id': self._current_dog_id,
+                'current_dog_name': self._current_dog_name,
+            }
+            with open(self._STATE_FILE, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            self.logger.warning(f"[STATE] Could not save persisted state: {e}")
+
+    def set_current_dog(self, dog_id: str, dog_name: str = None):
+        """Set current dog from app's select_dog command. Persists across restarts."""
+        with self._lock:
+            self._current_dog_id = dog_id
+            self._current_dog_name = dog_name or dog_id
+            self._save_persisted_state()
+            self.logger.info(f"[DOG] Selected: {self._current_dog_name} ({dog_id})")
+
+    def set_session_dog(self, dog_id: str):
+        """Set dog_id for active coach/mission session. Clears on session end."""
+        with self._lock:
+            self._session_dog_id = dog_id
+            self.logger.info(f"[DOG] Session dog: {dog_id}")
+
+    def clear_session_dog(self):
+        """Clear session dog_id when coach/mission ends."""
+        with self._lock:
+            self._session_dog_id = None
+
+    def update_aruco_dog(self, dog_id: str):
+        """Update last ArUco-identified dog (called on ArUco detection)."""
+        with self._lock:
+            self._last_aruco_dog_id = dog_id
+            self._last_aruco_time = time.time()
+
+    def get_active_dog_id(self, aruco_ttl: float = 5.0) -> Optional[str]:
+        """Get the currently active dog_id using fallback chain.
+
+        Priority (highest wins):
+        (a) ArUco-identified dog within aruco_ttl seconds
+        (b) Session dog_id (from start_coach/start_mission)
+        (c) select_dog from app (persisted)
+        (d) None
+
+        Args:
+            aruco_ttl: Seconds ArUco detection remains valid (default 5s)
+
+        Returns:
+            dog_id string or None
+        """
+        with self._lock:
+            # (a) ArUco within TTL
+            if self._last_aruco_dog_id and (time.time() - self._last_aruco_time) < aruco_ttl:
+                return self._last_aruco_dog_id
+            # (b) Session dog
+            if self._session_dog_id:
+                return self._session_dog_id
+            # (c) App-selected dog
+            if self._current_dog_id:
+                return self._current_dog_id
+            # (d) None
+            return None
+
+    @property
+    def current_dog_id(self) -> Optional[str]:
+        """Get app-selected dog_id (select_dog). Use get_active_dog_id() for full fallback."""
+        with self._lock:
+            return self._current_dog_id
+
+    @property
+    def current_dog_name(self) -> Optional[str]:
+        """Get app-selected dog name."""
+        with self._lock:
+            return self._current_dog_name
 
     def set_mode(self, new_mode: SystemMode, reason: str = "", force: bool = False) -> bool:
         """

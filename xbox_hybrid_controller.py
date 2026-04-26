@@ -565,25 +565,41 @@ class XboxHybridControllerFixed:
         self._last_dog_check = 0
 
     def _get_active_dog(self) -> Optional[str]:
-        """Get the currently active dog name from coaching engine or last detection.
+        """Get the currently active dog using C3.2 fallback chain.
 
-        Caches result for 10 seconds to avoid excessive API calls.
-        Returns None if no dog is active or offline.
+        Priority (highest wins):
+        (a) ArUco-identified dog within 5 seconds
+        (b) Session dog_id (coaching/mission)
+        (c) App's select_dog (persisted)
+
+        Caches result for 10 seconds to avoid excessive state checks.
+        Returns dog_id string or None if no dog is active.
         """
         current_time = time.time()
         if current_time - self._last_dog_check < 10.0:
             return self._active_dog
 
         try:
+            # Use state's centralized fallback chain (C3.2)
+            from core.state import get_state
+            state = get_state()
+            dog_id = state.get_active_dog_id(aruco_ttl=5.0)
+            if dog_id:
+                self._active_dog = dog_id
+                self._last_dog_check = current_time
+                return self._active_dog
+        except Exception as e:
+            logger.debug(f"Could not get active dog from state: {e}")
+
+        # Fallback to API (for cases where state isn't available)
+        try:
             result = self.api_request_blocking('GET', '/coaching/status', timeout=1)
             if result:
-                # Check forced dog first (for demo recording)
                 forced = result.get('forced_dog')
                 if forced:
                     self._active_dog = forced.lower()
                     self._last_dog_check = current_time
                     return self._active_dog
-                # Check current session's dog
                 session = result.get('current_session')
                 if session and session.get('dog_name'):
                     dog_name = session['dog_name']

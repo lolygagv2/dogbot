@@ -1045,6 +1045,12 @@ class DetectorService:
             if dog_index not in self._dog_identity_cache or self._dog_identity_cache[dog_index] != aruco_name:
                 self.logger.info(f"[IDENTITY] dog_{dog_index} identified as '{aruco_name}' - caching")
             self._dog_identity_cache[dog_index] = aruco_name
+            # C3.1: Update state's ArUco dog for voice fallback chain
+            try:
+                from core.state import get_state
+                get_state().update_aruco_dog(aruco_name)
+            except Exception:
+                pass
             return (dog_id, aruco_name)
 
         # No ARUCO this frame - check cache

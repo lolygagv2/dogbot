@@ -67,6 +67,45 @@ def get_voice_path(voice_type: str, dog_id: str = None) -> str | None:
     return None
 
 
+def resolve_voice_file(command_id: str, dog_id_override: str = None) -> str | None:
+    """
+    Resolve voice file using C3.2 fallback chain.
+
+    This is the main entry point for autonomous voice triggers (coach rewards,
+    Silent Guardian, Xbox controller buttons). Use this instead of get_voice_path()
+    when you don't have a specific dog_id and want automatic resolution.
+
+    Fallback chain (highest priority wins):
+    (a) dog_id_override if provided
+    (b) ArUco-identified dog within last 5 seconds
+    (c) Session dog_id (from start_coach/start_mission)
+    (d) select_dog from app (persisted)
+    (e) Default voice file
+
+    Args:
+        command_id: Voice command (sit, good, no, quiet, treat, come, etc.)
+        dog_id_override: Explicit dog_id to use (skips fallback chain)
+
+    Returns:
+        Path to voice file, or None if not found
+    """
+    # Get dog_id from fallback chain
+    dog_id = dog_id_override
+    if not dog_id:
+        try:
+            from core.state import get_state
+            state = get_state()
+            dog_id = state.get_active_dog_id(aruco_ttl=5.0)
+        except Exception as e:
+            logger.warning(f"[VOICE] Could not get active dog_id: {e}")
+
+    # Resolve using existing get_voice_path
+    path = get_voice_path(command_id, dog_id)
+    if path:
+        logger.info(f"[VOICE] Resolved: {command_id} -> {path} (dog={dog_id or 'default'})")
+    return path
+
+
 def get_songs_folder(dog_id: str = None) -> str:
     """
     Get folder for songs. Uses custom if exists and has files, else default.

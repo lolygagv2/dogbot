@@ -578,6 +578,13 @@ class CoachingEngine:
             trick_requested=trick
         )
 
+        # C3.1: Set session dog in state for voice fallback chain
+        try:
+            from core.state import get_state
+            get_state().set_session_dog(dog_id)
+        except Exception:
+            pass
+
         self.fsm_state = CoachState.GREETING
         logger.info(f"[COACH] Session started: dog={dog_name}, trick={trick}")
 
@@ -594,6 +601,11 @@ class CoachingEngine:
             logger.info("Dog left during attention check")
             self.fsm_state = CoachState.WAITING_FOR_DOG
             self.current_session = None
+            try:
+                from core.state import get_state
+                get_state().clear_session_dog()
+            except Exception:
+                pass
             return
 
         # Attention confirmed
@@ -1071,6 +1083,12 @@ class CoachingEngine:
                     history.last_tricks = history.last_tricks[-3:]
 
             self.current_session = None
+            # C3.1: Clear session dog in state
+            try:
+                from core.state import get_state
+                get_state().clear_session_dog()
+            except Exception:
+                pass
 
         # CRITICAL: Clear dogs_in_view to prevent immediate re-detection
         # Without this, the same dog (possibly with different ID) would
