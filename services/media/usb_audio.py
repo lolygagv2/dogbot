@@ -570,22 +570,19 @@ class USBAudioService:
             return {"success": False, "error": "Audio not initialized"}
 
         try:
-            from services.media.voice_manager import get_voice_manager
-            voice_manager = get_voice_manager()
+            from services.media.voice_lookup import resolve_voice_file
 
-            # Get voice path (custom or default)
-            voice_path = None
-            voice_source = "default"
+            # Use centralized voice lookup with full fallback chain:
+            # dog_id_override > ArUco (5s TTL) > session dog > select_dog > default
+            # Also handles multi-extension (.wav, .mp3, .m4a, .aac)
+            voice_path = resolve_voice_file(command, dog_id_override=dog_id)
 
-            if dog_id:
-                voice_path = voice_manager.get_voice_path(dog_id, command)
-                if voice_path and "/dog_" in voice_path:
-                    voice_source = "custom"
-
-            # If no custom voice found, try default path
             if not voice_path:
-                voice_path = f"/talks/default/{command}.mp3"
-                voice_source = "default"
+                self.logger.warning(f"No voice file found for '{command}'")
+                return {"success": False, "error": f"Voice file not found: {command}"}
+
+            # Determine source for logging
+            voice_source = "custom" if "/dog_" in voice_path else "default"
 
             # Play the voice
             result = self.play_file(voice_path, loop=loop)
@@ -598,9 +595,9 @@ class USBAudioService:
 
             return result
 
-        except ImportError:
-            # VoiceManager not available, fall back to default
-            return self.play_file(f"/talks/default/{command}.mp3", loop=loop)
+        except ImportError as e:
+            self.logger.error(f"voice_lookup import failed: {e}")
+            return {"success": False, "error": "Voice lookup unavailable"}
         except Exception as e:
             self.logger.error(f"Play command error: {e}")
             return {"success": False, "error": str(e)}
