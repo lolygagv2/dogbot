@@ -10,7 +10,7 @@
   "camera_rotation_deg": 90,
   "hef_path": "dogpose_14.hef",
   "detect_path": "dogdetector_14.hef",
-  "behavior_head_ts": "behavior_14.ts",
+  "behavior_head_ts": "",
   "debug_cpu_pose_pt": ""
 }
 

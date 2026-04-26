@@ -231,8 +231,13 @@ class AI3StageControllerFixed:
                 return False
             logger.info("Pose model loaded successfully (provides both detection + keypoints)")
 
-            # Load TorchScript behavior model (CPU)
-            self.behavior_model_path = Path("ai/models") / self.config.get("behavior_head_ts", "behavior_14.ts")
+            # Load TorchScript behavior model (CPU) — camera-aware selection.
+            # IMX500 vs IMX708 cameras produce different keypoint distributions
+            # due to FOV differences, so each ships with its own trained model.
+            from services.perception.camera_detect import behavior_model_for_camera
+            override = (self.config.get("behavior_head_ts") or "").strip()
+            model_name = override if override else behavior_model_for_camera()
+            self.behavior_model_path = Path("ai/models") / model_name
             if self.behavior_model_path.exists():
                 self.behavior_model = torch.jit.load(str(self.behavior_model_path), map_location="cpu").eval()
                 logger.info(f"TorchScript behavior model loaded: {self.behavior_model_path.name}")
