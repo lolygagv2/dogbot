@@ -595,19 +595,25 @@ class MissionEngine:
         return dog_id
 
     def _play_audio(self, filename: str, wait: bool = True, timeout: float = 5.0):
-        """Play audio file (same as coaching engine)"""
+        """Play audio file using C3.2 per-dog voice resolution."""
         if not self.audio:
             return
 
         try:
             base_path = '/home/morgan/dogbot/VOICEMP3/talks'
-            full_path = os.path.join(base_path, filename)
 
-            if not os.path.exists(full_path):
-                # Try default directory
-                full_path = os.path.join(base_path, 'default', filename)
+            # C3.2: Use resolve_voice_file with fallback chain
+            command_id = filename.replace('.mp3', '').replace('.wav', '')
+            from services.media.voice_lookup import resolve_voice_file
+            full_path = resolve_voice_file(command_id)
 
-            if os.path.exists(full_path):
+            # Legacy fallback if resolve_voice_file returns None
+            if not full_path:
+                full_path = os.path.join(base_path, filename)
+                if not os.path.exists(full_path):
+                    full_path = os.path.join(base_path, 'default', filename)
+
+            if full_path and os.path.exists(full_path):
                 self.audio.play_file(full_path)
                 if wait:
                     self.audio.wait_for_completion(timeout=timeout)
@@ -927,7 +933,7 @@ class MissionEngine:
         self.logger.debug(f"Mission stage success: {trick} by {dog_name}")
 
         # Play success audio
-        self._play_audio('good_dog.mp3', wait=True, timeout=3.0)
+        self._play_audio('good.mp3', wait=True, timeout=3.0)
 
         # LED celebration
         if self.led:
@@ -972,7 +978,7 @@ class MissionEngine:
             return
 
         self.logger.debug(f"First attempt failed, retrying")
-        self._play_audio('good_dog.mp3', wait=True, timeout=2.0)  # "Good try!"
+        self._play_audio('good.mp3', wait=True, timeout=2.0)  # "Good try!"
         time.sleep(1.0)
         session.state = MissionState.RETRY_GREETING
 
@@ -1031,7 +1037,7 @@ class MissionEngine:
         self.logger.debug(f"Mission stage failed after retry: {trick}")
 
         # Play consolation
-        self._play_audio('good_dog.mp3', wait=True, timeout=2.0)
+        self._play_audio('good.mp3', wait=True, timeout=2.0)
 
         # Send failure to app
         self._send_mission_status("failed", trick)

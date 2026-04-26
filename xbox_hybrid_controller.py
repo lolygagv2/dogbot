@@ -357,7 +357,7 @@ class XboxHybridControllerFixed:
         # Command cycling (B button) - Sit, Speak, Stay, Quiet, LieDown, Spin
         # Uses sound names for dog-aware path resolution
         self._command_cycle_index = 0
-        self._command_names = ["sit", "speak", "stay", "quiet", "lie_down", "spin"]
+        self._command_names = ["sit", "speak", "stay", "quiet", "laydown", "spin"]
         self._command_pending_timer: Optional[Timer] = None
         self._command_last_cycle_time = 0  # For auto-reset after idle
         self._CYCLE_RESET_TIMEOUT = 2.0  # Reset to first track after 2s idle
@@ -1858,9 +1858,10 @@ class XboxHybridControllerFixed:
 
 
     def play_reward_sound(self):
-        """Play TREAT sound (Y button)"""
-        logger.info("Y button: Playing 'Treat' sound")
-        self.api_request('POST', '/audio/play/file', {"filepath": "/talks/default/treat.mp3"})
+        """Play TREAT sound (Y button) - uses per-dog voice if available"""
+        audio_path = self._get_dog_audio_path("treat")
+        logger.info(f"Y button: Playing 'Treat' sound ({audio_path})")
+        self.api_request('POST', '/audio/play/file', {"filepath": audio_path})
 
 
     def play_selected_talk(self):

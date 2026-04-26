@@ -834,7 +834,7 @@ class SilentGuardianMode:
         max_treats = self.config.get('session_limits', {}).get('max_treats', 11)
         if self.treats_dispensed >= max_treats:
             logger.info(f"Treat limit reached ({self.treats_dispensed}/{max_treats})")
-            self._play_audio('good_dog.mp3')
+            self._play_audio('good.mp3')
             return
 
         # Check treat eligibility (anti-farming)
@@ -848,7 +848,7 @@ class SilentGuardianMode:
             logger.info(f"Verbal praise only - treat cooldown ({cooldown_remaining/60:.1f} min remaining)")
             if self.led:
                 self.led.set_pattern('success', duration=2.0)
-            self._play_audio('good_dog.mp3')
+            self._play_audio('good.mp3')
 
             # Log intervention without treat
             self.store.log_sg_intervention(
@@ -866,9 +866,9 @@ class SilentGuardianMode:
         if self.led:
             self.led.celebration_sequence(3.0)
 
-        # Play good_dog.mp3 for reward
-        logger.info("SG_REWARD: Playing good_dog.mp3")
-        self._play_audio('good_dog.mp3')
+        # Play good.mp3 for reward
+        logger.info("SG_REWARD: Playing good.mp3")
+        self._play_audio('good.mp3')
         time.sleep(1.0)
 
         # Dispense treat
