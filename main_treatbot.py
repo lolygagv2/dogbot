@@ -1672,6 +1672,17 @@ class TreatBotMain:
                     dispenser.reset_treat_counter()
                     self.logger.info("Treat counter reset via cloud")
 
+                elif command in ('select_dog', 'reload_dogs'):
+                    from core.state import get_state
+                    dog_id = params.get('dog_id') or params.get('id')
+                    dog_name = params.get('dog_name') or params.get('name')
+                    if dog_id:
+                        state = get_state()
+                        state.set_current_dog(dog_id, dog_name)
+                        self.logger.info(f"[SELECT_DOG] Set current dog: {dog_name} ({dog_id})")
+                    else:
+                        self.logger.warning(f"select_dog: no dog_id in params={params}")
+
                 else:
                     self.logger.warning(f"Unknown cloud command: {command}")
 
