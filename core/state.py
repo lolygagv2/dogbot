@@ -262,8 +262,33 @@ class StateManager:
         with self._lock:
             self._session_dog_id = None
 
+    @staticmethod
+    def _is_real_dog_id(dog_id: str) -> bool:
+        """Check if dog_id is a real profile ID vs generic tracker ID.
+
+        Rejects generic auto-tracker ids like dog_0, dog_-1000, dog_5.
+        Real profile ids come from the relay/app and look like
+        dog_1777167142852 (timestamp-based, not small integers).
+        """
+        if not dog_id:
+            return False
+        if dog_id.startswith("dog_"):
+            try:
+                suffix = dog_id.split("_", 1)[1]
+                val = int(suffix)
+                # Generic tracker IDs are small integers or negative
+                # Real profile IDs are timestamps (13+ digits)
+                if val < 1000000000000:  # Before year 2001 in ms
+                    return False
+            except (ValueError, IndexError):
+                pass
+        return True
+
     def update_aruco_dog(self, dog_id: str):
-        """Update last ArUco-identified dog (called on ArUco detection)."""
+        """Update last ArUco-identified dog (called on ArUco detection).
+        Only accepts real profile IDs, not generic tracker IDs like dog_0."""
+        if not self._is_real_dog_id(dog_id):
+            return  # Ignore generic tracker IDs
         with self._lock:
             self._last_aruco_dog_id = dog_id
             self._last_aruco_time = time.time()
@@ -284,14 +309,14 @@ class StateManager:
             dog_id string or None
         """
         with self._lock:
-            # (a) ArUco within TTL
+            # (a) ArUco within TTL (already filtered at write time)
             if self._last_aruco_dog_id and (time.time() - self._last_aruco_time) < aruco_ttl:
                 return self._last_aruco_dog_id
-            # (b) Session dog
-            if self._session_dog_id:
+            # (b) Session dog (filter generic IDs)
+            if self._session_dog_id and self._is_real_dog_id(self._session_dog_id):
                 return self._session_dog_id
-            # (c) App-selected dog
-            if self._current_dog_id:
+            # (c) App-selected dog (filter generic IDs)
+            if self._current_dog_id and self._is_real_dog_id(self._current_dog_id):
                 return self._current_dog_id
             # (d) None
             return None

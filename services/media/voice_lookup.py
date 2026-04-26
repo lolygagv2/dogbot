@@ -17,6 +17,27 @@ AUDIO_EXTENSIONS = ('.wav', '.mp3', '.m4a', '.aac')
 # Valid voice commands (matches app buttons)
 VOICE_TYPES = ['sit', 'laydown', 'come', 'stay', 'no', 'good', 'treat', 'quiet', 'speak', 'spin', 'name']
 
+def _is_real_dog_id(dog_id: str) -> bool:
+    """Check if dog_id is a real profile ID vs generic tracker ID.
+
+    Rejects generic auto-tracker ids like dog_0, dog_-1000, dog_5.
+    Real profile ids from the app look like dog_1777167142852 (timestamp-based).
+    """
+    if not dog_id:
+        return False
+    if dog_id.startswith("dog_"):
+        try:
+            suffix = dog_id.split("_", 1)[1]
+            val = int(suffix)
+            # Generic tracker IDs are small integers or negative
+            # Real profile IDs are timestamps (13+ digits, > 1e12)
+            if val < 1000000000000:
+                return False
+        except (ValueError, IndexError):
+            pass
+    return True
+
+
 # Alias map: voice_type -> actual default filename when {voice_type}.mp3 doesn't exist
 VOICE_FILE_MAP = {
     'good': 'good_dog.mp3',
@@ -99,6 +120,12 @@ def resolve_voice_file(command_id: str, dog_id_override: str = None) -> str | No
 
     # Get dog_id from fallback chain
     dog_id = dog_id_override
+
+    # Filter out generic tracker IDs like dog_0, dog_-1000
+    if dog_id and not _is_real_dog_id(dog_id):
+        logger.debug(f"[VOICE] Ignoring generic tracker ID: {dog_id}")
+        dog_id = None
+
     if not dog_id:
         try:
             from core.state import get_state
