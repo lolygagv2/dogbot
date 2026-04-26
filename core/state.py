@@ -333,6 +333,23 @@ class StateManager:
         with self._lock:
             return self._current_dog_name
 
+    def get_aruco_dog_within(self, seconds: float = 5.0) -> Optional[str]:
+        """Get ArUco-identified dog if detected within seconds."""
+        with self._lock:
+            if self._last_aruco_dog_id and (time.time() - self._last_aruco_time) < seconds:
+                return self._last_aruco_dog_id
+            return None
+
+    def get_session_dog_id(self) -> Optional[str]:
+        """Get session dog_id (from start_coach/start_mission)."""
+        with self._lock:
+            return self._session_dog_id
+
+    def get_current_dog_id(self) -> Optional[str]:
+        """Get app-selected dog_id (from select_dog/reload_dogs)."""
+        with self._lock:
+            return self._current_dog_id
+
     def set_mode(self, new_mode: SystemMode, reason: str = "", force: bool = False) -> bool:
         """
         Change system mode with validation and lock protection.

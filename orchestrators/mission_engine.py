@@ -600,25 +600,16 @@ class MissionEngine:
             return
 
         try:
-            base_path = '/home/morgan/dogbot/VOICEMP3/talks'
-
-            # C3.2: Use resolve_voice_file with fallback chain
-            command_id = filename.replace('.mp3', '').replace('.wav', '')
             from services.media.voice_lookup import resolve_voice_file
+            command_id = filename.replace('.mp3', '').replace('.wav', '')
             full_path = resolve_voice_file(command_id)
 
-            # Legacy fallback if resolve_voice_file returns None
-            if not full_path:
-                full_path = os.path.join(base_path, filename)
-                if not os.path.exists(full_path):
-                    full_path = os.path.join(base_path, 'default', filename)
-
-            if full_path and os.path.exists(full_path):
+            if full_path:
                 self.audio.play_file(full_path)
                 if wait:
                     self.audio.wait_for_completion(timeout=timeout)
             else:
-                self.logger.warning(f"Audio file not found: {filename}")
+                self.logger.warning(f"Audio file not found via resolve_voice_file: {command_id}")
         except Exception as e:
             self.logger.error(f"Audio playback error: {e}")
 

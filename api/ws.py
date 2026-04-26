@@ -491,11 +491,10 @@ class TreatBotWebSocketServer:
 
             elif command == "call_dog":
                 # {"command": "call_dog", "dog_id": "dog_123"} - plays 'come' command
-                # Same logic as relay path in main_treatbot.py
-                from services.media.voice_lookup import get_voice_path
+                from services.media.voice_lookup import resolve_voice_file
                 dog_id = data.get("dog_id")
                 try:
-                    audio_path = get_voice_path("come", dog_id)
+                    audio_path = resolve_voice_file("come", dog_id_override=dog_id)
                     if audio_path:
                         usb_audio = get_usb_audio_service()
                         if usb_audio and usb_audio.is_initialized:
@@ -504,14 +503,7 @@ class TreatBotWebSocketServer:
                         else:
                             result = {"success": False, "command": command, "error": "USB audio not initialized"}
                     else:
-                        # Fallback to default come.mp3
-                        fallback = "/home/morgan/dogbot/VOICEMP3/talks/default/come.mp3"
-                        usb_audio = get_usb_audio_service()
-                        if usb_audio and usb_audio.is_initialized:
-                            usb_audio.play_file(fallback)
-                            self.logger.info(f"call_dog: fallback {fallback}")
-                        else:
-                            result = {"success": False, "command": command, "error": "Voice not found and USB audio not initialized"}
+                        result = {"success": False, "command": command, "error": "Voice file not found for 'come'"}
                 except Exception as e:
                     self.logger.error(f"call_dog error: {e}")
                     result = {"success": False, "command": command, "error": str(e)}
@@ -688,10 +680,12 @@ class TreatBotWebSocketServer:
 
             elif command == "reload_dogs":
                 # App sends dog profiles on connect — also set current dog for voice playback
+                self.logger.info(f"[RELOAD_DOGS] Received data: {data}")
                 from core.state import get_state
                 dog_data = data.get("data", data)
                 dog_id = dog_data.get("dog_id") or dog_data.get("id")
                 dog_name = dog_data.get("dog_name") or dog_data.get("name")
+                self.logger.info(f"[RELOAD_DOGS] Parsed: dog_id={dog_id} dog_name={dog_name}")
                 if dog_id:
                     state = get_state()
                     state.set_current_dog(dog_id, dog_name)

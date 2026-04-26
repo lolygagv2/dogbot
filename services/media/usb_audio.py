@@ -591,7 +591,7 @@ class USBAudioService:
             result["dog_id"] = dog_id
 
             if result.get("success"):
-                self.logger.info(f"Playing {voice_source} voice for '{command}' (dog={dog_id})")
+                self.logger.info(f"USBAudio: playing {voice_path} (cmd={command}, dog={dog_id})")
 
             return result
 

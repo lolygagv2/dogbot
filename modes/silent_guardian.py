@@ -947,27 +947,14 @@ class SilentGuardianMode:
             wait: If True, wait for audio to finish before returning
         """
         try:
-            audio_config = self.config.get('audio_paths', {})
-            base = audio_config.get('talks', '/home/morgan/dogbot/VOICEMP3/talks')
-
             if filename.startswith('/'):
                 full_path = filename
             else:
-                # C3.2: Use resolve_voice_file with fallback chain
-                # Strip .mp3 extension to get command name
-                command_id = filename.replace('.mp3', '').replace('.wav', '')
                 from services.media.voice_lookup import resolve_voice_file
+                command_id = filename.replace('.mp3', '').replace('.wav', '')
                 full_path = resolve_voice_file(command_id, dog_id_override=self.intervention_dog_id)
 
-                # Legacy fallback if resolve_voice_file returns None
-                if full_path is None:
-                    default_path = os.path.join(base, 'default', filename)
-                    if os.path.exists(default_path):
-                        full_path = default_path
-                    else:
-                        full_path = os.path.join(base, filename)
-
-            if os.path.exists(full_path):
+            if full_path and os.path.exists(full_path):
                 if self.audio:
                     # Suppress bark detection during playback + buffer
                     # This prevents the mic from picking up the speaker output

@@ -1104,47 +1104,27 @@ class CoachingEngine:
         logger.info("Returning to WAITING_FOR_DOG state")
 
     def _play_audio(self, filename: str, wait: bool = False, timeout: float = 5.0):
-        """Play audio file, using custom voice when dog_id is available
-
-        Args:
-            filename: Audio filename (e.g., 'bezik.mp3') or command name
-            wait: If True, block until audio finishes (up to timeout)
-            timeout: Max seconds to wait for audio completion (default 5s)
-        """
+        """Play audio file using resolve_voice_file for ALL path resolution."""
         try:
             if not self.audio:
                 logger.warning(f"_play_audio({filename}): audio service not available")
                 return
 
-            # Try custom voice via play_command when session has dog_id
+            from services.media.voice_lookup import resolve_voice_file
+
+            # Strip extension to get command name
+            command = filename.replace('.mp3', '').replace('.wav', '')
+
+            # resolve_voice_file handles the entire fallback chain
             dog_id = self.current_session.dog_id if self.current_session else None
-            if dog_id:
-                # Strip .mp3 extension to get command name for play_command()
-                command = filename.replace('.mp3', '').replace('.wav', '')
-                result = self.audio.play_command(command, dog_id=dog_id)
-                if result.get('success'):
-                    logger.info(f"Playing audio: {command} (dog={dog_id}, source={result.get('voice_source', '?')})")
-                    if wait:
-                        self.audio.wait_for_completion(timeout=timeout)
-                    return
-                else:
-                    logger.warning(f"play_command failed for '{command}' (dog={dog_id}): {result.get('error', 'unknown')}")
+            path = resolve_voice_file(command, dog_id_override=dog_id)
 
-            # Fallback to direct file path — check default/ subfolder too
-            base = '/home/morgan/dogbot/VOICEMP3/talks'
-            full_path = os.path.join(base, filename)
-
-            if not os.path.exists(full_path):
-                # Try default/ subfolder
-                full_path = os.path.join(base, 'default', filename)
-
-            if os.path.exists(full_path):
-                logger.info(f"Playing audio (fallback): {full_path}")
-                self.audio.play_file(full_path)
+            if path:
+                self.audio.play_file(path)
                 if wait:
                     self.audio.wait_for_completion(timeout=timeout)
             else:
-                logger.warning(f"Audio file not found: {filename} (checked talks/ and talks/default/)")
+                logger.warning(f"Audio file not found via resolve_voice_file: {command}")
 
         except Exception as e:
             logger.error(f"Audio playback error for '{filename}': {e}")

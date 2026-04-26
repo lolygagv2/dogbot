@@ -172,53 +172,9 @@ class VoiceManager:
             }
 
     def get_voice_path(self, dog_id: str, command: str) -> Optional[str]:
-        """
-        Get the path to a voice file for a command.
-
-        Priority:
-        1. Custom voice for this dog
-        2. Default voice from VOICEMP3/talks/
-
-        Args:
-            dog_id: Dog identifier
-            command: Command name
-
-        Returns:
-            Path to audio file, or None if not found
-        """
-        command = command.lower()
-        safe_dog_id = self._sanitize_filename(str(dog_id))
-
-        # Handle dog_id with or without 'dog_' prefix
-        folder_name = safe_dog_id if safe_dog_id.startswith("dog_") else f"dog_{safe_dog_id}"
-
-        # Check for custom voice in VOICEMP3/talks/{folder}/
-        custom_path = VOICES_BASE_DIR / folder_name / f"{command}.mp3"
-        if custom_path.exists():
-            self.logger.info(f"Using custom voice: {custom_path}")
-            return str(custom_path)
-
-        # Fallback to default voice in VOICEMP3/talks/default/
-        default_path = DEFAULT_VOICES_DIR / f"{command}.mp3"
-        if default_path.exists():
-            self.logger.debug(f"Using default voice: {default_path}")
-            return str(default_path)
-
-        # Try filename alias (good -> good_dog.mp3, down -> lie_down.mp3)
-        alias = VOICE_FILE_MAP.get(command)
-        if alias:
-            alias_path = DEFAULT_VOICES_DIR / alias
-            if alias_path.exists():
-                self.logger.info(f"Using alias: {command} -> {alias}")
-                return str(alias_path)
-
-        # Try with underscore variations
-        command_underscore = command.replace(" ", "_")
-        default_path = DEFAULT_VOICES_DIR / f"{command_underscore}.mp3"
-        if default_path.exists():
-            return str(default_path)
-
-        return None
+        """Thin wrapper - delegates to resolve_voice_file()."""
+        from services.media.voice_lookup import resolve_voice_file
+        return resolve_voice_file(command.lower(), dog_id_override=dog_id)
 
     def has_custom_voice(self, dog_id: str, command: str) -> bool:
         """Check if a custom voice exists for a dog command."""

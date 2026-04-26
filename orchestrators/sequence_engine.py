@@ -244,18 +244,14 @@ class SequenceEngine:
                     from services.media.usb_audio import get_usb_audio_service
                     audio = get_usb_audio_service()
                     if audio:
-                        import os
-                        # Check talks/ directory first, then full path
-                        base = '/home/morgan/dogbot/VOICEMP3/talks'
-                        full_path = os.path.join(base, filename)
-                        if not os.path.exists(full_path):
-                            full_path = os.path.join(base, 'default', filename)
-                        if os.path.exists(full_path):
+                        from services.media.voice_lookup import resolve_voice_file
+                        command_id = filename.replace('.mp3', '').replace('.wav', '')
+                        full_path = resolve_voice_file(command_id)
+                        if full_path:
                             audio.play_file(full_path)
                             audio.wait_for_completion(timeout=5.0)
-                            self.logger.info(f"Played audio file: {full_path}")
                         else:
-                            self.logger.warning(f"Audio file not found: {filename}")
+                            self.logger.warning(f"Audio file not found via resolve_voice_file: {command_id}")
                     else:
                         self.logger.warning("USB audio service not available")
                 except Exception as e:

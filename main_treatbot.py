@@ -1408,50 +1408,31 @@ class TreatBotMain:
                     self.logger.debug(f"Manual control {'active' if active else 'inactive'}")
 
                 elif command in ('play_voice', 'call_dog'):
-                    # Unified voice playback handler
-                    # - play_voice: plays any voice_type (sit, down, good, no, etc.)
-                    # - call_dog: plays 'come' voice_type
-                    from services.media.voice_lookup import get_voice_path
+                    # Unified voice playback - uses resolve_voice_file for all path resolution
+                    from services.media.voice_lookup import resolve_voice_file
                     from services.media.usb_audio import get_usb_audio_service
 
-                    # Get voice_type: for call_dog it's always 'come'
                     voice_type = params.get('voice_type') or params.get('command') or ('come' if command == 'call_dog' else None)
                     dog_id = (params.get('dog_id')
                               or params.get('data', {}).get('dog_id')
                               or event.data.get('dog_id'))
 
-                    self.logger.debug(f"{command}: voice_type={voice_type}, dog_id={dog_id}, params={params}")
-
                     if not voice_type:
-                        self.logger.warning(f"{command}: no voice_type provided, params={params}")
+                        self.logger.warning(f"{command}: no voice_type provided")
                     else:
-                        # Get path using voice_lookup (custom first, default fallback)
-                        audio_path = get_voice_path(voice_type, dog_id)
-                        self.logger.debug(f"{command}: get_voice_path({voice_type}, {dog_id}) -> {audio_path}")
-
+                        audio_path = resolve_voice_file(voice_type, dog_id_override=dog_id)
                         if audio_path:
                             try:
                                 audio_svc = get_usb_audio_service()
-                                self.logger.debug(f"{command}: audio_svc initialized={audio_svc.is_initialized if audio_svc else 'None'}")
                                 if audio_svc and audio_svc.is_initialized:
                                     result = audio_svc.play_file(audio_path)
-                                    self.logger.debug(f"{command}: play_file({audio_path}) result={result}")
+                                    self.logger.info(f"{command}: played {audio_path}")
                                 else:
-                                    self.logger.warning(f"{command}: USB audio not initialized (svc={audio_svc})")
+                                    self.logger.warning(f"{command}: USB audio not initialized")
                             except Exception as e:
                                 self.logger.error(f"{command} error: {e}", exc_info=True)
                         else:
-                            # For call_dog, fall back to default come.mp3 if custom not found
-                            if command == 'call_dog':
-                                fallback_path = "/home/morgan/dogbot/VOICEMP3/talks/default/come.mp3"
-                                self.logger.debug(f"call_dog: trying fallback {fallback_path}")
-                                try:
-                                    audio_svc = get_usb_audio_service()
-                                    if audio_svc and audio_svc.is_initialized:
-                                        result = audio_svc.play_file(fallback_path)
-                                        self.logger.debug(f"call_dog: fallback play result={result}")
-                                    else:
-                                        self.logger.warning(f"call_dog: USB audio not available for fallback")
+                            self.logger.warning(f"{command}: no audio file found for {voice_type}")
                                 except Exception as e:
                                     self.logger.error(f"call_dog fallback error: {e}", exc_info=True)
                             else:
