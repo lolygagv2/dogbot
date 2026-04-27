@@ -1,5 +1,94 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-04-27 — IMX708 Camera Swap + Coach WS Cleanup
+
+**Goal:** Get new IMX708 Wide camera working; clean up coach mode WS protocol; verify auto-detection across robot variants
+**Status:** COMPLETE
+
+---
+
+### What Was Accomplished
+
+#### 1. IMX708 Camera Brought Online
+**Problem:** New Camera Module 3 Wide was physically connected but `rpicam-hello` reported "No cameras available". WebRTC video track starving.
+
+**Root cause:** `/boot/firmware/config.txt` had hardcoded `dtoverlay=imx500` which claimed I2C address `0x1a` at boot, blocking IMX708 (same I2C address). Kernel logged `Failed to register i2c client imx708 at 0x1a (-16)` (EBUSY).
+
+**Fix:** Commented out `dtoverlay=imx500` in boot config. With `camera_auto_detect=1` already present, libcamera now picks up whichever sensor is plugged in. Reboot required.
+
+**Result:** IMX708 Wide detected as `imx708_wide`, AI pipeline running at 14.9 FPS, coach video saved successfully on first test session.
+
+**Important — applies to all 5 robot variants:** Each robot's `config.txt` has the same hardcoded `dtoverlay=imx500` line. To make any robot swap-ready, that line must be commented out (one-line edit per robot, requires reboot).
+
+#### 2. Coach Mode WS Protocol Cleanup
+**Problem:** App's "Stop Coaching" button did nothing while home EXIT button worked. User expected `stop_coach` to tear down coach mode.
+
+**Root cause:** Cloud-relay `stop_coach` handler at `main_treatbot.py:1501` was a no-op + lying success ack. Comment claimed it relied on `set_mode(idle)` following — which Build 38 removed. Same pattern for `start_coach`.
+
+**Fix:** Deleted both `start_coach` and `stop_coach` handlers from cloud relay path (`main_treatbot.py:1491-1509`) and local WS path (`api/ws.py:611-630`). Single teardown route now: `set_mode(idle)` → `mode_fsm` → mode-change handler at `main_treatbot.py:1786` → `coaching_engine.stop()`. Mirrors Silent Guardian (no SG stop command exists either).
+
+**App-side (Build 93):** Replaces `stop_coach` with `set_mode(idle)`, listens for `mode_changed` instead of `coach_stopped`. Also dropping `coach_set_behaviors` (no robot handler) and any in-feature SG stop.
+
+#### 3. Repo Hygiene
+- `data/robot_state.json` removed from git (runtime state — `_current_dog_id` mutates on every dog selection). Added to `.gitignore`.
+
+#### 4. Camera-Aware Architecture Verified
+Confirmed auto-detection wiring is in place from earlier `2bad8c7` commit:
+- `services/perception/camera_detect.py` reads sensor model from `Picamera2.global_camera_info()`
+- `core/ai_controller_3stage_fixed.py:237-239` picks behavior model file at AI controller init
+- `scripts/capture_behavior_sequences.py` tags captured `.npz` filenames with camera type
+- Fallback chain per camera: `behavior_<camera>.ts` → `behavior_shared.ts` → `behavior_14.ts`
+
+---
+
+### Commits This Session
+- `fa6cea5` — refactor: Remove vestigial start_coach/stop_coach WS handlers
+- `79ab7dc` — chore: Stop tracking data/robot_state.json (runtime state)
+
+(plus `954fb42` from prior session was pushed at the start of this one)
+
+---
+
+### Decisions Recorded for App Team
+- **Coach teardown:** unify on `set_mode(idle)` (single path).
+- **`select_dog` vs `force_dog`:** genuinely separate — `select_dog` is global voice routing, `force_dog` is a coach demo override that *renames* visible dogs (wrong primitive for "coach my selected dog"). App should NOT auto-fire `force_dog` on coach entry. Default ArUco-first / longest-visible targeting is fine.
+- **`coach_set_behaviors`:** no robot handler exists; chip wall is read-only mirror of `tricks_available` from `coaching_started` event.
+- **Future primitive needed (only if user complains about wrong-dog targeting):** clean `pin_session_dog` WS command that filters eligibility without renaming.
+
+---
+
+### Camera Swap Workflow (Confirmed Working)
+1. `sudo systemctl stop treatbot.service`
+2. Power off Pi
+3. Swap camera CSI ribbon
+4. Power on
+5. `journalctl -u treatbot -f` → look for `Camera sensor model: '…'` log line
+
+Detection runs at every service start. Behavior model fallback handles missing camera-specific `.ts` files gracefully.
+
+---
+
+### Camera Performance Notes (For LSTM Retraining Decision)
+At 640×640 1:1 output, libcamera center-crops the sensor. IMX708 native is 16:9, IMX500 native is 4:3 — so IMX708 actually loses *more* horizontal FOV to the center crop than IMX500 did (~40% vs ~25%). For AI pipeline:
+- ✅ IMX708 wins on autofocus (VCM + contrast detection, hill-climbing on sharpness, center-weighted)
+- ✅ IMX708 slightly cleaner in low light
+- ❌ Wide-angle FOV is wasted at 640×640 — only visible in manual full-res mode
+- ❌ Distance/coverage not improved for AI
+
+Decision (logged): **stay with current 1:1 center crop for retraining capture session**. Don't add letterbox FOV change at the same time as the close-up→distant retrain — would compound variables and make smaller dogs even smaller in frame, worsening the existing problem. Revisit aspect/geometry after the first retrain validates.
+
+---
+
+### Next Steps
+1. **User:** Capture LSTM training data (paired side-by-side or alt-tab SSH on two robots)
+2. **User:** Train on Blackwell PC (`scripts/train_behavior_lstm.py --augment medium`)
+3. **User:** Drop trained `behavior_imx500.ts` + `behavior_imx708.ts` (or `behavior_shared.ts`) into `ai/models/`
+4. **User:** Update `ai/models/config.json` `behaviors` list to include `"speak"` (currently `["stand","sit","lie","spin"]` — training script has 5)
+5. **User:** Flip `_force_geometric=False` at `core/ai_controller_3stage_fixed.py:176` to re-enable LSTM
+6. **User:** Apply boot-config fix (`dtoverlay=imx500` → commented out) to the other 4 robots so any can host either camera type
+
+---
+
 ## Session: 2026-04-25 — Dog Tracking Deduplication Fix
 
 **Goal:** Fix duplicate bounding boxes (both "Dog" and "Elsa" on same physical dog)
