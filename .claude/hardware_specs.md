@@ -153,6 +153,20 @@ Key Notes:
 **Common:**
 - **Interface:** CSI-2 (4-lane)
 
+### Camera Boot Config (Required for Swaps)
+**Location:** `/boot/firmware/config.txt`
+
+```
+camera_auto_detect=1
+#dtoverlay=imx500   # MUST be commented out
+```
+
+**Why:** Hardcoded `dtoverlay=imx500` forces the IMX500 driver to claim i2c 0x1a, blocking IMX708. With `camera_auto_detect=1` alone, libcamera auto-detects whichever sensor is present.
+
+**Fleet status:**
+- treatbot2: Fixed
+- treatbot1, 3-5: Need this edit before camera swap
+
 ### Camera Mount System
 - **Type:** 2-axis pan/tilt gimbal
 - **Pan Servo:** 180° rotation (left-right)
