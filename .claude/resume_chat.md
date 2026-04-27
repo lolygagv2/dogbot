@@ -1,219 +1,33 @@
 # WIM-Z Resume Chat Log
 
-## Session: 2026-05-02 (evening) — Power Button Boot-Loop Fix + Relay Isolation
+## Session: 2026-04-27 — Git Pull & Camera Boot Config Docs
 
-**Goal:** Stop the boot loop caused by GPIO20 reading HIGH at boot, and migrate the shutdown latch pulse to a libgpiod-based hook (sysfs is broken on Pi 5).
-**Status:** ✅ COMPLETE — commits `76482c7`, `7b8e390`, `7016179` pushed to `origin/main`. Awaiting first physical press to validate end-to-end.
-
----
-
-### Root Cause of Boot Loop
-Hardware was rewired: a Teyleten optocoupler relay now sits between the button and Pololu pad B. At boot, GPIO21 floats LOW → relay coil unenergized → NC contact closed → switch wire 2 (also tapped to GPIO20) sits at +V from pad B. The previous watcher armed press detection immediately and read that HIGH as a press, calling `shutdown -h now` → cycle.
-
-### Updated Hardware Wiring (supersedes prior session's wiring notes)
-- **GPIO21 (pin 40)**: output, drives relay IN. HIGH = coil energized = NC opens = button isolated from Pololu pad B. Watcher engages this FIRST at startup.
-- **GPIO20 (pin 38)**: input, **external 10kΩ pull-down to GND** (no internal pull-up anymore). Reads HIGH only when button pressed AND relay engaged.
-- **GPIO26 (pin 37)**: output, kill pulse — unchanged role, but driven by libgpiod via systemd-shutdown hook now.
-- **5V (pin 2)** → relay VCC, **GND (pin 39)** → relay GND.
-- Relay COM → switch wire 2 (and GPIO20 tap). Relay NC → Pololu pad B. Switch wire 1 → Pololu pad A.
-
-### What Was Built / Changed
-
-**Watcher (`scripts/wimz_power_button.py` → `/usr/local/bin/wimz_power_button.py`)**
-1. Engages relay on GPIO21 immediately (`OutputDevice(21, initial_value=True)`) — isolates button before reading sense pin.
-2. Initializes GPIO20 as `DigitalInputDevice(20, pull_up=False)` (relies on external 10k pull-down).
-3. Polls GPIO20 with 5s settle timeout — bails with error if line never goes LOW (wiring fault).
-4. Logs `Arming press detection (debounced)` once settled.
-5. **100ms debounce**: on `wait_for_active()`, re-samples for 100ms; only sustained HIGH triggers `shutdown -h now`. Transients are logged as `Transient on GPIO20 ignored (released before debounce)` and the watcher loops back.
-
-**Service unit (`wimz-power-button.service` → `/etc/systemd/system/`)**
-- Renamed description to "...with Relay Isolation".
-- Added `RestartSec=2`, explicit `StandardOutput=journal` / `StandardError=journal`.
-
-**Kill-pulse migrated from oneshot service → systemd-shutdown hook**
-- New: `scripts/wimz-killpulse` → `/lib/systemd/system-shutdown/wimz-killpulse` (mode 0755, root). One-liner: `gpioset --mode=time --sec=1 gpiochip0 26=1`. Runs at the very end of shutdown, after all units have stopped.
-- Removed: `scripts/wimz_poweroff_pulse.sh` and `wimz-poweroff-pulse.service` (sysfs-based, broken on Pi 5). Disabled and unlinked from `halt/reboot/shutdown.target.wants/` on this robot, deleted from repo.
-
-### Pi-5–Specific Gotcha (record for future self)
-- **`/sys/class/gpio` is broken on Pi 5** — anything using sysfs GPIO will silently fail. Use libgpiod (`gpioset` / `gpioget`) or `gpiozero` only.
-- **RP1 chip is `gpiochip0` on this Pi**, not `gpiochip4` as some Pi 5 docs claim. Confirmed via `gpiodetect` → `gpiochip0 [pinctrl-rp1] (54 lines)`. Hard-coded `gpiochip0` in killpulse hook.
-
-### Verification Performed This Session
-- Service active, journal shows: `Relay engaged on GPIO21` → `Waiting for GPIO20 to settle LOW...` → `GPIO20 settled LOW. Arming press detection (debounced).`
-- User reconnected GPIO20 wire post-deploy → no false trigger (relay isolation working).
-- `gpiodetect` confirms `gpiochip0` is RP1.
-- Killpulse hook installed `-rwxr-xr-x`, content correct, points at `gpiochip0 26=1`.
-- Old `wimz-poweroff-pulse.service` fully removed (no entries in `systemctl list-unit-files | grep wimz` other than the watcher).
-
-### Live Validation (post-deploy, same evening)
-- ✅ User pressed the button. Watcher logged `Sustained press detected (100ms hold) — initiating graceful shutdown` at 22:25:20.
-- ✅ Graceful shutdown ran. Pololu dropped power (re-press required to re-latch).
-- ✅ On re-power, current boot's watcher came up clean: `Relay engaged → settled LOW → Arming press detection (debounced)` with no false trigger.
-- Note: the killpulse hook does **not** appear in the journal — system-shutdown stage runs after journald has stopped. The proof it fired is that battery power was cut. Don't waste time grepping for it on next-session audits.
-
-### Post-Validation Hardware Change: Relay Polarity Flipped to Active-Low
-- Relay module wiring changed to active-low — IN pin now treats LOW as "engage coil".
-- Updated watcher to `OutputDevice(21, active_high=False, initial_value=True)`. Logical "engaged" still maps to `True`, but physical GPIO21 line is now LOW when engaged.
-- Why this matters: if you ever revert the script to `active_high=True`, GPIO21 will idle HIGH at boot, the relay will stay de-energized, and the boot loop returns. **Don't flip this without confirming the relay module wiring.**
-- Re-tested in-place: watcher restarted, GPIO20 settled LOW, no false trigger. Service is armed.
-
-### Commits (this session)
-- `76482c7` — relay-isolation watcher + libgpiod killpulse hook
-- `7b8e390` — 100ms debounce on press detection
-- `7016179` — remove obsolete sysfs poweroff-pulse service
-- `ba7e80b` — session log
-- `ae3c234` — relay polarity flipped to active-low (post hardware rewire)
-
-### Operational Notes / Gotchas
-- Watcher is **live**. A sustained 100ms+ press of the button **will** initiate shutdown.
-- To pause for hardware probing: `sudo systemctl stop wimz-power-button.service` (this also drops GPIO21 → relay de-energizes → NC closes → button reconnects to Pololu pad B; mind the wiring before pressing).
-- After a button-triggered shutdown, on next boot audit with: `journalctl -b -1 -u wimz-power-button.service` (watcher) and `journalctl -b -1 | grep -i killpulse` (hook).
-
----
-
-## Session: 2026-05-02 — Soft-Latch Power Button + Graceful Shutdown
-
-**Goal:** Wire a Pololu #2809 Mini Pushbutton Power Switch to a 4-wire illuminated button so a single press triggers a clean Pi shutdown that ends with a hardware power cut.
-**Status:** ✅ COMPLETE — committed `c6b42c8`, pushed to `origin/main`
-
----
-
-### Hardware Wiring Reference (record for future self)
-- **Pololu #2809 (SV)** between battery and load. Hardware-driven LED via Pololu VOUT through 1kΩ → button LED+; LED- to GND. No GPIO involvement for the LED.
-- **Button switch:** one wire to Pololu pin A (also tapped to Pi GPIO20 = pin 38); other to GND. Push-on-only configuration.
-- **GPIO20 (pin 38):** input, internal pull-up, falling edge = press. Watcher service.
-- **GPIO26 (pin 37):** output, pulsed HIGH 500ms at end of shutdown to drop the Pololu latch and cut battery power.
-- **GPIO21 (pin 40):** UNUSED — explicitly do not configure.
-
-### What Was Built
-
-**Watcher (boot → press detection):**
-- `scripts/wimz_power_button.py` → installed at `/usr/local/bin/wimz_power_button.py` (root, 0755)
-- Uses `gpiozero.Button(20, pull_up=True, bounce_time=0.05)`
-- On press: logs warning, runs `sudo shutdown -h now`, then `wait_for_release()` so a stuck button doesn't loop
-- `wimz-power-button.service`: simple/Restart=on-failure/User=root, `After=multi-user.target`, `WantedBy=multi-user.target` — currently **active (running)**
-
-**Shutdown latch killer (only fires during shutdown sequence):**
-- `scripts/wimz_poweroff_pulse.sh` → `/usr/local/bin/wimz_poweroff_pulse.sh` (root, 0755)
-- Bash + sysfs (`/sys/class/gpio/export`, suppress already-exported error, wait for sysfs node, set `out`, `1`, sleep 0.5, `0`). Sysfs chosen instead of gpiozero because Python is a heavy dep at this point in the shutdown sequence.
-- `wimz-poweroff-pulse.service`: oneshot, `DefaultDependencies=no`, `Before=shutdown.target reboot.target halt.target`, `Requires=shutdown.target`, `RemainAfterExit=yes`, `WantedBy=halt.target reboot.target shutdown.target`. Symlinks confirmed in all three `*.target.wants/`.
-
-### Repo Convention Followed
-- Existing pattern is `*.service` units at repo root (alongside `treatbot.service`, `xbox-controller.service`, `wifi-provision.service`) and helper scripts in `scripts/`. Followed it; no new top-level `systemd/` or `deploy/` directory.
-
-### Files Added
-- `wimz-power-button.service`
-- `wimz-poweroff-pulse.service`
-- `scripts/wimz_power_button.py` (executable)
-- `scripts/wimz_poweroff_pulse.sh` (executable)
-
-### Verification Performed This Session
-- `systemctl status wimz-power-button.service` → active, log line `Power button watcher armed on GPIO20 (pull-up, falling edge)` confirmed
-- `systemctl status wimz-poweroff-pulse.service` → loaded, dead (correct — fires at shutdown)
-- All four enable symlinks created (`multi-user`, `halt`, `reboot`, `shutdown`)
-- `treatbot.service` unaffected, still active
-
-### NOT Tested This Session
-- Actual button press → graceful shutdown → power cut → re-press → re-power loop. User declined test mid-session (would require physical power-off). **First action next session: validate the full physical loop.**
-
-### Operational Notes / Gotchas
-- Watcher is **live right now**. Any press of the button on this robot will immediately initiate shutdown.
-- To pause the watcher (e.g. for hardware probing): `sudo systemctl stop wimz-power-button.service`. Re-enable with `start`.
-- After a button-triggered shutdown, on next boot you can audit with: `journalctl -b -1 -u wimz-poweroff-pulse.service`
-
-### Next Session
-1. **Physical validation** — press button, time graceful shutdown, confirm GPIO26 pulse fires and Pololu drops power; verify re-press re-latches and Pi reboots.
-2. If pulse doesn't fire reliably, suspect ordering vs `shutdown.target` — check `journalctl -b -1` for unit ordering.
-3. Consider whether to also surface power-button events in robot telemetry (e.g. log a "user-initiated shutdown" event so the app can distinguish from crash).
-
----
-
-## Session: 2026-04-27 — IMX708 Camera Swap + Coach WS Cleanup
-
-**Goal:** Get new IMX708 Wide camera working; clean up coach mode WS protocol; verify auto-detection across robot variants
+**Goal:** Pull latest changes, document camera boot config for fleet
 **Status:** COMPLETE
 
 ---
 
 ### What Was Accomplished
 
-#### 1. IMX708 Camera Brought Online
-**Problem:** New Camera Module 3 Wide was physically connected but `rpicam-hello` reported "No cameras available". WebRTC video track starving.
+1. **Pulled origin/main** (0806e6a → 954fb42)
+   - 35 files updated with significant changes
+   - New scripts: capture_behavior_sequences.py, train_behavior_lstm.py
+   - New service: camera_detect.py
+   - Major updates to main_treatbot.py, api/server.py, wifi_manager.py
 
-**Root cause:** `/boot/firmware/config.txt` had hardcoded `dtoverlay=imx500` which claimed I2C address `0x1a` at boot, blocking IMX708 (same I2C address). Kernel logged `Failed to register i2c client imx708 at 0x1a (-16)` (EBUSY).
+2. **Documented Camera Boot Config**
+   - Added to `.claude/hardware_specs.md`: camera auto-detect settings
+   - `/boot/firmware/config.txt` needs `camera_auto_detect=1` and `#dtoverlay=imx500`
+   - Fleet status: treatbot2 fixed, treatbot1/3-5 need edit before camera swap
 
-**Fix:** Commented out `dtoverlay=imx500` in boot config. With `camera_auto_detect=1` already present, libcamera now picks up whichever sensor is plugged in. Reboot required.
+### Files Modified
+- `.claude/hardware_specs.md` — Added camera boot config section
 
-**Result:** IMX708 Wide detected as `imx708_wide`, AI pipeline running at 14.9 FPS, coach video saved successfully on first test session.
+### Commit
+- c6e5998 — docs: Add camera boot config for IMX500/IMX708 swaps
 
-**Important — applies to all 5 robot variants:** Each robot's `config.txt` has the same hardcoded `dtoverlay=imx500` line. To make any robot swap-ready, that line must be commented out (one-line edit per robot, requires reboot).
-
-#### 2. Coach Mode WS Protocol Cleanup
-**Problem:** App's "Stop Coaching" button did nothing while home EXIT button worked. User expected `stop_coach` to tear down coach mode.
-
-**Root cause:** Cloud-relay `stop_coach` handler at `main_treatbot.py:1501` was a no-op + lying success ack. Comment claimed it relied on `set_mode(idle)` following — which Build 38 removed. Same pattern for `start_coach`.
-
-**Fix:** Deleted both `start_coach` and `stop_coach` handlers from cloud relay path (`main_treatbot.py:1491-1509`) and local WS path (`api/ws.py:611-630`). Single teardown route now: `set_mode(idle)` → `mode_fsm` → mode-change handler at `main_treatbot.py:1786` → `coaching_engine.stop()`. Mirrors Silent Guardian (no SG stop command exists either).
-
-**App-side (Build 93):** Replaces `stop_coach` with `set_mode(idle)`, listens for `mode_changed` instead of `coach_stopped`. Also dropping `coach_set_behaviors` (no robot handler) and any in-feature SG stop.
-
-#### 3. Repo Hygiene
-- `data/robot_state.json` removed from git (runtime state — `_current_dog_id` mutates on every dog selection). Added to `.gitignore`.
-
-#### 4. Camera-Aware Architecture Verified
-Confirmed auto-detection wiring is in place from earlier `2bad8c7` commit:
-- `services/perception/camera_detect.py` reads sensor model from `Picamera2.global_camera_info()`
-- `core/ai_controller_3stage_fixed.py:237-239` picks behavior model file at AI controller init
-- `scripts/capture_behavior_sequences.py` tags captured `.npz` filenames with camera type
-- Fallback chain per camera: `behavior_<camera>.ts` → `behavior_shared.ts` → `behavior_14.ts`
-
----
-
-### Commits This Session
-- `fa6cea5` — refactor: Remove vestigial start_coach/stop_coach WS handlers
-- `79ab7dc` — chore: Stop tracking data/robot_state.json (runtime state)
-
-(plus `954fb42` from prior session was pushed at the start of this one)
-
----
-
-### Decisions Recorded for App Team
-- **Coach teardown:** unify on `set_mode(idle)` (single path).
-- **`select_dog` vs `force_dog`:** genuinely separate — `select_dog` is global voice routing, `force_dog` is a coach demo override that *renames* visible dogs (wrong primitive for "coach my selected dog"). App should NOT auto-fire `force_dog` on coach entry. Default ArUco-first / longest-visible targeting is fine.
-- **`coach_set_behaviors`:** no robot handler exists; chip wall is read-only mirror of `tricks_available` from `coaching_started` event.
-- **Future primitive needed (only if user complains about wrong-dog targeting):** clean `pin_session_dog` WS command that filters eligibility without renaming.
-
----
-
-### Camera Swap Workflow (Confirmed Working)
-1. `sudo systemctl stop treatbot.service`
-2. Power off Pi
-3. Swap camera CSI ribbon
-4. Power on
-5. `journalctl -u treatbot -f` → look for `Camera sensor model: '…'` log line
-
-Detection runs at every service start. Behavior model fallback handles missing camera-specific `.ts` files gracefully.
-
----
-
-### Camera Performance Notes (For LSTM Retraining Decision)
-At 640×640 1:1 output, libcamera center-crops the sensor. IMX708 native is 16:9, IMX500 native is 4:3 — so IMX708 actually loses *more* horizontal FOV to the center crop than IMX500 did (~40% vs ~25%). For AI pipeline:
-- ✅ IMX708 wins on autofocus (VCM + contrast detection, hill-climbing on sharpness, center-weighted)
-- ✅ IMX708 slightly cleaner in low light
-- ❌ Wide-angle FOV is wasted at 640×640 — only visible in manual full-res mode
-- ❌ Distance/coverage not improved for AI
-
-Decision (logged): **stay with current 1:1 center crop for retraining capture session**. Don't add letterbox FOV change at the same time as the close-up→distant retrain — would compound variables and make smaller dogs even smaller in frame, worsening the existing problem. Revisit aspect/geometry after the first retrain validates.
-
----
-
-### Next Steps
-1. **User:** Capture LSTM training data (paired side-by-side or alt-tab SSH on two robots)
-2. **User:** Train on Blackwell PC (`scripts/train_behavior_lstm.py --augment medium`)
-3. **User:** Drop trained `behavior_imx500.ts` + `behavior_imx708.ts` (or `behavior_shared.ts`) into `ai/models/`
-4. **User:** Update `ai/models/config.json` `behaviors` list to include `"speak"` (currently `["stand","sit","lie","spin"]` — training script has 5)
-5. **User:** Flip `_force_geometric=False` at `core/ai_controller_3stage_fixed.py:176` to re-enable LSTM
-6. **User:** Apply boot-config fix (`dtoverlay=imx500` → commented out) to the other 4 robots so any can host either camera type
+### Next Session
+- No pending tasks from this session
 
 ---
 
