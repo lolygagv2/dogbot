@@ -28,3 +28,4 @@ hailort*
 captures/
 photos/
 recordings/
+data/robot_state.json
