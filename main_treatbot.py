@@ -1487,27 +1487,6 @@ class TreatBotMain:
                     if self.relay_client and self.relay_client.connected:
                         self.relay_client.send_event('scheduler_status', status)
 
-                # Coach commands
-                elif command == 'start_coach':
-                    # App sends this after set_mode - coaching engine already started via _on_mode_change
-                    # Just acknowledge and send current state
-                    from orchestrators.coaching_engine import get_coaching_engine
-                    engine = get_coaching_engine()
-                    running = engine.running if engine else False
-                    self.logger.debug(f"start_coach -> already running={running}")
-                    if self.relay_client and self.relay_client.connected:
-                        self.relay_client.send_event('coach_started', {'success': True, 'running': running})
-
-                elif command == 'stop_coach':
-                    # App sends this before set_mode - coaching engine stopped via _on_mode_change
-                    # Just acknowledge
-                    from orchestrators.coaching_engine import get_coaching_engine
-                    engine = get_coaching_engine()
-                    was_running = engine.running if engine else False
-                    self.logger.debug(f"stop_coach -> was_running={was_running}")
-                    if self.relay_client and self.relay_client.connected:
-                        self.relay_client.send_event('coach_stopped', {'success': True})
-
                 elif command == 'force_trick':
                     # Force a specific trick in coach mode (like Xbox Guide button)
                     trick = params.get('trick') or params.get('data', {}).get('trick')

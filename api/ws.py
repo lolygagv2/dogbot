@@ -608,27 +608,6 @@ class TreatBotWebSocketServer:
                         mode_fsm.set_mode_override(internal_mode)
                         result["mode"] = mode_name
 
-            elif command == "start_coach":
-                # App sends this after set_mode — coaching engine started via _on_mode_change.
-                # If mode is already COACH but engine isn't running, start it.
-                from orchestrators.coaching_engine import get_coaching_engine
-                engine = get_coaching_engine()
-                if engine and not engine.running:
-                    engine.start()
-                result["running"] = engine.running if engine else False
-
-            elif command == "stop_coach":
-                # Must actually stop the coaching engine AND switch mode to IDLE
-                from orchestrators.coaching_engine import get_coaching_engine
-                from orchestrators.mode_fsm import get_mode_fsm
-                from core.state import SystemMode
-                engine = get_coaching_engine()
-                if engine and engine.running:
-                    engine.stop()
-                mode_fsm = get_mode_fsm()
-                mode_fsm.force_mode(SystemMode.IDLE, "stop_coach_command")
-                result["stopped"] = True
-
             elif command == "force_trick":
                 trick = data.get("trick")
                 if trick:
