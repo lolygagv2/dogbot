@@ -27,6 +27,8 @@ import tty
 from pathlib import Path
 from typing import List, Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 
 BEHAVIORS = ["stand", "sit", "lie", "spin", "speak"]
