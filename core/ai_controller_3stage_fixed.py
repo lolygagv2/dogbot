@@ -173,8 +173,8 @@ class AI3StageControllerFixed:
         self.geometric_classifier = get_geometric_classifier(geo_config)
         self._use_geometric_fallback = True  # Enable geometric fallback
         self._geometric_confidence_threshold = 0.6  # Use geometric if LSTM below this
-        self._force_geometric = True  # ALWAYS use geometric - LSTM is broken
-        logger.info("GeometricClassifier initialized - FORCED MODE (LSTM disabled)")
+        self._force_geometric = False  # LSTM re-enabled 2026-04-27 with behavior_shared.ts (retrained on Pi-camera data)
+        logger.info("GeometricClassifier initialized - LSTM enabled with geometric fallback")
 
     def _load_config(self):
         """Load configuration from JSON"""
