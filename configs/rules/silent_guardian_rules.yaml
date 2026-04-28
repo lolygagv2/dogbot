@@ -27,12 +27,9 @@ bark_detection:
   window_seconds: 60              # Time window for counting barks
   confidence_minimum: 0.35        # Lowered from 0.45 for more sensitivity
   loudness_threshold_db: -28      # Much more sensitive (was -21, dogs had to be VERY loud)
-  device: plughw:0,0              # Force USB hardware directly — PipeWire's 'default' source
-                                  # is flaky on this Pi image (Dummy-sink fallback produces
-                                  # all-zero samples). Bark detection doesn't need AEC anyway
-                                  # (speaker echo is handled via bark suppression during playback).
-                                  # then fall back to plughw:{card},0 if PipeWire is silent.
-                                  # Set on units where PipeWire is known flaky (e.g. TB2).
+  # device: unset — auto-detect via audio.bark_buffer_arecord.find_usb_audio_device().
+  # Probes PipeWire 'default' first; if silent, falls back to plughw:{usb_card},0
+  # using the live arecord -l card number (USB enumerates dynamically across boots).
 
 # Intervention sequences by escalation level
 intervention_sequences:

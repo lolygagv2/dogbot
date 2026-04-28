@@ -1755,6 +1755,10 @@ class TreatBotMain:
                 })
                 self.logger.debug(f"Mode changed event sent: {contract_prev} -> {contract_new} (locked={locked})")
 
+            # Announce mode FIRST so audio fires immediately on click — bark
+            # setup below has ~1s of sync sleeps that would otherwise delay it.
+            self._announce_mode(new_mode)
+
             # Stop Silent Guardian if leaving that mode
             if previous_mode == 'silent_guardian':
                 if self.silent_guardian_mode and self.silent_guardian_mode.running:
@@ -1830,10 +1834,6 @@ class TreatBotMain:
                         self.logger.info("Bark detection started (needed for current mode)")
                     else:
                         self.logger.warning("Bark detection failed to start - speak trick may not work")
-
-            # Announce mode after all setup is done
-            # Classifier loading is now non-blocking so this should be fast
-            self._announce_mode(new_mode)
 
         except Exception as e:
             self.logger.error(f"Mode change handler error: {e}")

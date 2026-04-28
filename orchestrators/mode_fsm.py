@@ -318,6 +318,16 @@ class ModeFSM:
 
         duration = duration or self.timeouts['override_timeout']
 
+        # Idempotent: if already overridden to this same mode and the override
+        # is still active, just refresh the deadline. Avoids re-firing
+        # mode_change / mode_override_set events on duplicate dropdown sends.
+        if (self.override_mode == mode
+                and self.state.get_mode() == mode
+                and time.time() < self.override_until):
+            self.override_until = time.time() + duration
+            self.logger.debug(f"Mode override refresh (already {mode.value}): extended {duration}s")
+            return True
+
         # CRITICAL: Set manual input time BEFORE mode change to avoid race condition
         if mode == SystemMode.MANUAL:
             self.last_manual_input_time = time.time()

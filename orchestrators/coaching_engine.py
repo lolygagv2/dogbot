@@ -171,6 +171,12 @@ class CoachingEngine:
 
         # Testing/debug: force specific trick (None = random)
         self._forced_trick: Optional[str] = None
+        # Timestamp of most recent force_trick call. Xbox controller plays the trick
+        # mp3 immediately as user feedback; if engine reaches COMMAND state within
+        # FORCED_TRICK_AUDIO_WINDOW_S of that, it skips its own redundant play.
+        self._forced_trick_at: float = 0.0
+        FORCED_TRICK_AUDIO_WINDOW_S = 5.0  # noqa: shadow ref via self below
+        self._forced_trick_audio_window_s = FORCED_TRICK_AUDIO_WINDOW_S
 
         # Demo mode: force specific dog identity (None = ArUco/auto)
         self._forced_dog: Optional[str] = None
@@ -714,18 +720,29 @@ class CoachingEngine:
         trick_rules = self.interpreter.get_trick_rules(trick)
         audio_file = trick_rules.get('audio_command', f'{trick}.mp3')
 
-        # For speak trick: suppress bark detection during audio playback to prevent
-        # speaker echo from triggering false bark events
-        speak_bark_svc = None
-        if trick == 'speak':
-            speak_bark_svc = get_bark_detector_service()
-            if speak_bark_svc:
-                # Suppress for estimated audio duration. We'll wait after audio
-                # to ensure suppression ends before we start listening.
-                speak_bark_svc.suppress_detection(2.5)
-                logger.debug("Bark detection suppressed for speak command audio")
+        # If Xbox controller just played the same trick name as press feedback,
+        # skip our redundant play to avoid "sit sit" / "speak speak" doubles.
+        force_age = time.time() - self._forced_trick_at if self._forced_trick_at else None
+        skip_audio = (
+            force_age is not None
+            and force_age <= self._forced_trick_audio_window_s
+        )
 
-        self._play_audio(audio_file, wait=True, timeout=5.0)
+        if skip_audio:
+            logger.info(f"[COACH] Skipping command audio for '{trick}' (Xbox already announced {force_age:.1f}s ago)")
+            self._forced_trick_at = 0.0  # consume — don't suppress next command
+        else:
+            # For speak trick: suppress bark detection during audio playback to prevent
+            # speaker echo from triggering false bark events
+            if trick == 'speak':
+                speak_bark_svc = get_bark_detector_service()
+                if speak_bark_svc:
+                    # Suppress for estimated audio duration. We'll wait after audio
+                    # to ensure suppression ends before we start listening.
+                    speak_bark_svc.suppress_detection(2.5)
+                    logger.debug("Bark detection suppressed for speak command audio")
+
+            self._play_audio(audio_file, wait=True, timeout=5.0)
 
         # CRITICAL: Reset behavior tracking AFTER audio finishes
         # If we reset before audio, the dog's pose gets tracked during the 3s audio playback
@@ -1274,9 +1291,11 @@ class CoachingEngine:
 
         self._forced_trick = trick
         if trick:
+            self._forced_trick_at = time.time()
             logger.info(f"Forced trick set: {trick}")
             return {'forced_trick': trick, 'message': f"Next session will use '{trick}'"}
         else:
+            self._forced_trick_at = 0.0
             logger.info("Forced trick cleared")
             return {'forced_trick': None, 'message': "Random trick selection restored"}
 

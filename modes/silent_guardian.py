@@ -121,7 +121,7 @@ class SilentGuardianMode:
         # Cooldown tracking
         self._cooldown_start = None
         self._cooldown_duration = 2.0  # 2 seconds between interventions
-        self._gave_up_cooldown = 120.0  # 2 minutes after giving up
+        self._gave_up_cooldown = 90.0  # 90 seconds after giving up
 
         # Timeouts
         self.intervention_timeout = 90.0  # Max 90 seconds per intervention
