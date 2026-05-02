@@ -1,5 +1,62 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-02 — Soft-Latch Power Button + Graceful Shutdown
+
+**Goal:** Wire a Pololu #2809 Mini Pushbutton Power Switch to a 4-wire illuminated button so a single press triggers a clean Pi shutdown that ends with a hardware power cut.
+**Status:** ✅ COMPLETE — committed `c6b42c8`, pushed to `origin/main`
+
+---
+
+### Hardware Wiring Reference (record for future self)
+- **Pololu #2809 (SV)** between battery and load. Hardware-driven LED via Pololu VOUT through 1kΩ → button LED+; LED- to GND. No GPIO involvement for the LED.
+- **Button switch:** one wire to Pololu pin A (also tapped to Pi GPIO20 = pin 38); other to GND. Push-on-only configuration.
+- **GPIO20 (pin 38):** input, internal pull-up, falling edge = press. Watcher service.
+- **GPIO26 (pin 37):** output, pulsed HIGH 500ms at end of shutdown to drop the Pololu latch and cut battery power.
+- **GPIO21 (pin 40):** UNUSED — explicitly do not configure.
+
+### What Was Built
+
+**Watcher (boot → press detection):**
+- `scripts/wimz_power_button.py` → installed at `/usr/local/bin/wimz_power_button.py` (root, 0755)
+- Uses `gpiozero.Button(20, pull_up=True, bounce_time=0.05)`
+- On press: logs warning, runs `sudo shutdown -h now`, then `wait_for_release()` so a stuck button doesn't loop
+- `wimz-power-button.service`: simple/Restart=on-failure/User=root, `After=multi-user.target`, `WantedBy=multi-user.target` — currently **active (running)**
+
+**Shutdown latch killer (only fires during shutdown sequence):**
+- `scripts/wimz_poweroff_pulse.sh` → `/usr/local/bin/wimz_poweroff_pulse.sh` (root, 0755)
+- Bash + sysfs (`/sys/class/gpio/export`, suppress already-exported error, wait for sysfs node, set `out`, `1`, sleep 0.5, `0`). Sysfs chosen instead of gpiozero because Python is a heavy dep at this point in the shutdown sequence.
+- `wimz-poweroff-pulse.service`: oneshot, `DefaultDependencies=no`, `Before=shutdown.target reboot.target halt.target`, `Requires=shutdown.target`, `RemainAfterExit=yes`, `WantedBy=halt.target reboot.target shutdown.target`. Symlinks confirmed in all three `*.target.wants/`.
+
+### Repo Convention Followed
+- Existing pattern is `*.service` units at repo root (alongside `treatbot.service`, `xbox-controller.service`, `wifi-provision.service`) and helper scripts in `scripts/`. Followed it; no new top-level `systemd/` or `deploy/` directory.
+
+### Files Added
+- `wimz-power-button.service`
+- `wimz-poweroff-pulse.service`
+- `scripts/wimz_power_button.py` (executable)
+- `scripts/wimz_poweroff_pulse.sh` (executable)
+
+### Verification Performed This Session
+- `systemctl status wimz-power-button.service` → active, log line `Power button watcher armed on GPIO20 (pull-up, falling edge)` confirmed
+- `systemctl status wimz-poweroff-pulse.service` → loaded, dead (correct — fires at shutdown)
+- All four enable symlinks created (`multi-user`, `halt`, `reboot`, `shutdown`)
+- `treatbot.service` unaffected, still active
+
+### NOT Tested This Session
+- Actual button press → graceful shutdown → power cut → re-press → re-power loop. User declined test mid-session (would require physical power-off). **First action next session: validate the full physical loop.**
+
+### Operational Notes / Gotchas
+- Watcher is **live right now**. Any press of the button on this robot will immediately initiate shutdown.
+- To pause the watcher (e.g. for hardware probing): `sudo systemctl stop wimz-power-button.service`. Re-enable with `start`.
+- After a button-triggered shutdown, on next boot you can audit with: `journalctl -b -1 -u wimz-poweroff-pulse.service`
+
+### Next Session
+1. **Physical validation** — press button, time graceful shutdown, confirm GPIO26 pulse fires and Pololu drops power; verify re-press re-latches and Pi reboots.
+2. If pulse doesn't fire reliably, suspect ordering vs `shutdown.target` — check `journalctl -b -1` for unit ordering.
+3. Consider whether to also surface power-button events in robot telemetry (e.g. log a "user-initiated shutdown" event so the app can distinguish from crash).
+
+---
+
 ## Session: 2026-04-27 — IMX708 Camera Swap + Coach WS Cleanup
 
 **Goal:** Get new IMX708 Wide camera working; clean up coach mode WS protocol; verify auto-detection across robot variants
