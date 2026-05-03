@@ -1,40 +1,41 @@
 #!/usr/bin/env python3
-"""WIMZ power button watcher.
-
-Watches GPIO20 for a momentary press and triggers a graceful shutdown.
-Power-off latch (GPIO26 pulse) is handled by wimz-poweroff-pulse.service
-during the shutdown sequence, not here.
 """
-
-import logging
-import subprocess
+WIMZ Power Button Watcher
+Handles boot-time HIGH state on GPIO20 by engaging relay first,
+waiting for GPIO20 to settle LOW, then arming press detection.
+"""
+from gpiozero import OutputDevice, DigitalInputDevice
+from subprocess import call
+import time
 import sys
 
-from gpiozero import Button
+# Step 1: Engage relay immediately to isolate button from Pololu pad B
+# GPIO21 HIGH = relay coil energized = NC contact open = button isolated
+relay = OutputDevice(21, active_high=True, initial_value=True)
+print("WIMZ: Relay engaged on GPIO21 — button isolated from Pololu", flush=True)
 
-BUTTON_GPIO = 20
+# Step 2: Initialize GPIO20 input with internal pull-down
+button_input = DigitalInputDevice(20, pull_up=False)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - wimz_power_button - %(levelname)s - %(message)s",
-    stream=sys.stdout,
-)
-log = logging.getLogger("wimz_power_button")
+# Step 3: Wait for GPIO20 to settle LOW after relay engagement
+# The pre-engagement HIGH state from pad B propagation needs to drain
+# through the 10k pull-down. This typically takes only a few ms,
+# but we give it up to 5 seconds before declaring a wiring problem.
+print("WIMZ: Waiting for GPIO20 to settle LOW...", flush=True)
+settle_timeout = 5.0
+settle_start = time.time()
+while button_input.is_active:
+    if time.time() - settle_start > settle_timeout:
+        print("WIMZ: ERROR — GPIO20 never settled LOW after 5s. Check wiring.", flush=True)
+        sys.exit(1)
+    time.sleep(0.05)
 
+print("WIMZ: GPIO20 settled LOW. Arming press detection.", flush=True)
 
-def main() -> int:
-    button = Button(BUTTON_GPIO, pull_up=True, bounce_time=0.05)
-    log.info("Power button watcher armed on GPIO%d (pull-up, falling edge)", BUTTON_GPIO)
+# Step 4: Wait for an actual button press (LOW → HIGH transition)
+button_input.wait_for_active()
+print("WIMZ: Button pressed — initiating graceful shutdown", flush=True)
 
-    while True:
-        button.wait_for_press()
-        log.warning("Power button pressed - initiating graceful shutdown")
-        subprocess.call(["sudo", "shutdown", "-h", "now"])
-        # After issuing shutdown, wait for the system to go down.
-        # If shutdown fails for any reason, fall back to looping so
-        # a subsequent press can retry.
-        button.wait_for_release()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+# Step 5: Trigger graceful shutdown. systemd shutdown hook handles
+# the GPIO26 kill pulse at end of shutdown to cut Pololu power.
+call(["sudo", "shutdown", "-h", "now"])
