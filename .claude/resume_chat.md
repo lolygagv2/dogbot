@@ -45,16 +45,24 @@ Hardware was rewired: a Teyleten optocoupler relay now sits between the button a
 - Killpulse hook installed `-rwxr-xr-x`, content correct, points at `gpiochip0 26=1`.
 - Old `wimz-poweroff-pulse.service` fully removed (no entries in `systemctl list-unit-files | grep wimz` other than the watcher).
 
-### NOT Tested This Session
-- **Actual physical press → graceful shutdown → GPIO26 pulse → Pololu drops power → re-press re-latches.** User staged for it at end of session. **First action next session: confirm the live press cycle worked.** If it didn't:
-  - Check `journalctl -b -1 -u wimz-power-button.service` for the press log line.
-  - Check `journalctl -b -1` for any line containing `wimz-killpulse` (system-shutdown hooks log via systemd).
-  - If watcher fired but power didn't cut: suspect the `gpioset` call against `gpiochip0 26` at the system-shutdown stage. Test manually post-boot with the relay engaged and the button pressed (do NOT do this with the latch live unless you want to confirm it cuts power).
+### Live Validation (post-deploy, same evening)
+- ✅ User pressed the button. Watcher logged `Sustained press detected (100ms hold) — initiating graceful shutdown` at 22:25:20.
+- ✅ Graceful shutdown ran. Pololu dropped power (re-press required to re-latch).
+- ✅ On re-power, current boot's watcher came up clean: `Relay engaged → settled LOW → Arming press detection (debounced)` with no false trigger.
+- Note: the killpulse hook does **not** appear in the journal — system-shutdown stage runs after journald has stopped. The proof it fired is that battery power was cut. Don't waste time grepping for it on next-session audits.
+
+### Post-Validation Hardware Change: Relay Polarity Flipped to Active-Low
+- Relay module wiring changed to active-low — IN pin now treats LOW as "engage coil".
+- Updated watcher to `OutputDevice(21, active_high=False, initial_value=True)`. Logical "engaged" still maps to `True`, but physical GPIO21 line is now LOW when engaged.
+- Why this matters: if you ever revert the script to `active_high=True`, GPIO21 will idle HIGH at boot, the relay will stay de-energized, and the boot loop returns. **Don't flip this without confirming the relay module wiring.**
+- Re-tested in-place: watcher restarted, GPIO20 settled LOW, no false trigger. Service is armed.
 
 ### Commits (this session)
 - `76482c7` — relay-isolation watcher + libgpiod killpulse hook
 - `7b8e390` — 100ms debounce on press detection
 - `7016179` — remove obsolete sysfs poweroff-pulse service
+- `ba7e80b` — session log
+- `ae3c234` — relay polarity flipped to active-low (post hardware rewire)
 
 ### Operational Notes / Gotchas
 - Watcher is **live**. A sustained 100ms+ press of the button **will** initiate shutdown.
