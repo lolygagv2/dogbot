@@ -12,7 +12,7 @@ import time
 import sys
 
 # Step 1: Engage relay to isolate button from Pololu pad B
-relay = OutputDevice(21, active_high=True, initial_value=True)
+relay = OutputDevice(21, active_high=False, initial_value=True)
 print("WIMZ: Relay engaged on GPIO21 — button isolated from Pololu", flush=True)
 
 # Step 2: Initialize GPIO20 input with internal pull-down
