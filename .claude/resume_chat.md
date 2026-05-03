@@ -1,5 +1,68 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-02 (evening) — Power Button Boot-Loop Fix + Relay Isolation
+
+**Goal:** Stop the boot loop caused by GPIO20 reading HIGH at boot, and migrate the shutdown latch pulse to a libgpiod-based hook (sysfs is broken on Pi 5).
+**Status:** ✅ COMPLETE — commits `76482c7`, `7b8e390`, `7016179` pushed to `origin/main`. Awaiting first physical press to validate end-to-end.
+
+---
+
+### Root Cause of Boot Loop
+Hardware was rewired: a Teyleten optocoupler relay now sits between the button and Pololu pad B. At boot, GPIO21 floats LOW → relay coil unenergized → NC contact closed → switch wire 2 (also tapped to GPIO20) sits at +V from pad B. The previous watcher armed press detection immediately and read that HIGH as a press, calling `shutdown -h now` → cycle.
+
+### Updated Hardware Wiring (supersedes prior session's wiring notes)
+- **GPIO21 (pin 40)**: output, drives relay IN. HIGH = coil energized = NC opens = button isolated from Pololu pad B. Watcher engages this FIRST at startup.
+- **GPIO20 (pin 38)**: input, **external 10kΩ pull-down to GND** (no internal pull-up anymore). Reads HIGH only when button pressed AND relay engaged.
+- **GPIO26 (pin 37)**: output, kill pulse — unchanged role, but driven by libgpiod via systemd-shutdown hook now.
+- **5V (pin 2)** → relay VCC, **GND (pin 39)** → relay GND.
+- Relay COM → switch wire 2 (and GPIO20 tap). Relay NC → Pololu pad B. Switch wire 1 → Pololu pad A.
+
+### What Was Built / Changed
+
+**Watcher (`scripts/wimz_power_button.py` → `/usr/local/bin/wimz_power_button.py`)**
+1. Engages relay on GPIO21 immediately (`OutputDevice(21, initial_value=True)`) — isolates button before reading sense pin.
+2. Initializes GPIO20 as `DigitalInputDevice(20, pull_up=False)` (relies on external 10k pull-down).
+3. Polls GPIO20 with 5s settle timeout — bails with error if line never goes LOW (wiring fault).
+4. Logs `Arming press detection (debounced)` once settled.
+5. **100ms debounce**: on `wait_for_active()`, re-samples for 100ms; only sustained HIGH triggers `shutdown -h now`. Transients are logged as `Transient on GPIO20 ignored (released before debounce)` and the watcher loops back.
+
+**Service unit (`wimz-power-button.service` → `/etc/systemd/system/`)**
+- Renamed description to "...with Relay Isolation".
+- Added `RestartSec=2`, explicit `StandardOutput=journal` / `StandardError=journal`.
+
+**Kill-pulse migrated from oneshot service → systemd-shutdown hook**
+- New: `scripts/wimz-killpulse` → `/lib/systemd/system-shutdown/wimz-killpulse` (mode 0755, root). One-liner: `gpioset --mode=time --sec=1 gpiochip0 26=1`. Runs at the very end of shutdown, after all units have stopped.
+- Removed: `scripts/wimz_poweroff_pulse.sh` and `wimz-poweroff-pulse.service` (sysfs-based, broken on Pi 5). Disabled and unlinked from `halt/reboot/shutdown.target.wants/` on this robot, deleted from repo.
+
+### Pi-5–Specific Gotcha (record for future self)
+- **`/sys/class/gpio` is broken on Pi 5** — anything using sysfs GPIO will silently fail. Use libgpiod (`gpioset` / `gpioget`) or `gpiozero` only.
+- **RP1 chip is `gpiochip0` on this Pi**, not `gpiochip4` as some Pi 5 docs claim. Confirmed via `gpiodetect` → `gpiochip0 [pinctrl-rp1] (54 lines)`. Hard-coded `gpiochip0` in killpulse hook.
+
+### Verification Performed This Session
+- Service active, journal shows: `Relay engaged on GPIO21` → `Waiting for GPIO20 to settle LOW...` → `GPIO20 settled LOW. Arming press detection (debounced).`
+- User reconnected GPIO20 wire post-deploy → no false trigger (relay isolation working).
+- `gpiodetect` confirms `gpiochip0` is RP1.
+- Killpulse hook installed `-rwxr-xr-x`, content correct, points at `gpiochip0 26=1`.
+- Old `wimz-poweroff-pulse.service` fully removed (no entries in `systemctl list-unit-files | grep wimz` other than the watcher).
+
+### NOT Tested This Session
+- **Actual physical press → graceful shutdown → GPIO26 pulse → Pololu drops power → re-press re-latches.** User staged for it at end of session. **First action next session: confirm the live press cycle worked.** If it didn't:
+  - Check `journalctl -b -1 -u wimz-power-button.service` for the press log line.
+  - Check `journalctl -b -1` for any line containing `wimz-killpulse` (system-shutdown hooks log via systemd).
+  - If watcher fired but power didn't cut: suspect the `gpioset` call against `gpiochip0 26` at the system-shutdown stage. Test manually post-boot with the relay engaged and the button pressed (do NOT do this with the latch live unless you want to confirm it cuts power).
+
+### Commits (this session)
+- `76482c7` — relay-isolation watcher + libgpiod killpulse hook
+- `7b8e390` — 100ms debounce on press detection
+- `7016179` — remove obsolete sysfs poweroff-pulse service
+
+### Operational Notes / Gotchas
+- Watcher is **live**. A sustained 100ms+ press of the button **will** initiate shutdown.
+- To pause for hardware probing: `sudo systemctl stop wimz-power-button.service` (this also drops GPIO21 → relay de-energizes → NC closes → button reconnects to Pololu pad B; mind the wiring before pressing).
+- After a button-triggered shutdown, on next boot audit with: `journalctl -b -1 -u wimz-power-button.service` (watcher) and `journalctl -b -1 | grep -i killpulse` (hook).
+
+---
+
 ## Session: 2026-05-02 — Soft-Latch Power Button + Graceful Shutdown
 
 **Goal:** Wire a Pololu #2809 Mini Pushbutton Power Switch to a 4-wire illuminated button so a single press triggers a clean Pi shutdown that ends with a hardware power cut.
