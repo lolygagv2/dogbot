@@ -1,0 +1,14 @@
+[Unit]
+Description=WIMZ Power Button Watcher with Relay Isolation
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/wimz_power_button.py
+Restart=on-failure
+RestartSec=2
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

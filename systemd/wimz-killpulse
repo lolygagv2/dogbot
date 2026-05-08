@@ -1,0 +1,4 @@
+#!/bin/bash
+# Last userspace code before kernel halt.
+# Pulses GPIO26 HIGH for 1 second to trigger Pololu OFF.
+/usr/bin/gpioset --mode=time --sec=1 gpiochip4 26=1

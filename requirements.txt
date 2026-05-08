@@ -85,3 +85,6 @@ PyYAML==6.0.1
 # Bark emotion classifier (replaced tflite-runtime)
 tensorflow==2.20.0
 librosa==0.11.0
+
+# Pi 5 GPIO compatibility (provides RPi.GPIO API via lgpio)
+rpi-lgpio==0.6
