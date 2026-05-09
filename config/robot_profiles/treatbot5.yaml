@@ -1,0 +1,68 @@
+# TreatBot5 — Cytron motor driver + 9V brushed motors (no encoders), IMX708 Pi Camera Module 3 Wide
+# Hardware delta vs treatbot1/2: replaced L298N + 6V DFRobot encoder motors with Cytron driver + 9V brushed,
+# and IMX500 → IMX708 wide-angle camera. PID disabled because 9V motors lack encoders.
+
+robot_id: "treatbot5"
+description: "Production unit #5 — Cytron motor driver, 9V brushed motors (no encoders), IMX708 wide camera"
+
+# Camera settings (detector.py) — IMX708 Pi Camera Module 3 Wide
+camera:
+  rotation: 0  # degrees clockwise (0, 90, 180, 270) — re-tune per unit
+  # Gimbal servo limits (pan_tilt.py)
+  pan_min: 10
+  pan_max: 200
+  tilt_min: 20
+  tilt_max: 160
+  pan_center: 110   # Calibrated center (may differ from mechanical 90) — re-tune per unit
+  tilt_center: 90
+  # Coach mode auto-tracking limits (tighter to avoid ceiling/floor)
+  coach_pan_min: 55
+  coach_pan_max: 145
+  coach_tilt_min: 25
+  coach_tilt_max: 85
+
+# Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py) — unchanged from treatbot1
+dispenser:
+  steps_per_slot: 137       # Microsteps to advance one treat slot — re-tune per unit
+  step_delay: 0.006         # Half-period per step in seconds (12ms/step = MEDIUM speed)
+  max_retries: 3            # Anti-jam retry attempts per dispense
+  reverse_steps: 40         # Steps to reverse during anti-jam
+  irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
+  ihold: 5                  # TMC2209 hold current (low to save battery)
+  microstepping: 8          # Microstepping multiplier (MRES=5)
+  sgthrs: 0                 # StallGuard disabled — known issue at low speed
+
+# Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
+servo:
+  slow_pulse: 1560  # legacy — no longer used for dispenser
+
+# Motor/Controller settings (xbox_hybrid_controller.py)
+controller:
+  max_speed: 80           # Capped speed percentage
+  turn_speed_factor: 0.8  # Multiplier for turn smoothness
+  max_rpm: 110            # Unused on this unit (no encoder feedback) — kept for schema compatibility
+  use_pid_control: false  # Required false: 9V motors have no encoders, no PID feedback possible
+  min_pwm_threshold: 0    # Minimum PWM to overcome motor deadzone
+
+  # Per-motor calibration for hardware imbalance — re-tune per unit during bring-up
+  motor_calibration:
+    left_multiplier: 1.0
+    right_multiplier: 1.0
+
+  # Xbox controller calibration
+  xbox:
+    joystick_deadzone: 0.30   # Ignore stick values below this (drift compensation)
+    joystick_scale: 1.0       # Multiply stick output
+
+  # PID tuning parameters — unused while use_pid_control=false
+  pid:
+    kp: 1.0
+    ki: 0.0
+    kd: 0.0
+
+# HARDWARE_NOTE:
+# - Motor driver: Cytron (model TBD — confirm during bring-up). services/motion/motor.py currently
+#   has no Cytron dispatch path. A new core/hardware/motor_controller_cytron.py is required before
+#   drive control on this unit will function. Identity/profile loads cleanly without it.
+# - Camera: IMX708 Pi Camera Module 3 Wide. Boot config notes in .claude/hardware_specs.md
+#   (commit 90e2399). Verify with `libcamera-hello --list-cameras` post-deploy.

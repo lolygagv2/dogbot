@@ -73,6 +73,9 @@ class RobotConfig:
             'treatbot': 'treatbot',
             'treatbot1': 'treatbot1',
             'treatbot2': 'treatbot2',
+            'treatbot3': 'treatbot3',
+            'treatbot4': 'treatbot4',
+            'treatbot5': 'treatbot5',
             'wimz-alpha': 'treatbot',
             'wimz-beta': 'treatbot2',
         }
