@@ -1,5 +1,57 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-09 — Rebadge cloned Pi as treatbot3 + prep for treatbot4/5
+
+**Goal:** This Pi was cloned from treatbot1's SD card. Give it a unique identity (treatbot3 / wimz_robot_03), pre-create profiles + bootstrap script so future clones for treatbot4 and treatbot5 are one-command operations.
+**Status:** ✅ Code/config committed and pushed (`bc3ecb9`). Identity reset script ran successfully on this Pi. **Reboot pending — user will trigger when ready.**
+
+### Hardware delta on units 3-5 (vs 1/2)
+- Cytron motor driver + 9V brushed motors (no encoders) — replaces L298N + 6V DFRobot encoder motors. PID disabled because no encoder feedback.
+- IMX708 Pi Camera Module 3 Wide — replaces IMX500 used on units 1/2.
+
+### What Was Built
+
+**Repo changes (commit `bc3ecb9`, pushed to origin/main):**
+- `config/config_loader.py` — added `treatbot3/4/5` to hostname_map. After hostname change, profile auto-selects, no `/etc/robot_id` needed.
+- `config/robot_profiles/treatbot3.yaml`, `treatbot4.yaml`, `treatbot5.yaml` — seeded from treatbot1.yaml. PID disabled, motor multipliers neutral (1.0/1.0), camera rotation 0. HARDWARE_NOTE block flags Cytron driver dependency.
+- `scripts/wimz_rebadge.sh` — idempotent post-clone identity reset. Takes one arg (3, 4, or 5). Resets machine-id, regenerates SSH host keys, sets hostname + /etc/hosts, writes new .env with fresh DEVICE_SECRET. Does NOT auto-reboot (so user can read the printed secret).
+
+**System changes on this Pi (via rebadge script):**
+- machine-id: `67ec0d9e3e5e47c98d50d87f3684c555` (new, distinct from treatbot1)
+- New SSH host keys (ed25519 fingerprint: `SHA256:HtaF5WgUG07LGRQJuEH63X5MewYq9SXGkPJ+yahvl78`) — note: key comment field still says "root@treatbot1" cosmetically because hostname changed AFTER key generation; harmless, will correct on next regeneration
+- hostname → `treatbot3`, `/etc/hosts` 127.0.1.1 → `treatbot3`
+- `/home/morgan/dogbot/.env` → `DEVICE_ID=wimz_robot_03` + a freshly-generated `DEVICE_SECRET` (stored only in .env, not in git — see file directly)
+- Bluetooth pairing database left intact (Xbox controller bond preserved from clone)
+
+### Critical follow-up actions (next session)
+
+1. **Register on Lightsail relay**: `wimz_robot_03` + the secret in `/home/morgan/dogbot/.env` must be added to the relay's allowed-devices list before the robot can connect remotely.
+2. **Cytron motor driver** (out of scope this session): `services/motion/motor.py` has no Cytron dispatch. Need a new `core/hardware/motor_controller_cytron.py` plus dispatch wiring before drive control works on units 3/4/5.
+3. **Per-unit calibration during bring-up**: motor `left_multiplier`/`right_multiplier`, `camera.rotation`, `pan_center`/`tilt_center`, dispenser `steps_per_slot`. All currently neutral defaults in treatbot3.yaml.
+4. **Verify after reboot**:
+   ```
+   hostname                                    # treatbot3
+   journalctl -u treatbot.service -n 80 | grep -iE "profile|robot_id|treatbot3"
+   ls /dev/input/js0                           # Xbox controller present
+   bluetoothctl devices Connected
+   libcamera-hello --list-cameras              # confirm IMX708 detected
+   ```
+
+### Cloning to treatbot4 / treatbot5 (future)
+After this Pi is fully validated, clone its SD card. On each new clone, first boot:
+```bash
+sudo bash /home/morgan/dogbot/scripts/wimz_rebadge.sh 4   # or 5
+sudo reboot
+```
+Then register the printed DEVICE_ID/SECRET on Lightsail. That's it.
+
+### Concurrency notes
+- treatbot1 stays online. Two separate Xbox controllers (one per robot) — first-come-first-served Bluetooth, no preemptive removal needed.
+- Once relay-registered, treatbot3 will appear as a separate device alongside `wimz_robot_01`.
+- Laptop SSH known_hosts: `ssh-keygen -R treatbot1.local` and any cached IPs before next SSH from laptop, otherwise host-key-mismatch warning.
+
+---
+
 ## Session: 2026-04-27 — Git Pull & Camera Boot Config Docs
 
 **Goal:** Pull latest changes, document camera boot config for fleet
