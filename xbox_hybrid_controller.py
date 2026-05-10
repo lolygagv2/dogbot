@@ -259,6 +259,15 @@ class XboxHybridControllerFixed:
     RIGHT_MOTOR_MULTIPLIER = 2.0   # Default - will be overridden by config
     MIN_PWM_THRESHOLD = 0          # Minimum PWM to overcome motor deadzone
 
+    # Gimbal stick-driven clamps - fallback defaults; per-device values come from yaml
+    # camera.{pan_min,pan_max,tilt_min,tilt_max,pan_center,tilt_center} in robot_profiles/<unit>.yaml
+    PAN_MIN = 10
+    PAN_MAX = 270
+    TILT_MIN = 20
+    TILT_MAX = 160
+    PAN_CENTER = 100   # Where the right-stick-click "center" command sends camera
+    TILT_CENTER = 90
+
     # Safety features - FIXED FOR SMOOTH CONTROL
     TREAT_COOLDOWN = 2.0  # Prevent rapid treat dispensing
     MOTOR_UPDATE_RATE = 0.05  # 50ms between motor updates - prevent conflicts with motor bus
@@ -485,6 +494,21 @@ class XboxHybridControllerFixed:
             self.LEFT_MOTOR_MULTIPLIER = controller_config.left_motor_multiplier
             self.RIGHT_MOTOR_MULTIPLIER = controller_config.right_motor_multiplier
             self.MIN_PWM_THRESHOLD = controller_config.min_pwm_threshold
+
+            # Gimbal limits for stick-driven pan/tilt — read from yaml so per-device
+            # ranges (treatbot3 has wider servos than treatbot1/2) are honored.
+            # Defaults match the previous hardcoded values for backwards compat.
+            cam_cfg = config.raw.get('camera', {})
+            self.PAN_MIN = cam_cfg.get('pan_min', 10)
+            self.PAN_MAX = cam_cfg.get('pan_max', 270)
+            self.TILT_MIN = cam_cfg.get('tilt_min', 20)
+            self.TILT_MAX = cam_cfg.get('tilt_max', 160)
+            self.PAN_CENTER = cam_cfg.get('pan_center', 100)
+            self.TILT_CENTER = cam_cfg.get('tilt_center', 90)
+            # Sync stick-tracking state to the calibrated center so the next stick
+            # nudge moves relative to actual hardware center, not stale init values.
+            self.last_pan_angle = self.PAN_CENTER
+            self.last_tilt_angle = self.TILT_CENTER
 
             logger.info(f"[Config] Robot profile loaded: {config.robot_id}")
             logger.info(f"[Config] DEADZONE={self.DEADZONE}")
@@ -849,9 +873,9 @@ class XboxHybridControllerFixed:
                     # negative right_y = stick DOWN = camera should look UP (inverted)
                     new_tilt = self.last_tilt_angle + tilt_speed  # Inverted: UP increases angle
 
-                    # Clamp to valid range
-                    new_pan = max(10, min(270, new_pan))
-                    new_tilt = max(20, min(160, new_tilt))
+                    # Clamp to per-device gimbal range (loaded from profile yaml)
+                    new_pan = max(self.PAN_MIN, min(self.PAN_MAX, new_pan))
+                    new_tilt = max(self.TILT_MIN, min(self.TILT_MAX, new_tilt))
 
                     # Only send if changed enough (reduce jitter)
                     if (abs(new_pan - self.last_pan_angle) > 1.0 or
@@ -1720,18 +1744,16 @@ class XboxHybridControllerFixed:
                 logger.error(f"Snapshot error: {e}")
 
     def center_camera(self):
-        """Center the camera to default position"""
-        logger.info("Right stick click: Centering camera")
+        """Center the camera to default position (per-device, from yaml)"""
+        logger.info(f"Right stick click: Centering camera to pan={self.PAN_CENTER}, tilt={self.TILT_CENTER}")
 
-        # Reset to center positions
-        self.last_pan_angle = 100  # Center with slight right offset
-        self.last_tilt_angle = 90  # Center
+        self.last_pan_angle = self.PAN_CENTER
+        self.last_tilt_angle = self.TILT_CENTER
 
-        # Send center command
         self.api_request('POST', '/camera/pantilt', {
-            "pan": 100,
-            "tilt": 90,
-            "smooth": True
+            "pan": self.PAN_CENTER,
+            "tilt": self.TILT_CENTER,
+            "smooth": False  # discrete center action — snap immediately, don't smooth
         })
 
     def cycle_mode(self):

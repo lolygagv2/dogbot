@@ -52,24 +52,52 @@ class MotorCommandBus:
         except Exception:
             self.logger.warning("Motor bus: could not load config, defaulting use_pid=True")
 
-        # Try to import motor controller - prioritize proper PID controller
+        # Cytron MDD10A first when profile selects it (treatbot3/4/5 — 9V brushed,
+        # no encoders, no PID). Gated by controller.driver=="cytron" so treatbot1/2
+        # are unaffected and continue using ProperPIDMotorController below.
         try:
-            from core.hardware.proper_pid_motor_controller import ProperPIDMotorController
-            self.motor_controller = ProperPIDMotorController()
-            self.logger.info("Proper PID motor controller initialized (closed-loop control)")
-        except ImportError:
+            from config.config_loader import get_config as _get_cfg
+            _raw = _get_cfg().raw.get('controller', {})
+            if _raw.get('driver') == "cytron":
+                from core.hardware.motor_controller_cytron import MotorControllerCytron
+                cy = _raw.get('cytron', {})
+                cal = _raw.get('motor_calibration', {})
+                self.motor_controller = MotorControllerCytron(
+                    left_dir_pin=cy.get('left_dir_pin', 17),
+                    left_pwm_pin=cy.get('left_pwm_pin', 13),
+                    right_dir_pin=cy.get('right_dir_pin', 27),
+                    right_pwm_pin=cy.get('right_pwm_pin', 19),
+                    left_invert=cy.get('left_invert', False),
+                    right_invert=cy.get('right_invert', False),
+                    left_multiplier=cal.get('left_multiplier', 1.0),
+                    right_multiplier=cal.get('right_multiplier', 1.0),
+                    max_pwm_pct=cy.get('max_pwm_pct', 100),
+                    pwm_freq_hz=cy.get('pwm_freq_hz', 1000),
+                )
+                self.logger.info("Cytron MDD10A motor controller initialized (open-loop, no encoders)")
+        except Exception as e:
+            self.logger.warning(f"Cytron dispatch skipped: {e}")
+            self.motor_controller = None
+
+        # Try to import motor controller - prioritize proper PID controller
+        if self.motor_controller is None:
             try:
-                from core.hardware.motor_controller_robust import MotorControllerRobust
-                self.motor_controller = MotorControllerRobust()
-                self.logger.info("Robust motor controller initialized (no encoders)")
+                from core.hardware.proper_pid_motor_controller import ProperPIDMotorController
+                self.motor_controller = ProperPIDMotorController()
+                self.logger.info("Proper PID motor controller initialized (closed-loop control)")
             except ImportError:
                 try:
-                    from core.hardware.motor_controller_dfrobot_encoder import DFRobotEncoderMotorController
-                    self.motor_controller = DFRobotEncoderMotorController()
-                    self.logger.info("DFRobot encoder motor controller initialized")
+                    from core.hardware.motor_controller_robust import MotorControllerRobust
+                    self.motor_controller = MotorControllerRobust()
+                    self.logger.info("Robust motor controller initialized (no encoders)")
                 except ImportError:
-                    self.logger.error("No motor controller available")
-                    self.motor_controller = None
+                    try:
+                        from core.hardware.motor_controller_dfrobot_encoder import DFRobotEncoderMotorController
+                        self.motor_controller = DFRobotEncoderMotorController()
+                        self.logger.info("DFRobot encoder motor controller initialized")
+                    except ImportError:
+                        self.logger.error("No motor controller available")
+                        self.motor_controller = None
 
     def start(self) -> bool:
         """Start the motor command bus"""

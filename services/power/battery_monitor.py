@@ -49,6 +49,19 @@ class BatteryMonitorService:
         self.bus = get_bus()
         self.state = get_state()
 
+        # Per-device voltage-divider calibration. Profile yaml overrides class default
+        # so each unit can carry its own divider ratio (treatbot3 has a ~54:1 divider
+        # vs treatbot1's ~4.3:1). Falls back silently if config is unavailable.
+        self.calibration_factor = self.CALIBRATION_FACTOR
+        try:
+            from config.config_loader import get_config
+            cfg_factor = get_config().raw.get('battery', {}).get('calibration_factor')
+            if cfg_factor is not None:
+                self.calibration_factor = float(cfg_factor)
+                self.logger.info(f"Battery calibration override from profile: {self.calibration_factor}")
+        except Exception as e:
+            self.logger.debug(f"Battery calibration: using class default ({self.CALIBRATION_FACTOR}); profile read skipped: {e}")
+
         # Hardware
         self.i2c = None
         self.ads = None
@@ -108,7 +121,7 @@ class BatteryMonitorService:
 
         try:
             self.adc_voltage = self.channel.voltage
-            self.voltage = self.adc_voltage * self.CALIBRATION_FACTOR
+            self.voltage = self.adc_voltage * self.calibration_factor
             self.percentage = self._calculate_percentage(self.voltage)
             self.last_update = time.time()
 
