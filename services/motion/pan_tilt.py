@@ -70,7 +70,9 @@ class PanTiltService:
         # Load gimbal config from robot profile
         try:
             config = get_config()
-            cam = getattr(config, 'camera', None) or {}
+            # Use raw dict — config.camera returns a CameraConfig object whose
+            # __getattr__ catches .get() and returns None, breaking the read.
+            cam = config.raw.get('camera', {})
             if cam:
                 self.pan_limits = (cam.get('pan_min', 10), cam.get('pan_max', 200))
                 self.tilt_limits = (cam.get('tilt_min', 20), cam.get('tilt_max', 160))

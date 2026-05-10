@@ -158,7 +158,7 @@ class PanTiltRequest(BaseModel):
     pan: Optional[int] = None  # -90 to 270 degrees with extended PWM
     tilt: Optional[int] = None  # 0-180 degrees
     speed: Optional[int] = 5  # movement speed
-    smooth: Optional[bool] = False  # use smooth movement
+    smooth: Optional[bool] = True  # use smooth movement (default preserves prior server-side hardcoded behavior)
 
 class JoystickRequest(BaseModel):
     """Virtual joystick input from app"""
@@ -2209,13 +2209,13 @@ async def camera_pantilt(request: PanTiltRequest):
             if not pantilt_service.initialize():
                 raise HTTPException(status_code=500, detail="Failed to initialize servos")
 
-        # Use move_camera() for debounced, smoothed movement
-        # This prevents jerky servos from rapid API commands
-        # smooth=True always applies debounce/smoothing to prevent jerkiness
+        # Honor the request's `smooth` field. Continuous gestures (joystick) want
+        # smoothing to avoid jerky servos; discrete actions (center button) want an
+        # immediate snap (smooth=False) so one press lands at the target.
         success = pantilt_service.move_camera(
             pan=request.pan,
             tilt=request.tilt,
-            smooth=True  # Always apply debounce/smoothing for API calls
+            smooth=request.smooth
         )
 
         if success:
