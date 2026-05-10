@@ -1149,16 +1149,25 @@ def get_relay_client(config: Optional[RelayConfig] = None) -> RelayClient:
 
 
 def configure_relay_from_yaml(config_dict: dict) -> RelayConfig:
-    """Create RelayConfig from YAML config dictionary"""
+    """Create RelayConfig from YAML config dictionary.
+
+    Per-device .env overrides take precedence over the shared yaml so a single
+    unit can be pointed at a different relay without forking robot_config.yaml.
+    Order: RELAY_URL env > cloud.relay_url yaml > hard-coded fallback.
+    """
     cloud_config = config_dict.get('cloud', {})
 
-    # Get credentials from environment variables if not in config
     device_id = cloud_config.get('device_id') or os.environ.get('DEVICE_ID', '')
     device_secret = cloud_config.get('device_secret') or os.environ.get('DEVICE_SECRET', '')
+    relay_url = (
+        os.environ.get('RELAY_URL')
+        or cloud_config.get('relay_url')
+        or 'wss://api.wimzai.com/ws/device'
+    )
 
     return RelayConfig(
         enabled=cloud_config.get('enabled', False),
-        relay_url=cloud_config.get('relay_url', 'wss://api.wimzai.com/ws/device'),
+        relay_url=relay_url,
         device_id=device_id,
         device_secret=device_secret,
         reconnect_delay=cloud_config.get('reconnect_delay', 5.0),
