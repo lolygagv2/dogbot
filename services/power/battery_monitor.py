@@ -84,11 +84,14 @@ class BatteryMonitorService:
         self.critical_warning_sent = False
 
         # Charging detection
-        self.voltage_history = []  # Last 3 readings for trend detection
+        self.voltage_history = []  # Rolling window for trend detection
         self.charging_detected = False
         self.charging_audio_path = '/home/morgan/dogbot/VOICEMP3/wimz/Wimz_charging.mp3'
         self.last_charging_announce = 0.0
         self.charging_announce_cooldown = 300.0  # 5 minutes cooldown
+        # Motor-idle gate: voltage bouncing back after motor unload faked "charging".
+        # Skip trend evaluation while motors have been active recently.
+        self.motor_idle_required_s = 30.0
 
     def initialize(self) -> bool:
         """Initialize ADS1115 ADC for battery monitoring"""
@@ -168,39 +171,66 @@ class BatteryMonitorService:
             self.low_warning_sent = False
             self.critical_warning_sent = False
 
-    def _check_charging(self) -> None:
-        """Check if charging (voltage must be actively rising over multiple readings).
+    def _motor_recently_active(self, now: float) -> bool:
+        """True if a non-zero motor command was issued within motor_idle_required_s.
 
-        Only Method 2 (voltage trend) is reliable. Method 1 (high voltage) and
-        Method 3 (high percentage) both false-positive on a fully-charged battery
-        that is NOT plugged in, causing the startup 'Wimz_charging' announcement.
+        Motor load causes large voltage sag/rebound that the old oldest-vs-newest
+        trend check falsely read as 'charging.' Gate the check on motor idleness.
         """
-        # Track voltage history
+        try:
+            from core.motor_command_bus import get_motor_bus
+            cmd = get_motor_bus().last_command
+            if cmd is None:
+                return False
+            if cmd.left_speed == 0 and cmd.right_speed == 0:
+                return False
+            return (now - cmd.timestamp) < self.motor_idle_required_s
+        except Exception:
+            return False
+
+    def _check_charging(self) -> None:
+        """Detect charger connect by requiring monotonic-ish rise while motors idle.
+
+        Why: voltage-trend alone false-positives on motor unload bounce-back (a
+        ~0.2V swing on the rail is normal under driving). And on units with high
+        voltage-divider ratios (e.g. treatbot3's 54:1), ADC noise alone exceeds
+        the old 0.05V threshold. Fix combines:
+          1. Skip trend eval while motors active or recently active (<30s).
+          2. Require every step in the window to not significantly drop.
+          3. Require larger total rise (~0.15V) before announcing.
+        """
+        now = time.time()
+
+        # Don't sample at all while motors are loading the rail; clear stale
+        # history so the next eval window starts fresh from a quiet rail.
+        if self._motor_recently_active(now):
+            if self.voltage_history:
+                self.voltage_history.clear()
+            return
+
         self.voltage_history.append(self.voltage)
         if len(self.voltage_history) > 5:
             self.voltage_history.pop(0)
 
-        now = time.time()
         was_charging = self.charging_detected
 
-        # Need at least 4 readings (~20s at 5s interval) before making charging decisions.
-        # This prevents false positives on startup when history is empty.
-        if len(self.voltage_history) < 4:
+        # Need full 5-sample window (~25s of quiet rail) for confident decision.
+        if len(self.voltage_history) < 5:
             return
 
-        # Only reliable method: voltage is consistently rising over several readings
-        # Compare oldest vs newest in our 5-sample window
-        v_oldest = self.voltage_history[0]
-        v_newest = self.voltage_history[-1]
-        voltage_trend = v_newest - v_oldest
+        # Step-wise check: no sample may drop by more than ~0.02V from its
+        # predecessor. Real charging gives a steady climb; rebound bounces dip.
+        max_drop = max(
+            self.voltage_history[i - 1] - self.voltage_history[i]
+            for i in range(1, len(self.voltage_history))
+        )
+        voltage_trend = self.voltage_history[-1] - self.voltage_history[0]
 
-        if voltage_trend >= 0.05:
-            # Voltage rising = charger connected
+        if voltage_trend >= 0.15 and max_drop <= 0.02:
             self.charging_detected = True
         elif voltage_trend < -0.05:
-            # Voltage dropping = not charging
             self.charging_detected = False
-        # else: voltage stable — keep current state (hysteresis)
+        # else: ambiguous — keep current state (hysteresis)
 
         # Announce charging started
         if self.charging_detected and not was_charging:
