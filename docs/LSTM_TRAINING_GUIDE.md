@@ -2,7 +2,7 @@
 
 ## Overview
 
-The behavior LSTM takes 16-frame windows of dog keypoints and classifies into: `stand`, `sit`, `lie`, `spin`, `speak`.
+The behavior LSTM takes 16-frame windows of dog keypoints and classifies into: `stand`, `sit`, `lie`, `spin`.
 
 **Train on:** Morgan's Blackwell PC (CUDA)  
 **Deploy to:** Raspberry Pi 5 (TorchScript `.ts` file)
@@ -49,9 +49,9 @@ for f in sequences_imx500/*.npz; do basename "$f" | cut -d'_' -f2; done | sort |
 - 100+ files per behavior for robust results
 
 **Current capture (2026-04-27):**
-- sit: 65, stand: 48, lie: 36, spin: 25, speak: 0
+- sit: 65, stand: 48, lie: 36, spin: 25
 
-**Note:** speak is missing — capture some "speak" sequences or remove from BEHAVIORS list in script.
+**Note:** "speak" was removed from visual behaviors — it's handled by the bark detector (audio), not pose classification.
 
 ---
 
@@ -174,13 +174,11 @@ Capture more sequences for that behavior. The model struggles with underrepresen
 - Check that the `.ts` file transferred correctly (compare file sizes)
 - Verify the Pi code loads from the correct path
 
-### "speak" behavior missing
-Either:
-1. Capture speak sequences (dog barking/vocalizing)
-2. Or edit `train_behavior_lstm.py` line 28 to remove "speak":
-   ```python
-   BEHAVIORS = ["stand", "sit", "lie", "spin"]
-   ```
+### Adding new behaviors
+Edit `train_behavior_lstm.py` BEHAVIORS list, then capture sequences with matching labels:
+```python
+BEHAVIORS = ["stand", "sit", "lie", "spin", "newbehavior"]
+```
 
 ---
 
