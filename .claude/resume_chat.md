@@ -1,5 +1,40 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-15 — Git sync + new Pi 5 diagnostics (treatbot2)
+
+**Goal:** Pull latest changes, verify new Pi 5 hardware after old one was destroyed (12V GPIO mishap)
+**Status:** ✅ Complete
+
+### What Was Accomplished
+
+1. **Git Sync**
+   - Pulled 6 commits from origin/main (treatbot3 profiles, charging detector fix, etc.)
+   - Fixed stale staged changes in `train_behavior_lstm.py` (4-class alignment, CPU export)
+   - Added 174 IMX500 behavior sequences to repo
+   - Updated LSTM training guide to remove "speak" (audio-only via bark detector)
+
+2. **Hardware Diagnostics — New Pi 5 (4GB)**
+   - Pi 5 Model B Rev 1.1: Healthy (48°C)
+   - RAM: 4GB (2.5GB available, swap usage higher than 8GB unit)
+   - IMX500 camera: Detected (4056x3040)
+   - I2C: PCA9685 servo @ 0x40, ADC @ 0x48
+   - USB Audio: Card 0
+   - Soft power button: Armed and working
+
+3. **Power Button Note**
+   - Service starts ~1.5 min after boot (waits for multi-user.target)
+   - User pressed button before service armed — expected behavior, not a bug
+
+### Commits Pushed
+- `903b2c0` — fix: Align train_behavior_lstm.py with deployed 4-class model
+- `7a37458` — feat: Add IMX500 behavior sequences + LSTM training guide
+- `0cbaeaf` — docs: Update LSTM guide — speak removed (audio-only via bark detector)
+
+### Next Session
+- No pending tasks
+
+---
+
 ## Session: 2026-05-09 — Rebadge cloned Pi as treatbot3 + prep for treatbot4/5
 
 **Goal:** This Pi was cloned from treatbot1's SD card. Give it a unique identity (treatbot3 / wimz_robot_03), pre-create profiles + bootstrap script so future clones for treatbot4 and treatbot5 are one-command operations.
