@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
 
-BEHAVIORS = ["stand", "sit", "lie", "spin", "speak"]
+BEHAVIORS = ["stand", "sit", "lie", "spin"]
 T = 16  # window length
 
 
@@ -169,11 +169,13 @@ def main():
             best = va_acc
             bad = 0
             torch.save({"state_dict": model.state_dict(), "behaviors": BEHAVIORS, "T": T}, args.out)
-            # Export TorchScript for inference
+            # Export TorchScript for inference (must be CPU for Pi deployment)
             model.eval()
-            example = torch.zeros(1, T, 48, device=device)
+            model.cpu()
+            example = torch.zeros(1, T, 48)  # CPU tensor
             traced = torch.jit.trace(model, example)
             traced.save(args.out_ts)
+            model.to(device)  # Move back for continued training
         else:
             bad += 1
             if bad >= args.patience:
