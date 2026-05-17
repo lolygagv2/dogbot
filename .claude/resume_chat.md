@@ -54,6 +54,48 @@
 
 ---
 
+## Session: 2026-05-17 — treatbot4 hardware bring-up
+
+**Goal:** Bring treatbot4 from cloned-from-treatbot1 SD card to a fully-calibrated working unit. Same Cytron + brushed-motor + IMX708 hardware family as treatbot3, but on a different physical Pi/PCB.
+**Status:** ✅ COMPLETE (modulo battery, which needs actual battery plugged in to verify). Commit `89efa8f` pushed locally (not yet pushed to origin).
+
+### Capabilities now working on treatbot4
+- **Drive train**: Xbox left stick → Cytron MDD10A → both wheels respond, correct directions
+- **Camera gimbal**: pan inherited from treatbot3 (pan_center=67), tilt re-calibrated after dead-servo replacement (tilt_center=43)
+- **Cloud relay**: connected to `wss://api.wimzai.com/ws/device`; wimz_robot_04 registered Lightsail-side
+- **Xbox controller**: paired (28:EA:0B:DB:82:3F), connected via /dev/input/js0
+- **Camera**: IMX708 Pi Camera Module 3 Wide, 19.4 FPS detection pipeline
+
+### Hardware findings worth remembering
+- **Right motor wired with reversed polarity** — same as treatbot3. `right_invert: true`. Now 2-for-2 on Cytron brushed-motor builds → memory saved (`project_cytron_right_invert.md`) so treatbot5 starts with `true` as expected default.
+- **Tilt servo was DOA** — confirmed via swap test (pan ↔ tilt cables swapped, neither chan-1 PCA output nor swapped-onto-chan-0 produced response). User installed a replacement servo mid-session in ~5 min.
+- **New tilt servo's mechanical "level" position = code-angle 43°** (vs treatbot3's -12°). Different mounting offset. Symmetric ±50° physical range gives tilt_min=-57, tilt_max=143, with coach-mode 30% inset (3 to 83).
+- **Battery sense divider on this PCB is wired the same as treatbot3** — but bench supply is going directly into the Pololu output (downstream of the divider tap), so ADS1115 A0 reads ~-27mV (floating). Calibration_factor 54.28 inherited; will read correctly once battery plugs into the JST.
+
+### Commits this session
+- `89efa8f` feat: treatbot4 hardware bring-up — Cytron + camera gimbal + new tilt servo
+
+### Files touched
+- MODIFIED: `config/robot_profiles/treatbot4.yaml` (Cytron section, battery cal, tilt re-cal, driver dispatch)
+
+### Pre-existing issues still pending (unchanged from treatbot3 session)
+- `services/motion/motor.py:MotorService.initialize()` NameError on ENCODER_MOTOR_AVAILABLE — dead code, not blocking
+- TMC2209 dispenser UART warning — defaults match yaml, dispenser works fine
+- Battery monitor `-1.48V CRITICAL` logs (test-rig artifact, resolves with battery plugged in)
+- `/camera/center` and `/camera/position` API endpoints reference missing methods (would 500 if called)
+
+### Still pending for treatbot4 (next session candidates)
+1. **Verify battery calibration** — plug actual battery in, confirm reading ~16.6V at 16.8V (matches treatbot3 pattern)
+2. **Treat dispenser test** — TMC2209/NEMA settings inherited from treatbot3, never tested on this unit
+3. **Field test outdoors / under-load drive** — all testing this session bench/wheels-up
+4. **Re-tune motor `left_multiplier`/`right_multiplier`** if drive feels asymmetric under load
+5. **Push commit `89efa8f` to origin** — currently local-only
+
+### Notes for treatbot5 (next clone)
+Per the documented procedure, treatbot5 should inherit treatbot3.yaml as starting point. NEW datapoint from treatbot4: right_invert=true should be the **expected default** for these Cytron brushed-motor builds (2/2). Servos may need re-calibration regardless of donor yaml (tilt mounting differed even between treatbot3 and treatbot4).
+
+---
+
 ## Session: 2026-05-15 — Git sync + new Pi 5 diagnostics (treatbot2)
 
 **Goal:** Pull latest changes, verify new Pi 5 hardware after old one was destroyed (12V GPIO mishap)
