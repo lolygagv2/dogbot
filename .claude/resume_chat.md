@@ -1,5 +1,59 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-17 — treatbot5 bring-up (cloned from treatbot3)
+
+**Goal:** First-boot bring-up of treatbot5, cloned from treatbot3's SD card. Pull latest, customize per-unit calibration, run drive + gimbal test sequences.
+**Status:** ✅ Core bring-up complete. Dispenser test skipped; full vision/AI verification deferred (camera was unplugged mid-session). Working tree changes ready to commit: `config/robot_profiles/treatbot5.yaml`, `.claude/resume_chat.md`.
+
+### Capabilities now working on treatbot5
+- **Identity**: hostname `treatbot5`, `DEVICE_ID=wimz_robot_05`, machine-id `f7cfcc5dbb3b4210b526449a5e9eb5d9`. Profile auto-selects via hostname_map.
+- **Cloud relay**: connected `wss://api.wimzai.com/ws/device` on first boot — Lightsail already had `wimz_robot_05` registered (no relay-side work needed this session).
+- **Battery monitoring**: reads 16.87V at 16.8V bench (0.4% error) with `calibration_factor: 53.33`.
+- **Drive train**: Cytron MDD10A live, both wheels respond, forward+reverse verified.
+- **Gimbal**: center + limits calibrated via Xbox-stick sweep.
+
+### Per-unit calibration deltas vs treatbot3
+1. **Battery divider runs ~1.8% leaner**: factor 53.33 (vs treatbot3's 54.28). Same hardware design, normal resistor tolerance variance.
+2. **Right motor wired with reversed polarity** (same as treatbot3): `right_invert: true`. Left motor fine (`left_invert: false`).
+3. **Gimbal center is at completely different servo positions**: treatbot5 lives at `pan_center: 64, tilt_center: 89` vs treatbot3's `67, -12`. Pan close but tilt convention reads very differently — both use "higher tilt = looking up" but the absolute neutral pulse on this servo lands at +89 instead of -12. Mounting/servo tolerance.
+4. **Tilt range is asymmetric on this unit**: physical limits 57 (down, mechanical wall) to 236 (up). Center at 89 → only 29° of down-tilt headroom but 147° of up-tilt headroom. Locked `tilt_min: 60` (3° safety from wall), `tilt_max: 236`.
+5. **Pan range**: `pan_min: -80`, `pan_max: 268` (user-chosen "comfortable max" via Xbox sweep, not necessarily mechanical wall).
+6. **`coach_pan_*` / `coach_tilt_*` inherited verbatim from treatbot3** but need re-tuning in actual coach mode — the 30%-inset formula produces tilt range biased upward (away from floor-level dog tracking) given treatbot5's asymmetric tilt range. Flagged in yaml comment.
+
+### Hardware findings
+- **Xbox controller (AC:8E:BD:4A:0F:97)** paired fresh — the cloned BlueZ bonding database came over empty (or got cleared) so no pre-pair carried from treatbot3.
+- **Camera (IMX708 wide)** was physically unplugged sometime during the gimbal calibration → service hung in startup with V4L2 buffer errors on next restart. Service stopped cleanly at end of session. **Next session: plug camera in, restart service, verify gimbal snaps to (pan=64, tilt=89) and AI pipeline starts cleanly.**
+
+### Drive test sequence executed (wheels lifted, 30% throttle)
+1. LEFT only +30 → forward ✅ (`left_invert: false` correct)
+2. RIGHT only +30 → BACKWARD ❌ → flipped `right_invert: true` → retest → forward ✅
+3. BOTH +30 → straight forward ✅
+4. BOTH -30 → straight reverse ✅
+
+### Gimbal calibration sequence (live Xbox sweep, position read via GET /camera/gimbal)
+- CENTER: pan=64, tilt=89 (`current_position` reading)
+- MAX UP: tilt=236 (locked as tilt_max)
+- MAX DOWN: tilt=57 (mechanical wall hit, +3° safety → tilt_min=60)
+- MAX LEFT: pan=267.8 (locked → pan_max=268)
+- MAX RIGHT: pan=-78.9 (locked → pan_min=-80)
+
+### Pending for treatbot5 (next session)
+1. **Re-plug IMX708 camera, restart service, verify** new gimbal snaps to (64, 89) on boot and AI detection pipeline starts. Confirm 4-class behavior model loads.
+2. **Dispenser test** — skipped this session. Trigger via API, confirm auger advances. Expect cosmetic "TMC2209 not responding on UART" warning (matches treatbot3).
+3. **Field test on-floor** — all drive testing was bench/wheels-lifted.
+4. **Coach mode tilt range re-tune** — `coach_tilt_min/max` currently inherited from treatbot3 and likely tracks too high given asymmetric tilt range.
+5. **Optional motor calibration tuning**: `left_multiplier`/`right_multiplier` are 1.0/1.0; under load may need bias if robot pulls one direction.
+
+### Commits this session
+- Pulled 5 commits from origin/main (392c2cd, 0cbaeaf, 7a37458, 903b2c0, b4e74db) — includes 174 IMX500 training sequences, LSTM training guide, charging-detector fix.
+- About to commit: treatbot5.yaml per-device calibration + this resume_chat update.
+
+### Files touched
+- MODIFIED: `config/robot_profiles/treatbot5.yaml` (full per-device fill-in: battery factor, Cytron driver dispatch, motor inversion, gimbal calibration)
+- MODIFIED: `.claude/resume_chat.md` (this entry)
+
+---
+
 ## Session: 2026-05-15 — Git sync + new Pi 5 diagnostics (treatbot2)
 
 **Goal:** Pull latest changes, verify new Pi 5 hardware after old one was destroyed (12V GPIO mishap)

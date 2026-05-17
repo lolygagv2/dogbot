@@ -8,18 +8,22 @@ description: "Production unit #5 — Cytron motor driver, 9V brushed motors (no 
 # Camera settings (detector.py) — IMX708 Pi Camera Module 3 Wide
 camera:
   rotation: 0  # degrees clockwise (0, 90, 180, 270) — re-tune per unit
-  # Gimbal servo limits (pan_tilt.py)
-  pan_min: 10
-  pan_max: 200
-  tilt_min: 20
-  tilt_max: 160
-  pan_center: 110   # Calibrated center (may differ from mechanical 90) — re-tune per unit
-  tilt_center: 90
-  # Coach mode auto-tracking limits (tighter to avoid ceiling/floor)
-  coach_pan_min: 55
-  coach_pan_max: 145
-  coach_tilt_min: 25
-  coach_tilt_max: 85
+  # Gimbal servo limits (pan_tilt.py) — calibrated 2026-05-17 via Xbox-stick sweep
+  # MG996R servos; tilt convention differs from treatbot3 (pos=up, larger numbers).
+  # Hit mechanical wall at tilt=57 → set tilt_min=60 (~3° safety margin).
+  pan_min: -80
+  pan_max: 268
+  tilt_min: 60
+  tilt_max: 236
+  pan_center: 64    # Live-read where camera physically looks dead-ahead on this mount
+  tilt_center: 89   # Live-read level horizon (asymmetric range: 29° down, 147° up from center)
+  # Coach mode auto-tracking limits — INHERITED from treatbot3; needs separate tuning
+  # in coach mode (tilt is asymmetric on this unit, dog-tracking range likely needs
+  # to bias toward lower tilt to avoid ceiling stares).
+  coach_pan_min: 18
+  coach_pan_max: 162
+  coach_tilt_min: 29
+  coach_tilt_max: 149
 
 # Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py) — unchanged from treatbot1
 dispenser:
@@ -36,8 +40,15 @@ dispenser:
 servo:
   slow_pulse: 1560  # legacy — no longer used for dispenser
 
+# Battery monitor calibration (services/power/battery_monitor.py)
+# Calibrated 2026-05-17: at 16.8V bench, ADS1115 A0 read 0.315V → factor = 53.33.
+# (treatbot3 needed 54.28; treatbot5 divider runs ~1.8% leaner on the ADC tap.)
+battery:
+  calibration_factor: 53.33
+
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:
+  driver: "cytron"        # Selects MotorControllerCytron in services/motion/motor.py dispatch
   max_speed: 80           # Capped speed percentage
   turn_speed_factor: 0.8  # Multiplier for turn smoothness
   max_rpm: 110            # Unused on this unit (no encoder feedback) — kept for schema compatibility
@@ -48,6 +59,17 @@ controller:
   motor_calibration:
     left_multiplier: 1.0
     right_multiplier: 1.0
+
+  # Cytron MDD10A wiring + per-motor inversion (BCM pin numbers)
+  cytron:
+    left_dir_pin: 17     # physical pin 11
+    left_pwm_pin: 13     # physical pin 33
+    right_dir_pin: 27    # physical pin 13
+    right_pwm_pin: 19    # physical pin 35
+    left_invert: false   # flip true if left wheel spins backward at bring-up — UNIT-SPECIFIC
+    right_invert: true   # right motor wired with reversed polarity; verified 2026-05-17 bring-up (same as treatbot3)
+    pwm_freq_hz: 1000    # MDD10A supports up to 20kHz; 1kHz is quiet + responsive
+    max_pwm_pct: 70      # 9V motors on 14.8V (nominal) / 16.8V (full) rail; 70% = ~11.8V at full charge
 
   # Xbox controller calibration
   xbox:
@@ -61,8 +83,8 @@ controller:
     kd: 0.0
 
 # HARDWARE_NOTE:
-# - Motor driver: Cytron (model TBD — confirm during bring-up). services/motion/motor.py currently
-#   has no Cytron dispatch path. A new core/hardware/motor_controller_cytron.py is required before
-#   drive control on this unit will function. Identity/profile loads cleanly without it.
+# - Motor driver: Cytron MDD10A (10A dual-channel, DIR + PWM per motor). Driver in
+#   core/hardware/motor_controller_cytron.py, dispatched by services/motion/motor.py
+#   when controller.driver == "cytron".
 # - Camera: IMX708 Pi Camera Module 3 Wide. Boot config notes in .claude/hardware_specs.md
-#   (commit 90e2399). Verify with `libcamera-hello --list-cameras` post-deploy.
+#   (commit 90e2399). Verify with `rpicam-hello --list-cameras` post-deploy.
