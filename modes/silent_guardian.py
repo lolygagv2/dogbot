@@ -6,7 +6,8 @@ Bark intervention with 3-level escalation system + anti-treat-farming
 Escalation Flow:
 - Level 1 (1st-2nd intervention in hour): "[dog name], quiet" → quiet period → reward
 - Level 2 (3rd intervention in hour): quiet, quiet, no, come, quiet → quiet period → reward
-- Level 3 (4th+ intervention in hour): quiet + CALMING MUSIC → 2x quiet periods → reward
+- Level 3 (4th intervention in hour): quiet + PHYSICAL MOVEMENT SEQUENCE → quiet period → reward
+- Level 4 (5th+ intervention in hour): quiet + CALMING MUSIC → 2x quiet periods → reward
 
 Anti-Farming Features:
 - After a treat: 10 min eligibility cooldown (verbal praise only, no treats)
@@ -163,12 +164,19 @@ class SilentGuardianMode:
             'escalation': {
                 'window_minutes': 60,
                 'reset_after_quiet_minutes': 15,
-                'max_level': 3
+                'max_level': 4
             },
             'intervention_sequences': {
                 'level_1': {'quiet_required_seconds': 20},
                 'level_2': {'quiet_required_seconds': 30},
-                'level_3': {'quiet_period_duration': 20, 'quiet_periods_required': 2}
+                'level_3': {
+                    'movement_cycles': 3,
+                    'move_duration_seconds': 0.4,
+                    'move_speed_pct': 50,
+                    'cycle_pause_seconds': 5.0,
+                    'quiet_required_seconds': 30,
+                },
+                'level_4': {'quiet_period_duration': 20, 'quiet_periods_required': 2}
             },
             'session_limits': {
                 'max_treats': 11,
@@ -193,12 +201,13 @@ class SilentGuardianMode:
         Returns:
             1 = 0-2 interventions in last hour
             2 = 3 interventions in last hour
-            3 = 4+ interventions in last hour
+            3 = 4 interventions in last hour (physical movement)
+            4 = 5+ interventions in last hour (calming music)
         """
         now = time.time()
         escalation_config = self.config.get('escalation', {})
         window_minutes = escalation_config.get('window_minutes', 60)
-        max_level = escalation_config.get('max_level', 3)
+        max_level = escalation_config.get('max_level', 4)
 
         # Clean old events outside window
         window_seconds = window_minutes * 60
@@ -210,8 +219,10 @@ class SilentGuardianMode:
             level = 1
         elif count == 3:
             level = 2
-        else:
+        elif count == 4:
             level = 3
+        else:
+            level = 4
 
         return min(level, max_level)
 
@@ -625,8 +636,10 @@ class SilentGuardianMode:
             self._process_level_1(now)
         elif self.current_escalation_level == 2:
             self._process_level_2(now)
+        elif self.current_escalation_level == 3:
+            self._process_level_movement(now)
         else:
-            self._process_level_3(now)
+            self._process_level_music(now)
 
     def _process_level_1(self, now: float):
         """
@@ -709,20 +722,115 @@ class SilentGuardianMode:
                     self.fsm_state = SGState.COOLDOWN
                     self._cooldown_start = now
 
-    def _process_level_3(self, now: float):
+    def _process_level_movement(self, now: float):
         """
-        Level 3: Calming music mode
+        Level 3: Physical attention sequence (runs BEFORE the calming-music level).
+        Step 0: play "quiet" + run the 3-cycle in-place movement sequence (blocking)
+        Step 1: Wait for quiet period (progressive) → reward
+        """
+        level_config = self.config.get('intervention_sequences', {}).get('level_3', {})
+        base_quiet = level_config.get('quiet_required_seconds', 30)
+        quiet_required = self._get_progressive_quiet_duration(base_quiet)
+
+        if self.intervention_step == 0:
+            if self.last_step_time == 0.0:
+                logger.info("Level 3 (movement) - Step 0: quiet command + movement sequence")
+                if self.led:
+                    self.led.set_pattern('attention', duration=8.0)
+                self._play_audio('quiet.mp3')  # Waits for completion
+                self._run_movement_sequence()  # Blocking ~21s; always finishes
+                self.last_step_time = time.time()
+                self.quiet_start_time = time.time()
+                self.intervention_step = 1
+
+        elif self.intervention_step == 1:
+            # Check if quiet period achieved
+            if self.quiet_start_time > 0:
+                quiet_duration = now - self.quiet_start_time
+                if quiet_duration >= quiet_required:
+                    logger.info(f"Level 3 (movement) - SUCCESS: {quiet_duration:.1f}s quiet achieved")
+                    self._give_reward()
+                    self.fsm_state = SGState.COOLDOWN
+                    self._cooldown_start = now
+
+    def _run_movement_sequence(self):
+        """Run the quiet movement sequence: 3 cycles of forward/back/left/right.
+
+        Each move is a quick in-place burst (~300-500ms), motors halted between
+        moves, with a pause between cycles. Drives the main wheels via the motor
+        command bus (CommandSource.AUTONOMOUS); the bus applies its own +/-70
+        safety clamp. The treat-carousel anti-jam is a separate stepper and is
+        not touched here.
+
+        Always completes all configured cycles (no bark abort) but bails out
+        immediately on mode shutdown (self.running == False), guaranteeing the
+        motors are halted via the finally block.
+        """
+        cfg = self.config.get('intervention_sequences', {}).get('level_3', {})
+        cycles = int(cfg.get('movement_cycles', 3))
+        move_dur = float(cfg.get('move_duration_seconds', 0.4))
+        speed = int(cfg.get('move_speed_pct', 50))
+        pause = float(cfg.get('cycle_pause_seconds', 5.0))
+
+        try:
+            from core.motor_command_bus import (
+                get_motor_bus, create_motor_command, CommandSource
+            )
+            bus = get_motor_bus()
+        except Exception as e:
+            logger.error(f"SG_MOVEMENT: motor bus unavailable, skipping sequence: {e}")
+            return
+
+        if not (bus and bus.running):
+            logger.warning("SG_MOVEMENT: motor bus not running, skipping sequence")
+            return
+
+        # In-place moves as (label, left_pct, right_pct)
+        moves = [
+            ('forward', speed, speed),
+            ('back', -speed, -speed),
+            ('left', -speed, speed),    # left wheel back, right wheel fwd -> pivot left
+            ('right', speed, -speed),   # left wheel fwd, right wheel back -> pivot right
+        ]
+
+        def _drive(left: int, right: int):
+            bus.send_command(create_motor_command(left, right, CommandSource.AUTONOMOUS))
+
+        logger.info(f"SG_MOVEMENT: starting {cycles}-cycle quiet sequence "
+                    f"(move={move_dur}s, speed={speed}%, pause={pause}s)")
+        try:
+            for c in range(cycles):
+                if not self.running:
+                    break
+                for label, left, right in moves:
+                    if not self.running:
+                        break
+                    logger.debug(f"SG_MOVEMENT: cycle {c + 1}/{cycles} - {label}")
+                    _drive(left, right)
+                    time.sleep(move_dur)
+                    _drive(0, 0)          # halt between every move
+                    time.sleep(0.08)      # settle before reversing direction
+                # Pause between cycles, but not after the final one
+                if c < cycles - 1 and self.running:
+                    time.sleep(pause)
+        finally:
+            _drive(0, 0)  # guarantee motors are stopped
+        logger.info("SG_MOVEMENT: quiet sequence complete")
+
+    def _process_level_music(self, now: float):
+        """
+        Level 4: Calming music mode
         Step 0: quiet + start calming music
         Step 1: Wait for 2x quiet periods (progressive duration) → reward
         """
-        level_config = self.config.get('intervention_sequences', {}).get('level_3', {})
+        level_config = self.config.get('intervention_sequences', {}).get('level_4', {})
         base_period = level_config.get('quiet_period_duration', 20)
         quiet_period_duration = self._get_progressive_quiet_duration(base_period)
         quiet_periods_required = level_config.get('quiet_periods_required', 2)
 
         if self.intervention_step == 0:
             if self.last_step_time == 0.0:
-                logger.info("Level 3 - Step 0: quiet + starting calming music")
+                logger.info("Level 4 - Step 0: quiet + starting calming music")
                 if self.led:
                     self.led.set_pattern('calm', duration=60.0)
                 self._play_audio('quiet.mp3')  # Waits for completion
@@ -738,10 +846,10 @@ class SilentGuardianMode:
                 quiet_duration = now - self.quiet_start_time
                 if quiet_duration >= quiet_period_duration:
                     self.quiet_periods_achieved += 1
-                    logger.info(f"Level 3 - Quiet period {self.quiet_periods_achieved}/{quiet_periods_required} achieved")
+                    logger.info(f"Level 4 - Quiet period {self.quiet_periods_achieved}/{quiet_periods_required} achieved")
 
                     if self.quiet_periods_achieved >= quiet_periods_required:
-                        logger.info("Level 3 - SUCCESS: All quiet periods achieved")
+                        logger.info("Level 4 - SUCCESS: All quiet periods achieved")
                         self._stop_calming_music()
                         self._give_reward()
                         self.fsm_state = SGState.COOLDOWN
@@ -858,7 +966,7 @@ class SilentGuardianMode:
                 escalation_level=self.current_escalation_level,
                 quiet_achieved=True,
                 treat_given=False,  # No treat during cooldown
-                music_played=(self.current_escalation_level == 3)
+                music_played=(self.current_escalation_level == 4)
             )
             return
 
@@ -900,7 +1008,7 @@ class SilentGuardianMode:
             escalation_level=self.current_escalation_level,
             quiet_achieved=True,
             treat_given=True,
-            music_played=(self.current_escalation_level == 3)
+            music_played=(self.current_escalation_level == 4)
         )
 
     def _process_cooldown(self):
@@ -1065,10 +1173,11 @@ def main():
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    print("\n=== SILENT GUARDIAN MODE TEST (3-Level Escalation) ===")
+    print("\n=== SILENT GUARDIAN MODE TEST (4-Level Escalation) ===")
     print("Level 1: [name] + quiet → 20s quiet → reward")
     print("Level 2: quiet, quiet, no, come, quiet → 30s quiet → reward")
-    print("Level 3: quiet + CALMING MUSIC → 2x 20s quiet → reward")
+    print("Level 3: quiet + MOVEMENT SEQUENCE (3x fwd/back/left/right) → 30s quiet → reward")
+    print("Level 4: quiet + CALMING MUSIC → 2x 20s quiet → reward")
     print("Press Ctrl+C to exit\n")
 
     mode.start()

@@ -65,8 +65,24 @@ intervention_sequences:
     quiet_required_seconds: 30
     reward_on_success: true
 
-  # Level 3+: Third or more bark events within 1 hour
+  # Level 3: Fourth bark event within 1 hour — physical attention sequence
+  # Runs BEFORE the calming-music level. Quick in-place fwd/back/left/right
+  # movements to break the dog's focus. See _run_movement_sequence().
   level_3:
+    name: "Physical Attention Sequence"
+    commands:
+      - type: audio
+        file: "quiet.mp3"
+        wait_after: 1.0
+    movement_cycles: 3            # fwd/back/left/right counts as one cycle
+    move_duration_seconds: 0.4    # each move ~300-500ms (quick)
+    move_speed_pct: 50            # drive PWM % (safe band 40-70; bus clamps 70)
+    cycle_pause_seconds: 5.0      # pause between cycles (not after the last)
+    quiet_required_seconds: 30
+    reward_on_success: true
+
+  # Level 4+: Fifth or more bark events within 1 hour
+  level_4:
     name: "Calming Music Mode"
     commands:
       - type: audio
@@ -107,7 +123,7 @@ reward_sequence:
 escalation:
   window_minutes: 60              # Events within this window increase level
   reset_after_quiet_minutes: 15   # 15 min continuous quiet → reset to level 0 with ceremony
-  max_level: 3                    # Cap at level 3
+  max_level: 4                    # Cap at level 4 (1=verbal, 2=firm, 3=movement, 4=music)
 
 # Session limits
 session_limits:
