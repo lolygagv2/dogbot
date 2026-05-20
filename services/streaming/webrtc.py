@@ -23,7 +23,12 @@ from services.streaming.audio_track import WIMZAudioTrack, set_audio_track
 
 # Motor control imports - direct hardware access like Xbox controller
 try:
-    from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+    from core.motor_command_bus import (
+        get_motor_bus,
+        create_motor_command,
+        map_stick_to_motor_command,
+        CommandSource,
+    )
     MOTOR_BUS_AVAILABLE = True
 except ImportError:
     MOTOR_BUS_AVAILABLE = False
@@ -85,18 +90,36 @@ class WebRTCService:
         # Subscribe to camera reconfig pause/resume events
         self.bus.subscribe('vision', self._on_vision_event)
 
-        self.logger.info(f"WebRTCService initialized (max {self.config.max_connections} connections)")
+        # App-side joystick deadzone applied to inbound motor commands.
+        # Per-device override via controller.app_input_deadzone in robot_profiles/<unit>.yaml.
+        try:
+            from config.config_loader import get_config
+            self._app_input_deadzone = float(
+                get_config().raw.get('controller', {}).get('app_input_deadzone', 0.10)
+            )
+        except Exception:
+            self._app_input_deadzone = 0.10
+
+        self.logger.info(
+            f"WebRTCService initialized (max {self.config.max_connections} connections, "
+            f"motor input deadzone={self._app_input_deadzone:.2f})"
+        )
 
     async def _handle_data_channel_message(self, message: str, session_id: str):
         """
-        Handle incoming data channel messages for motor control
+        Handle incoming data channel messages for motor control.
 
-        Message formats supported:
-        - {"type": "motor", "left": -1.0 to 1.0, "right": -1.0 to 1.0}
-        - {"command": "motor", "left": -1.0 to 1.0, "right": -1.0 to 1.0}
+        Message format (pre-mixed analog):
+        - {"type": "motor", "left": -1.0..1.0, "right": -1.0..1.0}
+        - {"command": "motor", "left": -1.0..1.0, "right": -1.0..1.0}
+
+        App is responsible for tank-mixing (Y +/- X -> L, R) on the client.
+        Robot applies per-channel deadzone (default 0.10, configurable via
+        controller.app_input_deadzone in robot_profiles/<unit>.yaml), then
+        linearly scales to +/-100 PWM-% via map_stick_to_motor_command().
+        Motor bus then applies the existing +/-70 safety clamp.
 
         Motor commands go DIRECTLY to hardware (like Xbox controller) for minimal latency.
-        No HTTP API calls - direct motor bus access.
         """
         try:
             data = json.loads(message)
@@ -105,16 +128,14 @@ class WebRTCService:
 
             if msg_type == 'motor':
                 try:
-                    left = float(data.get('left', 0))
-                    right = float(data.get('right', 0))
-
-                    # Clamp to -1.0 to 1.0 range
-                    left = max(-1.0, min(1.0, left))
-                    right = max(-1.0, min(1.0, right))
-
-                    # Convert to percentage (-100 to 100) for motor bus
-                    left_pct = int(left * 100)
-                    right_pct = int(right * 100)
+                    cmd = map_stick_to_motor_command(
+                        data.get('left', 0),
+                        data.get('right', 0),
+                        CommandSource.WEBRTC,
+                        deadzone=self._app_input_deadzone,
+                    )
+                    left_pct = cmd.left_speed
+                    right_pct = cmd.right_speed
 
                     # Motor control - try direct bus first, fallback to API
                     motor_sent = False
@@ -122,7 +143,6 @@ class WebRTCService:
                         try:
                             motor_bus = get_motor_bus()
                             if motor_bus and motor_bus.running:
-                                cmd = create_motor_command(left_pct, right_pct, CommandSource.WEBRTC)
                                 motor_bus.send_command(cmd)
                                 motor_sent = True
                                 # Only log periodically to avoid spam

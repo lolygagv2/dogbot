@@ -16,6 +16,7 @@ logger = logging.getLogger('MotorBus')
 class CommandSource(Enum):
     XBOX_CONTROLLER = "xbox"
     WEBRTC = "webrtc"
+    RELAY = "relay"
     API = "api"
     AUTONOMOUS = "auto"
     EMERGENCY = "emergency"
@@ -30,6 +31,27 @@ class MotorCommand:
 def create_motor_command(left: int, right: int, source: CommandSource) -> MotorCommand:
     """Create a motor command with current timestamp"""
     return MotorCommand(left, right, source, time.time())
+
+
+def map_stick_to_motor_command(
+    left: float,
+    right: float,
+    source: CommandSource,
+    deadzone: float = 0.10,
+) -> MotorCommand:
+    """Map pre-mixed analog stick magnitudes to a MotorCommand.
+
+    Inputs are floats in [-1.0, 1.0]; values outside the range are clamped.
+    Per-channel deadzone: |x| < deadzone -> 0. Linear scale to integer +/-100.
+    Caller is expected to have already done tank mixing (Y +/- X -> L, R).
+    """
+    left = max(-1.0, min(1.0, float(left)))
+    right = max(-1.0, min(1.0, float(right)))
+    if abs(left) < deadzone:
+        left = 0.0
+    if abs(right) < deadzone:
+        right = 0.0
+    return create_motor_command(int(left * 100), int(right * 100), source)
 
 class MotorCommandBus:
     """

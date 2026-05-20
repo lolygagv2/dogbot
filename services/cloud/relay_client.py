@@ -618,6 +618,48 @@ class RelayClient:
             await self._handle_cloud_mode_switch()
             return
 
+        # Handle motor_command - relay-path fallback for analog drive.
+        # App sends pre-mixed {left, right} floats in [-1.0, 1.0]; mixing
+        # (Y +/- X -> L, R) happens app-side. Robot applies per-channel deadzone
+        # (default 0.10, configurable via controller.app_input_deadzone in
+        # robot_profiles/<unit>.yaml) and linearly scales to +/-100 PWM-%.
+        # Motor bus then applies the existing +/-70 safety clamp.
+        # Already covered by SAFETY_COMMANDS staleness gate (5s).
+        if command == 'motor_command':
+            try:
+                from core.motor_command_bus import (
+                    get_motor_bus, map_stick_to_motor_command, CommandSource,
+                )
+                try:
+                    from config.config_loader import get_config
+                    deadzone = float(
+                        get_config().raw.get('controller', {}).get('app_input_deadzone', 0.10)
+                    )
+                except Exception:
+                    deadzone = 0.10
+
+                cmd = map_stick_to_motor_command(
+                    params.get('left', 0),
+                    params.get('right', 0),
+                    CommandSource.RELAY,
+                    deadzone=deadzone,
+                )
+                bus = get_motor_bus()
+                ok = bool(bus and bus.running and bus.send_command(cmd))
+                ack = {'type': 'command_ack', 'command': command, 'success': ok}
+                if not ok:
+                    ack['error'] = 'motor bus unavailable'
+                await self._send(ack)
+            except Exception as e:
+                self.logger.error(f"motor_command relay handler error: {e}")
+                await self._send({
+                    'type': 'command_ack',
+                    'command': command,
+                    'success': False,
+                    'error': str(e),
+                })
+            return
+
         # Publish command to event bus for other services to handle
         self.bus.publish(CloudEvent(
             subtype='command',
