@@ -50,8 +50,18 @@ controller:
 
   # Xbox controller calibration
   xbox:
-    joystick_deadzone: 0.30   # Ignore stick values below this (increased for drift)
+    joystick_deadzone: 0.30   # Ignore stick values below this
     joystick_scale: 1.0       # Multiply stick output (if controller doesn't reach 1.0)
+    # Per-axis hardware rest offset for worn/off-center sticks (raw -1..1 space).
+    # _calibrate_stick() subtracts this and rescales each side back to +/-1.0.
+    # Leave at 0.0 for a healthy controller; only set if a stick is measurably
+    # off-center AND its rest position is stable (a wandering rest can't be
+    # calibrated). 0.0 = no-op.
+    stick_centers:
+      left_x: 0.0
+      left_y: 0.0
+      right_x: 0.0
+      right_y: 0.0
 
   # PID tuning parameters
   pid:

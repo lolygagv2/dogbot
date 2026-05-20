@@ -165,7 +165,12 @@ class XboxControllerService:
             # NOTE: Removed stdout/stderr PIPE so logs go to systemd journal
             self.controller_process = subprocess.Popen(
                 ['python3', '-u', self.controller_script],  # -u for unbuffered output
-                preexec_fn=os.setsid  # Create new process group
+                preexec_fn=os.setsid,  # Create new process group
+                # Mark this as a child of main_treatbot: the MAIN process owns
+                # the motor hardware, so the subprocess must drive motors via
+                # the HTTP API. Two ProperPIDMotorControllers fighting for the
+                # GPIO lines left one motor undrivable.
+                env={**os.environ, 'WIMZ_XBOX_SUBPROCESS': '1'},
             )
 
             logger.info(f"Xbox controller process started (PID: {self.controller_process.pid})")

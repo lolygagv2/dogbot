@@ -247,6 +247,11 @@ class XboxHybridControllerFixed:
     # These defaults are fallbacks if config loading fails
     DEADZONE = 0.20  # 20% deadzone - larger for reliable stop detection
     TRIGGER_DEADZONE = 0.1
+
+    # Per-axis stick center offsets (raw normalized -1..1 space) to correct
+    # worn / off-center potentiometers. Keyed by js axis: 0=LX, 1=LY, 3=RX, 4=RY.
+    # Overridden by controller.xbox.stick_centers in robot_profiles/<unit>.yaml.
+    STICK_CENTERS = {0: 0.0, 1: 0.0, 3: 0.0, 4: 0.0}
     MAX_SPEED = 80   # Match treatbot1.yaml config
     TURN_SPEED_FACTOR = 0.8  # Reduced for smoother turns
 
@@ -428,6 +433,19 @@ class XboxHybridControllerFixed:
         """Initialize motor control system with fallback options"""
         global motor_bus, motor_controller, MOTOR_DIRECT
 
+        # When spawned by main_treatbot (services/control/xbox_controller.py
+        # sets WIMZ_XBOX_SUBPROCESS=1), the MAIN process owns the motor
+        # hardware. This subprocess must NOT create its own motor bus — a
+        # second ProperPIDMotorController claims the same GPIO lines and
+        # leaves one motor undrivable. Drive motors via the HTTP API instead.
+        if os.environ.get('WIMZ_XBOX_SUBPROCESS') == '1':
+            self.motor_bus = None
+            self.motor_controller = None
+            self.motor_direct = False
+            logger.info("Xbox subprocess: motor control via HTTP API "
+                        "(main process owns motor hardware)")
+            return
+
         if MOTOR_BUS_AVAILABLE:
             try:
                 self.motor_bus = get_motor_bus()
@@ -510,8 +528,20 @@ class XboxHybridControllerFixed:
             self.last_pan_angle = self.PAN_CENTER
             self.last_tilt_angle = self.TILT_CENTER
 
+            # Per-axis stick center offsets — corrects worn/off-center sticks.
+            # yaml uses named keys; map to js axis numbers (0=LX,1=LY,3=RX,4=RY).
+            sc = config.raw.get('controller', {}).get('xbox', {}).get('stick_centers', {})
+            self.STICK_CENTERS = {
+                0: float(sc.get('left_x', 0.0)),
+                1: float(sc.get('left_y', 0.0)),
+                3: float(sc.get('right_x', 0.0)),
+                4: float(sc.get('right_y', 0.0)),
+            }
+
             logger.info(f"[Config] Robot profile loaded: {config.robot_id}")
             logger.info(f"[Config] DEADZONE={self.DEADZONE}")
+            if any(self.STICK_CENTERS.values()):
+                logger.info(f"[Config] Stick center calibration active: {self.STICK_CENTERS}")
             logger.debug(f"[Config] MAX_SPEED={self.MAX_SPEED}, MAX_RPM={self.MAX_RPM}")
             logger.debug(f"[Config] LEFT_MULT={self.LEFT_MOTOR_MULTIPLIER}, RIGHT_MULT={self.RIGHT_MOTOR_MULTIPLIER}")
             logger.debug(f"[Config] MIN_PWM_THRESHOLD={self.MIN_PWM_THRESHOLD}")
@@ -927,14 +957,27 @@ class XboxHybridControllerFixed:
                     with self.motor_lock:
                         self.update_motor_control()
                 else:
-                    # FIXED: Send stop commands to keep motor bus alive even when stick centered
+                    # No stick input — ensure motors are stopped.
                     if not self.state.motors_stopped:
+                        # Just transitioned to neutral. Send the stop and open a
+                        # short window during which 0 is re-sent every loop tick.
+                        # A single dropped stop POST otherwise left the motors
+                        # running their last command (e.g. reverse) until the 2s
+                        # heartbeat — which felt like the robot "sticking".
                         with self.motor_lock:
-                            self.set_motor_speeds(0, 0)  # Send explicit stop command
-                            self.state.motors_stopped = True
-                            logger.debug("Motors stopped (no input)")
+                            self.set_motor_speeds(0, 0)
+                        self.state.motors_stopped = True
+                        self.last_motor_command_time = current_time
+                        self._stop_confirm_until = current_time + 0.5
+                        logger.debug("Motors stopped (no input)")
+                    elif current_time < getattr(self, '_stop_confirm_until', 0.0):
+                        # Confirmation window: keep re-sending 0 every ~50ms so a
+                        # lost command cannot leave a wheel creeping.
+                        with self.motor_lock:
+                            self.set_motor_speeds(0, 0)
+                        self.last_motor_command_time = current_time
                     else:
-                        # Send periodic heartbeat stop commands to prevent watchdog timeout
+                        # Idle heartbeat to keep the motor-bus watchdog satisfied
                         if current_time - self.last_motor_command_time > 2.0:  # Every 2 seconds
                             with self.motor_lock:
                                 self.set_motor_speeds(0, 0)  # Heartbeat stop command
@@ -967,6 +1010,26 @@ class XboxHybridControllerFixed:
                 logger.error(f"Direct motor stop error: {e}")
         return False
 
+    def _reopen_device(self):
+        """Reopen the joystick device after a disconnect.
+
+        A Bluetooth link blip destroys and recreates /dev/input/js0; the fd
+        opened in connect() then goes permanently stale (read -> errno 19).
+        Without this the controller stays dead until the process restarts.
+        """
+        try:
+            if self.device:
+                try:
+                    self.device.close()
+                except Exception:
+                    pass
+            self.device = open(self.device_path, 'rb')
+            logger.info(f"Xbox controller reconnected — reopened {self.device_path}")
+            self._device_disconnected = False
+        except (FileNotFoundError, OSError):
+            # Device node not back yet; the next retry cycle will try again.
+            pass
+
     def read_event(self) -> Optional[Tuple]:
         """Read a single joystick event with timeout to prevent blocking"""
         try:
@@ -982,23 +1045,47 @@ class XboxHybridControllerFixed:
                     timestamp, value, event_type, number = struct.unpack('IhBB', event_data)
                     return (timestamp, value, event_type, number)
         except OSError as e:
-            # Errno 19 = No such device (controller disconnected)
+            # Errno 19 = No such device — a Bluetooth link blip destroys and
+            # recreates /dev/input/js0, leaving our fd stale. Reopen it.
             if e.errno == 19:
                 if not getattr(self, '_device_disconnected', False):
-                    logger.warning("Xbox controller disconnected (will retry every 5s)")
+                    logger.warning("Xbox controller disconnected — reopening device every 5s")
                     self._device_disconnected = True
                 # Slow poll when disconnected to avoid log spam
                 time.sleep(5.0)
+                self._reopen_device()
             else:
                 logger.error(f"Error reading event: {e}")
         except Exception as e:
             logger.error(f"Error reading event: {e}")
         return None
 
+    def _calibrate_stick(self, number: int, normalized: float) -> float:
+        """Correct a worn / off-center stick axis.
+
+        Subtracts the per-axis hardware rest offset (STICK_CENTERS) and rescales
+        each side independently so full physical throw still maps to +/-1.0.
+        Axis numbers: 0=LX, 1=LY, 3=RX, 4=RY. A zero offset is a no-op.
+        """
+        center = self.STICK_CENTERS.get(number, 0.0)
+        if center == 0.0:
+            return normalized
+        corrected = normalized - center
+        # Asymmetric rescale: each side spans from center out to its rail.
+        span = (1.0 - center) if corrected >= 0.0 else (1.0 + center)
+        if span <= 0.0:
+            return 0.0
+        return max(-1.0, min(1.0, corrected / span))
+
     def process_axis(self, number: int, value: int):
         """Process axis movement"""
         # Normalize to -1.0 to 1.0
         normalized = value / 32767.0
+
+        # Center-calibrate worn/off-center sticks (axes 0,1,3,4) before deadzone.
+        # Triggers (2,5) recompute from raw `value` below and are unaffected.
+        if number in (0, 1, 3, 4):
+            normalized = self._calibrate_stick(number, normalized)
 
         # Apply deadzone
         if abs(normalized) < self.DEADZONE:
