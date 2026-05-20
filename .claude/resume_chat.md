@@ -1,5 +1,29 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-20 — Silent Guardian movement tier + Xbox controller bring-up
+
+**Goal:** Add a physical-movement escalation tier to Silent Guardian; pair a new Xbox controller; diagnose drift + right-motor issues.
+**Status:** ✅ All complete. Working tree clean, 2 commits pushed (`04295ee`, `f4c4876`). Battery-smoothing commit `337d92d` also pushed early in session.
+
+### Work completed
+1. **Silent Guardian — new Level 3 movement tier** (`04295ee`). Escalation ladder is now 4 levels: verbal → firm verbal → **physical movement** → calming music. Level 3 plays "quiet" then runs 3 cycles of in-place fwd/back/left/right (~400ms each, motors halted between moves, 5s pause between cycles), then waits for the progressive quiet period → reward. `_run_movement_sequence()` drives wheels via `motor_command_bus` (`CommandSource.AUTONOMOUS`), always finishes all cycles (no bark abort), bails on mode shutdown. `max_level` 3→4; music handler renamed `_process_level_3`→`_process_level_music`. No conflict with carousel anti-jam (separate stepper) or treat dispense (serialized on SG loop thread). **App-facing:** `get_status()` now reports `sg_max: 4`.
+2. **Xbox controller fixes** (`f4c4876`):
+   - **Right motor undrivable via Xbox** — root cause: the Xbox subprocess called `get_motor_bus()`, creating a *second* `ProperPIDMotorController` that fought the main process for motor GPIO lines. Fix: `xbox_controller.py` sets `WIMZ_XBOX_SUBPROCESS=1`; subprocess now drives motors via HTTP API only (main process = sole hardware owner). Standalone mode unaffected.
+   - **Connected-but-unresponsive after Bluetooth blip** — a BT link drop recreates `/dev/input/js0`, leaving a stale fd (errno 19); the retry path never reopened it. Added `_reopen_device()` to self-heal.
+   - **Reverse "sticking"** — neutral-stop sent a single stop then relied on a 2s heartbeat; a dropped stop left the motor creeping. Now re-sends 0 every ~50ms for a 0.5s window on transition to neutral.
+   - Added `_calibrate_stick()` + `controller.xbox.stick_centers` (yaml) for worn/off-center sticks; default 0.0 = no-op.
+
+### Hardware findings / warnings
+- **Spare Xbox controller `A8:8C:3E:50:62:70` is JUNK** — left stick Y potentiometer worn out: rests at ~−0.72 and the rest position *wanders* (caused runaway-at-rest). Unstable rest can't be software-calibrated. **Unpaired this session — do not re-pair it.**
+- treatbot1 is back on the **original controller `AC:8E:BD:4A:0F:97`**. MAC restored in `xbox_persistent.py` + `fix_xbox_controller.sh`.
+- Right motor + encoder verified healthy via direct test (−707 enc counts) — it was never a hardware fault.
+- No new files created this session; all changes were edits. Directory structure doc unchanged.
+
+### Next steps
+- Restart `treatbot.service` after any reboot (it ran the new code live this session — currently active).
+- Coordinate `sg_max: 4` with the Flutter app team (Guardian level display "X/4").
+- Silent Guardian Level 3 movement tier verified by code/syntax only — exercise it live when a 4th bark intervention naturally escalates.
+
 ## Session: 2026-05-17 — treatbot5 bring-up (cloned from treatbot3)
 
 **Goal:** First-boot bring-up of treatbot5, cloned from treatbot3's SD card. Pull latest, customize per-unit calibration, run drive + gimbal test sequences.
