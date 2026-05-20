@@ -44,6 +44,14 @@ class BatteryMonitorService:
     # I2C address for ADS1115
     I2C_ADDRESS = 0x48
 
+    # Noise reduction. Median of N ADS1115 samples rejects motor/servo PWM
+    # transients within a single read; EMA across reads kills the slower
+    # drift / divider-amplified ADC noise. alpha=0.3 -> ~25s time constant
+    # at the current 5s poll interval. Both apply uniformly to every unit
+    # so the same recipe works regardless of voltage-divider ratio.
+    SAMPLES_PER_READ = 8
+    EMA_ALPHA = 0.3
+
     def __init__(self):
         self.logger = logging.getLogger('BatteryMonitor')
         self.bus = get_bus()
@@ -78,6 +86,10 @@ class BatteryMonitorService:
         self.percentage = 0
         self.adc_voltage = 0.0
         self.last_update = 0.0
+
+        # Smoothed-voltage state (EMA across reads). Seeded by the first read.
+        self._smoothed_voltage = 0.0
+        self._first_read = True
 
         # Warning state
         self.low_warning_sent = False
@@ -118,13 +130,39 @@ class BatteryMonitorService:
             return False
 
     def _read_voltage(self) -> float:
-        """Read battery voltage from ADC"""
+        """Read battery voltage from ADC with median+EMA smoothing.
+
+        Single ADS1115 samples carry motor/servo PWM noise and rail-bounce.
+        On high-ratio dividers (e.g. treatbot3's 54x) that noise is amplified
+        ~12x vs treatbot1's 4.3x. We take SAMPLES_PER_READ samples and use the
+        median to reject outliers, then EMA across reads to smooth slow drift.
+        Result: percentage is stable for any consumer (HTTP, telemetry,
+        charging detection) regardless of divider ratio.
+        """
         if not self.initialized and not self.channel:
             return 0.0
 
         try:
-            self.adc_voltage = self.channel.voltage
-            self.voltage = self.adc_voltage * self.calibration_factor
+            # Burst-sample then median (8 reads ~= 64ms at 128 SPS default)
+            samples = [self.channel.voltage for _ in range(self.SAMPLES_PER_READ)]
+            samples.sort()
+            n = len(samples)
+            mid = n // 2
+            adc_median = samples[mid] if n % 2 else (samples[mid - 1] + samples[mid]) / 2.0
+            raw_voltage = adc_median * self.calibration_factor
+
+            # EMA across reads. Seed on first read so we don't bias from 0.
+            if self._first_read:
+                self._smoothed_voltage = raw_voltage
+                self._first_read = False
+            else:
+                self._smoothed_voltage = (
+                    self.EMA_ALPHA * raw_voltage
+                    + (1.0 - self.EMA_ALPHA) * self._smoothed_voltage
+                )
+
+            self.adc_voltage = adc_median
+            self.voltage = self._smoothed_voltage
             self.percentage = self._calculate_percentage(self.voltage)
             self.last_update = time.time()
 
@@ -218,15 +256,20 @@ class BatteryMonitorService:
         if len(self.voltage_history) < 5:
             return
 
-        # Step-wise check: no sample may drop by more than ~0.02V from its
-        # predecessor. Real charging gives a steady climb; rebound bounces dip.
+        # Step-wise check: no sample may drop by more than ~0.01V from its
+        # predecessor. Tightened from 0.02 now that input is median+EMA smoothed
+        # (raw single-sample drift could exceed 0.02V even on a flat rail).
         max_drop = max(
             self.voltage_history[i - 1] - self.voltage_history[i]
             for i in range(1, len(self.voltage_history))
         )
         voltage_trend = self.voltage_history[-1] - self.voltage_history[0]
 
-        if voltage_trend >= 0.15 and max_drop <= 0.02:
+        # Trend threshold raised 0.15 -> 0.20V. Smoothed signal tracks real
+        # charging cleanly so the larger gate doesn't delay legitimate
+        # detection but makes accidental tripping from residual noise
+        # effectively impossible.
+        if voltage_trend >= 0.20 and max_drop <= 0.01:
             self.charging_detected = True
         elif voltage_trend < -0.05:
             self.charging_detected = False
