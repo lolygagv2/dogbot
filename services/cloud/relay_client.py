@@ -160,6 +160,11 @@ class RelayClient:
 
             self._connected = True
             self.logger.info("Connected to cloud relay")
+            self.logger.info(
+                f"[RTC-TIMING] step2 relay signaling websocket OPEN "
+                f"({self.config.relay_url}) | "
+                f"t={time.time():.3f} mono={time.monotonic():.3f}"
+            )
 
             # Send robot_connected announcement
             await self._send({
@@ -167,6 +172,11 @@ class RelayClient:
                 'device_id': self.config.device_id,
                 'version': ROBOT_VERSION
             })
+            self.logger.info(
+                f"[RTC-TIMING] step3 sent robot_connected — registered as "
+                f"available robot (device_id={self.config.device_id}) | "
+                f"t={time.time():.3f} mono={time.monotonic():.3f}"
+            )
 
             # Request dog profiles from cloud
             await self.request_profiles()
@@ -376,6 +386,16 @@ class RelayClient:
         ice_servers = data.get('ice_servers', {})
 
         self.logger.info(f"WebRTC request received: session={session_id}")
+        # [RTC-TIMING] step4 — robot is the offerer; relay's inbound msg is a
+        # webrtc_request (not an SDP offer). Robot will build+send the offer next.
+        _ice_in = data.get('ice_servers')
+        self.logger.info(
+            f"[RTC-TIMING] step4 webrtc_request received from relay "
+            f"session={session_id} | ice_servers={'provided' if _ice_in else 'NONE'} | "
+            f"t={time.time():.3f} mono={time.monotonic():.3f}"
+        )
+        if _ice_in:
+            self.logger.info(f"[RTC-TIMING] step4 relay-supplied ICE servers: {_ice_in}")
 
         # Track that app is connected (mode change comes via set_mode command)
         self._app_connected = True
@@ -421,6 +441,10 @@ class RelayClient:
             })
 
             self.logger.info(f"Sent WebRTC offer for session {session_id}")
+            self.logger.info(
+                f"[RTC-TIMING] step6 SDP offer sent to relay session={session_id} | "
+                f"t={time.time():.3f} mono={time.monotonic():.3f}"
+            )
 
         except Exception as e:
             self.logger.error(f"Failed to create WebRTC offer: {e}", exc_info=True)
@@ -437,6 +461,10 @@ class RelayClient:
         sdp = data.get('sdp')
 
         self.logger.info(f"WebRTC answer received: session={session_id}")
+        self.logger.info(
+            f"[RTC-TIMING] step6b SDP answer received from app session={session_id} | "
+            f"t={time.time():.3f} mono={time.monotonic():.3f}"
+        )
 
         if not self._webrtc_service:
             self.logger.error("WebRTC service not available")

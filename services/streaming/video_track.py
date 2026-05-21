@@ -56,6 +56,7 @@ class WIMZVideoTrack(VideoStreamTrack):
         self.last_frame_time = 0
         self.frame_count = 0
         self.start_time = time.time()
+        self._first_real_frame_logged = False  # [RTC-TIMING] step10 instrumentation
 
         # Track state
         self._running = True
@@ -133,6 +134,22 @@ class WIMZVideoTrack(VideoStreamTrack):
         video_frame.time_base = time_base
 
         self.frame_count += 1
+
+        # [RTC-TIMING] step10 — first frame handed to WebRTC, and first REAL
+        # camera frame (vs black "No Camera Feed"/"Buffering" placeholder).
+        if self.frame_count == 1:
+            _kind = "camera" if frame_age <= self.MAX_FRAME_AGE_SEC else "black-placeholder"
+            self.logger.info(
+                f"[RTC-TIMING] step10 first video frame sent to WebRTC ({_kind}) | "
+                f"t={time.time():.3f} mono={time.monotonic():.3f}"
+            )
+        if frame_age <= self.MAX_FRAME_AGE_SEC and not self._first_real_frame_logged:
+            self._first_real_frame_logged = True
+            self.logger.info(
+                f"[RTC-TIMING] step10b first REAL camera frame sent to WebRTC "
+                f"(frame #{self.frame_count}) | "
+                f"t={time.time():.3f} mono={time.monotonic():.3f}"
+            )
 
         return video_frame
 

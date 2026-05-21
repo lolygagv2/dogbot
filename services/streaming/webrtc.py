@@ -104,6 +104,24 @@ class WebRTCService:
             f"WebRTCService initialized (max {self.config.max_connections} connections, "
             f"motor input deadzone={self._app_input_deadzone:.2f})"
         )
+        # [RTC-TIMING] diagnostic instrumentation
+        self.logger.info(
+            f"[RTC-TIMING] step1 webrtc_service_startup_complete | "
+            f"t={time.time():.3f} mono={time.monotonic():.3f}"
+        )
+        self.logger.info(f"[RTC-TIMING] startup STUN servers: {self.config.stun_servers}")
+        if self.config.turn_servers:
+            for _ts in self.config.turn_servers:
+                self.logger.info(
+                    f"[RTC-TIMING] startup TURN server: urls={_ts.get('urls')} "
+                    f"username={'set' if _ts.get('username') else 'none'} "
+                    f"credential={'set' if _ts.get('credential') else 'none'}"
+                )
+        else:
+            self.logger.info(
+                "[RTC-TIMING] startup TURN servers: NONE in static config "
+                "(relay supplies TURN dynamically per-session — see step4)"
+            )
 
     async def _handle_data_channel_message(self, message: str, session_id: str):
         """
@@ -356,6 +374,10 @@ class WebRTCService:
         async def on_connectionstatechange():
             state = pc.connectionState
             self.logger.info(f"[WEBRTC] Connection {session_id}: {state}")
+            self.logger.info(
+                f"[RTC-TIMING] step9 peer connection state {session_id}: {state} | "
+                f"t={time.time():.3f} mono={time.monotonic():.3f}"
+            )
 
             publish_system_event('webrtc_connection_state', {
                 'session_id': session_id,
@@ -379,6 +401,10 @@ class WebRTCService:
                             cand_type = part
                             break
                     self.logger.info(f"[WEBRTC] ICE candidate: type={cand_type} | {cand_str[:80]}")
+                    self.logger.info(
+                        f"[RTC-TIMING] step8 ICE candidate event {session_id}: "
+                        f"type={cand_type} | t={time.time():.3f} mono={time.monotonic():.3f}"
+                    )
                     if session_id in self.ice_callbacks:
                         await self.ice_callbacks[session_id](candidate)
             except Exception as e:
@@ -555,6 +581,13 @@ class WebRTCService:
             for stun_url in self.config.stun_servers:
                 rtc_ice_servers.append(RTCIceServer(urls=stun_url))
 
+        _ice_summary = [
+            f"{s.urls}({'auth' if s.username else 'noauth'})" for s in rtc_ice_servers
+        ]
+        self.logger.info(
+            f"[RTC-TIMING] session {session_id} ICE servers in effect: "
+            f"{_ice_summary or 'NONE (LAN-only)'} | mono={time.monotonic():.3f}"
+        )
         config = RTCConfiguration(iceServers=rtc_ice_servers)
         pc = RTCPeerConnection(configuration=config)
 
@@ -564,13 +597,26 @@ class WebRTCService:
 
         # Create or reuse video track
         if self.video_track is None:
+            self.logger.info(
+                f"[RTC-TIMING] step5a detector/camera/track init START | "
+                f"mono={time.monotonic():.3f}"
+            )
+            _t5 = time.monotonic()
             detector = self._get_detector()
             self.video_track = WIMZVideoTrack(
                 detector=detector,
                 fps=self.config.target_fps,
                 enable_overlay=self.config.enable_ai_overlay
             )
+            self.logger.info(
+                f"[RTC-TIMING] step5b detector/camera/track init COMPLETE | "
+                f"took={time.monotonic() - _t5:.3f}s | mono={time.monotonic():.3f}"
+            )
             self.logger.info("Created new WIMZVideoTrack for offer")
+        else:
+            self.logger.info(
+                "[RTC-TIMING] step5 detector/track already initialized (reused, no init cost)"
+            )
 
         # Add video track via media relay
         relay_track = self.media_relay.subscribe(self.video_track)
@@ -606,6 +652,10 @@ class WebRTCService:
         async def on_connectionstatechange():
             state = pc.connectionState
             self.logger.info(f"[WEBRTC] Connection {session_id}: {state}")
+            self.logger.info(
+                f"[RTC-TIMING] step9 peer connection state {session_id}: {state} | "
+                f"t={time.time():.3f} mono={time.monotonic():.3f}"
+            )
 
             publish_system_event('webrtc_connection_state', {
                 'session_id': session_id,
@@ -628,6 +678,10 @@ class WebRTCService:
                             cand_type = part
                             break
                     self.logger.info(f"[WEBRTC] ICE candidate: type={cand_type} | {cand_str[:80]}")
+                    self.logger.info(
+                        f"[RTC-TIMING] step8 ICE candidate event {session_id}: "
+                        f"type={cand_type} | t={time.time():.3f} mono={time.monotonic():.3f}"
+                    )
                     if session_id in self.ice_callbacks:
                         await self.ice_callbacks[session_id](candidate)
             except Exception as e:
@@ -647,6 +701,14 @@ class WebRTCService:
             except Exception as e:
                 self.logger.error(f"[WEBRTC] ICE state change handler error: {e}")
 
+        # [RTC-TIMING] step7 — ICE gathering state (new instrumentation handler)
+        @pc.on("icegatheringstatechange")
+        async def on_ice_gathering_change():
+            self.logger.info(
+                f"[RTC-TIMING] step7 ICE gathering state {session_id}: "
+                f"{pc.iceGatheringState} | t={time.time():.3f} mono={time.monotonic():.3f}"
+            )
+
         with self._lock:
             self.connections[session_id] = pc
 
@@ -655,6 +717,22 @@ class WebRTCService:
         # Create offer with bitrate enforcement
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
+        self.logger.info(
+            f"[RTC-TIMING] step6 SDP offer created + localDescription set for "
+            f"{session_id} (robot=offerer; app sends answer) | "
+            f"t={time.time():.3f} mono={time.monotonic():.3f}"
+        )
+        # [RTC-TIMING] step8 (reliable) — aiortc uses non-trickle ICE: candidates
+        # are baked into the SDP. Log them so host/srflx/relay types are visible
+        # even when the icecandidate event never fires.
+        for _line in pc.localDescription.sdp.split('\r\n'):
+            if _line.startswith('a=candidate:'):
+                _parts = _line.split()
+                _ct = _parts[_parts.index('typ') + 1] if 'typ' in _parts else 'unknown'
+                self.logger.info(
+                    f"[RTC-TIMING] step8 offer-SDP candidate {session_id}: "
+                    f"type={_ct} | {_line[:90]}"
+                )
 
         # Apply bandwidth constraint to SDP (aiortc doesn't do this automatically)
         sdp = self._add_sdp_bandwidth(pc.localDescription.sdp)
