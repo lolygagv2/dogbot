@@ -699,6 +699,24 @@ class RelayClient:
                 })
             return
 
+        # Handle audio_volume - set system volume over the cloud relay.
+        # params: {"volume": 0-100}  ("level" accepted as an alias)
+        if command == 'audio_volume':
+            raw = params.get('volume', params.get('level'))
+            ok = False
+            try:
+                vol = int(raw)
+                from services.media.volume_manager import get_volume_manager
+                ok = get_volume_manager().set_volume(vol)
+            except (TypeError, ValueError):
+                self.logger.warning(f"audio_volume: invalid value {raw!r}")
+            except Exception as e:
+                self.logger.error(f"audio_volume error: {e}")
+            await self._send({
+                'type': 'command_ack', 'command': command, 'success': ok,
+            })
+            return
+
         # Handle set_video_quality - adaptive bitrate manual override.
         # params: {"mode": "auto"|"low"|"medium"|"high"}
         if command == 'set_video_quality':
