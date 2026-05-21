@@ -336,6 +336,16 @@ class RelayClient:
                     if self._webrtc_service:
                         connection_type = self._webrtc_service.connection_type
 
+                    # Current system volume (single source of truth, 0-100).
+                    # Lets the app show the real volume without polling
+                    # GET /audio/volume — survives reboots and reflects
+                    # changes made from the Xbox controller.
+                    try:
+                        from services.media.volume_manager import get_volume_manager
+                        current_volume = get_volume_manager().get_volume()
+                    except Exception:
+                        current_volume = None
+
                     # Send telemetry event
                     await self._send({
                         'event': 'status',
@@ -347,6 +357,7 @@ class RelayClient:
                             'is_charging': hardware.get("is_charging", False),
                             'treats_remaining': self._get_treats_remaining(),
                             'connection_type': connection_type,  # "LAN", "WAN", or null
+                            'volume': current_volume,  # 0-100, or null if unavailable
                         },
                         'timestamp': datetime.utcnow().isoformat() + "Z"
                     })
