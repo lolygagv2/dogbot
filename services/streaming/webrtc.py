@@ -20,6 +20,7 @@ from core.bus import get_bus, publish_system_event
 from core.state import get_state
 from services.streaming.video_track import WIMZVideoTrack
 from services.streaming.audio_track import WIMZAudioTrack, set_audio_track
+from services.streaming.adaptive_bitrate import AdaptiveBitrateController
 
 # Motor control imports - direct hardware access like Xbox controller
 try:
@@ -78,6 +79,9 @@ class WebRTCService:
 
         # ICE candidate callbacks (session_id -> callback)
         self.ice_callbacks: Dict[str, Callable] = {}
+
+        # Per-session adaptive bitrate/resolution controllers
+        self.adaptive_controllers: Dict[str, AdaptiveBitrateController] = {}
 
         # Connection state
         self._lock = threading.Lock()
@@ -729,6 +733,17 @@ class WebRTCService:
 
         self.logger.info(f"[WEBRTC] Active connections: {list(self.connections.keys())}")
 
+        # Start adaptive bitrate/resolution control for this session.
+        if self.video_track is not None:
+            try:
+                controller = AdaptiveBitrateController(
+                    session_id, pc, self.video_track, logger=self.logger
+                )
+                self.adaptive_controllers[session_id] = controller
+                controller.start()
+            except Exception as e:
+                self.logger.error(f"[WEBRTC] Failed to start adaptive controller: {e}")
+
         # Create offer with bitrate enforcement
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
@@ -858,6 +873,13 @@ class WebRTCService:
         with self._lock:
             pc = self.connections.pop(session_id, None)
             self.ice_callbacks.pop(session_id, None)
+            controller = self.adaptive_controllers.pop(session_id, None)
+
+        if controller:
+            try:
+                controller.stop()
+            except Exception as e:
+                self.logger.warning(f"[WEBRTC] Error stopping adaptive controller {session_id}: {e}")
 
         if pc:
             try:
