@@ -387,10 +387,12 @@ class USBAudioService:
 
     @property
     def current_volume(self) -> int:
-        """Get current volume (0-100)"""
-        if self.initialized:
-            return int(pygame.mixer.music.get_volume() * 100)
-        return 0
+        """Get current volume (0-100) from the VolumeManager source of truth."""
+        try:
+            from services.media.volume_manager import get_volume_manager
+            return get_volume_manager().get_volume()
+        except Exception:
+            return 0
 
     def is_busy(self) -> bool:
         """Check if any audio is currently playing"""
@@ -624,11 +626,18 @@ class USBAudioService:
         return True
 
     def set_volume(self, volume: int) -> bool:
-        """Set volume (0-100)"""
-        if self.initialized:
-            pygame.mixer.music.set_volume(volume / 100.0)
-            return True
-        return False
+        """Set volume (0-100).
+
+        Delegates to VolumeManager (the single source of truth) so the change
+        applies to the hardware mixer and persists across reboots. The pygame
+        software volume is intentionally left pinned at 1.0 by VolumeManager.
+        """
+        try:
+            from services.media.volume_manager import get_volume_manager
+            return get_volume_manager().set_volume(volume)
+        except Exception as e:
+            self.logger.error(f"set_volume delegation failed: {e}")
+            return False
 
 # Global instance
 _usb_audio_service = None

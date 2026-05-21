@@ -54,17 +54,18 @@ class AudioController:
                     self.initialized = True
                     self.logger.info("Using default audio device")
 
-                # Initialize USB audio levels using detected card number
-                # Speaker to 90% for good volume without distortion
+                # Speaker volume is owned by VolumeManager (the single source of
+                # truth, persisted in /etc/wimz/audio_state.json). Constructing
+                # the manager re-asserts the saved value -- do NOT force a
+                # hardcoded level here or it would clobber the user's setting.
                 try:
-                    subprocess.run(
-                        ['amixer', '-c', str(self.usb_card_number), 'sset', 'Speaker', '90%'],
-                        capture_output=True, timeout=2
+                    from services.media.volume_manager import get_volume_manager
+                    self.current_volume = get_volume_manager().get_volume()
+                    self.logger.info(
+                        f"USB speaker volume from VolumeManager: {self.current_volume}%"
                     )
-                    self.current_volume = 90
-                    self.logger.info(f"USB speaker set to 90% (card {self.usb_card_number})")
                 except Exception as spk_err:
-                    self.logger.warning(f"Could not set speaker volume: {spk_err}")
+                    self.logger.warning(f"Could not load saved speaker volume: {spk_err}")
 
                 # Microphone to 100% capture
                 try:
@@ -114,31 +115,17 @@ class AudioController:
             return False
 
     def set_volume(self, volume: int) -> bool:
-        """Set system volume using amixer"""
-        if not self.initialized:
-            return False
+        """Set system volume.
 
+        Delegates to VolumeManager (the single source of truth) so the change
+        applies to the hardware mixer AND persists across reboots.
+        """
         try:
-            volume = max(0, min(100, volume))
-            self.current_volume = volume
-
-            # Set USB audio speaker volume using detected card
-            card = str(self.usb_card_number) if self.usb_card_number else '2'
-            cmd = ['amixer', '-c', card, 'sset', 'Speaker', f'{volume}%']
-            result = subprocess.run(cmd, capture_output=True)
-
-            if result.returncode == 0:
-                self.logger.info(f"USB Speaker volume set to {volume}% (card {card})")
-                return True
-            else:
-                # Fallback to master volume
-                cmd = ['amixer', 'sset', 'Master', f'{volume}%']
-                result = subprocess.run(cmd, capture_output=True)
-                if result.returncode == 0:
-                    self.logger.info(f"Master volume set to {volume}%")
-                    return True
-
-            return False
+            from services.media.volume_manager import get_volume_manager
+            vm = get_volume_manager()
+            ok = vm.set_volume(volume)
+            self.current_volume = vm.get_volume()
+            return ok
         except Exception as e:
             self.logger.error(f"Volume control error: {e}")
             return False

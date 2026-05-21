@@ -2791,21 +2791,39 @@ async def play_audio_sound(request: AudioSoundRequest):
         logger.error(f"Audio play sound error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/audio/volume")
+async def get_audio_volume():
+    """Get current system volume (0-100) -- the real persisted value, so the
+    app can display actual state instead of its cached guess."""
+    try:
+        from services.media.volume_manager import get_volume_manager
+        state = get_volume_manager().get_state()
+        return {
+            "success": True,
+            "volume": state["volume"],
+            "state_file": state["state_file"],
+        }
+    except Exception as e:
+        logger.error(f"Get audio volume error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/audio/volume")
 async def set_audio_volume(request: AudioVolumeRequest):
-    """Set USB audio volume (0-100)"""
+    """Set USB audio volume (0-100). Persists across reboots via VolumeManager."""
     try:
         if not 0 <= request.volume <= 100:
             raise HTTPException(status_code=400, detail="Volume must be between 0 and 100")
 
-        audio = get_audio_controller()
-        success = audio.set_volume(request.volume)
+        from services.media.volume_manager import get_volume_manager
+        success = get_volume_manager().set_volume(request.volume)
 
         return {
             "success": success,
             "volume": request.volume,
             "message": f"Volume set to {request.volume}" if success else "Failed to set volume"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Audio volume error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -5504,12 +5522,12 @@ async def audio_play_contract_v2(request: AudioFileRequest):
 
 @app.post("/audio/volume")
 async def audio_volume_contract_v2(request: AudioLevelRequest):
-    """Set audio volume per API contract"""
+    """Set audio volume per API contract. Routes to the single VolumeManager
+    source of truth -- identical behavior to set_audio_volume() above."""
     try:
-        audio = get_usb_audio_service()
-        if audio:
-            audio.set_volume(request.level)
-        return {"success": True}
+        from services.media.volume_manager import get_volume_manager
+        success = get_volume_manager().set_volume(request.level)
+        return {"success": success}
     except Exception as e:
         return {"success": False, "error": {"code": "AUDIO_ERROR", "message": str(e)}}
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=WIM-Z saved audio volume restore
+Documentation=https://github.com/lolygagv2/dogbot
+# Run after ALSA restores its (possibly stale) saved state so our value wins,
+# and before the WIM-Z main service starts.
+After=alsa-restore.service sound.target
+Before=treatbot.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Standalone stdlib script -- uses system python3, not the project venv.
+ExecStart=/usr/bin/python3 /home/morgan/dogbot/scripts/apply_saved_volume.py
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

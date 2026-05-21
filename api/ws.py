@@ -549,8 +549,8 @@ class TreatBotWebSocketServer:
                 # {"command": "audio_volume", "level": 50}
                 level = data.get("level", 50)
                 try:
-                    usb_audio = get_usb_audio_service()
-                    usb_audio.set_volume(int(level))
+                    from services.media.volume_manager import get_volume_manager
+                    get_volume_manager().set_volume(int(level))
                     result["volume"] = int(level)
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
