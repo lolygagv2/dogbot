@@ -128,6 +128,14 @@ class WebRTCService:
                 "(relay supplies TURN dynamically per-session — see step4)"
             )
 
+        # Memory monitor: logs [RTC-MEM] every 10s so RAM behaviour is visible
+        # in the trace during streaming (leak detection).
+        self._mem_monitor_running = True
+        self._mem_monitor_thread = threading.Thread(
+            target=self._memory_monitor_loop, daemon=True, name="RTCMemMonitor"
+        )
+        self._mem_monitor_thread.start()
+
     async def _handle_data_channel_message(self, message: str, session_id: str):
         """
         Handle incoming data channel messages for motor control.
@@ -938,6 +946,39 @@ class WebRTCService:
         asyncio.run_coroutine_threadsafe(self.cleanup(), loop)
         self.logger.warning("[WEBRTC] force cleanup scheduled on event loop")
         return True
+
+    def _memory_monitor_loop(self):
+        """Log [RTC-MEM] every 10s so RAM behaviour is visible in the trace.
+
+        INFO while a connection is active (10s resolution for leak tests),
+        DEBUG when idle to keep the journal quiet.
+        """
+        try:
+            import psutil
+            proc = psutil.Process()
+        except Exception as e:
+            self.logger.debug(f"[RTC-MEM] psutil unavailable, monitor disabled: {e}")
+            return
+        while self._mem_monitor_running:
+            try:
+                rss_mb = proc.memory_info().rss / (1024 * 1024)
+                sys_pct = psutil.virtual_memory().percent
+                with self._lock:
+                    n_conn = len(self.connections)
+                fc, fps = 0, 0.0
+                if self.video_track:
+                    vs = self.video_track.get_stats()
+                    fc = vs.get('frame_count', 0)
+                    fps = vs.get('actual_fps', 0.0)
+                msg = (f"[RTC-MEM] rss={rss_mb:.0f}MB sys_mem={sys_pct:.0f}% "
+                       f"connections={n_conn} video_frames={fc} fps={fps:.1f}")
+                if n_conn > 0:
+                    self.logger.info(msg)
+                else:
+                    self.logger.debug(msg)
+            except Exception as e:
+                self.logger.debug(f"[RTC-MEM] monitor error: {e}")
+            time.sleep(10.0)
 
     async def cleanup(self):
         """Clean shutdown of all connections"""
