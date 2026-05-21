@@ -62,6 +62,12 @@ class WIMZVideoTrack(VideoStreamTrack):
         self._running = True
         self._paused = False  # Pause during camera reconfig to prevent stale frame reads
 
+        # Adaptive output resolution (w, h), set by AdaptiveBitrateController.
+        # None = pass the source through at native resolution. Frames are only
+        # ever downscaled, never upscaled (upscaling wastes CPU/bandwidth for
+        # zero quality gain). Tuple assignment is atomic under the GIL.
+        self._output_resolution: Optional[tuple] = None
+
         self.logger.info(f"WIMZVideoTrack initialized at {fps} FPS, overlay={enable_overlay}")
 
     MAX_FRAME_AGE_SEC = 0.5  # seconds before frame considered stale
@@ -127,6 +133,15 @@ class WIMZVideoTrack(VideoStreamTrack):
 
             # Convert BGR to RGB for WebRTC/aiortc
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+        # Scale to the adaptive-bitrate tier resolution (set by
+        # AdaptiveBitrateController). Downscale only — never upscale.
+        out_res = self._output_resolution
+        if out_res is not None:
+            h, w = frame_rgb.shape[:2]
+            ow, oh = out_res
+            if ow * oh < w * h:
+                frame_rgb = cv2.resize(frame_rgb, (ow, oh), interpolation=cv2.INTER_AREA)
 
         # Create VideoFrame for aiortc
         video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
@@ -381,6 +396,17 @@ class WIMZVideoTrack(VideoStreamTrack):
 
         except Exception as e:
             self.logger.debug(f"Status overlay error: {e}")
+
+    def set_output_resolution(self, resolution: Optional[tuple]):
+        """Set the WebRTC output resolution (w, h) for adaptive bitrate tiers.
+
+        Called by AdaptiveBitrateController on tier changes. None restores
+        native passthrough. Resizing happens in recv() just before encoding;
+        only downscaling is applied. Tuple assignment is atomic under the GIL.
+        """
+        if resolution != self._output_resolution:
+            self.logger.info(f"Video output resolution -> {resolution or 'native'}")
+            self._output_resolution = resolution
 
     def pause(self):
         """Pause video track during camera reconfiguration"""
