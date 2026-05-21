@@ -48,5 +48,19 @@ while IFS=: read -r conn ctype; do
     fi
 done < <(nmcli -t -f NAME,TYPE connection show)
 
+# --- Verify ---------------------------------------------------------------
 echo
-echo "[setup] Done. Reboot to activate the WiFi driver change:  sudo reboot"
+echo "[setup] verification:"
+[ -d /etc/wimz ] \
+    && echo "  OK   /etc/wimz present (owner: $(stat -c '%U' /etc/wimz))" \
+    || echo "  FAIL /etc/wimz missing"
+systemctl is-enabled --quiet wimz-audio.service \
+    && echo "  OK   wimz-audio.service enabled" \
+    || echo "  FAIL wimz-audio.service not enabled"
+[ -f /etc/modprobe.d/rtw88.conf ] \
+    && echo "  OK   /etc/modprobe.d/rtw88.conf present" \
+    || echo "  FAIL rtw88.conf missing"
+
+echo
+echo "[setup] Done. Reboot to activate the WiFi driver change + load new code:"
+echo "[setup]   sudo reboot"
