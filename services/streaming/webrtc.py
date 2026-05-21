@@ -83,6 +83,9 @@ class WebRTCService:
         # Per-session adaptive bitrate/resolution controllers
         self.adaptive_controllers: Dict[str, AdaptiveBitrateController] = {}
 
+        # Per-session data channels (used to push video_quality updates to app)
+        self.data_channels: Dict[str, Any] = {}
+
         # Connection state
         self._lock = threading.Lock()
         self._detector = None  # Lazy loaded
@@ -658,6 +661,7 @@ class WebRTCService:
             maxRetransmits=0
         )
         self._setup_data_channel_handlers(data_channel, session_id)
+        self.data_channels[session_id] = data_channel
         self.logger.info(f"Created data channel for offer {session_id}")
 
         # Handle incoming data channels from app
@@ -737,7 +741,8 @@ class WebRTCService:
         if self.video_track is not None:
             try:
                 controller = AdaptiveBitrateController(
-                    session_id, pc, self.video_track, logger=self.logger
+                    session_id, pc, self.video_track, logger=self.logger,
+                    on_change=lambda status, sid=session_id: self._push_quality(sid, status),
                 )
                 self.adaptive_controllers[session_id] = controller
                 controller.start()
@@ -874,6 +879,7 @@ class WebRTCService:
             pc = self.connections.pop(session_id, None)
             self.ice_callbacks.pop(session_id, None)
             controller = self.adaptive_controllers.pop(session_id, None)
+            self.data_channels.pop(session_id, None)
 
         if controller:
             try:
@@ -953,6 +959,35 @@ class WebRTCService:
                 'turn_configured': len(self.config.turn_servers) > 0
             }
         }
+
+    def _push_quality(self, session_id: str, status: dict):
+        """Send a video_quality update to the app over the data channel.
+
+        Wired as the AdaptiveBitrateController's on_change callback — fires on
+        every tier change and on the 2.5s status heartbeat.
+        """
+        channel = self.data_channels.get(session_id)
+        if channel is None or getattr(channel, 'readyState', None) != "open":
+            return
+        try:
+            channel.send(json.dumps({"type": "video_quality", **status}))
+        except Exception as e:
+            self.logger.debug(f"[WEBRTC] quality push failed for {session_id}: {e}")
+
+    def set_video_quality(self, mode: str) -> bool:
+        """Apply a manual quality override to all active sessions.
+
+        mode: 'auto' (adaptive) | 'low' | 'medium' | 'high'. Called from the
+        relay command handler when the app changes the quality setting.
+        """
+        applied = False
+        for controller in list(self.adaptive_controllers.values()):
+            try:
+                controller.set_manual_override(mode)
+                applied = True
+            except Exception as e:
+                self.logger.warning(f"[WEBRTC] set_video_quality error: {e}")
+        return applied
 
     def request_cleanup_threadsafe(self) -> bool:
         """Schedule cleanup() of all connections from a non-async thread.

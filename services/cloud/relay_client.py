@@ -688,6 +688,21 @@ class RelayClient:
                 })
             return
 
+        # Handle set_video_quality - adaptive bitrate manual override.
+        # params: {"mode": "auto"|"low"|"medium"|"high"}
+        if command == 'set_video_quality':
+            mode = params.get('mode', 'auto')
+            ok = False
+            if self._webrtc_service:
+                try:
+                    ok = self._webrtc_service.set_video_quality(mode)
+                except Exception as e:
+                    self.logger.error(f"set_video_quality error: {e}")
+            await self._send({
+                'type': 'command_ack', 'command': command, 'success': ok,
+            })
+            return
+
         # Publish command to event bus for other services to handle
         self.bus.publish(CloudEvent(
             subtype='command',

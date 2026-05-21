@@ -218,11 +218,18 @@ class AdaptiveBitrateController:
                 await asyncio.sleep(self.LOOP_INTERVAL)
                 if not self._running:
                     break
-                if self._manual_tier is not None:
-                    continue  # adaptive logic bypassed under manual override
                 loss, rtt, observed = await self._read_stats()
                 self._loss, self._rtt = loss, rtt
-                self._evaluate(loss, rtt, observed)
+                # Adaptive decision — skipped under manual override.
+                if self._manual_tier is None:
+                    self._evaluate(loss, rtt, observed)
+                # Status heartbeat every tick so the app indicator stays
+                # current (bars/loss/rtt) even without a tier change.
+                if self.on_change:
+                    try:
+                        self.on_change(self.get_status())
+                    except Exception as e:
+                        self.logger.debug(f"[ABR] status callback error: {e}")
         except asyncio.CancelledError:
             pass
         except Exception as e:
