@@ -348,13 +348,11 @@ class SafetyMonitor:
             webrtc = get_webrtc_service()
             if webrtc and webrtc.connections:
                 self.logger.warning(f"🧹 Force-closing {len(webrtc.connections)} WebRTC connections due to memory pressure")
-                # Use asyncio to schedule the cleanup
-                import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(webrtc.cleanup())
-                else:
-                    loop.run_until_complete(webrtc.cleanup())
+                # SafetyMonitor runs on its own thread with no event loop.
+                # WebRTCService schedules the cleanup on its own loop thread-safely
+                # (was previously calling asyncio.get_event_loop() here, which
+                # raised "no current event loop" and silently never cleaned up).
+                webrtc.request_cleanup_threadsafe()
         except Exception as e:
             self.logger.error(f"WebRTC force cleanup error: {e}")
 

@@ -83,6 +83,11 @@ class WebRTCService:
         self._lock = threading.Lock()
         self._detector = None  # Lazy loaded
 
+        # Event loop the peer connections run on — captured when a connection
+        # is created so non-async threads (e.g. SafetyMonitor) can schedule
+        # cleanup on it via run_coroutine_threadsafe.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
         # ICE connection type: "LAN", "WAN", or None (unknown/disconnected)
         # Updated when ICE connects, cleared on disconnect. Used by telemetry.
         self.connection_type: Optional[str] = None
@@ -305,6 +310,7 @@ class WebRTCService:
         on_ice_candidate: Optional[Callable] = None
     ) -> RTCPeerConnection:
         """Create a new peer connection for a client session"""
+        self._loop = asyncio.get_running_loop()
         # CRITICAL: Close existing sessions before creating new one to prevent SEGFAULT
         existing_sessions = list(self.connections.keys())
         if existing_sessions:
@@ -539,6 +545,7 @@ class WebRTCService:
         Returns:
             SDP offer dict with type and sdp fields
         """
+        self._loop = asyncio.get_running_loop()
         # CRITICAL: Close existing sessions before creating new one to prevent SEGFAULT
         # Multiple simultaneous sessions cause race conditions in MediaRelay/VP8 encoding
         existing_sessions = list(self.connections.keys())
@@ -916,6 +923,21 @@ class WebRTCService:
                 'turn_configured': len(self.config.turn_servers) > 0
             }
         }
+
+    def request_cleanup_threadsafe(self) -> bool:
+        """Schedule cleanup() of all connections from a non-async thread.
+
+        The SafetyMonitor runs on its own thread with no event loop, so it
+        cannot call the async cleanup() directly. This schedules it on the
+        loop the peer connections actually run on. Returns True if scheduled.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            self.logger.warning("[WEBRTC] force cleanup requested but no running event loop")
+            return False
+        asyncio.run_coroutine_threadsafe(self.cleanup(), loop)
+        self.logger.warning("[WEBRTC] force cleanup scheduled on event loop")
+        return True
 
     async def cleanup(self):
         """Clean shutdown of all connections"""
