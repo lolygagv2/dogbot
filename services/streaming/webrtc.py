@@ -341,7 +341,7 @@ class WebRTCService:
             self.logger.info("Created new WIMZVideoTrack")
 
         # Add video track via media relay (allows multiple subscribers)
-        relay_track = self.media_relay.subscribe(self.video_track)
+        relay_track = self.media_relay.subscribe(self.video_track, buffered=False)  # buffered=False: drop to latest frame, no unbounded queue
         pc.addTrack(relay_track)
 
         # API Contract v1.3: Add audio track for always-on mic streaming
@@ -351,7 +351,7 @@ class WebRTCService:
             self.logger.info("Created new WIMZAudioTrack for WebRTC")
 
         # Add audio track via media relay
-        audio_relay_track = self.media_relay.subscribe(self.audio_track)
+        audio_relay_track = self.media_relay.subscribe(self.audio_track, buffered=False)  # buffered=False: drop to latest frame, no unbounded queue
         pc.addTrack(audio_relay_track)
 
         # Create data channel for motor control (low-latency, unreliable)
@@ -619,7 +619,7 @@ class WebRTCService:
             )
 
         # Add video track via media relay
-        relay_track = self.media_relay.subscribe(self.video_track)
+        relay_track = self.media_relay.subscribe(self.video_track, buffered=False)  # buffered=False: drop to latest frame, no unbounded queue
         pc.addTrack(relay_track)
 
         # API Contract v1.3: Add audio track for always-on mic streaming
@@ -629,7 +629,7 @@ class WebRTCService:
             self.logger.info("Created new WIMZAudioTrack for offer")
 
         # Add audio track via media relay
-        audio_relay_track = self.media_relay.subscribe(self.audio_track)
+        audio_relay_track = self.media_relay.subscribe(self.audio_track, buffered=False)  # buffered=False: drop to latest frame, no unbounded queue
         pc.addTrack(audio_relay_track)
 
         # Create data channel for motor control (low-latency, unreliable)
