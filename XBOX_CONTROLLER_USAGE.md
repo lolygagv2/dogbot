@@ -36,6 +36,8 @@
 - **Right Bumper (RB)**: Play "No" audio (dog-aware path if dog detected)
 - **Right Trigger (RT)**: Play "Good" audio (dog-aware path if dog detected)
 - **Left Trigger (LT)**: Cycle NeoPixel LED modes
+- **Share Button** (capture button below the Xbox logo): Cycle system volume
+  0 → 20 → 40 → 60 → 80 → 100 → 0%. Persists across reboots.
 
 ### D-Pad
 - **D-Pad Left**: Cycle songs

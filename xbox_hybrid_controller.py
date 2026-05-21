@@ -364,6 +364,16 @@ class XboxHybridControllerFixed:
         # Shutdown via Start button (removed A+B combo)
         self._shutdown_in_progress = False
 
+        # Share button (the capture button below the Xbox logo) cycles volume.
+        # xpadneo routes Share to KEY_F12 on a SEPARATE keyboard input node,
+        # not the gamepad/js0 node — see _share_button_loop().
+        self._volume_levels = [0, 20, 40, 60, 80, 100]
+        self._volume_cycle_index = None  # resolved from live volume on first press
+        self._last_volume_cycle_time = 0
+        self._volume_cycle_cooldown = 0.3  # 300ms debounce between presses
+        self.share_reader_running = False
+        self.share_reader_thread = None
+
         # Dog identity cycling (D-pad up in coach mode) - for demo recording
         self._last_dog_cycle_time = 0
         self._dog_cycle_cooldown = 1.0
@@ -856,6 +866,12 @@ class XboxHybridControllerFixed:
                 self.heartbeat_thread.start()
                 logger.info("Heartbeat thread started to maintain MANUAL mode")
 
+                # Start Share-button reader (separate keyboard node, KEY_F12)
+                self.share_reader_running = True
+                self.share_reader_thread = Thread(target=self._share_button_loop, daemon=True)
+                self.share_reader_thread.start()
+                logger.info("Share button reader thread started (volume cycle)")
+
                 return True
 
             except FileNotFoundError:
@@ -938,6 +954,114 @@ class XboxHybridControllerFixed:
             except Exception as e:
                 logger.error(f"Heartbeat error: {e}")
                 time.sleep(30.0)
+
+    def _find_keyboard_event_device(self) -> Optional[str]:
+        """Find the evdev path for the Xbox controller's keyboard node.
+
+        The Share button is exposed there as KEY_F12. The event number is not
+        stable across reconnects, so resolve it by device name each time.
+        """
+        try:
+            with open('/proc/bus/input/devices') as f:
+                blocks = f.read().split('\n\n')
+            for block in blocks:
+                if 'Xbox Wireless Controller Keyboard' in block:
+                    for line in block.split('\n'):
+                        if line.startswith('H: Handlers='):
+                            for tok in line.split('Handlers=')[1].split():
+                                if tok.startswith('event'):
+                                    return f'/dev/input/{tok}'
+        except Exception as e:
+            logger.debug(f"Keyboard device lookup failed: {e}")
+        return None
+
+    def _cycle_volume(self):
+        """Share button action: cycle volume 0→20→40→60→80→100→0.
+
+        Posts to /audio/volume, which routes through VolumeManager (the single
+        source of truth) so the new level is applied AND persists across reboots.
+        """
+        current_time = time.time()
+        if current_time - self._last_volume_cycle_time < self._volume_cycle_cooldown:
+            return
+        self._last_volume_cycle_time = current_time
+
+        # On the first press, align the cycle to the level nearest the current
+        # actual volume so the first tap steps UP from where we already are.
+        if self._volume_cycle_index is None:
+            cur = None
+            try:
+                resp = self.api_request_blocking('GET', '/audio/volume', timeout=1.0)
+                if resp and 'volume' in resp:
+                    cur = int(resp['volume'])
+            except Exception:
+                pass
+            if cur is None:
+                # Server unreachable — start so the first tap lands on 0.
+                self._volume_cycle_index = len(self._volume_levels) - 1
+            else:
+                self._volume_cycle_index = min(
+                    range(len(self._volume_levels)),
+                    key=lambda i: abs(self._volume_levels[i] - cur),
+                )
+
+        self._volume_cycle_index = (self._volume_cycle_index + 1) % len(self._volume_levels)
+        volume = self._volume_levels[self._volume_cycle_index]
+        logger.info(f"Share button: volume -> {volume}%")
+        self.api_request('POST', '/audio/volume', {"volume": volume})
+
+    def _share_button_loop(self):
+        """Watch the controller keyboard node for the Share button (KEY_F12).
+
+        Share is NOT on the gamepad/js0 node — xpadneo routes it to a separate
+        virtual keyboard device. We read that evdev stream here and cycle the
+        system volume on each press.
+        """
+        EV_KEY = 0x01
+        KEY_F12 = 88
+        EVENT_SIZE = 24          # struct input_event on 64-bit Linux
+        EVENT_FMT = 'llHHi'      # timeval(2×long) + type + code + value
+
+        dev = None
+        while self.share_reader_running:
+            try:
+                if dev is None:
+                    path = self._find_keyboard_event_device()
+                    if not path:
+                        time.sleep(3.0)  # controller likely disconnected; retry
+                        continue
+                    dev = open(path, 'rb')
+                    logger.info(f"Share button reader: watching {path} for KEY_F12")
+
+                ready, _, _ = select.select([dev], [], [], 0.5)
+                if not ready:
+                    continue
+                data = dev.read(EVENT_SIZE)
+                if not data or len(data) < EVENT_SIZE:
+                    continue
+                _sec, _usec, etype, code, value = struct.unpack(EVENT_FMT, data)
+                if etype == EV_KEY and code == KEY_F12 and value == 1:  # press only
+                    self._cycle_volume()
+
+            except OSError:
+                # Keyboard node vanished (controller disconnect) — re-find later.
+                logger.debug("Share button reader: device gone, will re-find")
+                try:
+                    if dev:
+                        dev.close()
+                except Exception:
+                    pass
+                dev = None
+                time.sleep(3.0)
+            except Exception as e:
+                logger.error(f"Share button reader error: {e}")
+                time.sleep(1.0)
+
+        if dev:
+            try:
+                dev.close()
+            except Exception:
+                pass
 
     def _motor_update_loop(self):
         """Separate thread for smooth motor control with safety timeout"""
@@ -2102,6 +2226,7 @@ class XboxHybridControllerFixed:
         self.motor_update_running = False
         self.camera_update_running = False
         self.heartbeat_running = False
+        self.share_reader_running = False  # Stop Share-button reader
         self.api_worker_running = False  # Stop async API worker
 
         # Stop API worker thread
@@ -2119,6 +2244,10 @@ class XboxHybridControllerFixed:
         # Stop heartbeat thread
         if hasattr(self, 'heartbeat_thread'):
             self.heartbeat_thread.join(timeout=1.0)
+
+        # Stop Share-button reader thread
+        if self.share_reader_thread:
+            self.share_reader_thread.join(timeout=1.0)
 
         # Final motor stop to be sure
         self.stop_motors()
