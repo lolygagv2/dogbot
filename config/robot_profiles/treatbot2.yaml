@@ -1,52 +1,42 @@
-# TreatBot2 Backup Unit - Mismatched Motors
-# Hardware: 2.3Ω + 4.9Ω DC motors (significant imbalance), servo needs wider pulse
-# KNOWN ISSUE: Binary motor control (0 or 100, no gradual) - needs Xbox/PID recalibration
-
-robot_id: "treatbot2"
-description: "Backup unit with motor compensation required"
-
-# Camera settings (detector.py)
 camera:
-  rotation: 0  # No rotation needed on this unit
-
-# Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py)
-dispenser:
-  steps_per_slot: 137       # Microsteps to advance one treat slot (calibrated)
-  step_delay: 0.006         # Half-period per step in seconds (12ms/step = MEDIUM speed)
-  max_retries: 3            # Anti-jam retry attempts per dispense
-  reverse_steps: 40         # Steps to reverse during anti-jam
-  irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
-  ihold: 5                  # TMC2209 hold current (low to save battery)
-  microstepping: 8          # Microstepping multiplier (MRES=5)
-  sgthrs: 0                 # StallGuard disabled — SG_RESULT=0 at low RPM
-  shaft_invert: true        # TMC2209 shaft bit — reverses internal step sequence for this motor batch
-
-# Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
-servo:
-  slow_pulse: 1600  # legacy — no longer used for dispenser
-
-# Motor/Controller settings (xbox_hybrid_controller.py)
+  coach_pan_max: 145
+  coach_pan_min: 55
+  coach_tilt_max: 85
+  coach_tilt_min: 25
+  pan_center: 180
+  pan_max: 320
+  pan_min: -60
+  rotation: 0
+  tilt_center: 90
+  tilt_max: 200
+  tilt_min: 45
 controller:
-  max_speed: 60           # Lower cap due to motor mismatch
-  turn_speed_factor: 0.8  # Multiplier for turn smoothness
-  max_rpm: 100            # Conservative RPM target
-  use_pid_control: false  # DISABLED - right encoder broken, using open-loop until motor replaced
-  min_pwm_threshold: 0    # DISABLED - was causing binary jump behavior
-
-  # Per-motor calibration for hardware imbalance
-  # NOW: Multipliers applied AFTER PWM mapping
-  # Left motor (1.6Ω) is ~3x more powerful than right (4.5Ω), needs big reduction
+  max_rpm: 100
+  max_speed: 80
+  min_pwm_threshold: 0
   motor_calibration:
-    left_multiplier: 0.75    # Heavily reduce left motor (way too powerful)
-    right_multiplier: 1.0   # Keep right at full (it's weak/defective)
-
-  # Xbox controller calibration - NEEDS TUNING
-  xbox:
-    joystick_deadzone: 0.30   # Increased for stick drift
-    joystick_scale: 1.0       # May need adjustment after diagnostics
-
-  # PID tuning parameters - NEEDS TUNING
+    left_multiplier: 0.75
+    right_multiplier: 1.0
   pid:
-    kp: 1.0                   # May need reduction to prevent binary behavior
-    ki: 0.0                   # Integral gain
-    kd: 0.0                   # Derivative gain
+    kd: 0.0
+    ki: 0.0
+    kp: 1.0
+  turn_speed_factor: 0.8
+  use_pid_control: false
+  xbox:
+    joystick_deadzone: 0.3
+    joystick_scale: 1.0
+description: Backup unit with motor compensation required
+dispenser:
+  ihold: 5
+  irun: 31
+  max_retries: 3
+  microstepping: 8
+  reverse_steps: 40
+  sgthrs: 0
+  shaft_invert: true
+  step_delay: 0.006
+  steps_per_slot: 137
+robot_id: treatbot2
+servo:
+  slow_pulse: 1600

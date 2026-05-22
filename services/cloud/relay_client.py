@@ -732,6 +732,26 @@ class RelayClient:
             })
             return
 
+        # Handle mood_led - blue LED toggle via relay.
+        # params: {"action": "on"|"off"|"toggle"}
+        if command == 'mood_led':
+            action = params.get('action', 'toggle')
+            ok = False
+            try:
+                from api.server import blue_led_direct_control, _blue_led_state
+                if action == 'on':
+                    ok = blue_led_direct_control(True)
+                elif action == 'off':
+                    ok = blue_led_direct_control(False)
+                else:
+                    ok = blue_led_direct_control(not _blue_led_state)
+            except Exception as e:
+                self.logger.error(f"mood_led error: {e}")
+            await self._send({
+                'type': 'command_ack', 'command': command, 'success': ok,
+            })
+            return
+
         # Publish command to event bus for other services to handle
         self.bus.publish(CloudEvent(
             subtype='command',
