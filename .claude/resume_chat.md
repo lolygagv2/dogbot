@@ -87,7 +87,38 @@ The Vref pot on each TMC2209 module sets the hard current ceiling regardless of 
 2. **Real-world night mode bench test** — dark room, watch system auto-switch to night, confirm IR illuminator doesn't oscillate the mode
 3. **Decide on IR-cut filter** — physical fix for daytime color if dog-training footage quality matters
 4. **Pi onboard LED dim** — sudoers entry + writes to `/sys/class/leds/{ACT,PWR}/brightness` if user wants this minor enhancement
+---
 
+## Session: 2026-05-22 — treatbot5 device setup + power-button diagnosis
+
+**Robot:** treatbot5
+**Status:** ✅ Complete. No repo code changes — working tree clean (only this log updated).
+
+### Work completed
+1. **Git pull** — `82dbe8b..652a06f` fast-forward, 27 files (+1986/−177). Brought in volume control system (`services/media/volume_manager.py`, `wimz-audio.service`, `apply_saved_volume.py`), adaptive bitrate streaming (`services/streaming/adaptive_bitrate.py`), and device setup tooling (`scripts/setup_device.sh`, `rtw88.conf`, `docs/NEW_ROBOT_SETUP.md`).
+2. **Ran `scripts/setup_device.sh`** on treatbot5 — all verification checks passed:
+   - `/etc/wimz/` created (owner morgan) — persistent volume state dir
+   - `wimz-audio.service` installed + enabled; ran clean (no saved state → applied default 60% via amixer card 2, control 'Speaker')
+   - `/etc/modprobe.d/rtw88.conf` installed — disables rtw88 WiFi deep power-save
+   - WiFi power-save disabled on all 4 saved connections
+3. **Confirmed xpadneo installed** — DKMS `hid-xpadneo v0.9-226-ga16acb0` built for all 4 kernels incl. running `6.12.62+rpt-rpi-2712`. Module auto-loads on Xbox controller BT connect.
+
+### Diagnosis (no fix applied — user said not needed)
+- **`reboot` actually powers the robot off.** Root cause: `/lib/systemd/system-shutdown/wimz-killpulse` pulses GPIO26 → Pololu OFF unconditionally. systemd runs system-shutdown hooks for ALL verbs (poweroff/halt/**reboot**/kexec), passing the verb as `$1`. The script ignores `$1`, so a reboot cuts power instead of restarting.
+- **Fix (deferred):** wrap the `gpioset` in `case "$1" in poweroff|halt) ... ;; esac`. This hook is NOT in the repo — if fixed later, also add to `scripts/` + `setup_device.sh` for fleet coverage.
+
+### Pending — NOT yet activated
+- **WiFi driver change** (`rtw88.conf`) takes effect only after reboot.
+- **New pulled code** (volume manager, adaptive bitrate, etc.) loads only after `treatbot.service` restart. Service currently still running old code from May 20 boot.
+
+### Observed this session
+- **False "charging" detection on treatbot5** — robot announced/reported charging while NOT plugged in. `battery_monitor._check_charging()` infers charging from a voltage upward trend (motor-idle gated). On treatbot5 this still misfires — needs a per-unit charging threshold/calibration pass. Not fixed this session.
+
+### Next session (TBD — treatbot5 calibration backlog)
+1. **Camera/AI verify** — confirm IMX708, gimbal snaps to (pan=64, tilt=89) on boot, AI pipeline + 4-class behavior model load cleanly.
+2. **Dispenser test** — never run on treatbot5; trigger auger advance via API.
+3. **Motor calibration** — on-floor drive test (all prior testing bench/wheels-lifted); tune `left_multiplier`/`right_multiplier` if it pulls; coach mode tilt re-tune for asymmetric tilt range.
+4. **Battery % calibration** — voltage→percent curve and the false-charging detection (`battery_monitor.py`, `_check_charging()`). treatbot5 reads charging while unplugged; needs per-unit voltage-trend threshold tuning. (`calibration_factor` already set to 53.33 last session for the divider, but charging-trend logic is separate.)
 ---
 
 ## Session: 2026-05-21/22 — treatbot2 hardware bring-up + relay mood_led
