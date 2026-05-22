@@ -1,5 +1,45 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-21/22 — treatbot2 hardware bring-up + relay mood_led
+
+**Duration:** ~2 hours
+**Robot:** treatbot2
+**Status:** ✅ Complete
+
+### Problems Solved
+1. **WiFi power-save** — Ran setup_device.sh, disabled power-save on all saved networks
+2. **Camera ribbon loose** — Identified camera timeout error after reboot, user reseated ribbon
+3. **Blue LED not working via app** — Added `mood_led` command handler to relay_client.py (was only in local ws.py)
+4. **Gimbal calibration off** — Recalibrated pan (-60/180/320) and tilt (45/90/200) for treatbot2
+5. **Xbox controller pairing** — Installed xpadneo driver, paired using `agent on` + `default-agent` sequence
+6. **Blue LED hardware** — Diagnosed MOSFET wiring issue (Source wired to GPIO instead of Gate) — user fixed
+
+### Key Code Changes
+- `services/cloud/relay_client.py` — Added mood_led command handler for relay path
+- `config/robot_profiles/treatbot2.yaml` — Updated gimbal calibration values
+
+### Commit
+`46ec876` — feat: relay mood_led command + treatbot2 gimbal calibration
+
+### Hardware Notes (treatbot2)
+- Camera ribbon came loose after reboot — check connections on this unit
+- Blue LED MOSFET had Source/Gate wires swapped — now fixed by user
+- Xbox controller paired successfully (MAC: 28:EA:0B:DB:82:3F)
+- xpadneo driver installed via DKMS (not in git — must install per-robot)
+- Gimbal pan went to -80 and tore camera ribbon — safe limit set at -60
+
+### Unresolved / Next Steps
+- Blue LED toggle in Flutter app needs to send `mood_led` command via relay WebSocket (app-side fix)
+- Verify Xbox controller works with treatbot service after reboot
+- Consider adding xpadneo install to setup_device.sh for new robots
+
+### Important Notes
+- xpadneo is a kernel driver (DKMS), not in git — must be installed separately on each robot
+- Xbox pairing requires: `agent on` + `default-agent` BEFORE `pair` command
+- JustWorksRepairing was enabled in /etc/bluetooth/main.conf
+
+---
+
 ## Session: 2026-05-20 — Silent Guardian movement tier + Xbox controller bring-up
 
 **Goal:** Add a physical-movement escalation tier to Silent Guardian; pair a new Xbox controller; diagnose drift + right-motor issues.
