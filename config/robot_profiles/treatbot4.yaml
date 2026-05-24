@@ -12,7 +12,7 @@ camera:
   # after tilt-servo replacement (new servo's level position = code-angle 43).
   pan_min: -89
   pan_max: 269
-  tilt_min: -57     # ~50° physical down from level (100 code-units below center)
+  tilt_min: -45     # ~50° physical down from level (100 code-units below center)
   tilt_max: 143     # ~50° physical up from level (100 code-units above center)
   pan_center: 67    # Where camera physically looks dead-ahead (treatbot3 value)
   tilt_center: 43   # Calibrated level horizon (new tilt servo, 2026-05-17)
@@ -27,7 +27,7 @@ dispenser:
   steps_per_slot: 137       # Microsteps to advance one treat slot — re-tune per unit
   step_delay: 0.006         # Half-period per step in seconds (12ms/step = MEDIUM speed)
   max_retries: 3            # Anti-jam retry attempts per dispense
-  reverse_steps: 40         # Steps to reverse during anti-jam
+  reverse_steps: 100         # Steps to reverse during anti-jam
   irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
   ihold: 5                  # TMC2209 hold current (low to save battery)
   microstepping: 8          # Microstepping multiplier (MRES=5)
