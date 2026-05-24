@@ -734,17 +734,26 @@ class RelayClient:
 
         # Handle mood_led - blue LED toggle via relay.
         # params: {"action": "on"|"off"|"toggle"}
+        # Routes through LedService's LedController — the single legitimate
+        # owner of GPIO 25. The old api.server.blue_led_direct_control() path
+        # made an independent lgpio.gpio_claim_output() on the same pin, which
+        # loses a startup race with LedController and then fails 'GPIO busy'
+        # for the rest of the process lifetime (silently returning False).
         if command == 'mood_led':
             action = params.get('action', 'toggle')
             ok = False
             try:
-                from api.server import blue_led_direct_control, _blue_led_state
+                from services.media.led import get_led_service
+                led = get_led_service().led
+                if led is None or not getattr(led, 'blue_chip', None):
+                    raise RuntimeError("blue LED controller not initialized")
                 if action == 'on':
-                    ok = blue_led_direct_control(True)
+                    ok = bool(led.blue_on())
                 elif action == 'off':
-                    ok = blue_led_direct_control(False)
+                    ok = bool(led.blue_off())
                 else:
-                    ok = blue_led_direct_control(not _blue_led_state)
+                    ok = bool(led.blue_off() if getattr(led, 'blue_is_on', False)
+                              else led.blue_on())
             except Exception as e:
                 self.logger.error(f"mood_led error: {e}")
             await self._send({
