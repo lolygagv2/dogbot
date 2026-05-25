@@ -1,5 +1,43 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-25 (part 3) — treatbot5 pull/conflict, Xbox controller swap, gimbal re-center
+
+**Duration:** ~1.5 hours
+**Robot:** treatbot5
+**Status:** ✅ Complete — committed as `005d78b`, pushed to origin/main
+
+### Work completed
+1. **Pull origin/main with conflict** — rebase against `b4f21f3` (later `191ba0c`) hit a conflict in `.claude/resume_chat.md` where the local treatbot5-setup session log overlapped with the incoming treatbot4 night-mode log. Resolved by keeping both entries in newest-first order. New code on this Pi after pull: night mode controller (`5f0dacc`), mood_led LedService routing (`e1f3de8`), tilt_min/dispenser tweaks (treatbot4-only), and a later `feat: night mode kills blue tube` (`191ba0c`).
+2. **TMC2209 UART verified on treatbot5** — all OS-side steps from `.claude/TMC2209_UART_SETUP.md` pass (dtparam, cmdline, dialout, /dev/ttyAMA0 perms, SupplementaryGroups). Chip-level probe across all 4 slave addresses returned **echo only** (Pi sees its own TX loopback) — same symptom as treatbot4. Root cause is the same VIO logic-supply wire being disconnected (per part-2 session diagnosis). Dispenser runs on hardware defaults (Vref pot + MS1/MS2 strapping) and is fine for now.
+3. **Xbox controller swap on treatbot5** — removed old `AC:8E:BD:4A:0F:97`, paired new `78:86:2E:8C:47:97`. Burned a lot of time chasing a phantom "BlueZ procedure" issue before the actual root cause surfaced in dmesg: `BLE firmware version 5.09, please upgrade for better stability`. The new-out-of-the-box controller had old firmware → xpadneo's welcome-rumble crashed it → infinite reconnect loop (sysfs index raced from .003E to .00BF in seconds). User updated firmware to 5.23 via Xbox Accessories app on Windows. After update, single clean `pair → trust → connect` worked.
+4. **Updated `fix_xbox_controller.sh`** — hardcoded MAC swapped to new controller (committed).
+5. **Re-centered treatbot5 gimbal** — `pan_center: 64 → 46`, `tilt_center: 89 → 97` (live-read after user physically aimed dead-ahead). Written manually to yaml to avoid the `/camera/calibrate save:true` comment-stripping bug. Not live-reloaded (no `/config/reload`); takes effect next service restart.
+
+### Key learnings (saved to memory)
+- **`feedback_xbox_firmware.md`** — When a new Xbox controller won't pair stably (slow-flash LED, BlueZ shows Connected:yes, journal flood of `Error reading event: I/O operation on closed file`, sysfs reconnect-counter racing): FIRST check `dmesg | grep "BLE firmware"`. If xpadneo reports `please upgrade for better stability`, firmware is the blocker — Windows + Xbox Accessories app is the only real fix. Don't waste hours on bluez sequencing.
+
+### Memory cleanup
+- Wrote a `feedback_xbox_pairing.md` mid-session claiming `fix_xbox_controller.sh` was the procedure that worked — deleted it immediately when symptoms made clear the script wasn't actually working. Replaced with the firmware-first memory above.
+
+### Procedures confirmed
+- **Xbox controller pairing on Pi (with updated firmware):** `bluetoothctl scan on` → wait → `pair MAC` → `trust MAC` → `connect MAC`. Set agent to `NoInputNoOutput` first. `rfkill` cycle the radio if BT state is stuck.
+- **Conflict-resolving `resume_chat.md` on rebase:** keep both session blocks, newest first; just delete the conflict markers and add a `---` between sessions.
+
+### Pending / next session
+1. **TMC2209 VIO wire** on treatbot5 — same physical fix as treatbot4 (Pi 3V3 → TMC2209 VIO pin). After fix, expect `TMC2209 detected: version=0x21` in dispenser init log instead of the "not responding" warning. Read part-2 session notes about the yaml time-bomb (microstepping mismatch) BEFORE wiring — treatbot5.yaml currently has no `microstepping` field, so it'll use whatever default; check before activating UART.
+2. **Crank Vref pot on treatbot5** if dispenser torque feels light.
+3. **Restart treatbot.service** to pick up the new gimbal centers (user explicitly said "it's fine" to defer).
+4. **Battery false-charging on treatbot5** — still unresolved from prior session; needs per-unit charging-trend threshold tuning.
+
+### Commits this session
+- `005d78b` — chore: re-center treatbot5 gimbal + update fix_xbox_controller.sh MAC (pushed)
+
+### Notes
+- `.claude/TMC2209_UART_SETUP.md` remains untracked by design (its own header says "Per-Unit, Not in Git"). Treatbot5 passes 100% of its OS-side checks; only the hardware VIO wire is missing — same story as treatbot4.
+- Old controller MAC `AC:8E:BD:4A:0F:97` is gone from bluez. If that controller comes back later, it'll need to re-pair from scratch.
+
+---
+
 ## Session: 2026-05-25 (part 2) — UART diagnosis, blue-tube night-off, dispenser reality check
 
 **Duration:** ~2 hours
