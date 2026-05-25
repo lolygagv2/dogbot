@@ -1947,6 +1947,11 @@ async def set_camera_calibration(request: Request):
             controls["ExposureTime"] = int(body["exposure_time"])
         if "analogue_gain" in body:
             controls["AnalogueGain"] = float(body["analogue_gain"])
+        if "awb_enable" in body:
+            controls["AwbEnable"] = bool(body["awb_enable"])
+        if "colour_gains" in body:
+            cg = body["colour_gains"]
+            controls["ColourGains"] = (float(cg[0]), float(cg[1]))
 
         if not controls:
             raise HTTPException(status_code=400, detail="No valid calibration settings provided")
@@ -1986,6 +1991,10 @@ async def set_camera_calibration(request: Request):
                     profile_data["camera"]["exposure_time"] = body["exposure_time"]
                 if "analogue_gain" in body:
                     profile_data["camera"]["analogue_gain"] = body["analogue_gain"]
+                if "awb_enable" in body:
+                    profile_data["camera"]["awb_enable"] = body["awb_enable"]
+                if "colour_gains" in body:
+                    profile_data["camera"]["colour_gains"] = list(body["colour_gains"])
 
                 with open(profile_path, 'w') as f:
                     yaml.dump(profile_data, f, default_flow_style=False)
@@ -5537,6 +5546,39 @@ async def mode_get_contract():
     """Get current mode per API contract"""
     state = get_state()
     return {"mode": state.get_mode().value}
+
+
+# --- Night Mode ---
+@app.get("/night_mode/status")
+async def night_mode_status():
+    """Current night-mode state: mode (day|night), override (auto|force_day|force_night), lux, last_changed_at."""
+    try:
+        from modes.night_mode_controller import get_night_mode_controller
+        return get_night_mode_controller().get_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/night_mode/override")
+async def night_mode_override(request: Request):
+    """Set the night-mode override.
+
+    Body: {"override": "auto" | "force_day" | "force_night"}
+    """
+    try:
+        body = await request.json()
+        override = (body.get('override') or '').lower()
+        from modes.night_mode_controller import get_night_mode_controller, VALID_OVERRIDES
+        if override not in VALID_OVERRIDES:
+            raise HTTPException(status_code=400, detail=f"override must be one of {VALID_OVERRIDES}")
+        nm = get_night_mode_controller()
+        ok = nm.set_override(override)
+        return {"success": ok, "status": nm.get_status()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # --- Missions (Contract) ---
 @app.get("/missions")

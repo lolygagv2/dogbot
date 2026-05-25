@@ -1,11 +1,12 @@
-# TreatBot4 — Cytron motor driver + 9V brushed motors (no encoders), IMX708 Pi Camera Module 3 Wide
+# TreatBot4 — Cytron motor driver + 9V brushed motors (no encoders), IMX708 Pi Camera Module 3 Wide NoIR
 # Hardware delta vs treatbot1/2: replaced L298N + 6V DFRobot encoder motors with Cytron driver + 9V brushed,
 # and IMX500 → IMX708 wide-angle camera. PID disabled because 9V motors lack encoders.
+# 2026-05-24: swapped to IMX708 Wide NoIR (IR-cut filter removed) for upcoming night-vision mode.
 
 robot_id: "treatbot4"
-description: "Production unit #4 — Cytron motor driver, 9V brushed motors (no encoders), IMX708 wide camera"
+description: "Production unit #4 — Cytron motor driver, 9V brushed motors (no encoders), IMX708 Wide NoIR"
 
-# Camera settings (detector.py) — IMX708 Pi Camera Module 3 Wide
+# Camera settings (detector.py) — IMX708 Pi Camera Module 3 Wide NoIR
 camera:
   rotation: 0  # degrees clockwise (0, 90, 180, 270) — re-tune per unit
   # Gimbal servo limits — pan seeded from treatbot3, tilt calibrated 2026-05-17
@@ -22,27 +23,41 @@ camera:
   coach_tilt_min: 3
   coach_tilt_max: 83
 
-# Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py) — unchanged from treatbot1
+  # Daytime image profile — NoIR baseline (no IR-cut filter)
+  # AWB cannot fully solve NoIR daytime color (green channel dominant, IR bleeds into red,
+  # ColourGains only controls R+B). Best result: lock AWB-chosen gains statically + low saturation
+  # to mute residual false-color in skin/foliage. Bench-tuned 2026-05-24 against bald-head test target.
+  # Non-skin neutrals (walls, fabric, plastic) look correct; will be replaced by NIGHT_PROFILE
+  # when modes/night_mode_controller.py switches us into IR-illuminated mode.
+  awb_enable: false
+  colour_gains: [0.887, 1.52]   # (red_gain, blue_gain) — green is implicit reference
+  saturation: 0.85              # moderate — keeps color life; minor NoIR green tint on skin acceptable
+  contrast: 1.05                # slight bump for definition
+  sharpness: 1.0
+  brightness: 0.0
+
+# Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py)
+# 2026-05-24: bumped torque (slower step + half microstepping) — treatbot4 carousel needed more headroom.
 dispenser:
-  steps_per_slot: 137       # Microsteps to advance one treat slot — re-tune per unit
-  step_delay: 0.006         # Half-period per step in seconds (12ms/step = MEDIUM speed)
+  steps_per_slot: 69        # Used to be 137....Halved when microstepping went 8→4 (preserves slot geometry)
+  step_delay: 0.010         # Half-period per step (slower = more torque on torque-speed curve)
   max_retries: 3            # Anti-jam retry attempts per dispense
-  reverse_steps: 100         # Steps to reverse during anti-jam
-  irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
+  reverse_steps: 50         # Steps to reverse during anti-jam
+  irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A) — already maxed
   ihold: 5                  # TMC2209 hold current (low to save battery)
-  microstepping: 8          # Microstepping multiplier (MRES=5)
+  microstepping: 4          # Was 8 — halved for more torque-per-step
   sgthrs: 0                 # StallGuard disabled — known issue at low speed
+  chopper_mode: "spreadcycle"  # Full rated torque (audible whine). use var: "stealthchop" --default leaves ~30-50% torque on table.
 
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:
   slow_pulse: 1560  # legacy — no longer used for dispenser
 
 # Battery monitor calibration (services/power/battery_monitor.py)
-# Starting point: treatbot3's 54.28 (assumes same voltage-divider board).
-# VERIFY on bench: feed known voltage (e.g. 14.8V from bench supply),
-# read ADS1115 A0; factor = known_voltage / measured_voltage_at_A0.
+# treatbot4 uses a LOW-ratio voltage divider (~5.6:1), NOT treatbot3's high-ratio (~54:1).
+# Calibrated 2026-05-25 against multimeter: 15.43V battery -> 2.7368V at A0 -> factor 5.638.
 battery:
-  calibration_factor: 54.28   # TODO: re-verify against bench supply during bring-up
+  calibration_factor: 5.638
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:
@@ -84,5 +99,7 @@ controller:
 # - Motor driver: Cytron MDD10A (10A dual-channel, DIR + PWM per motor). Driver in
 #   core/hardware/motor_controller_cytron.py, dispatched by core/motor_command_bus.py
 #   when controller.driver == "cytron".
-# - Camera: IMX708 Pi Camera Module 3 Wide. Boot config notes in .claude/hardware_specs.md
-#   (commit 90e2399). Verify with `rpicam-hello --list-cameras` post-deploy.
+# - Camera: IMX708 Pi Camera Module 3 Wide NoIR (IR-cut filter removed). Boot config notes
+#   in .claude/hardware_specs.md (commit 90e2399). On Pi 5 this is wired to CSI0 (cam0) —
+#   cam1 port on this unit appears damaged (see 2026-05-24 troubleshooting).
+#   Verify with `rpicam-hello --list-cameras` post-deploy.

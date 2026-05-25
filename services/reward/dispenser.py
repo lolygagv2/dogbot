@@ -58,6 +58,10 @@ class DispenserService:
         self.ihold = robot_config.dispenser.ihold
         self.microstepping = robot_config.dispenser.microstepping
         self.sgthrs = getattr(robot_config.dispenser, 'sgthrs', 50)
+        # TMC2209 chopper mode: "stealthchop" (default, quiet, ~50-70% torque)
+        # or "spreadcycle" (audible whine, full rated torque). Per-robot opt-in.
+        self.chopper_mode = (getattr(robot_config.dispenser, 'chopper_mode', None)
+                             or 'stealthchop').lower()
 
         # Direction constants (fixed — polarity handled by TMC2209 shaft bit)
         self.CW = 1   # Clockwise = dispense direction
@@ -130,9 +134,12 @@ class DispenserService:
         mres_map = {256: 0, 128: 1, 64: 2, 32: 3, 16: 4, 8: 5, 4: 6, 2: 7, 1: 8}
         mres = mres_map.get(self.microstepping, 5)
 
-        # GCONF: I_scale_analog=1, mstep_reg_select=1, shaft bit for motor polarity
+        # GCONF: I_scale_analog=1 (bit 0), mstep_reg_select=1 (bit 7), shaft bit (bit 4) for polarity
+        # bit 2 (en_spreadcycle): 0 = stealthChop (quiet, ~50-70% torque)
+        #                        1 = spreadCycle (audible, full rated torque)
         shaft_bit = (1 << 4) if self.shaft_invert else 0
-        self._tmc_write(0x00, 0x00000081 | shaft_bit)
+        spreadcycle_bit = (1 << 2) if self.chopper_mode == 'spreadcycle' else 0
+        self._tmc_write(0x00, 0x00000081 | shaft_bit | spreadcycle_bit)
 
         # IHOLD_IRUN: configured current with gradual ramp-down
         ihold_irun = (6 << 16) | (self.irun << 8) | self.ihold
@@ -154,7 +161,8 @@ class DispenserService:
 
         self.logger.info(
             f"TMC2209 configured: IRUN={self.irun}, IHOLD={self.ihold}, "
-            f"{self.microstepping}x microstep, vsense=0, SGTHRS={self.sgthrs}"
+            f"{self.microstepping}x microstep, vsense=0, SGTHRS={self.sgthrs}, "
+            f"chopper={self.chopper_mode}"
         )
 
     # =========================================================================

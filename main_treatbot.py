@@ -51,6 +51,7 @@ from core.mission_scheduler import get_mission_scheduler
 
 # Mode handlers
 from modes.silent_guardian import get_silent_guardian_mode
+from modes.night_mode_controller import get_night_mode_controller
 from orchestrators.coaching_engine import get_coaching_engine
 
 
@@ -111,6 +112,7 @@ class TreatBotMain:
         # Mode handlers
         self.silent_guardian_mode = None
         self.coaching_engine = None
+        self.night_mode = None
 
         # Main state
         self.running = False
@@ -472,6 +474,10 @@ class TreatBotMain:
             self.coaching_engine = get_coaching_engine()
             self.logger.info("Coaching engine ready")
 
+            # Night-mode controller (depends on detector being initialized for Lux reads)
+            self.night_mode = get_night_mode_controller()
+            self.logger.info(f"Night mode controller ready (override={self.night_mode.override_mode})")
+
             # Mission scheduler (for auto-starting scheduled missions)
             self.mission_scheduler = get_mission_scheduler()
             self.logger.info("Mission scheduler ready")
@@ -507,6 +513,20 @@ class TreatBotMain:
                     self.logger.info("Camera capture started (WebRTC only, no AI)")
                 # Subscribe to detection events for LED feedback
                 self.bus.subscribe('vision', self._on_detection_for_feedback)
+
+                # Start night-mode controller now that camera is up.
+                # On day->night, fire LEDs off once so the NeoPixels don't cause lens flare
+                # under IR illumination. On return to day we do nothing — the normal mode
+                # FSM and current pattern handle LED state from there.
+                if self.night_mode:
+                    def _night_led_callback(mode: str, info: dict) -> None:
+                        if mode == 'night' and self.led:
+                            try:
+                                self.led.set_pattern('off')
+                            except Exception as e:
+                                self.logger.warning(f"Night LED callback error: {e}")
+                    self.night_mode.add_callback(_night_led_callback)
+                    self.night_mode.start()
 
             # Start bark detection if enabled AND in a mode that uses it
             # Bark detection should only run in SILENT_GUARDIAN, COACH
@@ -2262,6 +2282,8 @@ class TreatBotMain:
                 self.silent_guardian_mode.stop()
             if self.coaching_engine:
                 self.coaching_engine.stop()
+            if self.night_mode:
+                self.night_mode.stop()
 
             # Stop cloud relay and WebRTC
             if self.relay_client:

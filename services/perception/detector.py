@@ -307,6 +307,13 @@ class DetectorService:
             if hasattr(cam_config, 'analogue_gain') and cam_config.analogue_gain:
                 controls["AnalogueGain"] = float(cam_config.analogue_gain)
 
+            if hasattr(cam_config, 'awb_enable') and cam_config.awb_enable is not None:
+                controls["AwbEnable"] = bool(cam_config.awb_enable)
+
+            if hasattr(cam_config, 'colour_gains') and cam_config.colour_gains:
+                cg = cam_config.colour_gains
+                controls["ColourGains"] = (float(cg[0]), float(cg[1]))
+
             if controls:
                 self.camera.set_controls(controls)
                 self.logger.info(f"Applied saved camera calibration: {controls}")

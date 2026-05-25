@@ -739,6 +739,21 @@ class RelayClient:
         # made an independent lgpio.gpio_claim_output() on the same pin, which
         # loses a startup race with LedController and then fails 'GPIO busy'
         # for the rest of the process lifetime (silently returning False).
+        if command == 'set_night_mode_override':
+            override = (params.get('override') or '').lower()
+            ok = False
+            try:
+                from modes.night_mode_controller import get_night_mode_controller
+                nm = get_night_mode_controller()
+                ok = nm.set_override(override)
+            except Exception as e:
+                self.logger.error(f"set_night_mode_override error: {e}")
+            await self._send({
+                'type': 'command_ack', 'command': command, 'success': ok,
+                'error': None if ok else f"invalid override '{override}' (use auto/force_day/force_night)",
+            })
+            return
+
         if command == 'mood_led':
             action = params.get('action', 'toggle')
             ok = False
