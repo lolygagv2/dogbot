@@ -15,8 +15,8 @@ camera:
   pan_max: 268
   tilt_min: 60
   tilt_max: 236
-  pan_center: 64    # Live-read where camera physically looks dead-ahead on this mount
-  tilt_center: 89   # Live-read level horizon (asymmetric range: 29° down, 147° up from center)
+  pan_center: 46    # Live-read where camera physically looks dead-ahead on this mount (re-centered 2026-05-25)
+  tilt_center: 97   # Live-read level horizon (asymmetric range; re-centered 2026-05-25)
   # Coach mode auto-tracking limits — INHERITED from treatbot3; needs separate tuning
   # in coach mode (tilt is asymmetric on this unit, dog-tracking range likely needs
   # to bias toward lower tilt to avoid ceiling stares).
