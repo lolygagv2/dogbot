@@ -1,5 +1,55 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-24/25 — treatbot4 night-vision + camera/battery/dispenser tuning
+
+**Duration:** ~6+ hours (long session across the date boundary)
+**Robot:** treatbot4
+**Status:** ✅ Complete — committed as 5f0dacc, pushed to origin/main
+
+### Problems Solved
+1. **NoIR daytime color** — IMX708 Wide NoIR (IR-cut filter removed) had unusable daytime color via AWB (green skin OR magenta blues depending on preset). Manual `ColourGains=(0.887, 1.52)` locked + AWB off + saturation 0.85 + contrast 1.05 is the best achievable in software; fundamental NoIR limitation (green channel dominant, ColourGains only controls R+B). Real fix would be a physical IR-cut filter for daytime use.
+2. **Night mode subsystem built** — full implementation per `.claude/nightvisionrobo.md`. Asymmetric hysteresis (5 lux entry, 100 lux exit) was added specifically because IR illuminator pollutes the camera's lux reading; without the high exit threshold the system would oscillate.
+3. **Battery showed 148V / 100%** — treatbot4 has the LOW-ratio voltage divider (~5.6:1), not treatbot3's high-ratio (~54:1). Calibrated against multimeter: 15.43V battery → 2.7368V at A0 → factor 5.638. Now reads correctly.
+4. **Dispenser stalling** — yaml-side torque was already maxed (irun=31, microstepping=4, slow step_delay). Root cause: TMC2209 was in stealthChop mode (default, ~50-70% torque). Added `chopper_mode` yaml field; setting "spreadcycle" sets GCONF bit 2 for full rated torque. Opt-in per robot so other units unaffected.
+5. **`/camera/calibrate` save:true reformats yaml** — discovered this bug mid-session when it stripped comments + sorted keys. Worked around by writing yaml manually. Real fix would be ruamel.yaml in the save path. Avoid `save:true` until that's fixed.
+6. **WebRTC stuck reconnecting** — Camera/relay healthy but app never sent SDP answer. Force-quit + relaunch of phone app fixed it (stale peer connection state).
+
+### Key Code Changes
+- `modes/night_mode_controller.py` (NEW) — threaded singleton, lux polling, profile switching via `picam2.set_controls()` (preserves WebRTC stream)
+- `services/perception/detector.py` — `_apply_saved_calibration` now accepts `awb_enable` + `colour_gains`
+- `services/reward/dispenser.py` — `_configure_tmc` reads `chopper_mode` from yaml, sets GCONF bit 2 for spreadCycle
+- `services/cloud/relay_client.py` — added `set_night_mode_override` command handler
+- `api/server.py` — added `colour_gains`/`awb_enable` to `/camera/calibrate`, plus `GET /night_mode/status` + `POST /night_mode/override`
+- `main_treatbot.py` — wired NightModeController into init/start/stop; LED-off callback on day→night
+- `config/robot_profiles/treatbot4.yaml` — full daytime camera profile, battery factor 5.638, chopper_mode spreadcycle, dispenser torque tuning
+
+### What Was NOT Done (deferred)
+- **Pi onboard ACT/PWR LED dim** — needs a sudoers entry, didn't tackle
+- **`tests/hardware/test_battery_adc_channels.py`** — untracked diagnostic, didn't commit (user's call)
+- **Xbox MAC files** — `fix_xbox_controller.sh` + `services/control/xbox_persistent.py` still uncommitted (per-robot shared files, intentional)
+- **`/camera/calibrate` save:true comment-preservation fix** — known bug, deferred
+- **Live yaml reload** — there's no `/config/reload`; all yaml is read-once at service init. User now knows.
+
+### Important Notes / Gotchas for Next Session
+- **NoIR daytime color is genuinely a hardware limitation** — don't chase it further in software. Either accept the muted profile or buy a clip-on IR-cut filter.
+- **Asymmetric hysteresis (5/100 lux)** is intentional — do not "fix" by making it symmetric, or IR illuminator will cause oscillation.
+- **Night mode profile-switching uses `set_controls()` only** — never call `start()`/`stop()`/`configure()` from the night mode path; that would kill WebRTC. The settle pattern is: AE on briefly → 3s settle → read metadata → lock values with AE off.
+- **`chopper_mode` field defaults to stealthchop** when absent — safe default for other robots.
+- **State file `state/night_mode.json` persists override** across restarts; do not delete unless intentional.
+- **cam1 port on treatbot4 Pi 5 is suspect** — camera is wired to **cam0**. Earlier session troubleshooting strongly suggested cam1 port damage. Do not move ribbon to cam1.
+- **Service must be restarted to test:** spreadcycle dispenser fix, latest camera profile values, battery factor (already restarted once during session — verified working). User had not done the spreadcycle test by end of session.
+
+### Commit
+`5f0dacc — feat: night mode controller + treatbot4 camera/battery/dispenser tuning` (pushed to origin/main)
+
+### Next Session
+1. **Verify spreadcycle dispenser** — restart service, listen for motor whine on dispense, confirm `chopper=spreadcycle` in TMC2209 init log
+2. **Real-world night mode bench test** — dark room, watch system auto-switch to night, confirm IR illuminator doesn't oscillate the mode
+3. **Decide on IR-cut filter** — physical fix for daytime color if dog-training footage quality matters
+4. **Pi onboard LED dim** — sudoers entry + writes to `/sys/class/leds/{ACT,PWR}/brightness` if user wants this minor enhancement
+
+---
+
 ## Session: 2026-05-21/22 — treatbot2 hardware bring-up + relay mood_led
 
 **Duration:** ~2 hours
