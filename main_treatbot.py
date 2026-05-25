@@ -525,6 +525,13 @@ class TreatBotMain:
                                 self.led.set_pattern('off')
                             except Exception as e:
                                 self.logger.warning(f"Night LED callback error: {e}")
+                            # Also extinguish the blue tube (separate hardware path)
+                            try:
+                                ctrl = getattr(self.led, 'led', None)
+                                if ctrl and getattr(ctrl, 'blue_chip', None):
+                                    ctrl.blue_off()
+                            except Exception as e:
+                                self.logger.warning(f"Night blue-tube off error: {e}")
                     self.night_mode.add_callback(_night_led_callback)
                     self.night_mode.start()
 

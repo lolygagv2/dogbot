@@ -1,5 +1,45 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-25 (part 2) — UART diagnosis, blue-tube night-off, dispenser reality check
+
+**Duration:** ~2 hours
+**Robot:** treatbot4 (with implications for whole fleet)
+**Status:** ✅ Diagnostic + small fix complete. UART hardware fix is the user's next physical step.
+
+### Major finding
+**TMC2209 UART has been silent on treatbot4 (and likely several others) since fleet bring-up — root cause is the VIO logic supply line being disconnected.** STEP/DIR still work via the chip's internal regulator, so motors turn fine; UART transmit needs VIO to drive the line back to the Pi, so the chip echoes nothing. Empirically proven by:
+- Direct UART probe across all 4 possible chip addresses → 0/12 reads succeeded (Pi sees own TX loopback, chip silent)
+- Side-by-side comparison vs working treatbot2 → OS / cmdline / cmd group / pins.py / dispenser.py all identical, treatbot2 returns chip version 0x21, treatbot4 silent
+- Reported by user: "same issue on other treatbots" + "i have the logic wire disconnected, i believed we didn't need it"
+
+### What this means for the yaml
+On treatbot4 (and any other unit with VIO disconnected), all of `irun`, `microstepping`, `chopper_mode`, `shaft_invert`, `sgthrs` are **inert** — they describe an intent the chip never receives. The chip runs on hardware defaults (Vref pot + MS1/MS2 pin strapping). The dispenser has been working all along on these defaults; "light torque" is the user's actual mechanical concern.
+
+### Time bomb to be aware of
+treatbot4.yaml currently has `microstepping: 4` + `steps_per_slot: 137`. As long as UART stays silent, this is fine (chip ignores microstepping and uses MS1/MS2 default of 8). But the moment the user fixes VIO and UART starts working, `microstepping: 4` will take effect and 137 steps × (1.8°/4) = 61.6° per slot — **2× over-rotation per dispense**. Either revert microstepping to 8 in yaml BEFORE wiring VIO, or update both together.
+
+### Other work this session
+1. **Night mode also kills the blue LED tube** (`main_treatbot.py`). Previous callback only stopped the NeoPixel strip; the separate blue tube stayed on. Now calls both `set_pattern('off')` and `ctrl.blue_off()` on day→night.
+2. **Confirmed Flutter app's "night mode" toggle is UI-only** — not wired to our `set_night_mode_override` command. Self-contained brief written for whoever updates the Flutter app to send the relay command + listen for `night_mode_state` events.
+3. **User reverted treatbot4.yaml `steps_per_slot` 69→137** and bumped `reverse_steps` 50→70. The 69 value was incorrect for the actual (UART-silent) microstepping the chip uses.
+
+### Practical fix for "light torque" (no UART required)
+The Vref pot on each TMC2209 module sets the hard current ceiling regardless of UART. Turning it CW raises current. Target ~2.0–2.2V on the Vref pad (multimeter to GND). User has this on their TODO.
+
+### Documented in this session
+- `.claude/TMC2209_UART_SETUP.md` (user added) — full per-Pi UART setup guide; treatbot4 already passes 100% of its checks at the OS layer. Only the hardware VIO wire is missing.
+
+### Next session
+1. **Wire VIO to Pi 3.3V on each affected robot** — Pi pin 1 (3V3) → TMC2209 VIO pin. Verify after reboot: `TMC2209 detected: version=0x21` in dispenser init log.
+2. **Before doing that, fix the yaml time bomb** — change `microstepping: 4 → 8` in treatbot4.yaml to match working treatbot2 geometry, OR plan to update both fields atomically.
+3. **Crank Vref pot on treatbot4** — give the carousel more current to handle load.
+4. **Wire Flutter app's night-mode toggle to backend** — the relay-command brief from this session.
+
+### Commits this session
+- (pending) blue-tube night-off + yaml steps_per_slot/reverse_steps revert
+
+---
+
 ## Session: 2026-05-24/25 — treatbot4 night-vision + camera/battery/dispenser tuning
 
 **Duration:** ~6+ hours (long session across the date boundary)

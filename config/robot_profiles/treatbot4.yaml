@@ -39,10 +39,10 @@ camera:
 # Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py)
 # 2026-05-24: bumped torque (slower step + half microstepping) — treatbot4 carousel needed more headroom.
 dispenser:
-  steps_per_slot: 69        # Used to be 137....Halved when microstepping went 8→4 (preserves slot geometry)
+  steps_per_slot: 137       # Used to be 137....Halved when microstepping went 8→4 (preserves slot geometry)
   step_delay: 0.010         # Half-period per step (slower = more torque on torque-speed curve)
   max_retries: 3            # Anti-jam retry attempts per dispense
-  reverse_steps: 50         # Steps to reverse during anti-jam
+  reverse_steps: 70         # Steps to reverse during anti-jam
   irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A) — already maxed
   ihold: 5                  # TMC2209 hold current (low to save battery)
   microstepping: 4          # Was 8 — halved for more torque-per-step
