@@ -35,6 +35,32 @@
 ### Notes
 - `.claude/TMC2209_UART_SETUP.md` remains untracked by design (its own header says "Per-Unit, Not in Git"). Treatbot5 passes 100% of its OS-side checks; only the hardware VIO wire is missing — same story as treatbot4.
 - Old controller MAC `AC:8E:BD:4A:0F:97` is gone from bluez. If that controller comes back later, it'll need to re-pair from scratch.
+## Session: 2026-05-25 (part 4) — treatbot4 VIO fix attempt, UART STILL silent
+
+**Duration:** ~30 min, no code changes
+**Robot:** treatbot4
+**Status:** ⚠️ Diagnostic still open — VIO alone did not solve UART silence
+**Important update for treatbot5 session above:** part-3 (treatbot5) attributed UART silence to the VIO disconnect from part-2's diagnosis. THIS session proves that diagnosis was **incomplete** — wiring VIO on treatbot4 didn't fix it. The actual root cause is still unknown. Don't wire VIO on treatbot5 expecting it to fix UART; do the multimeter test below first.
+
+### What happened
+- User wired 3.3V to TMC2209 VIO pin per last session's recommendation
+- Re-probed UART after reboot: still silent. Boot log still says `TMC2209 not responding`. Live probe still only sees Pi's own TX loopback.
+- User pointed out 2+ other robots have the same silent symptom, ruling out random chip damage / loose solder. This is systematic to their build pattern, not coincidence.
+
+### Where we landed
+- Confirmed topology is correct: split is at PDN_UART (labeled at "pin 5" on user's TMC2209 modules — module pinout differs from textbook StepStick), joining Pi pins 8 (TX, through 1K) and 10 (RX, direct)
+- Ruled out: OS config, Pi-side wiring, wrong chip pin, VIO disconnect, single damaged chip
+- Leading remaining hypothesis: PDN_UART pin sits HIGH at idle on these modules, putting the chip into power-down mode (`pdn_disable=0` is the chip default → PDN_UART idle HIGH = chip off). Adding VIO may have actually activated a module pull-up that holds the line HIGH. treatbot2 working might mean its module lacks that pull-up.
+
+### Open diagnostic (user's next step)
+Multimeter from TMC2209 PDN_UART pin to GND with treatbot.service stopped.
+- ~3.3V → external pull-up issue; fix by removing module's pull-up jumper or adding stronger external pull-down (~4.7K to GND)
+- ~0V → pull-up not the issue; investigate GND reference or chip variant differences
+
+### Memory updated
+`project_tmc2209_vio.md` rewritten to reflect that VIO alone wasn't the answer. Leading hypothesis and remaining diagnostic captured.
+
+### No code changes this session — nothing to commit.
 
 ---
 
