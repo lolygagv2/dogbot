@@ -25,14 +25,15 @@ camera:
 
 # Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py) — unchanged from treatbot1
 dispenser:
-  steps_per_slot: 137       # Microsteps to advance one treat slot — re-tune per unit
-  step_delay: 0.006         # Half-period per step in seconds (12ms/step = MEDIUM speed)
+  steps_per_slot: 144       # Microsteps to advance one treat slot — re-tune per unit
+  step_delay: 0.010         # Half-period per step in seconds (20ms/step = SLOW, more torque)
   max_retries: 3            # Anti-jam retry attempts per dispense
-  reverse_steps: 100         # Steps to reverse during anti-jam
+  reverse_steps: 70         # Steps to reverse during anti-jam
   irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
   ihold: 5                  # TMC2209 hold current (low to save battery)
   microstepping: 8          # Microstepping multiplier (MRES=5)
   sgthrs: 0                 # StallGuard disabled — known issue at low speed
+  chopper_mode: "spreadcycle"  # spreadcycle = full rated torque (audible whine); stealthchop = quiet, ~50-70% torque
 
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:

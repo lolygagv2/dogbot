@@ -103,7 +103,8 @@ class BatteryMonitorService:
         self.charging_announce_cooldown = 300.0  # 5 minutes cooldown
         # Motor-idle gate: voltage bouncing back after motor unload faked "charging".
         # Skip trend evaluation while motors have been active recently.
-        self.motor_idle_required_s = 30.0
+        # 4S LiPo recovery curve takes 1-2 min to flatten after sustained load.
+        self.motor_idle_required_s = 120.0
 
     def initialize(self) -> bool:
         """Initialize ADS1115 ADC for battery monitoring"""
@@ -265,11 +266,12 @@ class BatteryMonitorService:
         )
         voltage_trend = self.voltage_history[-1] - self.voltage_history[0]
 
-        # Trend threshold raised 0.15 -> 0.20V. Smoothed signal tracks real
-        # charging cleanly so the larger gate doesn't delay legitimate
-        # detection but makes accidental tripping from residual noise
-        # effectively impossible.
-        if voltage_trend >= 0.20 and max_drop <= 0.01:
+        # Trend threshold 0.20 -> 0.35V. The 0.20V gate still false-triggered
+        # on natural LiPo rebound after motor load (~0.2-0.3V recovery is
+        # routine on a 4S after sustained current draw). Real charging delivers
+        # ~1V/min on a 4S, so 0.35V over 25s is still well within legitimate
+        # detection range while staying above passive rebound plateau.
+        if voltage_trend >= 0.35 and max_drop <= 0.01:
             self.charging_detected = True
         elif voltage_trend < -0.05:
             self.charging_detected = False
