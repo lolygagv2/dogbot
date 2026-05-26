@@ -20,7 +20,7 @@ camera:
   # in the comfortable middle, avoid ceiling/floor stares
   coach_pan_min: 18
   coach_pan_max: 162
-  coach_tilt_min: 29
+  coach_tilt_min: 35
   coach_tilt_max: 149
 
 # Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py) — unchanged from treatbot1
@@ -28,7 +28,7 @@ dispenser:
   steps_per_slot: 137       # Microsteps to advance one treat slot — re-tune per unit
   step_delay: 0.006         # Half-period per step in seconds (12ms/step = MEDIUM speed)
   max_retries: 3            # Anti-jam retry attempts per dispense
-  reverse_steps: 40         # Steps to reverse during anti-jam
+  reverse_steps: 100         # Steps to reverse during anti-jam
   irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
   ihold: 5                  # TMC2209 hold current (low to save battery)
   microstepping: 8          # Microstepping multiplier (MRES=5)
@@ -57,7 +57,7 @@ controller:
   # Per-motor calibration for hardware imbalance — re-tune per unit during bring-up
   motor_calibration:
     left_multiplier: 1.0
-    right_multiplier: 1.0
+    right_multiplier: 1.06
 
   # Cytron MDD10A wiring + per-motor inversion (BCM pin numbers)
   cytron:

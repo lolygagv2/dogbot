@@ -36,6 +36,42 @@ treatbot4.yaml had `microstepping: 4` set during the months UART was broken (had
 
 ---
 
+## Session: 2026-05-25 (part 4) — treatbot3 TMC2209 UART fixed (wiring corrected)
+
+**Duration:** ~30 min
+**Robot:** treatbot3
+**Status:** ✅ Complete — UART live, chip detected, yaml config now actually applies.
+
+### Work completed
+1. **Pulled origin/main with conflict** in `.claude/resume_chat.md` — stash/pop, resolved by merging the local 2026-05-23/24 treatbot3 LED-MOSFET session into the newest-first order (between 2026-05-24/25 and 2026-05-22). Working tree now has only the local treatbot3.yaml tuning bumps from prior sessions (`coach_tilt_min 29→35`, `dispenser.reverse_steps 40→100`, `right_multiplier 1.0→1.06`).
+2. **TMC2209 UART diagnosis on treatbot3** — same boot-time symptom as treatbot4/5 (`TMC2209 not responding on UART — using hardware defaults`). OS-side checks all pass (uart0=on, enable_uart=1, no serial console in cmdline, /dev/ttyAMA0 perms ok, morgan in dialout, treatbot.service SupplementaryGroups includes dialout). yaml time-bomb confirmed *absent* on treatbot3 (already `microstepping: 8`, matches MS1/MS2 hardware strap default — no over-rotation surprise when UART comes alive).
+3. **User wired the UART data line correctly** — see notes below. After power cycle: `TMC2209 detected: version=0x21` ✓ + `TMC2209 configured: IRUN=31, IHOLD=5, 8x microstep, vsense=0, SGTHRS=0, chopper=stealthchop`.
+
+### TMC2209 UART wiring — the fleet-wide gotcha
+**The systemic mis-wiring across treatbot3/4/5 was the single-wire UART data line, not VIO.** The classic single-wire half-duplex UART hookup is:
+- **TMC2209 Pin 4 (PDN_UART)** ← junction of two Pi pins:
+  - **Pi Pin 8 (GPIO 14, TXD)** via a **~1kΩ series resistor** (measure end-to-end resistance to confirm ≤1kΩ — this is the "send" leg; the resistor prevents Pi's push-pull TX from clobbering the chip's reply during half-duplex turnaround)
+  - **Pi Pin 10 (GPIO 15, RXD)** **direct wire, no resistor** (this is the "listen" leg)
+- The wire colors on the harness Morgan was using were ambiguous, which is how all 3 robots got wired the same wrong way. Now corrected on treatbot3.
+
+**Diagnostic signature** of this fault: probing all 4 slave addresses returns clean 4-byte echo (Pi's TX loopback through the shared joined node) with no chip reply (because the joined node never actually reaches PDN_UART on the chip). Looks identical at the bus level to a missing-VIO fault — both produce echo-only — so don't assume which one is wrong just from the symptom. **Check the wire colors and the resistor first** before chasing VIO.
+
+### Outstanding for next session
+1. **Apply the same wiring fix to treatbot4 and treatbot5** — Pin 4 of TMC2209 ← Pi Pin 8 (via 1kΩ) + Pi Pin 10 (direct).
+   - Before powering on: **check treatbot4's yaml time-bomb** — when last logged it had `microstepping: 4` while the hardware strap default is 8; fixing UART will activate microstepping=4 and cause 2× over-rotation per dispense. Revert to `microstepping: 8` in treatbot4.yaml **before** the wiring fix, or change both atomically.
+   - treatbot5.yaml had no `microstepping` field last session — fill it in to match what you want.
+2. **Crank Vref pot on each unit if torque feels light** — independent of UART, the Vref pot sets hard current ceiling.
+3. **treatbot3 blue LED MOSFET swap** — hardware action still pending (logic-level FET — IRLZ44N / AO3400 / FQP30N06L). Software (commit `e1f3de8`) already drives the path correctly.
+4. **(Optional cosmetic)** Add `session_ended` handler to relay_client to silence "Unknown message type" log warnings.
+
+### Commits this session
+- `490c980` docs: Update resume_chat (session 2026-05-25 part 4 + 23/24 merge) + treatbot3 tuning
+
+### Correction (per part 5 — written concurrently on treatbot4)
+The "data line was the only fault" framing in this part-4 entry is incomplete. The treatbot4 session running in parallel found the actual fleet-wide pattern needs **four** items, all at once: (1) VIO wire, (2) logic-side GND wire, (3) 1kΩ resistor moved to the **TX leg** (Pi Pin 8), not RX, (4) PDN_UART = TMC2209 chip pin 4 (textbook StepStick). Plus a real code bug in `config/config_loader.py::DispenserConfig` — missing `chopper_mode` @property silently dropped yaml's `chopper_mode: "spreadcycle"`. On treatbot3 the user likely fixed several of these at once but only the resistor-leg correction was explicitly called out here. The accurate fleet-wide story is in part 5 above.
+
+---
+
 ## Session: 2026-05-25 (part 3) — treatbot5 pull/conflict, Xbox controller swap, gimbal re-center
 
 **Duration:** ~1.5 hours
@@ -187,6 +223,45 @@ The Vref pot on each TMC2209 module sets the hard current ceiling regardless of 
 2. **Real-world night mode bench test** — dark room, watch system auto-switch to night, confirm IR illuminator doesn't oscillate the mode
 3. **Decide on IR-cut filter** — physical fix for daytime color if dog-training footage quality matters
 4. **Pi onboard LED dim** — sudoers entry + writes to `/sys/class/leds/{ACT,PWR}/brightness` if user wants this minor enhancement
+---
+
+## Session: 2026-05-23/24 — treatbot3 video diagnosis + blue LED MOSFET hunt
+
+**Duration:** Multi-resume span
+**Robot:** treatbot3
+**Status:** ✅ Software fix committed; LED is hardware-fault pending physical repair
+
+### Key findings
+- **Video "slow"** is app-side, not robot. Robot session setup = sub-second (572ms request→first frame); direct LAN ICE pair sustains 14+fps. The "slow" comes from the app's relay WebSocket flapping at reconnect (5× User connected events in 4s observed) + the app retrying stale session IDs that the robot doesn't recognize. Re-login is the workaround; real fix is Flutter side.
+- **UX bug**: app's "unauthorized mode" silently swallows every command with no banner/indicator — wasted ~20min debugging "nothing works" before realizing.
+- **`Unknown message type: session_ended`** — cosmetic gap: Lightsail relay sends a session_ended notification the robot has no handler for. Doesn't break anything; could add handler to quiet logs.
+
+### Blue LED diagnostic arc (treatbot3)
+**Software issue found and fixed** (commit `e1f3de8`): `mood_led` relay handler called `api.server.blue_led_direct_control()` which made an independent `lgpio.gpio_claim_output(25)` — a SECOND claim on the same pin already owned by `LedController`. Whoever lost the startup race got `'GPIO busy'` silently for the process lifetime, returning False with no logged error. Rerouted through `get_led_service().led.blue_on()/blue_off()` so there's one owner. Cleanly fits `feedback_no_duplicate_handlers`.
+
+**But the LED still doesn't light on treatbot3.** Hardware diagnosis (user opened module up):
+- Pin 22 (BCM GPIO 25): clean 3.3V HIGH / 0V LOW ✓
+- Vgs at MOSFET silicon pins: clean 3.3V when commanded ON ✓
+- Source pin → main GND: continuity ✓
+- Drain → LED black wire: continuity ✓
+- LED tube itself: passes resistance test ✓
+- 12V+ → LED red lead: reaches ✓
+- Manually shorting D↔S with probe: LED lights ✓
+- **MOSFET channel itself won't conduct despite valid Vgs.** Either dead silicon (failed open) or non-logic-level part (e.g., IRF540/IRF520/IRFZ44N — note the missing "L" — needs 10V Vgs, not 3.3V).
+
+**User action:** swap in a logic-level N-channel MOSFET — IRLZ44N / AO3400 / FQP30N06L are good drop-ins for the modest current the 12V LED tube draws. Once swapped, the existing software (post-`e1f3de8`) should drive it correctly.
+
+### Pulled this session
+- `b4e74db → 652a06f` (audio_volume, mood_led handler, treatbot2 gimbal cal, IMX500 LSTM sequences). Ran `scripts/setup_device.sh` (wimz-audio.service, rtw88 conf, WiFi powersave on 4 saved connections).
+
+### Commit pushed
+- `e1f3de8` fix: route mood_led relay command through LedService
+
+### Outstanding for next session
+1. Swap treatbot3's blue LED MOSFET for logic-level part — then verify mood_led path works end-to-end.
+2. (Optional cosmetic) Add `session_ended` handler to relay_client to silence "Unknown message type" warning.
+3. (Flutter app, out of scope here) App should: (a) drop stale session IDs after N failed offer/answer rounds instead of hammering for ~2min, (b) surface "unauthorized mode" visibly so users know why commands aren't working.
+
 ---
 
 ## Session: 2026-05-22 — treatbot5 device setup + power-button diagnosis
