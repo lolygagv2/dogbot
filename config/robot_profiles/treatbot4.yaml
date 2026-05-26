@@ -37,17 +37,18 @@ camera:
   brightness: 0.0
 
 # Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py)
-# 2026-05-24: bumped torque (slower step + half microstepping) — treatbot4 carousel needed more headroom.
+# 2026-05-25: UART finally working after fixing PDN_UART wire to pin 4, VIO to 3V3, GND shared,
+# and 1K resistor on Pi TX leg only (pin 8). Settings below now actually take effect.
 dispenser:
-  steps_per_slot: 137       # Used to be 137....Halved when microstepping went 8→4 (preserves slot geometry)
+  steps_per_slot: 137       # 137 microsteps per slot at microstepping=8 → 30.8° rotation per dispense
   step_delay: 0.010         # Half-period per step (slower = more torque on torque-speed curve)
   max_retries: 3            # Anti-jam retry attempts per dispense
   reverse_steps: 70         # Steps to reverse during anti-jam
-  irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A) — already maxed
+  irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
   ihold: 5                  # TMC2209 hold current (low to save battery)
-  microstepping: 4          # Was 8 — halved for more torque-per-step
-  sgthrs: 0                 # StallGuard disabled — known issue at low speed
-  chopper_mode: "spreadcycle"  # Full rated torque (audible whine). use var: "stealthchop" --default leaves ~30-50% torque on table.
+  microstepping: 8          # Reverted from 4 (which paired with steps_per_slot=137 would 2x-rotate)
+  sgthrs: 0                 # StallGuard disabled — broken at low RPM regardless
+  chopper_mode: "spreadcycle"  # Full rated torque (audible whine); now actually applied via UART
 
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:

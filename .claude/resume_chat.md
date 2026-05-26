@@ -1,5 +1,41 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-25 (part 5) — TMC2209 UART FIXED on treatbot4
+
+**Duration:** ~1.5 hours
+**Robot:** treatbot4
+**Status:** ✅ UART working — `TMC2209 detected: version=0x21` after 5+ wire iterations
+
+### What was actually wrong
+Four separate physical wiring issues, all needed at once:
+1. **VIO** wire missing — added 3.3V from Pi pin 1
+2. **GND** wire missing — added Pi pin 6 → TMC2209 logic-side GND (not motor GND)
+3. **1K resistor on wrong leg** — was on RX (pin 10), moved to TX (pin 8). User's resistor is ~700Ω, close enough.
+4. **PDN_UART is at chip pin 4** (textbook StepStick) — earlier in the session I incorrectly inferred pin 5 from a 0V-idle voltage reading and sent user on a wild goose chase. Pin 4 was right all along.
+
+### Verification after fix
+`TMC2209 configured: IRUN=31, IHOLD=5, 8x microstep, vsense=0, SGTHRS=0, chopper=spreadcycle` — all yaml settings actually taking effect now.
+
+### Code bug found and fixed
+`config/config_loader.py::DispenserConfig` lacked a `chopper_mode` @property and had no `__getattr__` fallback. So `getattr(dispenser, 'chopper_mode', None)` always returned None, and yaml's `chopper_mode: "spreadcycle"` silently fell through to "stealthchop". Added explicit @property. Without this fix the spreadcycle setting would have been silently ignored even after UART came up.
+
+### Yaml time bomb defused
+treatbot4.yaml had `microstepping: 4` set during the months UART was broken (had no effect — chip was on hardware default 8x). With UART now working, that setting would have caused 2× over-rotation per dispense. Reverted to `microstepping: 8` in same commit as the UART fix.
+
+### Diagnostic mistakes I made this session — for next session's reference
+- Multiple incorrect theories proposed: "PDN HIGH = power-down" (datasheet says UART works regardless), "pin 5 = PDN_UART" (was pin 4), "VIO alone fixes it" (needed 3 more changes too). User correctly called out my batting average. Real fixes were the four wiring items; I should have walked through the full list earlier rather than offering them one-at-a-time as new theories.
+
+### For the user's next moves
+1. **Apply same 4-item check to treatbot3 and treatbot5** — likely same wiring pattern, same fix
+2. **Before bringing UART up on each:** check yaml `microstepping × steps_per_slot` is consistent (treatbot2 baseline = 8 × 137 = 30.8°/slot)
+3. **Test the dispenser** — spreadcycle is now on; expect motor whine + significantly more torque (irun=31 vs the ~16 default that was running before)
+4. Vref pot tuning is now optional (only needed if irun=31 + spreadcycle still isn't enough — unlikely)
+
+### Commits this session
+(pending) yaml time-bomb fix + chopper_mode config_loader property + this session log
+
+---
+
 ## Session: 2026-05-25 (part 3) — treatbot5 pull/conflict, Xbox controller swap, gimbal re-center
 
 **Duration:** ~1.5 hours

@@ -202,6 +202,11 @@ class DispenserConfig:
     def shaft_invert(self) -> bool:
         return self._config.get('shaft_invert', False)
 
+    @property
+    def chopper_mode(self) -> str:
+        """TMC2209 chopper mode: 'stealthchop' (default, quiet) or 'spreadcycle' (full torque, audible)."""
+        return self._config.get('chopper_mode', 'stealthchop')
+
     # Legacy properties for backward compat during transition
     @property
     def dispense_duration(self) -> float:
