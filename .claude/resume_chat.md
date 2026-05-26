@@ -1,5 +1,110 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-26 — treatbot5 UART deep-dive (unresolved), full Pi health audit
+
+**Duration:** ~6+ hours (very long session)
+**Robot:** treatbot5
+**Status:** ⚠️ Unresolved on the UART question, BUT: comprehensive Pi health audit confirms unit is otherwise healthy and mission-ready. Several memories saved to capture learnings.
+
+### TL;DR — what future-you needs to know up front
+- **treatbot5's TMC2209 UART does not work** despite exhaustive diagnostic effort. **Pi UART is provably healthy** (proven via direct GPIO14↔GPIO15 jumper loopback — wrote bytes including null/binary at 4 different baud rates, all came back perfect). The fault is **between the Pi pin header and the TMC2209 chip's UART pin** — specifically the wire→breakout-pad→chip-internal path on treatbot5's specific module(s).
+- **It does not matter.** Dispenser runs on hardware defaults (Vref pot + MS1/MS2 strapping); UART has been a nice-to-have, not a must-have, across the entire fleet.
+- **Stop chasing UART on treatbot5.** Real next step: physical visual comparison of where treatbot1's UART wire physically lands on its breakout vs where treatbot5's does, with attention to solder bridges near PDN on the module back.
+- **treatbot5 yaml is correct as-is.** `microstepping: 8` matches hardware default, no time-bomb.
+- **Service restart this session** picked up new gimbal centers from the prior session (`pan_center: 46, tilt_center: 97`) — that carry-over item is done ✓.
+
+### Theories tested and ruled out (in chronological order)
+| Theory | Verdict | How disproven |
+|---|---|---|
+| VIO disconnect (carry-over from part-2 session) | **WRONG** | Multimeter: VIO=3.3V at chip pad |
+| TX/RX wires swapped at TMC end | **WRONG** | User re-wired correctly; same result |
+| TMC2209 module damaged (chip ESD) | **WRONG** | Swap-test with module pulled from working treatbot1/2 — still silent |
+| Factory pin-5 vs pin-4 PDN routing | **RE-OPENED — leading theory** | User said boards "look identical" to treatbot1's, but never verified the wire lands on the same *physical pin position* AND that pin actually routes to the chip's PDN internally. After loopback proved Pi UART is fine, this is the most likely remaining cause. |
+| TX series resistor too low (was ~400Ω vs spec 1K) | **PLAUSIBLE BUT WRONG** | Sound physics argument from another LLM; user swapped to 1K — still silent |
+| Pyserial/Python software issue | **WRONG** | Shell-only `stty + dd + printf` path returns identical bytes |
+| My probe was lying (internal Pi loopback) | **WRONG** | Definitive RX-disconnect test: 0 bytes when wire physically unplugged → probe is honest |
+| Bluetooth grabbing ttyAMA0 | **WRONG** | Stopped BT + rmmod hci_uart → no change. (The `hci_uart_bcm serial0-0` line in dmesg refers to a different internal serial node, not ttyAMA0) |
+| Comms subsystems (BT/WiFi/etc.) interference | **WRONG** | Strip-down test: NetworkManager off, wpa_supplicant off, audio off, treatbot off, bluetooth off → still `echo_only` |
+| Wrong UART device | **WRONG** | Verified `/dev/ttyAMA0` is the GPIO14/15 PL011 (uevent confirms `OF_FULLNAME=/axi/pcie@1000120000/rp1/serial@30000`) |
+| Pin function mode | **WRONG** | pinctrl shows GPIO14/15 correctly in alt-4 (UART) mode |
+| Process contention | **WRONG** | lsof shows only our probe holding the port |
+
+### Cross-fleet ground truth established
+**treatbot1 confirmed working** via chip-level probe + boot log:
+- IOIN=0x21000241 (chip version 0x21)
+- GCONF=0x00000081
+- CHOPCONF=0x05000053
+- DRV_STATUS=0xC01F0000
+
+This kills the prior session's "fleet may never have had real UART working" hypothesis. UART CAN work; treatbot5 is genuinely the outlier.
+
+### What treatbot5 IS doing that's wrong (one anomaly)
+On every probe, Pi RX reads exactly the bytes Pi TX wrote (4-byte single-wire echo through tied PDN pad) and **nothing else**. Chip never drives the line low to encode a reply. This is anomalous — the same physical chip works on treatbot1.
+
+**THE DECISIVE TEST (added late in session): Direct GPIO14↔GPIO15 jumper loopback.**
+- TMC wires disconnected from Pi end
+- Single Dupont jumper from Pi pin 8 (GPIO14 TX) directly to Pi pin 10 (GPIO15 RX)
+- Wrote `b'HELLO'`, `b'\x55\xAA\x01\x02\x03\xFF\x00LOOPBACK'`, and `b'PI-OK\n'` at 9600/57600/115200/230400 baud
+- **Every byte came back perfectly, every baud, every test**
+- Pi UART is 100% healthy end-to-end (both TX and RX directions work for arbitrary byte values)
+
+**This kills the earlier hypothesis that GPIO15 was damaged.** It also eliminates Pi-driver/config issues entirely. The fault is genuinely between the Pi pin header and the TMC2209 chip's UART pin — somewhere in the wire→breakout-pad→chip-internal path on treatbot5 specifically.
+
+Most likely remaining cause:
+- **The wire on Pi pin 10 (RX) lands on a TMC2209 breakout pad that's labeled "PDN_UART" but isn't actually routed internally to the chip's PDN_UART pin on this specific module.** Multimeter measures pin-to-pad continuity, NOT pad-to-chip-die continuity. The factory text the user found mentions a pin-4/pin-5 jumper-selectable routing on some clone boards.
+- treatbot1 likely has the wire on a different physical pin position (or has a solder bridge mod) that treatbot5 lacks — but user said "looks identical," which is a visual claim, not a verified pin-position match.
+
+### Comprehensive Pi health audit (this session) — RESULTS
+| System | State |
+|---|---|
+| Throttling/undervoltage | clean (`throttled=0x0`, no events 7d) |
+| Thermal | 49°C (excellent) |
+| Power rails | 3V3 at 3.30V, EXT5V at 4.92V — healthy |
+| EEPROM firmware | up-to-date (Aug 2025 release) |
+| PCIe / Hailo-8 | enumerated, driver loaded, `/dev/hailo0` present |
+| I2C bus | PCA9685 (0x40) + ADS1115 (0x48) responsive |
+| Camera | DetectorService runs at 14.9 FPS, 0 pipeline errors |
+| Storage | 10% used, no FS errors |
+| Memory | 5.4G available, no OOM |
+| USB | clean |
+| Network | connected (WiFi: 524Pomeranian) |
+| treatbot.service | clean, no crashes/exceptions in last 24h |
+| GPIO function map | all pins in correct alt-modes |
+
+### Cosmetic anomalies worth flagging (NOT faults)
+1. **Bluetooth using default MAC** (`BCM: Using default device address (43:45:c0:00:1f:ac)`). BCM firmware didn't load the chip's unique MAC. Side effect of `dtoverlay=disable-wifi` partially disturbing the combo chip's firmware load. Xbox controller pairing still works — not blocking.
+2. **wifi_manager log spam every 30s** — `Command failed: pgrep -f hostapd`. The wifi monitor is polling for AP-mode hostapd that isn't running (because robot is in client mode). Code-side fix opportunity, not a failure.
+3. **OF overlay memory-leak warnings** for i2c and spi at boot. Cosmetic Pi 5 firmware quirk. Ignore.
+
+### Memories saved this session
+- `feedback_tmc2209_uart.md` — canonical wiring spec (1K resistor on TX leg only, PDN pin 4, VIO 3V3, common GND). **Corrects** the earlier "VIO disconnect" theory. Also documents the `echo_only` diagnostic pattern and the RX-disconnect sanity test.
+- `project_treatbot1_uart_reference.md` — known-good register reference values for cross-fleet comparison.
+
+### Files created (uncommitted, kept for future use)
+- `tests/hardware/test_tmc2209_echo_split.py` — the probe script used throughout. Reusable.
+- `tests/hardware/test_tmc2209_dump_regs.py` — created on treatbot1's side for register dump.
+
+### Pending / next session
+1. **(Highest-value if pursued) Compare treatbot5's vs treatbot1's UART wire physical landing position.** Now that Pi UART is provably healthy, the only remaining cause of treatbot5 silence is the wire→pad→chip path on the breakout. Have treatbot1's Claude (or yourself) physically inspect: (a) which numbered pin position on the breakout header treatbot1's UART wire lands on, counting from a fixed reference; (b) any solder bridges visible near PDN on the back of treatbot1's module. Then visually compare treatbot5's setup. If different position OR different bridge state → root cause found.
+2. **USB-to-serial adapter test** is NO LONGER a useful diagnostic — Pi UART is already proven healthy via loopback. Adapter would now only confirm what loopback already showed.
+3. **(Optional) Fix wifi_manager pgrep spam** — code-side: don't poll for hostapd unless in AP mode. `services/network/wifi_manager.py`.
+4. **(Optional) Restore BT MAC** — if/when stable Bluetooth identity becomes needed. Unlikely to matter for current usage.
+5. **Battery false-charging on treatbot5** still unresolved from prior session. Not touched tonight.
+6. **Vref pot crank on treatbot5** — was carry-over item, user mentioned mid-session "I did the trimpot backward (shut off all voltage/max position)". This needs to be re-done in the correct direction to bump dispenser torque. Target Vref ~2.0-2.2V (multimeter to GND).
+
+### Commits this session
+- (pending) Update to resume_chat.md (this entry)
+- Untracked: `tests/hardware/test_tmc2209_echo_split.py` (kept for future debugging)
+- Untracked: `.claude/TMC2209_UART_SETUP.md` (per-unit, not in git by design)
+
+### Critical lessons (saved to memory)
+- **Don't trust "UART working" claims in resume_chat without chip-level probe verification.** Most fleet-wide claims through 2026-05-25 were aspirational, scheduled-but-not-executed, or based on the warning being benign. Only `chip_replied` + `version=0x21` from `tests/hardware/test_tmc2209_echo_split.py` counts as proof.
+- **The VIO-disconnect theory from part-2 was wrong.** Real canonical wiring is documented in `feedback_tmc2209_uart.md` — 1K resistor on TX leg only, PDN pin 4, VIO=3V3, common GND. Treatbot4's fix yesterday used this canonical wiring.
+- **Always do the GPIO14↔GPIO15 jumper loopback test BEFORE concluding "Pi UART is broken".** It's a 30-second physical test that definitively separates "Pi UART hardware issue" from "downstream wire/breakout/chip issue." I spent hours late-session leaning toward "GPIO15 input damaged" — the loopback proved that completely wrong in 5 seconds. The 4-byte single-wire echo through the chip's PDN pad is NOT proof that Pi RX can clock real bytes from a driver — only loopback proves end-to-end UART.
+- **Multimeter continuity from Pi pin to a labeled breakout pad ≠ continuity to the chip's silicon pin.** TMC2209 clone breakouts can have selectable internal routing (e.g., the factory text mentioning pin-4 vs pin-5 PDN selection via solder bridge). The pad with the label may not be electrically connected to the chip pin it claims to expose.
+
+---
+
 ## Session: 2026-05-25 (part 5) — TMC2209 UART FIXED on treatbot4
 
 **Duration:** ~1.5 hours
