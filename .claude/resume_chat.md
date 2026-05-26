@@ -1,5 +1,65 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-26 (evening) — treatbot3 dispenser tuning, treatbot5 motor failure, battery false-charging fix
+
+**Duration:** ~2 hours
+**Robot:** treatbot3 (primary) + treatbot5 (via SSH)
+**Status:** ✅ treatbot3 tuned and pushed. ⚠️ treatbot5 has a new hardware issue: motor coils appear dead (independent of UART).
+
+### Work completed
+1. **TMC2209 UART verified working on treatbot3** — `version=0x21`, IRUN=31, microstep=8, all yaml config now actually applies to the chip.
+2. **Spreadcycle enabled on treatbot3** — added `chopper_mode: "spreadcycle"` to `treatbot3.yaml`. Full rated torque vs ~50–70% on stealthchop default. Confirmed live (`chopper=spreadcycle` in init log).
+3. **Treatbot3 dispenser tuning, per user**:
+   - `steps_per_slot: 137 → 144`
+   - `step_delay: 0.006 → 0.010` (slower, more torque per step)
+   - `reverse_steps: 100 → 70` (gentler anti-jam)
+   - `chopper_mode: "spreadcycle"` (new)
+4. **Battery false-charging fix** (fleet-wide code change in `services/power/battery_monitor.py`):
+   - `motor_idle_required_s: 30 → 120s` (4S LiPo rebound takes 1–2 min to settle)
+   - Trend threshold `0.20V → 0.35V` (legit charging is ~1V/min so 0.35V/25s is well within real detection; passive rebound plateau stays under the gate)
+   - Confirmed false charging events on treatbot3 today: 05:26 (trend +0.326V) and 17:37 (trend +0.241V), both with no charger attached.
+5. **Battery voltage calibration verified accurate** on treatbot3 — user's DMM read 15.42V; ADS1115 reported `adc_voltage=0.284 × 54.28 = 15.42V` exactly. **No recalibration needed.**
+
+### treatbot5 — new hardware finding
+User SSH'd in via `treatbot5.local` from treatbot3. After cranking Vref pot to "max voltage" position (matching treatbot3/4 positions), dispenser is:
+- **Silent on every dispense attempt** (no buzz, no whine)
+- **Stepper shaft spins freely** by hand — coils NOT energized
+- treats #6, #7 logged "successful" at 04:44 but software-log success ≠ physical rotation
+- Vref position is correct (matches working units) → pot is not the issue
+
+Most likely now: **dead motor coil(s)**. Independent of the chronic UART silence on treatbot5 — two separate problems.
+
+**User's next step:** spin-test the motor with coil-wire shorting trick:
+1. Disconnect 4 motor wires from TMC2209
+2. Short A1↔A2, try spinning shaft — should be notably stiff if coil A is live
+3. Repeat with B1↔B2
+4. If both pairs spin freely when shorted → motor is dead, needs replacement
+
+**User pushed back correctly** on my earlier "motor dispensed 7 treats today" claim — it's a software lie (`_step()` returns success regardless of physical rotation; no encoder feedback). Don't infer "motor worked recently" from dispense logs.
+
+### Commits this session
+- `be3ac8a` — docs: Update resume_chat (part 4 + 23/24 merge) + treatbot3 tuning (carried)
+- `7e96d99` — **fix: tighten battery false-charging gate + treatbot3 dispenser tuning**
+
+### Pulled this session
+- `a199b27` — treatbot5 UART deep-dive session + reusable echo-split probe (`tests/hardware/test_tmc2209_echo_split.py`)
+- The deep-dive log corrected the earlier "VIO disconnect" framing; canonical wiring documented in `feedback_tmc2209_uart_wiring.md`.
+
+### Outstanding for next session
+1. **Treatbot5 motor diagnosis** — short-coil spin-test to confirm dead motor. If dead, replacement stepper needed. Independent of UART (which is also broken on treatbot5 but is purely a UART-control issue, not dispense-control).
+2. **Treatbot5 Vref pot** — confirmed in correct ("max") position now matching treatbot3/4.
+3. **TMC2209 UART on treatbot5** — leading theory from deep-dive: clone-board internal routing; pad labeled `PDN_UART` may not actually connect to chip's PDN pin. Side-by-side physical comparison with treatbot1 still TBD.
+4. **Treatbot3 spreadcycle test** — user should actually trigger a dispense and confirm the audible whine + improved torque feel.
+5. **Treatbot3 blue LED MOSFET swap** — still pending hardware action (logic-level FET).
+6. **Other fleet `battery_monitor.py` rollout** — on next `git pull` + service restart, false-charging announcements should stop fleet-wide.
+
+### Lessons / memories
+- **Don't infer hardware state from software logs** when there's no closed-loop feedback. Dispenser logs success on STEP-pulse send, not on physical motion. User correctly called this out — should have caught it sooner.
+- **Per-yaml tuning IS per-unit** — pushing `treatbot3.yaml` doesn't change behavior on other robots. Only shared code (`battery_monitor.py`) propagates on pull.
+- **Test-by-shorting trick** for stepper motors: shorting a coil pair adds back-EMF damping → makes shaft notably stiff to turn. Easy field test for dead windings with no instruments.
+
+---
+
 ## Session: 2026-05-26 — treatbot5 UART deep-dive (unresolved), full Pi health audit
 
 **Duration:** ~6+ hours (very long session)
