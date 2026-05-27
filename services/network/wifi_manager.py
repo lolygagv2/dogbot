@@ -671,6 +671,20 @@ address=/#/{self.HOTSPOT_IP}
         status = self.get_connection_status()
         logger.info(f"Connected to {ssid} ({status['ip_address']})")
 
+        # Pin dual-band SSIDs to 5 GHz. The rtw88 dongle silently loses inbound
+        # LAN traffic while it band-flaps between 2.4/5 GHz BSSIDs of the same
+        # SSID — outbound (relay/internet) still works, so the failure is
+        # invisible from the app side. Single-band networks are left alone.
+        if self._ssid_has_5ghz(ssid):
+            ok, out = self._run_nmcli([
+                "connection", "modify", ssid,
+                "802-11-wireless.band", "a"
+            ])
+            if ok:
+                logger.info(f"Pinned '{ssid}' to 5 GHz (dual-band SSID)")
+            else:
+                logger.warning(f"Could not pin '{ssid}' to 5 GHz: {out}")
+
         # Test internet connectivity
         has_internet = self.check_internet()
         result["has_internet"] = has_internet
@@ -683,6 +697,32 @@ address=/#/{self.HOTSPOT_IP}
             result["message"] = f"Connected to {ssid} but no internet detected. Proceeding anyway."
 
         return result
+
+    def _ssid_has_5ghz(self, ssid: str) -> bool:
+        """Return True if any visible BSSID for this SSID is on 5 GHz."""
+        self._run_nmcli(["device", "wifi", "rescan", "ifname", self.interface], timeout=10)
+        time.sleep(3)
+        success, output = self._run_nmcli([
+            "-t", "-f", "SSID,FREQ",
+            "device", "wifi", "list", "ifname", self.interface, "--rescan", "no"
+        ])
+        if not success:
+            return False
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            idx = line.rfind(':')
+            if idx < 0:
+                continue
+            scanned_ssid = line[:idx].replace('\\:', ':')
+            try:
+                freq_mhz = int(line[idx + 1:].strip().split()[0])
+            except (ValueError, IndexError):
+                continue
+            if scanned_ssid == ssid and 4900 <= freq_mhz <= 5900:
+                return True
+        return False
 
     def check_internet(self, timeout: int = 5) -> bool:
         """Check if we have internet connectivity"""
