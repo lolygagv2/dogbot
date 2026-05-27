@@ -1,5 +1,62 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-27 (afternoon) — Silent Guardian overhaul: music fix, dog attribution, offline catch-up, BPM fast-escalation
+
+**Duration:** ~3 hours
+**Robot:** treatbot1
+**Status:** ✅ Shipped commit `a1bca1c` (pushed to origin/main). Service NOT yet restarted — changes live on next `systemctl restart treatbot.service`.
+
+### Story
+Reviewed Silent Guardian session #165 (10:04:51–11:15:36, 157 barks, 33 interventions, 4 treats). User reported "excessive barking before SG acted" and "2 minutes nonstop barking with no escalation to music." Forensic walk through journal logs + SQLite revealed multiple compounding issues that explained the perceived dead air.
+
+### Root causes found
+1. **Calming music NEVER played** all session. YAML config pointed to `songs/mozart_piano.mp3` but the file is at `songs/default/mozart_piano.mp3`. Every L4 escalation logged "Calming music file not found" and silently degraded to just playing "quiet.mp3" once. So Level 4 = "say quiet, then wait silently for 2× 20s quiet periods." From outside this looked like the robot stopped responding.
+2. **90s GAVE_UP cooldown after every timeout** is dead air — bark events get logged but FSM ignores them. Combined with bug #1, the 10:14:43→10:16:13 window (90s gave-up) + L4 with no music made it feel like 2+ minutes of robot indifference. That was the "2 min nonstop barking with no escalation" period.
+3. **All 157 barks logged with `dog_id=NULL`** because ArUco was never visible during bark events and the bark_detector had no fallback to "currently selected dog from the app." User has 2 dogs but neither was attributable.
+4. **App showed no events on resume** — relay does NOT buffer for offline phones (`relay_client.py:1265` early-returns if not connected). Plus SG escalations were never published to the bus, so DogEventLogger never wrote them to `dog_events` even for catch-up polling.
+5. **"good" without treat** after first treat dispensed — user thought it might be a jam, but it's intentional anti-farming: 10-min cooldown after each treat where verbal praise replaces treat. Confirmed via interventions #195/209/213/215/219 in DB.
+
+### Shipped (commit `a1bca1c`, 7 files, +342/-7)
+**Bug fixes:**
+- `configs/rules/silent_guardian_rules.yaml` — mozart path → `songs/default/mozart_piano.mp3`
+- `modes/silent_guardian.py:125` — `_gave_up_cooldown` 90 → 45 seconds
+- `modes/silent_guardian.py:873` — matching in-code fallback string also fixed
+
+**Bark attribution fix:**
+- `services/perception/bark_detector.py::_handle_bark_detected` — added final fallback to `state.get_active_dog_id()` so when no ArUco is visible, the app's `select_dog` selection (or recent ArUco/session dog) gets used. ArUco still wins via the existing `bark_event.dog_id` path up top.
+
+**Offline catch-up infrastructure:**
+- `modes/silent_guardian.py::_start_intervention` — now publishes `sg_escalation` to the bus → DogEventLogger writes to `dog_events` → also forwarded over the relay socket if app is online
+- New `GET /sg/sessions/recent?since=<ts>&limit=20` in `api/server.py` — returns silent_guardian_sessions JOINed with their sg_interventions for app catch-up
+- `core/store.py::end_silent_guardian_session` — now also calls `_roll_sg_session_into_dog_profiles(session_id)` which walks the session's interventions grouped by dog_id and updates each dog's `profile_json['sg']` with cumulative counters (sessions_total, interventions_total, quiets_total, treats_total, max_escalation_ever, last_session_id, last_session_ended_at). Long-term per-dog history is now permanent.
+- Hourly `DBCleanup` daemon thread in `main_treatbot.py` purges `barks` + `dog_events` > 24h, keeps `sg_interventions` + `silent_guardian_sessions` for 30 days.
+
+**Fast-escalation feature (robot side):**
+- New `bark_detection.fast_escalation_bpm` YAML config (default 0 = disabled). When BPM exceeds threshold, `_get_escalation_level()` returns max_level (L4) immediately instead of climbing one per intervention.
+- `POST /sg/config` accepts new `fast_escalation_bpm` field
+- `_handle_command` in `relay_client.py` now has an `sg_config` command branch — backs the app's "punishment level" slider
+
+### Flutter handoff
+Self-contained prompt for app-side slider work saved at:
+`/home/morgan/.claude/plans/flutter-sg-punishment-slider-prompt.md`
+Covers the relay command shape, slider UX semantics (Off / 10–90 BPM where lower = more aggressive), persistence note (robot doesn't write to disk; app must re-send on reconnect), acceptance criteria.
+
+### Memory implications
+- Today's session #165 had `dog_id=NULL` on every intervention/bark → per-dog rollup will skip those (the SQL filter is `WHERE dog_id IS NOT NULL`). Fix is forward-only.
+- Robot doesn't persist `fast_escalation_bpm` to YAML — only in-memory. App is source of truth; must re-push on every reconnect.
+
+### Cleanup done
+122 cruft files in repo root (all `May 27 10:04:50 ... -INFO- ...` named — shell-paste mishap that turned journalctl lines into filenames containing ~17 bytes of log-fragment each). Deleted in one shot.
+
+### Next session
+1. **Restart service to make changes live:** `sudo systemctl restart treatbot.service` (drops current idle override; re-select dog + re-enable SG from app to verify)
+2. Watch for `SG_FAST_ESCALATION: BPM X >= Y` log line when sustained barking trips the threshold (only fires if `fast_escalation_bpm > 0`)
+3. Verify on next SG session: `sg_escalation` rows appear in `dog_events` table; `dogs.profile_json['sg']` populates for any dog with non-NULL attribution; `GET /sg/sessions/recent` returns the new session
+4. Hand the Flutter prompt to the app's Claude session for the slider UI
+5. Open question: today's bark detector still requires ArUco OR app `select_dog` for attribution. If user wants 100% attribution coverage with multiple-dog households and no ArUco, may need a "primary dog" config or multi-dog attribution policy. Not built.
+
+---
+
 ## Session: 2026-05-27 — treatbot5 UART FIXED + dispenser restored — root cause was unpowered chip
 
 **Duration:** ~2 hours
