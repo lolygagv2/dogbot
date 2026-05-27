@@ -1071,7 +1071,12 @@ async def reset_bark_statistics():
 async def update_sg_config(config: Dict[str, Any]):
     """Update Silent Guardian config at runtime (no restart needed).
 
-    Accepts: bark_threshold (dB), confidence_minimum, bark_count_threshold
+    Accepts:
+        bark_threshold (dB) — loudness gate for what counts as a bark
+        confidence_minimum — emotion classifier confidence floor (legacy, not gating)
+        bark_count_threshold — barks-in-60s needed to start a Level 1 intervention
+        fast_escalation_bpm — sustained barks/min that fast-tracks straight to L4
+                              (0 disables; app "punishment level" slider writes here)
     """
     from modes.silent_guardian import get_silent_guardian_mode
     sg = get_silent_guardian_mode()
@@ -1092,7 +1097,35 @@ async def update_sg_config(config: Dict[str, Any]):
         sg.config.setdefault('bark_detection', {})['threshold'] = new_count
         updated['bark_count_threshold'] = new_count
 
+    if 'fast_escalation_bpm' in config:
+        new_bpm = int(config['fast_escalation_bpm'])
+        sg.config.setdefault('bark_detection', {})['fast_escalation_bpm'] = new_bpm
+        updated['fast_escalation_bpm'] = new_bpm
+
     return {"success": True, "updated": updated}
+
+
+@app.get("/sg/sessions/recent")
+async def get_sg_sessions_recent(since: float = 0.0, limit: int = 20):
+    """Catch-up endpoint for the app after being offline.
+
+    Returns Silent Guardian sessions (with their interventions) started after
+    the given Unix timestamp. Most recent first. Designed so the app can call
+    `?since=<last_seen_session_start>` on resume and replay missed events.
+
+    Args:
+        since: Unix timestamp; only sessions started after this are returned
+        limit: Max sessions to return (default 20)
+    """
+    store = get_store()
+    sessions = store.get_sg_sessions_since(since_ts=since, limit=limit)
+    return {
+        "sessions": sessions,
+        "count": len(sessions),
+        "since": since,
+        "limit": limit,
+    }
+
 
 # Battery monitoring endpoints
 @app.get("/battery/status")

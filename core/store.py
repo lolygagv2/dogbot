@@ -595,6 +595,60 @@ class TreatBotStore:
             finally:
                 conn.close()
 
+    def cleanup_old_events(self, raw_retention_hours: int = 24,
+                           sg_retention_days: int = 30) -> Dict[str, int]:
+        """Purge stale rows from raw event tables.
+
+        - `barks` and `dog_events` are raw per-event tables — large and noisy.
+          Kept for `raw_retention_hours` (default 24) so the app can catch up
+          after an offline window. Long-term per-dog stats survive via the
+          rollup into `dogs.profile_json` (see _roll_sg_session_into_dog_profiles).
+        - `sg_interventions` + `silent_guardian_sessions` are rollup-shaped and
+          kept longer (`sg_retention_days`, default 30) for reporting.
+        - `dogs`, `rewards`, `coaching_sessions`, `events` are NOT touched here.
+
+        Returns a dict of {table: rows_deleted}.
+        """
+        deleted = {}
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                hours_cutoff = f"-{int(raw_retention_hours)} hours"
+                sg_cutoff_ts = time.time() - (sg_retention_days * 86400)
+
+                # Raw event tables — text/iso timestamps
+                cursor.execute("DELETE FROM barks WHERE timestamp < datetime('now', ?)", (hours_cutoff,))
+                deleted['barks'] = cursor.rowcount
+                cursor.execute("DELETE FROM dog_events WHERE timestamp < datetime('now', ?)", (hours_cutoff,))
+                deleted['dog_events'] = cursor.rowcount
+
+                # SG rollup tables — REAL unix timestamps. Delete interventions first
+                # to respect the FK relationship to silent_guardian_sessions.
+                cursor.execute('''
+                    DELETE FROM sg_interventions
+                    WHERE session_id IN (
+                        SELECT id FROM silent_guardian_sessions WHERE session_start < ?
+                    )
+                ''', (sg_cutoff_ts,))
+                deleted['sg_interventions'] = cursor.rowcount
+                cursor.execute(
+                    'DELETE FROM silent_guardian_sessions WHERE session_start < ?',
+                    (sg_cutoff_ts,),
+                )
+                deleted['silent_guardian_sessions'] = cursor.rowcount
+
+                conn.commit()
+                self.logger.info(f"cleanup_old_events: deleted {deleted}")
+                return deleted
+
+            except Exception as e:
+                self.logger.error(f"cleanup_old_events failed: {e}")
+                conn.rollback()
+                return deleted
+            finally:
+                conn.close()
+
     # ========== Silent Guardian Methods ==========
 
     def start_silent_guardian_session(self) -> int:
@@ -629,7 +683,11 @@ class TreatBotStore:
                                     interventions: int = 0, successful_quiets: int = 0,
                                     treats_dispensed: int = 0, max_escalation: int = 0,
                                     quiet_periods: List = None, dog_bark_counts: Dict = None) -> bool:
-        """End a Silent Guardian session with summary data (non-blocking)"""
+        """End a Silent Guardian session with summary data (non-blocking).
+
+        Also rolls per-dog stats from this session into each dog's profile_json so
+        the long-term per-dog history survives the 24h raw-event cleanup.
+        """
         if not self._lock.acquire(timeout=0.5):
             self.logger.warning("end_silent_guardian_session skipped - lock busy")
             return False
@@ -637,18 +695,28 @@ class TreatBotStore:
             conn = sqlite3.connect(self.db_path)
             try:
                 cursor = conn.cursor()
+                ended_at = time.time()
                 cursor.execute('''
                     UPDATE silent_guardian_sessions
                     SET session_end = ?, total_barks = ?, interventions = ?,
                         successful_quiets = ?, treats_dispensed = ?, max_escalation_level = ?,
                         quiet_periods_json = ?, dog_bark_counts_json = ?
                     WHERE id = ?
-                ''', (time.time(), total_barks, interventions, successful_quiets,
+                ''', (ended_at, total_barks, interventions, successful_quiets,
                       treats_dispensed, max_escalation, json.dumps(quiet_periods or []),
                       json.dumps(dog_bark_counts or {}), session_id))
 
                 conn.commit()
                 self.logger.info(f"Silent Guardian session ended (ID: {session_id})")
+
+                # Roll session-level stats into each tagged dog's profile_json.
+                # Failures here are non-fatal — the session is already saved.
+                try:
+                    self._roll_sg_session_into_dog_profiles(cursor, session_id, ended_at)
+                    conn.commit()
+                except Exception as roll_err:
+                    self.logger.warning(f"Per-dog SG rollup failed for session {session_id}: {roll_err}")
+
                 return True
 
             except Exception as e:
@@ -659,6 +727,63 @@ class TreatBotStore:
                 conn.close()
         finally:
             self._lock.release()
+
+    def _roll_sg_session_into_dog_profiles(self, cursor, session_id: int, ended_at: float):
+        """Aggregate per-dog stats from this SG session into dogs.profile_json.
+
+        Skips rows where dog_id is NULL (couldn't attribute). For each dog that
+        DID get tagged during the session, increments cumulative counters so the
+        per-dog profile carries long-term history even after the raw event tables
+        get purged at 24h.
+        """
+        # Aggregate interventions per dog
+        cursor.execute('''
+            SELECT dog_id,
+                   COUNT(*),
+                   SUM(quiet_achieved),
+                   SUM(treat_given),
+                   MAX(escalation_level)
+            FROM sg_interventions
+            WHERE session_id = ? AND dog_id IS NOT NULL AND dog_id != ''
+            GROUP BY dog_id
+        ''', (session_id,))
+        per_dog = {row[0]: {
+            'interventions': row[1] or 0,
+            'quiets': row[2] or 0,
+            'treats': row[3] or 0,
+            'max_level_this_session': row[4] or 0,
+        } for row in cursor.fetchall()}
+
+        if not per_dog:
+            return
+
+        for dog_id, stats in per_dog.items():
+            cursor.execute('SELECT profile_json FROM dogs WHERE id = ?', (dog_id,))
+            row = cursor.fetchone()
+            if not row:
+                self.logger.debug(f"SG rollup: dog {dog_id} not in dogs table, skipping")
+                continue
+            profile = {}
+            try:
+                profile = json.loads(row[0]) if row[0] else {}
+            except Exception:
+                profile = {}
+
+            sg = profile.setdefault('sg', {})
+            sg['sessions_total'] = int(sg.get('sessions_total', 0)) + 1
+            sg['interventions_total'] = int(sg.get('interventions_total', 0)) + stats['interventions']
+            sg['quiets_total'] = int(sg.get('quiets_total', 0)) + stats['quiets']
+            sg['treats_total'] = int(sg.get('treats_total', 0)) + stats['treats']
+            sg['max_escalation_ever'] = max(int(sg.get('max_escalation_ever', 0)),
+                                            stats['max_level_this_session'])
+            sg['last_session_id'] = session_id
+            sg['last_session_ended_at'] = ended_at
+
+            cursor.execute(
+                'UPDATE dogs SET profile_json = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?',
+                (json.dumps(profile), dog_id),
+            )
+        self.logger.info(f"SG rollup: updated {len(per_dog)} dog profile(s) for session {session_id}")
 
     def log_sg_intervention(self, session_id: int, escalation_level: int = 0,
                            dog_id: str = None, dog_name: str = None,
@@ -737,6 +862,74 @@ class TreatBotStore:
             except Exception as e:
                 self.logger.error(f"Failed to get SG stats: {e}")
                 return {}
+            finally:
+                conn.close()
+
+    def get_sg_sessions_since(self, since_ts: float = 0.0, limit: int = 20) -> List[Dict[str, Any]]:
+        """Return SG sessions started after since_ts, each with its intervention rows.
+
+        Used by the app to catch up on what happened while it was offline.
+
+        Args:
+            since_ts: Unix timestamp; sessions with session_start > since_ts are returned
+            limit: Max number of sessions to return (most recent first)
+
+        Returns:
+            List of session dicts, each containing an 'interventions' list
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, session_start, session_end, total_barks, interventions,
+                           successful_quiets, treats_dispensed, max_escalation_level
+                    FROM silent_guardian_sessions
+                    WHERE session_start > ?
+                    ORDER BY session_start DESC
+                    LIMIT ?
+                ''', (since_ts, limit))
+                sessions = []
+                for row in cursor.fetchall():
+                    sessions.append({
+                        'id': row[0],
+                        'session_start': row[1],
+                        'session_end': row[2],
+                        'total_barks': row[3],
+                        'interventions_count': row[4],
+                        'successful_quiets': row[5],
+                        'treats_dispensed': row[6],
+                        'max_escalation_level': row[7],
+                        'interventions': [],
+                    })
+
+                if sessions:
+                    session_ids = [s['id'] for s in sessions]
+                    placeholders = ','.join('?' * len(session_ids))
+                    cursor.execute(f'''
+                        SELECT session_id, timestamp, escalation_level, dog_id, dog_name,
+                               quiet_achieved, treat_given, music_played
+                        FROM sg_interventions
+                        WHERE session_id IN ({placeholders})
+                        ORDER BY timestamp ASC
+                    ''', session_ids)
+                    by_session = {s['id']: s['interventions'] for s in sessions}
+                    for ir in cursor.fetchall():
+                        by_session[ir[0]].append({
+                            'timestamp': ir[1],
+                            'escalation_level': ir[2],
+                            'dog_id': ir[3],
+                            'dog_name': ir[4],
+                            'quiet_achieved': bool(ir[5]),
+                            'treat_given': bool(ir[6]),
+                            'music_played': bool(ir[7]),
+                        })
+
+                return sessions
+
+            except Exception as e:
+                self.logger.error(f"Failed to get sg sessions since {since_ts}: {e}")
+                return []
             finally:
                 conn.close()
 

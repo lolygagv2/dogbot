@@ -732,6 +732,42 @@ class RelayClient:
             })
             return
 
+        # Handle sg_config - live-tune Silent Guardian thresholds from the app.
+        # Mirrors POST /sg/config but reachable via the relay socket so the
+        # "punishment level" slider can push updates without HTTP.
+        # params: {"bark_threshold", "confidence_minimum", "bark_count_threshold",
+        #          "fast_escalation_bpm"} — all optional; only sent fields apply.
+        if command == 'sg_config':
+            try:
+                from modes.silent_guardian import get_silent_guardian_mode
+                sg = get_silent_guardian_mode()
+                bark = sg.config.setdefault('bark_detection', {})
+                updated = {}
+                if 'bark_threshold' in params:
+                    bark['loudness_threshold_db'] = float(params['bark_threshold'])
+                    updated['loudness_threshold_db'] = bark['loudness_threshold_db']
+                if 'confidence_minimum' in params:
+                    bark['confidence_minimum'] = float(params['confidence_minimum'])
+                    updated['confidence_minimum'] = bark['confidence_minimum']
+                if 'bark_count_threshold' in params:
+                    bark['threshold'] = int(params['bark_count_threshold'])
+                    updated['bark_count_threshold'] = bark['threshold']
+                if 'fast_escalation_bpm' in params:
+                    bark['fast_escalation_bpm'] = int(params['fast_escalation_bpm'])
+                    updated['fast_escalation_bpm'] = bark['fast_escalation_bpm']
+                self.logger.info(f"sg_config applied: {updated}")
+                await self._send({
+                    'type': 'command_ack', 'command': command,
+                    'success': True, 'updated': updated,
+                })
+            except Exception as e:
+                self.logger.error(f"sg_config error: {e}")
+                await self._send({
+                    'type': 'command_ack', 'command': command,
+                    'success': False, 'error': str(e),
+                })
+            return
+
         # Handle mood_led - blue LED toggle via relay.
         # params: {"action": "on"|"off"|"toggle"}
         # Routes through LedService's LedController — the single legitimate

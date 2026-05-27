@@ -27,6 +27,11 @@ bark_detection:
   window_seconds: 60              # Time window for counting barks
   confidence_minimum: 0.35        # Lowered from 0.45 for more sensitivity
   loudness_threshold_db: -28      # Much more sensitive (was -21, dogs had to be VERY loud)
+  # Fast-escalation: when sustained barks/minute exceeds this, skip straight to L4
+  # (calming music) instead of climbing one level per intervention. 0 = disabled.
+  # App "punishment level" slider maps to this (Max-aggressive=10, Min-aggressive=90,
+  # default 30). Existing climb-the-levels logic still runs underneath.
+  fast_escalation_bpm: 0
   # device: unset — auto-detect via audio.bark_buffer_arecord.find_usb_audio_device().
   # Probes PipeWire 'default' first; if silent, falls back to plughw:{usb_card},0
   # using the live arecord -l card number (USB enumerates dynamically across boots).
@@ -89,7 +94,7 @@ intervention_sequences:
         file: "quiet.mp3"
         wait_after: 1.0
     play_calming_music: true
-    calming_music_file: "songs/mozart_piano.mp3"
+    calming_music_file: "songs/default/mozart_piano.mp3"
     quiet_periods_required: 2
     quiet_period_duration: 20     # Each quiet period must be 20 seconds
     reduce_treats: true           # Fewer treats at this escalation level
@@ -163,7 +168,7 @@ audio_paths:
   good_dog: "talks/good_dog.mp3"
   elsa: "talks/elsa.mp3"
   bezik: "talks/bezik.mp3"
-  calming_music: "songs/mozart_piano.mp3"
+  calming_music: "songs/default/mozart_piano.mp3"
 
 # Camera settings for Silent Guardian mode
 camera:

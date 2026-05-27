@@ -455,6 +455,26 @@ class BarkDetectorService:
                 dog_id = None
                 dog_name = None
 
+        # Final fallback: app's currently-selected dog (from select_dog).
+        # Catches the common case where dogs bark out of camera frame —
+        # vision-based attribution above always wins when ArUco is visible.
+        if dog_id is None:
+            try:
+                from core.state import get_state
+                state = get_state()
+                fallback_id = state.get_active_dog_id(aruco_ttl=5.0)
+                if fallback_id:
+                    dog_id = fallback_id
+                    if state.current_dog_id == fallback_id and state.current_dog_name:
+                        dog_name = state.current_dog_name
+                    else:
+                        from core.store import get_store
+                        dogs = get_store().get_dog_stats(fallback_id)
+                        dog_name = dogs[0]['name'] if dogs else None
+                    logger.debug(f"Bark attributed via select_dog fallback: {dog_name} ({dog_id})")
+            except Exception as e:
+                logger.debug(f"Selected-dog fallback failed: {e}")
+
         visible_dogs = self._get_visible_dogs()
         visible_ids = list(visible_dogs.keys())
 

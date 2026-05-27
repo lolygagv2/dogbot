@@ -122,7 +122,7 @@ class SilentGuardianMode:
         # Cooldown tracking
         self._cooldown_start = None
         self._cooldown_duration = 2.0  # 2 seconds between interventions
-        self._gave_up_cooldown = 90.0  # 90 seconds after giving up
+        self._gave_up_cooldown = 45.0  # 45 seconds after giving up
 
         # Timeouts
         self.intervention_timeout = 90.0  # Max 90 seconds per intervention
@@ -223,6 +223,23 @@ class SilentGuardianMode:
             level = 3
         else:
             level = 4
+
+        # Fast-escalation: when sustained barking exceeds the BPM threshold,
+        # bypass the climb-one-level-at-a-time path and jump to max (L4 = music).
+        # The user-tunable "punishment level" slider in the app writes to this
+        # value via /sg/config. 0 means disabled.
+        fast_bpm = int(self.config.get('bark_detection', {}).get('fast_escalation_bpm', 0) or 0)
+        if fast_bpm > 0:
+            try:
+                bpm = self.bark_tracker.get_barks_per_minute('unknown')
+                if bpm >= fast_bpm and level < max_level:
+                    logger.info(
+                        f"SG_FAST_ESCALATION: BPM {bpm} >= {fast_bpm} threshold — "
+                        f"jumping level {level} -> {max_level}"
+                    )
+                    level = max_level
+            except Exception as e:
+                logger.debug(f"Fast-escalation BPM check failed: {e}")
 
         return min(level, max_level)
 
@@ -522,6 +539,17 @@ class SilentGuardianMode:
                 dog_name=dog_name,
                 escalation_level=self.current_escalation_level
             )
+
+            # Publish to bus so DogEventLogger persists it in dog_events
+            # and main_treatbot forwards it over the relay WebSocket to the app.
+            publish_system_event('sg_escalation', {
+                'dog_id': dog_id,
+                'dog_name': dog_name,
+                'escalation_level': self.current_escalation_level,
+                'session_id': self.session_id,
+                'action': 'intervention_started',
+                'interventions_in_hour': len(self.escalation_events),
+            }, 'silent_guardian')
 
             logger.info(f"Starting Level {self.current_escalation_level} intervention for {dog_name or dog_id or 'unknown'}")
 
@@ -870,7 +898,7 @@ class SilentGuardianMode:
 
             # Fallback to old single-file config if playlist not defined
             if not playlist:
-                old_file = audio_config.get('calming_music', 'songs/mozart_piano.mp3')
+                old_file = audio_config.get('calming_music', 'songs/default/mozart_piano.mp3')
                 playlist = [old_file]
 
             if not playlist:

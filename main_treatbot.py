@@ -584,6 +584,15 @@ class TreatBotMain:
             self.dog_event_logger.start()
             self.logger.info("Dog event logger started")
 
+            # Start hourly DB cleanup (purges barks + dog_events older than 24h;
+            # sg_interventions + silent_guardian_sessions kept 30 days). Per-dog
+            # long-term stats survive via dogs.profile_json rollup at session end.
+            self._cleanup_thread = threading.Thread(
+                target=self._cleanup_loop, daemon=True, name="DBCleanup"
+            )
+            self._cleanup_thread.start()
+            self.logger.info("DB cleanup daemon started (24h raw / 30d SG)")
+
             # NOTE: WiFi monitor thread is started in start() after self.running=True
             # to ensure the thread loop doesn't exit immediately
 
@@ -593,6 +602,17 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"Subsystem startup failed: {e}")
             return False
+
+    def _cleanup_loop(self) -> None:
+        """Background daemon that purges stale rows from raw event tables every hour."""
+        # Wait a couple of minutes before the first sweep so startup isn't IO-heavy
+        time.sleep(120)
+        while True:
+            try:
+                self.store.cleanup_old_events(raw_retention_hours=24, sg_retention_days=30)
+            except Exception as e:
+                self.logger.warning(f"DB cleanup tick failed: {e}")
+            time.sleep(3600)  # once an hour
 
     def _on_detection_for_feedback(self, event) -> None:
         """Provide visual feedback for detection events (COACH mode only)"""
