@@ -1,5 +1,36 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-27 (evening) — treatbot4 housekeeping: pull SG overhaul, commit tuning, dispenser verified
+
+**Duration:** ~30 min
+**Robot:** treatbot4
+**Status:** ✅ Complete — committed as `be7c5ff`, pushed to origin/main. Service NOT yet restarted (user to restart after filling dispenser).
+
+### Work completed
+1. **Pulled origin/main** — 15 commits fast-forwarded cleanly (`fbbff72..7231b80`). No conflicts with local mods. Notable incoming: SG overhaul (`a1bca1c`), tb5 UART fix + tuning adoption (`1a02e95`), tb5 battery recalibration (`0148649`), battery false-charging gate tightened (`7e96d99`), WiFi 5 GHz pinning (`38549f9`), new TMC2209 probe tests.
+2. **Battery calibration check (treatbot4)** — verified already done. Current reading 16.52V / 94% / ADC 2.926V, factor 5.638 → 16.50V (internally consistent). DMM-calibrated 2026-05-25 in commit `5f0dacc` (15.43V → 2.7368V → factor 5.638). The 16.52V coincidence with tb5's old over-read is just the natural near-fully-charged reading. **No action needed.**
+3. **Committed local tb4 tuning** (`be7c5ff`):
+   - `treatbot4.yaml`: `steps_per_slot 137 → 144` (~30.8° → ~32.4°/slot, live-tuned 2026-05-26 against this unit's physical carousel pitch with spreadcycle + irun=31 active)
+   - `fix_xbox_controller.sh` + `xbox_persistent.py` default arg: MAC swap to `CC:B0:B3:84:67:FC` (new controller paired on tb4)
+   - Note: default MAC in `xbox_persistent.py` will continue to ping-pong per robot until controller MAC moves into per-unit yaml. Out of scope for this session.
+4. **Dispenser movement verified** — user confirmed `steps_per_slot=144` "looks great". Going to fill carousel and try a real dispense after restart.
+
+### Still pending / next session
+1. **Restart treatbot.service** after filling dispenser — required to pick up: (a) the new SG overhaul code from upstream, (b) the committed `steps_per_slot=144`, (c) the new Xbox MAC default.
+2. **Apply 4-item TMC2209 UART fix to treatbot3** — tb5 is now done (commit `1a02e95`); tb3 is the last holdout. Same procedure: VIO + GND + 1K on TX (pin 8) + PDN_UART to chip pin 4.
+3. **Validate SG overhaul on tb4** post-restart — bark detection, dog attribution, offline catch-up, BPM fast-escalation. Watch logs for clean startup of the new SG code paths.
+
+### Untracked items still in working tree (all pre-existing, intentional)
+- `.claude/TMC2209_UART_SETUP.md` — per-unit OS setup notes, header says "Not in Git" by design
+- `.claude/nightvisionrobo.md` — night mode design brief
+- `state/night_mode.json` — runtime state; probably should be in `.gitignore`
+- `tests/hardware/test_battery_adc_channels.py` — pre-existing test file from May 20
+
+### Commits this session
+- `be7c5ff` — chore(treatbot4): live-tuned steps_per_slot + new Xbox controller MAC (pushed)
+
+---
+
 ## Session: 2026-05-27 (afternoon) — Silent Guardian overhaul: music fix, dog attribution, offline catch-up, BPM fast-escalation
 
 **Duration:** ~3 hours
