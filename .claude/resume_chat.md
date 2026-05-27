@@ -1,5 +1,63 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-27 (late evening) — TB5 dispense direction wire fix + idle-mode CPU fix + false-charging gate fix
+
+**Duration:** ~1.5 hours
+**Robot:** treatbot5
+**Status:** ✅ Shipped commit `d428393` (pushed to origin/main). Detector fix already live (service restarted mid-session). Battery monitor fix needs `systemctl restart treatbot.service` to take effect.
+
+### TL;DR
+After carousel reinstall, TB5 dispenser rotated CCW for forward, anti-jam reverse, AND secondary reverse — every direction the same. Initial hypothesis: needed `shaft_invert: true` in TMC2209 config. Confirmed via UART that GCONF bit 4 was indeed set after YAML edit and service restart — but rotation was still all-CCW. Real root cause: **DIR signal wire between Pi GPIO16 (pin 36) and the TMC2209 DIR pin was broken**. Pi was driving HIGH but chip's IOIN.DIR registered LOW. Same failure class as last session's V+ rail (loose-but-continuous wire that fails under load). User reseated the wire, dispenser now works correctly with `shaft_invert: true` left in place. Then chased two more orthogonal issues: idle-mode AI burning CPU at 20 FPS for no reason, and battery monitor false-positives on "Charging detected" right after Xbox driving.
+
+### Diagnostic process (TB5 dispenser)
+1. **Symptom**: User reinstalled carousel, dispenser ran but in inverted direction vs other units.
+2. **First attempt**: Added `shaft_invert: true` to `treatbot5.yaml`, restarted service. UART readback confirmed GCONF=0x95 with bit 4 set. But rotation didn't change.
+3. **Smoking gun**: Read TMC2209 IOIN register while polling Pi GPIO state via `pinctrl get 16`:
+   ```
+   Pi GPIO16 = hi (output driving HIGH)
+   chip IOIN.DIR = 0  (LOW) ← MISMATCH
+   chip IOIN.ENN = 1  ← matches Pi GPIO24 (this wire works)
+   ```
+   Pi was driving HIGH, chip was seeing LOW. Wire is broken/shorted somewhere between them.
+4. **User reseated the DIR rail terminal on the breadboard**. Same class of failure as the V+ rail terminal in the last session — a wire that conducts micro-amps for continuity testing but can't carry signal under chip load.
+5. **Result**: Dispenser now works correctly with `shaft_invert: true` left as-is. (If TB5 ever swaps to a fresh wiring harness, may need to revisit whether shaft_invert is still required.)
+
+### Idle-mode AI CPU fix (`services/perception/detector.py`)
+- AI inference was correctly skipped in IDLE/MANUAL modes (gated at line 750), but the camera capture loop was still spinning at 20 FPS (`time.sleep(0.050)` in the catch-all `else` branch).
+- Added explicit `elif run_full_ai: 0.050` and `else: 0.200` (~5 FPS) branches. Frame capture loop now backs off in idle.
+- Also fixed misleading heartbeat log: was always saying `[AI] Pipeline active | FPS: X` even when AI was paused. Now says `[AI] Mode=idle — inference paused | frame capture only | FPS: 5.0`.
+- **Measured impact**: Python CPU went from ~12-18% to ~3-5% (didn't even appear in `top`) in idle.
+
+### Battery false-charging fix (`services/power/battery_monitor.py`)
+- Symptom: "Charging detected: 16.08V (85%), trend=+0.460V" + charging audio fired ~15s after Xbox-driving session ended. Robot was not plugged in.
+- Existing motor-idle gate had two holes:
+  1. `if cmd.left_speed == 0 and cmd.right_speed == 0: return False` — a stop command (released stick / motors decelerating to zero) instantly disengaged the gate, even though the rail was still rebounding from full-load draw.
+  2. Dispenser activity wasn't tracked at all in `_motor_recently_active()` — only drive motors. Stepper pulls ~1.1A peak from the same rail.
+- Both fixed: any recent drive command (including stops) keeps the gate engaged for `motor_idle_required_s` (120s). Added dispenser check via `get_dispenser_service().last_dispense_time`.
+
+### Files modified this session
+- `config/robot_profiles/treatbot5.yaml` (+1 line, shaft_invert: true)
+- `services/perception/detector.py` (+13/-2)
+- `services/power/battery_monitor.py` (+19/-8)
+
+### Commits this session (already pushed)
+- `d428393` — fix(tb5): dispense direction + idle-mode AI pause + charging false-positive
+
+### Memory implications
+- **Broken signal wire is the same failure pattern as broken V+ rail** (loose-but-continuous breadboard terminal). Diagnostic recipe is identical: compare what Pi drives (`pinctrl get N`) vs what chip sees (`IOIN` register over UART). When they disagree, the wire is at fault, not the chip. Worth folding into existing `feedback_tmc2209_uart.md` and/or `feedback_phantom_voltage.md`.
+- **`pinctrl get N` reads the drive register, NOT the actual wire voltage**. A shorted wire would still show "op dh | hi" if the GPIO is configured as output driving HIGH. To actually probe the line voltage, you need a multimeter or to read the chip's downstream view.
+
+### Open items (carryover)
+1. **`services/network/wifi_manager.py` pgrep spam** — still untouched. Service in client mode shouldn't be checking for hostapd every iteration.
+2. **TB3 TMC2209 UART setup** — last holdout in fleet (per evening 2026-05-27 entry).
+3. **TB2 dongle work** — same 5 GHz dead pattern as TB1.
+4. **Verify battery monitor fix** — restart service, drive around, then stop. Should NOT trigger "Charging detected". For positive test, plug in real charger.
+
+### Service restart needed
+The battery_monitor change needs `sudo systemctl restart treatbot.service` to take effect. Detector + dispenser fixes already live.
+
+---
+
 ## Session: 2026-05-27 (evening) — treatbot4 housekeeping: pull SG overhaul, commit tuning, dispenser verified
 
 **Duration:** ~30 min
