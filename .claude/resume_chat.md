@@ -1,5 +1,48 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-27 (overnight) — Dongle 5 GHz failure → dual-profile fallback → revert to built-in
+
+**Duration:** ~2 hours
+**Robot:** treatbot1 (paralleled with tb2 over SSH)
+**Status:** ✅ STABLE on built-in WiFi. Dongles returned to TB3. Dual-profile fallback proven and kept as safety net.
+
+### Story
+After tonight's band=a fix on TB1 (committed da3034d earlier), live test of dongle on TB1 failed — `ssid-not-found` from wlan1, 23s scan timeout, no association. Reroll: discovered the **dongle** in TB1 had **zero 5 GHz BSSID visibility** even with the dongle's antenna right next to the AP. Driver advertised full 5 GHz capability; the actual RF chain in this physical unit was dead on 5 GHz. Same AC600 RTL8821CU model works on TB3 (5805 MHz, -33 dBm); the unit in TB1 cannot.
+
+### What we set up on TB1 before giving up on the dongle
+1. **Blacklisted brcmfmac** via `/etc/modprobe.d/disable-internal-wifi.conf` — so dongle is the only WiFi radio
+2. **Dual-profile fallback** in NetworkManager:
+   - `preconfigured` (band=a, autoconnect-priority=10, retries=2) — 5 GHz preferred
+   - `preconfigured-24g` (band=bg, autoconnect-priority=5, retries=2) — 2.4 GHz fallback
+3. **Re-confirmed wifi-provision.service is enabled** as last-resort AP rescue (60 s threshold)
+
+Booted with dongle attached. Result: NM never tried `preconfigured` (no 5 GHz BSSID visible in scan) → auto-fell-back to `preconfigured-24g` → associated cleanly on 2.4 GHz at -6 dBm, DHCP .211, SSH worked. Multi-profile fallback PROVEN.
+
+### Why we reverted to built-in
+User decision: the AC600 batch has per-unit defects, ordering replacement dongles takes time, and built-in WiFi works fine at -17 dBm on 5 GHz with the cage off. Dongles returned to TB3 (which has a working unit). For now TB1 relies on built-in. The blacklist file was removed; dual-profile setup left in place as a dormant safety net.
+
+### Memory updated
+`project_wifi_dongle.md` now documents three distinct failure modes:
+1. rtw88 deep-LPS beacon storms (fixed 2026-05-21)
+2. dual-band BSSID flap (fixed 2026-05-26 with band=a + wifi_manager.py patch)
+3. **per-unit dead 5 GHz RF chain in AC600 batch** (NEW — swap dongle, not a software fix)
+
+Plus the dual-profile fallback pattern (recommended for future deployments).
+
+### TB2 follow-up (deferred)
+TB2 same dongle batch, same 2.4-only behavior. Same fixes applicable. User said TB2 will be addressed in a separate session — they have full context from this session.
+
+### Commits this session (already pushed)
+- `cb8e517` chore: update treatbot2 pan_center calibration (180→134) — rebased onto main from TB2's local
+- All TB1 tonight's changes are off-repo (NM connection profiles, modprobe.d files) — no commits needed
+
+### Open items
+- Order new dongles (any AC600 batch is suspect; consider MediaTek MT7612U)
+- Test each new dongle's 5 GHz reception at the AP location BEFORE committing it to a bot
+- Decide whether the chassis cage design needs revisiting (dongle dependency vs built-in penetration)
+
+---
+
 ## Session: 2026-05-26 (late) — TB1 SSH-unreachable: ROOT-CAUSED as dual-band BSSID flap, fix shipped
 
 **Duration:** ~1 hour
