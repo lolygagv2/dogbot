@@ -3,7 +3,7 @@ camera:
   coach_pan_min: 55
   coach_tilt_max: 85
   coach_tilt_min: 25
-  pan_center: 180
+  pan_center: 134
   pan_max: 320
   pan_min: -60
   rotation: 0
