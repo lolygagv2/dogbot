@@ -1,5 +1,87 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-27 — TB1/TB2 SSH-unreachable rabbit hole — CONFIRMED bad Edimax dongles
+
+**Duration:** ~3 hours
+**Robots:** treatbot1 + treatbot2 (both running, both broken in the same way)
+**Status:** ✅ ROOT CAUSE CONFIRMED. Both Edimax USB dongles are bad. Verified by enabling Pi 5 built-in WiFi → SSH worked. No flash needed. Fix is dongle swap (or just use built-in WiFi on these units going forward, despite prior "built-in sucks" assessment — maybe it was the wrong dongle all along).
+
+### Problem statement
+TB1 and TB2 both exhibit the same pattern:
+- WiFi associated to home network (router shows them online with leased IPs .241 and .211)
+- App connects fine via AWS Lightsail relay (outbound from bot works)
+- Bluetooth Xbox controller works (separate radio)
+- **SSH from laptop times out** (or `Destination Host Unreachable`)
+- HDMI shows blank/cursor only — Razer RGB keyboard doesn't enumerate during early boot, so no console login possible
+
+### Key fact that took an embarrassingly long time to surface
+**Both TB1 and TB2 use external Edimax USB WiFi dongles** (MAC prefix `90:DE:80`) because the Pi 5's built-in WiFi is unreliable on those units. TB3/4/5 don't have this problem (TB3 uses a Realtek `rtw_8821cu` USB dongle, TB4/5 unknown).
+
+### Theories tested chronologically (most ruled out)
+| Theory | Verdict |
+|---|---|
+| Recent code change in `battery_monitor.py` / `config_loader.py` | WRONG — diffs were trivially benign |
+| WebRTC memory leak (def9f08-era fixes) | NOT TESTED — no live shell to measure |
+| Auto-AP fallback in `main_treatbot.py:2104-2114` flipping to hostapd after 60s WiFi loss | WRONG — bot was never in AP mode (no WIMZ-* SSID broadcast, app kept working) |
+| mDNS / `.local` resolution broken | WRONG — direct-IP SSH also failed |
+| Edimax dongle WiFi power-save | WRONG — `wifi.powersave = 2` was already set on TB1 (per-conn) and added to TB2; SD-card fix to add global `/etc/NetworkManager/conf.d/wifi-powersave-off.conf` made no durable difference |
+| `hidden=true` on Pi-Imager preconfigured connection + competing saved networks (Gonzaga1, Kazuya, etc.) | PARTIALLY HELPFUL — SD-card fix to `hidden=false` and delete stray `.nmconnection` files made TB1 SSH-able "instantly" after first reboot, then it dropped again after a few minutes |
+| `treatbot.service` itself doing something to wlan0 | WRONG — disabled the service AND `wifi-provision.service` on TB2's SD; bot still timed out on SSH after the (re)boot |
+| Asymmetric routing (eth0 metric 100 < wlan0 metric 600 → SYN-ACK to wlan0 IP goes out eth0) | RULED OUT — `rp_filter=0` and sshd binds to `0.0.0.0:22`; SSH to wlan0 IP `.211` worked while eth0 was also plugged in |
+| Router MAC-aging on quiet WiFi clients (keepalive cron would fix) | NOT TESTED — user gave up before running the experiment |
+| **Dongle hardware/firmware/driver in a stuck state** | LEADING THEORY — every test shows wlan0 SSH dies the instant the Ethernet cable is unplugged |
+
+### The decisive observation
+Once we got SSH into TB2 via Ethernet (eth0 = 192.168.50.9), all diagnostics looked fine:
+- `nft list ruleset` empty
+- `wpa_cli status`: `wpa_state=COMPLETED`, freq 2442 (2.4GHz ch 7), 802.11n
+- Self-ping wlan0 worked (0.02ms)
+- sshd listens on 0.0.0.0:22
+- No iptables / nftables blocking
+- Routing sane
+
+**But the moment eth0 cable is unplugged, SSH to .211 (wlan0) dies. Every single time.** That's a damning signal — the dongle/driver appears to ride on something Ethernet provides (could be: USB current draw is higher with eth0 active and powers the dongle better; could be NM keepalive behavior; could be coincidence in timing of broadcasts; we don't know).
+
+### What we did to the bots
+TB1 (via SD-card surgery):
+- Set `hidden=false` on `preconfigured.nmconnection` (was `hidden=true` for a non-hidden network)
+- Removed competing networks: Gonzaga1, Kazuya, Trailsidedream
+- Left `treatbot.service` enabled — that "worked instantly" on first reboot then degraded
+
+TB2 (via SD-card surgery):
+- Removed competing networks: Gonzaga1, Kazuya, Motta studios, OgdenCap, Trailsidedream
+- Added `/etc/NetworkManager/conf.d/wifi-powersave-off.conf` (was missing)
+- **Disabled `treatbot.service` and `wifi-provision.service`** auto-start
+- Still has the WiFi-only failure mode
+
+### Decision → RESOLUTION
+Initially decided to flash. Then user enabled the Pi 5 **built-in WiFi** on TB2 → SSH worked immediately. **Root cause confirmed: the Edimax USB dongle is bad.** Same issue on TB1 (same MAC prefix, same symptom).
+
+**No flash needed.** Options for these units going forward:
+1. Use Pi 5 built-in WiFi (the "built-in sucks" assessment that pushed the dongle in the first place may have been wrong — possibly TB1/TB2 always had bad dongles)
+2. Replace the Edimax dongles with a different brand (Panda PAU09, TP-Link TL-WN722N, Realtek 8821AU)
+
+### What to preserve before flashing
+N/A — flash avoided. Switched to built-in WiFi instead.
+
+### Lessons / memories
+- **Don't trust mDNS / `.local` hostnames when diagnosing.** Always use the literal IP from the router's DHCP table.
+- **Don't trust the router's "online" indicator alone** — the bot can be associated at the WiFi link layer with sshd dead or the dongle in a state where inbound packets fail. Use `ping <ip>` from another LAN host first.
+- **When the app works but SSH fails, that's outbound-works/inbound-fails** — a very specific signature. Suspect L2/dongle/driver before the bot's code.
+- **Razer RGB keyboards don't enumerate during early Pi boot.** Keep a cheap basic USB keyboard in the toolbox for HDMI rescue.
+- **SD-card surgery is the reliable recovery path** when SSH is dead. Pop SD into another Pi via USB reader, mount `/dev/sda2`, edit `/etc/NetworkManager/system-connections/*` and `/etc/systemd/system/multi-user.target.wants/`, sync, unmount, reinsert. ~10 min.
+- **The Pi Imager's preconfigured WiFi has `hidden=true` by default** — wrong for any visible home network and causes association flakiness. Always fix to `false`.
+- **Stale `.nmconnection` files from prior locations can hijack the bot.** When provisioning a new unit at a new location, audit `/etc/NetworkManager/system-connections/` and delete anything that isn't the current home WiFi.
+- **Ethernet always wins.** For new bot bring-up or recovery, plug a cable in first. WiFi-only diagnosis is a trap.
+
+### Files touched
+None in the repo. All changes were to TB1 and TB2 SD-card OS state (no code changed in `/home/morgan/dogbot/`).
+
+### Commits this session
+- (this commit) — docs: log TB1/TB2 SSH rabbit hole + Edimax dongle memory
+
+---
+
 ## Session: 2026-05-26 (evening) — treatbot3 dispenser tuning, treatbot5 motor failure, battery false-charging fix
 
 **Duration:** ~2 hours
