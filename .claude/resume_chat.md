@@ -1,5 +1,58 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-27 — treatbot5 UART FIXED + dispenser restored — root cause was unpowered chip
+
+**Duration:** ~2 hours
+**Robot:** treatbot5
+**Status:** ✅ Complete — UART working, dispenser running on treatbot4 tuning, chopper=spreadcycle confirmed live
+
+### TL;DR
+After multiple sessions across May 25-26 chasing UART silence on treatbot5, root cause was finally identified: **the TMC2209 chip was unpowered the entire time.** A loose breadboard rail terminal on the VM (motor power) supply meant battery voltage never reached the chip. An unpowered chip produces EXACTLY the `echo_only` UART pattern (Pi TX drives joined node, Pi RX reads it back, chip sits inert) — electrically indistinguishable from "broken wire to chip" at the bus level. After reseating the rail terminal, UART came up clean on first probe: `chip_replied`, `version=0x21`.
+
+### How we got there
+1. **User reported dispenser "fails epically" — no movement, no sound** even with carousel removed (zero load on shaft)
+2. **Software side verified firing correctly** — backend logs showed `[TREAT] Dispensing treat #N` with GPIO writes happening
+3. **Multimeter on chip V+ pad: 1.1V phantom voltage to GND** — high-impedance reading of a floating pin (EMI pickup), not real low voltage
+4. **All wires tested continuous in continuity mode** — wires themselves are fine
+5. **Bulk capacitor tested 10MΩ both directions** — cap is healthy, not shorting the rail
+6. **User pulled chip + connected to DC bench at 12.8V standalone → pads held 12V perfectly** — chip is innocent
+7. **Diagnosis: in-circuit failure was the rail terminal contact** — reseated, V+ came back to battery voltage
+8. **UART probe immediately showed `chip_replied`, IOIN=0x21000041, version=0x21** — full success
+
+### Why this took so long across sessions
+- Earlier sessions multimetered VIO=3.3V at chip pad, but that was a snapshot in time — connection was flaky (came/went with rework)
+- Module swap-tests (treatbot1's chip into treatbot5) didn't fix → we correctly concluded "chip isn't the fault" but wrong implication followed (we assumed wires were the fault, when actually it was the rail terminal upstream of all wires)
+- Pi UART loopback proved Pi healthy → also correct, but only proves the Pi end; said nothing about whether the chip was alive
+- Continuity testing of wires passed → wires WERE continuous, but a wire's continuity doesn't prove its battery-side end is actually connected to a live source
+- Every diagnostic touchpoint was correct in isolation; the pattern just looked exactly like "broken signal wires"
+
+### Config changes applied to treatbot5.yaml
+Adopted treatbot4's proven tuning (best-tuned post-UART unit):
+- `step_delay: 0.006 → 0.010` — slower stepping = more torque on torque-speed curve
+- `reverse_steps: 40 → 70` — stronger anti-jam reverse
+- Added `chopper_mode: "spreadcycle"` — full rated torque, now actually applies via working UART
+
+Boot log verification: `TMC2209 configured: IRUN=31, IHOLD=5, 8x microstep, vsense=0, SGTHRS=0, chopper=spreadcycle` ✓
+
+### Major implication for the fleet
+**Phantom voltage (~1V) on a power rail is "floating pin," NOT "undervolted."** This is a common pattern after extensive rework — a wire that conducts microamps for continuity testing can fail under chip's milliamp load. Future debugging: probe the source-side end of the supply wire to verify power actually exists at the wire, not just that the wire is end-to-end continuous.
+
+### Memories updated this session
+- `feedback_tmc2209_uart.md` — added 2026-05-27 update with "unpowered chip = echo_only" insight + chip-power sanity test procedure
+- `feedback_phantom_voltage.md` — NEW: ~1V multimeter readings on rails = floating pin, not undervolt
+
+### Files modified
+- `config/robot_profiles/treatbot5.yaml` — dispenser section: step_delay, reverse_steps, chopper_mode
+
+### Pending / next session
+1. **Bare-motor dispense test** — confirm Xbox LB now spins motor with full torque
+2. **Reinstall carousel** — full loaded dispense test
+3. **(Carry over from 2026-05-26)** wifi_manager pgrep spam fix — `services/network/wifi_manager.py` shouldn't poll for hostapd in client mode
+4. **(Carry over)** Battery false-charging issue on treatbot5 — still untouched
+5. **WiFi dongle situation on TB1/TB2** — see TB1 session entry directly below for full context (AC600 batch has per-unit dead 5 GHz; built-in WiFi being used as workaround)
+
+---
+
 ## Session: 2026-05-27 (overnight) — Dongle 5 GHz failure → dual-profile fallback → revert to built-in
 
 **Duration:** ~2 hours
