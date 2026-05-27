@@ -42,10 +42,10 @@ servo:
   slow_pulse: 1560  # legacy — no longer used for dispenser
 
 # Battery monitor calibration (services/power/battery_monitor.py)
-# Calibrated 2026-05-17: at 16.8V bench, ADS1115 A0 read 0.315V → factor = 53.33.
-# (treatbot3 needed 54.28; treatbot5 divider runs ~1.8% leaner on the ADC tap.)
+# Re-calibrated 2026-05-27: DMM 15.90V, ADS1115 A0 read 0.310V → factor = 51.29.
+# (treatbot3 needed 54.28; treatbot5 divider runs ~5.5% leaner — original 53.33 over-read by ~0.62V.)
 battery:
-  calibration_factor: 53.33
+  calibration_factor: 51.29
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:
