@@ -32,7 +32,7 @@ dispenser:
   irun: 31
   max_retries: 3
   microstepping: 8
-  reverse_steps: 40
+  reverse_steps: 75
   sgthrs: 0
   shaft_invert: true
   step_delay: 0.006
