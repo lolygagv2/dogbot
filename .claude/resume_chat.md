@@ -1,10 +1,10 @@
 # WIM-Z Resume Chat Log
 
-## Session: 2026-05-27 — TB1/TB2 SSH-unreachable rabbit hole — CONFIRMED bad Edimax dongles
+## Session: 2026-05-27 — TB1/TB2 SSH-unreachable — RETRACTED dongle theory; pointing at TB2 hardware
 
-**Duration:** ~3 hours
-**Robots:** treatbot1 + treatbot2 (both running, both broken in the same way)
-**Status:** ✅ ROOT CAUSE CONFIRMED. Both Edimax USB dongles are bad. Verified by enabling Pi 5 built-in WiFi → SSH worked. No flash needed. Fix is dongle swap (or just use built-in WiFi on these units going forward, despite prior "built-in sucks" assessment — maybe it was the wrong dongle all along).
+**Duration:** ~3 hours + follow-up
+**Robots:** treatbot1 + treatbot2 (both broken the same way)
+**Status:** ⚠️ DONGLE THEORY RETRACTED. Same dongle that "failed" on TB2 was moved to TB3 and works **perfectly** (5.805 GHz / 802.11ac / -33 dBm / 0 errors / 351 Mb/s). On TB2 the same dongle could only manage 2.4 GHz / 802.11n. Same dongle, same router, same SSID — capability gap is huge. Points at **USB power delivery or USB controller on TB2**, not the dongle. Likely same story on TB1. Cause not yet confirmed; needs the decisive test below.
 
 ### Problem statement
 TB1 and TB2 both exhibit the same pattern:
@@ -54,12 +54,17 @@ TB2 (via SD-card surgery):
 - **Disabled `treatbot.service` and `wifi-provision.service`** auto-start
 - Still has the WiFi-only failure mode
 
-### Decision → RESOLUTION
-Initially decided to flash. Then user enabled the Pi 5 **built-in WiFi** on TB2 → SSH worked immediately. **Root cause confirmed: the Edimax USB dongle is bad.** Same issue on TB1 (same MAC prefix, same symptom).
+### Decision → RETRACTION
+Initially decided to flash. Then briefly thought "built-in WiFi works → dongle is dead." Then user moved the supposedly-dead TB2 dongle to TB3 and it works **perfectly** (5GHz/802.11ac, -33 dBm, 0 errors, 351 Mb/s).
 
-**No flash needed.** Options for these units going forward:
-1. Use Pi 5 built-in WiFi (the "built-in sucks" assessment that pushed the dongle in the first place may have been wrong — possibly TB1/TB2 always had bad dongles)
-2. Replace the Edimax dongles with a different brand (Panda PAU09, TP-Link TL-WN722N, Realtek 8821AU)
+**The dongle is innocent. TB2 (and likely TB1) has a hardware-level issue** with how it powers/drives USB peripherals. Same brand+model dongle on TB3 negotiates 5GHz 802.11ac; on TB2 it could only negotiate 2.4GHz 802.11n and inbound packets to wlan0 died unless Ethernet was also plugged in (Ethernet plug likely provides marginal additional USB bus stability or triggers driver re-init).
+
+### Decisive test still TODO (cheap, ~10 min)
+1. Try the dongle in **each of TB2's 4 USB ports** (2x USB 3.0 blue + 2x USB 2.0 black). If only some ports fail → bad port, use a different one.
+2. If all ports fail → put **TB3's SD (cloned or physically swapped) into TB2**. If TB2 with TB3's image still fails → **hardware fault on TB2's USB controller / power circuit; software cannot fix it.** If it works → OS state corruption that survived our partial fixes; remediation is to clone TB3's SD onto TB1/TB2.
+3. **Beefier PSU** — official Pi 5 wants 5V/5A USB-C. Underpowered supplies throttle USB current. Cheap thing to try.
+
+Likely outcome (gut): TB1/TB2 have a USB power circuit fault (cap aging, voltage sag under USB load). 5GHz/ac requires more dongle current than 2.4GHz/n, which is why the dongle degrades to /n on these units. Ethernet plug may add just enough current draw / bus activity to keep the USB hub stable.
 
 ### What to preserve before flashing
 N/A — flash avoided. Switched to built-in WiFi instead.
