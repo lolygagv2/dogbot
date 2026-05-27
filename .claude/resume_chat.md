@@ -1,5 +1,44 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-26 (late) — TB1 SSH-unreachable: ROOT-CAUSED as dual-band BSSID flap, fix shipped
+
+**Duration:** ~1 hour
+**Robot:** treatbot1 (paralleled with tb2's own Claude session)
+**Status:** ✅ FIXED on TB1. Same fix needs to be applied on TB2.
+
+### The actual cause (resolves the retracted theory from the earlier 2026-05-27 entry)
+Not USB power delivery, not bad Edimax dongles, not the rtw88 deep-LPS bug. The real cause: **rtw88 band-flap on dual-band SSIDs**.
+
+"524Pomeranian" is exposed on both 2.4 GHz (`…dc:b0`) and 5 GHz (`…dc:b4`) under one SSID. The rtw88_8821cu dongle keeps re-evaluating and roaming between them (visible in TB1's journal as repeated `authenticate with …b0` ↔ `…b4` events). Every re-association leaves the AP's bridge/forwarding table for the dongle's MAC briefly stale. Symptoms:
+- outbound TCP (relay, internet) works fine — chip is awake to transmit
+- inbound from LAN (ping, SSH) silently dies — AP forwards to wrong BSSID while chip is on the other radio
+- per-Pi-and-location variance: same dongle works on TB3 (signal differential there is large → dongle picks one band and stays), fails on TB1/TB2 (balanced signal → constant flapping)
+
+This is *consistent* with TB2's earlier "dongle was stuck at 2.4 GHz on TB2 but did 5 GHz/ac on TB3" observation — same dongle, different band-flap behavior at different physical locations.
+
+### Fix applied
+1. **TB1 home network** — `sudo nmcli connection modify "524Pomeranian" 802-11-wireless.band a` — pins to 5 GHz, stops the flap. No SSH bounce (band setting applies on next re-association). Do **NOT** run `nmcli connection up` after — would needlessly disconnect.
+2. **Provisioning code** — `services/network/wifi_manager.py::save_credentials` now auto-pins `band=a` when the scan shows the target SSID has a 5 GHz BSSID. New helper `_ssid_has_5ghz`. Single-band SSIDs left alone so 2.4-GHz-only demo routers still work.
+
+### TB1 currently running on built-in WiFi
+User removed the Faraday cage to use built-in WiFi as a workaround while we diagnosed. Built-in is currently at -17 dBm on 5 GHz channel 161. The dongle remains *mandatory* once the cage goes back on — built-in WiFi can't get through the chassis. The `band=a` pin is now in place for when the dongle is re-attached.
+
+### Memory updated
+`project_wifi_dongle.md` rewritten to distinguish the two distinct rtw88 failure modes:
+- failure mode 1: deep LPS beacon-loss storms (fixed 2026-05-21 with `disable_lps_deep=1`)
+- failure mode 2: dual-band BSSID flap (fixed today with `band=a` pin + provisioning patch)
+
+### Next session / TB2 follow-up
+1. Apply same fix on TB2: `sudo nmcli connection modify "<ssid>" 802-11-wireless.band a` (skip the `connection up` step)
+2. Pull latest main on TB2 to get the `wifi_manager.py` provisioning patch
+3. When cage goes back on TB1, verify SSH still works on the dongle
+
+### Commits this session
+- `38549f9` fix: pin dual-band SSIDs to 5 GHz on provisioned WiFi networks
+- `f177e79` test: add TMC2209 known-good register dump probe
+
+---
+
 ## Session: 2026-05-27 — TB1/TB2 SSH-unreachable — RETRACTED dongle theory; pointing at TB2 hardware
 
 **Duration:** ~3 hours + follow-up
