@@ -16,7 +16,7 @@ import signal
 logger = logging.getLogger(__name__)
 
 class XboxControllerPersistent:
-    def __init__(self, mac_address: str = "AC:8E:BD:4A:0F:97"):
+    def __init__(self, mac_address: str = "CC:B0:B3:84:67:FC"):
         self.mac = mac_address
         self.controller = None
         self.running = False

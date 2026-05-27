@@ -40,7 +40,7 @@ camera:
 # 2026-05-25: UART finally working after fixing PDN_UART wire to pin 4, VIO to 3V3, GND shared,
 # and 1K resistor on Pi TX leg only (pin 8). Settings below now actually take effect.
 dispenser:
-  steps_per_slot: 137       # 137 microsteps per slot at microstepping=8 → 30.8° rotation per dispense
+  steps_per_slot: 144       # ~32.4° per dispense (137 × 1.05, dialed in live 2026-05-26)
   step_delay: 0.010         # Half-period per step (slower = more torque on torque-speed curve)
   max_retries: 3            # Anti-jam retry attempts per dispense
   reverse_steps: 70         # Steps to reverse during anti-jam

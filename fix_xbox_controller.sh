@@ -4,7 +4,7 @@
 echo "Fixing Xbox Controller connection..."
 
 # Remove any existing connection
-bluetoothctl disconnect 78:86:2E:8C:47:97 2>/dev/null
+bluetoothctl disconnect CC:B0:B3:84:67:FC 2>/dev/null
 sleep 1
 
 # Power cycle Bluetooth
@@ -15,7 +15,7 @@ sudo rfkill unblock bluetooth
 sleep 2
 
 # Ensure controller is trusted
-bluetoothctl trust 78:86:2E:8C:47:97
+bluetoothctl trust CC:B0:B3:84:67:FC
 
 echo "Now turn on your Xbox controller (press Xbox button)"
 echo "Waiting for controller to be ready..."
@@ -24,11 +24,11 @@ sleep 5
 # Connect with retry
 for i in {1..3}; do
     echo "Connection attempt $i..."
-    bluetoothctl connect 78:86:2E:8C:47:97
+    bluetoothctl connect CC:B0:B3:84:67:FC
 
     # Check if connected
     sleep 2
-    if bluetoothctl info 78:86:2E:8C:47:97 | grep -q "Connected: yes"; then
+    if bluetoothctl info CC:B0:B3:84:67:FC | grep -q "Connected: yes"; then
         echo "Controller connected!"
 
         # Wait for device to stabilize
