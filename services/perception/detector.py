@@ -815,12 +815,17 @@ class DetectorService:
                             f"[AI] Pipeline active (SG) | FPS: {self.current_fps:.1f} | "
                             f"Dogs last 5s: {self._heartbeat_detections}"
                         )
-                    else:
+                    elif run_full_ai:
                         self.logger.info(
                             f"[AI] Pipeline active | FPS: {self.current_fps:.1f} | "
                             f"Detections last 5s: {self._heartbeat_detections} | "
                             f"Last: {self._heartbeat_last_class or 'none'} @ "
                             f"{self._heartbeat_last_confidence*100:.0f}%"
+                        )
+                    else:
+                        self.logger.info(
+                            f"[AI] Mode={current_mode.value} — inference paused | "
+                            f"frame capture only | FPS: {self.current_fps:.1f}"
                         )
                     self._heartbeat_detections = 0
                     self._heartbeat_time = now
@@ -843,9 +848,13 @@ class DetectorService:
                     # Silent Guardian: ~3 FPS — enough for dog presence/ArUco tracking,
                     # frees CPU cores for emotion classifier inference
                     time.sleep(0.300)
-                else:
+                elif run_full_ai:
                     # Full AI modes: ~20 FPS cap, leaves headroom for Hailo DMA
                     time.sleep(0.050)
+                else:
+                    # IDLE / MANUAL: no inference, frame loop only feeds WebRTC preview.
+                    # ~5 FPS is smooth enough for app preview and cuts capture CPU ~75%.
+                    time.sleep(0.200)
 
                 # Process results
                 if dogs:

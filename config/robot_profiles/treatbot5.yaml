@@ -27,15 +27,16 @@ camera:
 
 # Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py) — tuned per treatbot4
 dispenser:
-  steps_per_slot: 137       # 137 microsteps per slot at microstepping=8 → 30.8° rotation per dispense
+  steps_per_slot: 147       # 137 microsteps per slot at microstepping=8 → 30.8° rotation per dispense
   step_delay: 0.010         # Half-period per step (slower = more torque on torque-speed curve)
   max_retries: 3            # Anti-jam retry attempts per dispense
-  reverse_steps: 70         # Steps to reverse during anti-jam (matches treatbot4)
+  reverse_steps: 77         # Steps to reverse during anti-jam (matches treatbot4)
   irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
   ihold: 5                  # TMC2209 hold current (low to save battery)
   microstepping: 8          # Microstepping multiplier (MRES=5)
   sgthrs: 0                 # StallGuard disabled — broken at low RPM regardless
   chopper_mode: "spreadcycle"  # Full rated torque (audible whine); now actually applied via UART (fixed 2026-05-27)
+  shaft_invert: true        # This unit wired with opposite rotation vs TB1/3/4; flip TMC2209 GCONF bit 4 (verified 2026-05-27 after carousel reinstall)
 
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:

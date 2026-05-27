@@ -211,21 +211,32 @@ class BatteryMonitorService:
             self.critical_warning_sent = False
 
     def _motor_recently_active(self, now: float) -> bool:
-        """True if a non-zero motor command was issued within motor_idle_required_s.
+        """True if drive motors OR dispenser were active within motor_idle_required_s.
 
         Motor load causes large voltage sag/rebound that the old oldest-vs-newest
-        trend check falsely read as 'charging.' Gate the check on motor idleness.
+        trend check falsely read as 'charging.' A stop command (0,0) still implies
+        recent activity — the motors were moving up until that command — so a fresh
+        stop should still keep the gate engaged while the rail rebounds.
         """
+        # Drive motors: any recent command (including stops) implies recent load
         try:
             from core.motor_command_bus import get_motor_bus
             cmd = get_motor_bus().last_command
-            if cmd is None:
-                return False
-            if cmd.left_speed == 0 and cmd.right_speed == 0:
-                return False
-            return (now - cmd.timestamp) < self.motor_idle_required_s
+            if cmd is not None and (now - cmd.timestamp) < self.motor_idle_required_s:
+                return True
         except Exception:
-            return False
+            pass
+
+        # Dispenser: stepper pulls ~1.1A peak from the same rail
+        try:
+            from services.reward.dispenser import get_dispenser_service
+            last_dispense = get_dispenser_service().last_dispense_time
+            if last_dispense > 0 and (now - last_dispense) < self.motor_idle_required_s:
+                return True
+        except Exception:
+            pass
+
+        return False
 
     def _check_charging(self) -> None:
         """Detect charger connect by requiring monotonic-ish rise while motors idle.
