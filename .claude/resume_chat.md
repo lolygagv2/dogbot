@@ -1,5 +1,30 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-27 (night, treatbot3) — pull, merge resume_chat conflict, fleet ready for user testing
+
+**Duration:** ~10 min
+**Robot:** treatbot3
+**Status:** ✅ Working tree clean post-pull. Fleet confirmed in good shape; user moving to user-testing phase next.
+
+### What happened
+- `git pull origin main` brought in 4 commits since `7231b80`: `be7c5ff` (tb4 steps_per_slot + Xbox MAC), `0704a89` (tb4 housekeeping log), `d428393` (tb5 dispense direction + idle CPU + charging gate), `16bbcec` (tb5 session log).
+- Stash conflict in `.claude/resume_chat.md` between upstream's two new session entries (TB5 late-evening + treatbot4 housekeeping) and the locally-stashed treatbot3 evening entry. Resolved by keeping all three in chronological newest-first order.
+- User confirmed TB5 is working great after the late-evening dispense direction + idle CPU + charging gate fixes (`d428393`). No further fixes needed for now.
+
+### Repo changes this session
+- `.claude/resume_chat.md` — merge resolution + this session entry.
+
+### Next session
+- **User testing phase.** Fleet hardware/firmware is stable across TB1/3/4/5; SG overhaul is live; TB5 dispense is mechanically and electrically correct; idle CPU is sane; battery false-charging closed.
+- Carryovers from prior sessions if/when needed:
+  1. Verify SG overhaul on a real bark session (sg_escalation rows, profile_json rollups, /sg/sessions/recent, mozart at L4).
+  2. Hand `/home/morgan/.claude/plans/flutter-sg-punishment-slider-prompt.md` to Flutter session.
+  3. Order new AC600 dongles for TB1/TB2 (ceiling: try the new ones, else stick with built-in WiFi).
+  4. TB3 TMC2209 UART setup (last fleet holdout).
+  5. `services/network/wifi_manager.py` pgrep spam cleanup.
+
+---
+
 ## Session: 2026-05-27 (late evening) — TB5 dispense direction wire fix + idle-mode CPU fix + false-charging gate fix
 
 **Duration:** ~1.5 hours
@@ -86,6 +111,39 @@ The battery_monitor change needs `sudo systemctl restart treatbot.service` to ta
 
 ### Commits this session
 - `be7c5ff` — chore(treatbot4): live-tuned steps_per_slot + new Xbox controller MAC (pushed)
+
+---
+
+## Session: 2026-05-27 (evening, treatbot3) — pulled SG overhaul, verified battery fixes, memory housekeeping, dispenser physical-test pass
+
+**Duration:** ~20 min
+**Robot:** treatbot3 (host this session was run on)
+**Status:** ✅ All pulled changes verified live in code. Dispenser physical test passed. User restarted `treatbot.service` to activate the SG overhaul at session close.
+
+### What happened
+- `git pull origin main` brought in 9 new commits since `2088503`, including the big Silent Guardian overhaul (`a1bca1c`) and TB5 battery recalibration (`0148649`). Fast-forward, clean.
+- Verified the two battery fixes are actually present in code:
+  - `services/power/battery_monitor.py:107` — `motor_idle_required_s = 120.0` (was 30)
+  - `services/power/battery_monitor.py:274` — trend threshold `0.35` (was 0.20)
+  - `config/robot_profiles/treatbot5.yaml:48` — `calibration_factor: 51.29` (was 53.33; 4S DMM read 15.90V vs reported 16.52V)
+- User confirmed TB2 WiFi is fixed (band=a pin via `nmcli` + provisioning code patch `38549f9`).
+- User clarified the AC600 dongle situation: TB1/TB2's specific dongles have dead 5GHz RF chains. Plan is to order new dongles; if those also fail on those Pi units, accept it as legacy-hardware idiosyncrasy and stick with built-in WiFi rather than rabbit-hole further.
+- Dispenser physical movement test passed on treatbot3 (no config changes needed).
+- User restarted `treatbot.service` at session end to activate the SG overhaul (mozart path fix, bark dog-attribution fallback to selected dog, `sg_escalation` events on bus, offline catch-up via `GET /sg/sessions/recent`, per-dog SG rollups in `dogs.profile_json`, hourly DBCleanup daemon, BPM fast-escalation config + `POST /sg/config` + relay `sg_config` command).
+
+### Files modified (memory only — outside the repo)
+- `~/.claude/projects/-home-morgan-dogbot/memory/project_edimax_wifi_dongles.md` — rewrote. Old version still claimed "USB power/controller fault, software won't fix it" (the retracted theory). New version reflects reality: per-unit dead 5GHz RF chains in the AC600 batch, plan is replacement dongles + built-in WiFi fallback for TB1/TB2.
+- `~/.claude/projects/-home-morgan-dogbot/memory/MEMORY.md` — updated index line for the dongle memory.
+
+### Repo changes this session
+None. Working tree clean. Nothing to commit.
+
+### Next session
+1. Verify SG overhaul on next live SG session (assuming user did the restart): `sg_escalation` rows appear in `dog_events`; `dogs.profile_json['sg']` populates for dogs with non-NULL attribution; `GET /sg/sessions/recent` returns the new session; mozart actually plays at L4.
+2. Hand `/home/morgan/.claude/plans/flutter-sg-punishment-slider-prompt.md` to the Flutter session.
+3. TB5 bare-motor + loaded dispense tests (after UART fix + treatbot4 tuning adoption).
+4. TB5 battery false-charging issue: false-charging gate is fixed fleet-wide and TB5 voltage recalibrated — should be resolved. Confirm on next charge cycle.
+5. Order new AC600 dongles for TB1/TB2; ceiling on further dongle debugging is "try the new ones, if they also fail just use built-in."
 
 ---
 
