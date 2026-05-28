@@ -1,5 +1,92 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-28 (early hours, treatbot4) — app-testing punch list: 4 issues fixed, pushed to main
+
+**Duration:** ~3 hours
+**Robot:** treatbot4 (code changes are fleet-wide via origin/main)
+**Status:** ✅ All 4 reported issues from app-testing session committed and pushed. Pull + `sudo systemctl restart treatbot.service` on each robot to activate.
+
+### Issues reported by user, all addressed
+
+1. **False spin reward (~18:09 on TB?)** — dog ran into wall, robot rewarded "spin"
+   - Couldn't pull literal frame timeline: log gap on TB4 from 17–19h; user skipped cross-fleet ssh
+   - Root cause in `core/behavior_interpreter.py`: when `_last_behavior is None` (after `reset_tracking()`), the first classifier event gets the immediate-accept fast-path. For `spin` (a transient behavior) this means a single misfire frame instantly engages the 2-second spin latch + passes `check_trick` at 0.3s.
+   - Fix in `d6bcdba`: added `TRANSIENT_BEHAVIORS = {'spin'}` constant; spin now goes through the 2-frame debounce on first detection. Static poses (sit/lie/stand) keep their fast-path. Smoke-tested all 3 scenarios.
+
+2. **Bark event flood** — speaker echo from non-speak audio classifying as barks
+   - Existing `suppress_detection()` mechanism only called from coach speak-trick command audio path. Greetings, "good"/"no", Xbox feedback, mode announcements, SG ladder — none called it.
+   - Already-good: YAMNet threshold (0.70), relay-forward throttle (5s in `main_treatbot._forward_event_to_relay`), intensity envelope on event (`peak_energy`/`duration_ms`/`loudness_db`).
+   - Fix in `3d3c497`: `usb_audio.play_file()` now spawns a daemon monitor that re-extends `bark_detector.suppress_detection()` every 200ms while pygame is busy, plus 500ms tail. Music excluded. Added `peek_bark_detector_service()` so audio playback doesn't accidentally instantiate the bark detector early.
+
+3. **Voice override audit** — Xbox button MP3s always defaulted, never used uploaded per-dog voice
+   - Audit found three orchestrators (coach/mission/SG) and three ws.py voice handlers (play_voice/call_dog/play_command) ALREADY route through `resolve_voice_file`. Only Xbox was broken.
+   - Root cause: Xbox runs as a subprocess of main_treatbot (per `services/control/xbox_controller.py:166`). Its `resolve_voice_file()` saw an empty state singleton — `get_aruco_dog_within / session / current_dog` all returned None — so every Xbox-side lookup fell to `/talks/default/*`.
+   - Fix in `b069b22`: removed `_get_dog_audio_path`, added `_play_voice_command(name)` that POSTs `{"command": name}` to `/audio/play_command`. Server-side resolution uses the live state. Five call sites rewired (RT "good", B-cycle commands, RB "no", Y "treat", D-pad right "quiet"/"come").
+
+4. **`dispense_treat {count: N}`** — atomic multi-treat from one envelope
+   - `dispense_multiple(count, dog_id, reason)` already existed in dispenser. REST handler `/treat/dispense` already routed count>1 to it.
+   - Two WS handlers broken: `ws.py:401` ignored count; `ws.py:1421` passed `count` as the FIRST POSITIONAL ARG (`dog_id`) — silently mis-attributed every multi-dispense to a "dog" named "3"/"5"/etc.
+   - Fix in `a11dffa`: both WS paths now accept `count` + `dog_id` + `reason`, clamp count to [1, 10], thread multi-dispense off the WS receive loop. REST handler now returns actual dispensed count (was always returning requested count regardless of partial-jam outcomes). Added `import threading` at top of ws.py.
+   - App can listen for per-treat `treat_dispensed` bus events for UI progress.
+
+### Follow-up: "no default sounds" clarification
+
+User pushed back on session-end framing that described `/talks/default/*` as the "fallback" — design vision is owner-recorded voices are the norm, defaults are first-boot scaffolding only. Clarification: when a new dog is added but only some commands recorded, every other command should pull from the **first dog the owner added** (their "house voice") before any shipped default plays.
+
+- Fix in `d095c16`: `services/media/voice_lookup.py` now inserts a "first-added dog" step in the resolution chain between per-dog candidates and `/talks/default/`. Folder discovered by scanning `/VOICEMP3/talks/` for `dog_<timestamp>` folders, sorted numerically. Filesystem-smoke-tested on TB4's actual layout — `sit` (in both): first-dog wins; `name` (only first-dog): first-dog; `crosses` (only default): default.
+- Memory saved: `project_voice_first_dog_default.md` (the rule) + `feedback_no_default_framing.md` (don't talk about defaults as the norm) + MEMORY.md index entries.
+
+### Commits this session (all pushed to origin/main)
+- `3d3c497` — fix(audio): suppress bark detection during all speaker playback
+- `d6bcdba` — fix(coach): require 2 consecutive frames before committing 'spin'
+- `a11dffa` — feat(treat): accept count param on dispense_treat (1–10) across all paths
+- `b069b22` — fix(xbox): route command audio through /audio/play_command for per-dog voice
+- `d095c16` — fix(voice): owner's first dog acts as house voice before shipped defaults
+
+### Files touched (7)
+```
+ api/server.py                        |  9 ++++--
+ api/ws.py                            | 46 ++++++++++++++++++++------
+ core/behavior_interpreter.py         |  8 ++++-
+ services/media/usb_audio.py          | 39 +++++++++++++++++++++++
+ services/media/voice_lookup.py       | 46 +++++++++++++++++++++++++-
+ services/perception/bark_detector.py |  7 ++++
+ xbox_hybrid_controller.py            | 62 +++++++++++-------------------------
+```
+
+### Next session / open items
+- **Activate the changes:** every fleet member needs `git pull origin main` + `sudo systemctl restart treatbot.service`. None of these fixes are live until the service restarts on that unit.
+- **Validation:**
+  - Bark flood: trigger coach greeting/"good"/Xbox audio with bark detector active — confirm `"Bark detection suppressed for ...s (speaker echo)"` lines continuously extend, no real bark events during playback.
+  - False spin: run a coach session with the actual wall-running scenario or simulate by triggering a single-frame spin via debug. The 2-frame requirement should prevent the false reward.
+  - Xbox voice override: upload a custom "good.mp3" for the first dog; press RT; should play the custom not the shipped default. Also test the house-voice fallback by deleting that custom and checking it still uses the first-dog's voice instead of `/talks/default/`.
+  - `dispense_treat`: send `{"count": 3}` via WS — should fire 3 dispenses ~1.5s apart, each emit a `treat_dispensed` event.
+- **Deferred from Issue 1's asks:**
+  - Obstacle-acceleration gate for spin reward (needs depth/ToF or bbox-motion analysis from `dog_tracker`). Cheapest follow-up if false spins recur: bbox translation vs rotation check.
+  - Literal frame buffer for 18:09 incident — log gap on TB4, never pulled.
+- **Pre-existing untracked items** unchanged from session start (per prior log): `.claude/TMC2209_UART_SETUP.md`, `.claude/nightvisionrobo.md`, `state/`, `tests/hardware/test_battery_adc_channels.py`, plus dirty `config/robot_profiles/treatbot4.yaml`. Not touched this session.
+
+---
+
+## Session: 2026-05-27 (late evening, treatbot4) — sync pull only
+
+**Duration:** ~2 min
+**Robot:** treatbot4
+**Status:** ✅ Complete — fast-forwarded to `c0931bd`, no work needed
+
+### Work completed
+- `git pull origin main`: 3 commits in (`d428393` TB5 DIR/idle/charging fix, `16bbcec` TB5 late-night docs, `c0931bd` night merge). 4 files updated, fast-forward clean, no conflicts.
+- All carry-overs from previous TB4 session (service restart + SG validation + TB3 UART) confirmed done by user out-of-band.
+
+### State at session end
+- Branch `main` clean (only the 4 known pre-existing untracked files: `.claude/TMC2209_UART_SETUP.md`, `.claude/nightvisionrobo.md`, `state/`, `tests/hardware/test_battery_adc_channels.py`).
+- `treatbot.service` active, AI 19.4 FPS, no errors in last hour of logs.
+- TB4 in sync with rest of fleet (TB5 dispense direction, idle CPU pause, charging false-positive fix all live in pulled code).
+
+### No commits this session
+
+---
+
 ## Session: 2026-05-27 (night, treatbot3) — pull, merge resume_chat conflict, fleet ready for user testing
 
 **Duration:** ~10 min
