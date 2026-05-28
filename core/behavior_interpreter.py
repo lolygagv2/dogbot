@@ -43,6 +43,12 @@ class BehaviorInterpreter:
     """
 
     BEHAVIORS = ['stand', 'sit', 'lie', 'spin']  # cross removed - unreliable
+    # Transient behaviors must accumulate multiple consecutive classifier frames
+    # before being committed. Static poses (sit/lie/stand) are accepted on first
+    # detection, but a single 'spin' misfire (e.g. dog running forward into a
+    # wall) would otherwise instantly engage the 2-second spin latch and
+    # short-circuit a false reward.
+    TRANSIENT_BEHAVIORS = {'spin'}
 
     def __init__(self, config_path: str = None):
         """Initialize behavior interpreter"""
@@ -177,7 +183,7 @@ class BehaviorInterpreter:
                         return
 
                 if behavior != self._last_behavior:
-                    if self._last_behavior is None:
+                    if self._last_behavior is None and behavior not in self.TRANSIENT_BEHAVIORS:
                         # First detection after reset — accept immediately
                         self._last_behavior = behavior
                         self._behavior_start_time = now
