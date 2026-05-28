@@ -611,10 +611,19 @@ async def reset_coaching_cooldowns(dog_id: str = None):
     return result
 
 @app.post("/coaching/force_trick/{trick}")
-async def force_coaching_trick(trick: str):
-    """Force a specific trick for testing (e.g., 'sit', 'down', 'spin')"""
+async def force_coaching_trick(trick: str, dog_id: str = None, dog_name: str = None,
+                               audio_pre_played: bool = False):
+    """Force a specific trick.
+
+    Query params:
+        dog_id: optional dog identifier (from app's resolved selection).
+        dog_name: optional display name — used by TTS so prompts say the real name.
+        audio_pre_played: caller (e.g. Xbox) already played the trick mp3 as press
+            feedback; engine will skip its own TTS for this session. App MUST omit.
+    """
     engine = get_coaching_engine()
-    result = engine.set_forced_trick(trick)
+    result = engine.set_forced_trick(trick, dog_id=dog_id, dog_name=dog_name,
+                                     audio_pre_played=audio_pre_played)
     return result
 
 @app.post("/coaching/clear_forced_trick")

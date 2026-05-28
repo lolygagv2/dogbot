@@ -1997,8 +1997,10 @@ class XboxHybridControllerFixed:
         # Reset session cooldown - allows new session to start immediately
         self.api_request('POST', '/coaching/reset_session_cooldown')
 
-        # Set forced trick via API (uses path parameter)
-        result = self.api_request_blocking('POST', f'/coaching/force_trick/{trick}', timeout=2)
+        # Set forced trick via API. audio_pre_played=1 because we play the mp3 below
+        # as press feedback — the coach engine MUST skip its own redundant TTS.
+        result = self.api_request_blocking(
+            'POST', f'/coaching/force_trick/{trick}?audio_pre_played=1', timeout=2)
         if result and not result.get('error'):
             logger.info(f"Trick set to: {trick} (cooldown reset)")
         else:

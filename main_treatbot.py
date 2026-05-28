@@ -1536,7 +1536,12 @@ class TreatBotMain:
 
                 elif command == 'force_trick':
                     # Force a specific trick in coach mode (like Xbox Guide button)
-                    trick = params.get('trick') or params.get('data', {}).get('trick')
+                    data_blob = params.get('data', {}) if isinstance(params.get('data'), dict) else {}
+                    trick = params.get('trick') or data_blob.get('trick')
+                    # App (Build 106+) sends dog_id/dog_name resolved by priority
+                    # (ArUco > selected profile). Pass through so TTS uses the real name.
+                    dog_id = params.get('dog_id') or data_blob.get('dog_id')
+                    dog_name = params.get('dog_name') or data_blob.get('dog_name')
                     # Map behavior names to trick names (app may send either)
                     BEHAVIOR_TO_TRICK = {'stand': 'come', 'lie': 'laydown', 'down': 'laydown'}
                     if trick in BEHAVIOR_TO_TRICK:
@@ -1545,7 +1550,7 @@ class TreatBotMain:
                     from orchestrators.coaching_engine import get_coaching_engine
                     engine = get_coaching_engine()
                     if engine and engine.running and trick:
-                        result = engine.set_forced_trick(trick)
+                        result = engine.set_forced_trick(trick, dog_id=dog_id, dog_name=dog_name)
                         if result.get('error'):
                             self.logger.warning(f"force_trick rejected: {result['error']}")
                             if self.relay_client and self.relay_client.connected:

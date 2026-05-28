@@ -171,12 +171,18 @@ class CoachingEngine:
 
         # Testing/debug: force specific trick (None = random)
         self._forced_trick: Optional[str] = None
-        # Timestamp of most recent force_trick call. Xbox controller plays the trick
-        # mp3 immediately as user feedback; if engine reaches COMMAND state within
+        # Timestamp of most recent force_trick call where the CALLER already played the
+        # trick mp3 (Xbox press feedback). If engine reaches COMMAND state within
         # FORCED_TRICK_AUDIO_WINDOW_S of that, it skips its own redundant play.
+        # App-side force_trick MUST NOT set this — the app plays no audio.
         self._forced_trick_at: float = 0.0
         FORCED_TRICK_AUDIO_WINDOW_S = 5.0  # noqa: shadow ref via self below
         self._forced_trick_audio_window_s = FORCED_TRICK_AUDIO_WINDOW_S
+        # Dog identity attached to most recent force_trick (from app payload).
+        # Used by _get_dog_name so TTS substitutes the correct name even when
+        # ArUco hasn't yet identified the dog in the current session.
+        self._forced_dog_id: Optional[str] = None
+        self._forced_dog_name: Optional[str] = None
 
         # Demo mode: force specific dog identity (None = ArUco/auto)
         self._forced_dog: Optional[str] = None
@@ -392,6 +398,13 @@ class CoachingEngine:
         # Forced dog override (demo mode) takes priority over everything
         if self._forced_dog:
             return self._forced_dog
+
+        # App-supplied dog name from most recent force_trick payload.
+        # Honour when dog_id matches OR when no identifier was paired (best-effort).
+        if self._forced_dog_name and (
+            self._forced_dog_id is None or self._forced_dog_id == dog_id
+        ):
+            return self._forced_dog_name
 
         # First check ArUco-identified name from dogs_in_view tracking
         if dog_id in self.dogs_in_view:
@@ -1284,18 +1297,34 @@ class CoachingEngine:
         logger.info(f"FULL RESET - Session cancelled, {dogs_count} dogs ready for new session")
         return {'reset': True, 'dogs_ready': dogs_count, 'message': 'Full reset - ready for new session'}
 
-    def set_forced_trick(self, trick: str = None) -> Dict[str, Any]:
-        """Force a specific trick for testing (None to clear)"""
+    def set_forced_trick(self, trick: str = None, dog_id: str = None,
+                         dog_name: str = None, audio_pre_played: bool = False) -> Dict[str, Any]:
+        """Force a specific trick (None to clear).
+
+        Args:
+            trick: trick name (None to clear)
+            dog_id: optional dog identifier from caller (app payload)
+            dog_name: optional dog display name from caller (used by TTS)
+            audio_pre_played: True only when the caller (e.g. Xbox) already played the
+                trick mp3 as press feedback. When True, the coach engine will skip its
+                own redundant TTS in the next session's COMMAND state. App-initiated
+                force_trick MUST pass False so the engine speaks the trick aloud.
+        """
         if trick and trick not in self.TRICKS:
             return {'error': f'Invalid trick: {trick}', 'valid_tricks': self.TRICKS}
 
         self._forced_trick = trick
         if trick:
-            self._forced_trick_at = time.time()
-            logger.info(f"Forced trick set: {trick}")
+            self._forced_trick_at = time.time() if audio_pre_played else 0.0
+            self._forced_dog_id = dog_id or None
+            self._forced_dog_name = dog_name or None
+            logger.info(f"Forced trick set: {trick} (dog={dog_name or dog_id or 'unspecified'}, "
+                       f"audio_pre_played={audio_pre_played})")
             return {'forced_trick': trick, 'message': f"Next session will use '{trick}'"}
         else:
             self._forced_trick_at = 0.0
+            self._forced_dog_id = None
+            self._forced_dog_name = None
             logger.info("Forced trick cleared")
             return {'forced_trick': None, 'message': "Random trick selection restored"}
 

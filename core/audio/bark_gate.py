@@ -28,7 +28,7 @@ class BarkGateConfig:
 
     # Timing (in milliseconds)
     min_bark_duration_ms: int = 150   # Barks are typically 100-500ms (raised to filter clicks)
-    max_bark_duration_ms: int = 1500  # Cap duration (barks rarely exceed 1.5s)
+    max_bark_duration_ms: int = 1000  # Reject above this — sustained >1s is speech/music, not a bark
     grace_period_ms: int = 150        # Wait for bark "tail" before ending
     bark_cooldown_ms: int = 1000      # Cooldown between barks (raised from 800)
 
@@ -126,12 +126,12 @@ class BarkGate:
                 self.in_bark = False
                 self.waiting_grace = False
 
-                # Cap duration to reasonable max (handles chunked input)
-                duration = min(duration, cfg.max_bark_duration_ms)
-
-                # Validate: duration check
+                # Validate: duration check (too short = click, too long = speech/music)
                 if duration < cfg.min_bark_duration_ms:
                     logger.debug(f"Rejected: too short ({duration}ms < {cfg.min_bark_duration_ms}ms)")
+                    return result
+                if duration > cfg.max_bark_duration_ms:
+                    logger.info(f"Rejected: too long ({duration}ms > {cfg.max_bark_duration_ms}ms — likely speech)")
                     return result
 
                 # Validate: cooldown check

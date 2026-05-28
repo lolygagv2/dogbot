@@ -625,10 +625,14 @@ class TreatBotWebSocketServer:
                 if trick:
                     BEHAVIOR_TO_TRICK = {'stand': 'come', 'lie': 'laydown', 'down': 'laydown'}
                     trick = BEHAVIOR_TO_TRICK.get(trick, trick)
+                    # App (Build 106+) sends dog_id/dog_name resolved by priority
+                    # (ArUco > selected profile). Pass through so TTS uses the real name.
+                    dog_id = data.get("dog_id")
+                    dog_name = data.get("dog_name")
                     from orchestrators.coaching_engine import get_coaching_engine
                     engine = get_coaching_engine()
                     if engine and engine.running:
-                        engine.set_forced_trick(trick)
+                        engine.set_forced_trick(trick, dog_id=dog_id, dog_name=dog_name)
 
             elif command == "treat_counter_set":
                 # {"command": "treat_counter_set", "count": 44}
