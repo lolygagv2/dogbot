@@ -1,5 +1,76 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-28 (late, treatbot5) — R2 bark-spam root-cause + R3/R4 force_trick fixes, pushed to main
+
+**Duration:** ~1.5 hours
+**Robot:** treatbot5 (code changes are fleet-wide via origin/main)
+**Status:** ✅ Committed + pushed as `a55057f`. Service NOT restarted on TB5 yet — user opted to restart manually. Fleet rollout pending pull + restart.
+
+### What was reported
+User noted bark events still flooding the dog history despite the previous session's `3d3c497` speaker-echo suppression fix. Also: app-side Build 106 testing punch list (`.claude/ROBOT_ISSUES_2026-05-28` referenced but file not in repo) listing R3 (coach TTS skips trick prompt) and R4 (coach prompts say generic "Dog").
+
+### Verified the previous fixes are live on TB5
+- Local HEAD already at `6f69374` == `origin/main` HEAD. `3d3c497` (bark suppression), `d095c16` (house voice), `b069b22` (Xbox per-dog audio), `a11dffa` (treat count), `d6bcdba` (spin debounce) all pulled.
+- `treatbot.service` started at 00:59:10 EDT — AFTER `6f69374` (00:33:37) — so the new code IS running. Speaker-echo suppression confirmed firing in logs (200ms re-extensions during playback).
+
+### Root cause: bark spam ≠ speaker echo (R2)
+
+Pulled 4 false-positive bark events from last 4h logs. Same signature every time:
+```
+peak=0.37-0.38, duration=1500ms, loudness≈-8.5dB, conf=0.00
+classifier said: aggressive (0.34-0.67), notbark ≤ 5%
+```
+
+Diagnosis:
+1. `BarkGate` (Stage 1) is **pure energy thresholding** — no spectral or ML gating at the entry point. `base_threshold=0.18` is easily passed by talking close to the mic.
+2. Spectral filter at `core/audio/bark_detector.py:204` checks 400–1800Hz ratio against `spectral_threshold=0.15` — but speech vowel formants overlap that band heavily, so speech sails through.
+3. **ML notbark veto is async and broken anyway.** Veto runs in background thread (`_emotion_worker`), publishing `bark_false_positive` events *after* the bark is already committed and relayed. Even if it ran synchronously, the classifier itself confidently labels human speech as "aggressive" with `notbark < 5%`, so the `notbark > 0.5` gate never triggers.
+4. **Smoking gun:** all 4 false positives showed `duration=1500ms` — exactly `max_bark_duration_ms`, the silent cap. Real barks are 100-500ms. The code was capping over-long sustained sound and emitting it as a bark anyway. Speech/music = sustained → always hits the cap.
+
+### Fix shipped (in commit a55057f)
+
+**R2 — bark_gate.py:** Changed cap-and-emit → reject-when-too-long.
+- `max_bark_duration_ms: 1500 → 1000`
+- Removed `duration = min(duration, max)` cap line
+- Added explicit `if duration > cfg.max_bark_duration_ms: return result` with INFO log
+- Smoke-tested: would have rejected all 4 of today's false positives
+
+**R3 — trick TTS skipped (coaching_engine.py + xbox_hybrid_controller.py):**
+- Root cause: `set_forced_trick()` unconditionally set `_forced_trick_at = time.time()` — this is the "Xbox already played the mp3, skip redundant TTS" flag. App's force_trick path triggered the same flag → engine thought audio was already played → skipped the prompt.
+- Fix: `set_forced_trick(trick, dog_id=None, dog_name=None, audio_pre_played=False)`. Only set `_forced_trick_at` when `audio_pre_played=True`.
+- Xbox path now passes `?audio_pre_played=1` via query param in `/coaching/force_trick/{trick}`. App paths (WS/REST) leave it False → engine speaks the trick aloud.
+
+**R4 — coach says generic "Dog" (3 handlers + engine):**
+- Root cause: WS handler in `main_treatbot.py:1539`, WS handler in `api/ws.py:623`, and REST in `api/server.py:613` all extracted only `trick` from payload, dropping the `dog_id`/`dog_name` fields Build 106 app sends.
+- Fix: all three handlers now extract `dog_id` + `dog_name` and pass to `set_forced_trick`. Engine stores them as `_forced_dog_id` / `_forced_dog_name`. `_get_dog_name()` consults the forced name (after `_forced_dog` demo override, before ArUco/select_dog fallbacks).
+- Forced dog name cleared when `set_forced_trick(None)` called.
+
+### Commit (pushed to origin/main)
+- `a55057f` — fix(coach+bark): R2 bark duration reject, R3 trick TTS, R4 dog name in force_trick
+
+### Files touched (6)
+```
+ api/server.py                    | 15 ++++++++++++---
+ api/ws.py                        |  6 +++++-
+ core/audio/bark_gate.py          | 10 +++++-----
+ main_treatbot.py                 |  9 +++++++--
+ orchestrators/coaching_engine.py | 41 ++++++++++++++++++++++++++++++++++------
+ xbox_hybrid_controller.py        |  6 ++++--
+```
+
+### Activate + validate (next session / user TODO)
+- **Activate on TB5:** `sudo systemctl restart treatbot.service` — not done yet
+- **Fleet rollout:** `git pull origin main && sudo systemctl restart treatbot.service` on TB1-4
+- **R2 validation:** talk near robot for 2+ s in coach mode → expect `Rejected: too long (Xms — likely speech)` in logs, no bark events emitted/relayed/stored
+- **R3 validation:** force a trick from app → robot speaks the trick. Xbox Guide button → still skips engine TTS (Xbox plays it itself, no double "sit sit").
+- **R4 validation:** with a profiled dog selected in app, force a trick → robot says the dog's real name. Existing `select_dog` fallback unchanged.
+
+### Open / deferred
+- Untracked `.claude/TMC2209_UART_SETUP.md` (per-unit OS notes, intentionally not in git)
+- Spectral threshold (`0.15`) and ML classifier mis-labeling speech as bark are still the underlying weakness. Duration-reject fix is necessary but not sufficient if a real bark-length speech burst happens (e.g. a sharp "HEY!"). Follow-up options: raise spectral threshold to 0.25, train classifier on negative human-speech samples, or add a VAD preprocessor.
+
+---
+
 ## Session: 2026-05-28 (early hours, treatbot4) — app-testing punch list: 4 issues fixed, pushed to main
 
 **Duration:** ~3 hours
