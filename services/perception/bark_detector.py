@@ -672,3 +672,10 @@ def get_bark_detector_service(config: Optional[Dict] = None) -> BarkDetectorServ
         _bark_detector_instance.initialize()
 
     return _bark_detector_instance
+
+
+def peek_bark_detector_service() -> Optional[BarkDetectorService]:
+    # Returns the singleton only if it already exists. Used by usb_audio to
+    # suppress bark detection during speaker playback without forcing the
+    # bark detector to initialize early just because audio played.
+    return _bark_detector_instance

@@ -279,6 +279,12 @@ class USBAudioService:
             if is_music:
                 self._send_audio_event('playing', self._playlist_track)
 
+            # Suppress bark detection while speaker is active (echo prevention).
+            # Music excluded — bark detector is already mode-gated and music
+            # plays for minutes, so suppressing the full duration is unsafe.
+            if not is_music:
+                self._start_bark_suppression_monitor()
+
             return {
                 "success": True,
                 "filepath": filepath,
@@ -603,6 +609,39 @@ class USBAudioService:
         except Exception as e:
             self.logger.error(f"Play command error: {e}")
             return {"success": False, "error": str(e)}
+
+    def _start_bark_suppression_monitor(self):
+        """Suppress bark detection while the speaker is active (echo prevention).
+
+        Runs a daemon thread that re-extends the bark detector's suppression
+        window every 200ms until pygame stops playing, then adds a 500ms tail
+        to cover speaker reverb and mic AGC release.
+
+        Fails silent if the bark detector isn't initialized yet — that just means
+        nothing is listening for barks, so there's nothing to suppress.
+        """
+        def monitor():
+            try:
+                from services.perception.bark_detector import peek_bark_detector_service
+                svc = peek_bark_detector_service()
+                if svc is None:
+                    return
+                # Initial 1s window covers the gap before this thread loops
+                svc.suppress_detection(1.0)
+                while True:
+                    try:
+                        if not pygame.mixer.music.get_busy():
+                            break
+                    except Exception:
+                        break
+                    svc.suppress_detection(0.4)  # 200ms loop + 200ms slack
+                    time.sleep(0.2)
+                # Tail for speaker reverb / AGC release
+                svc.suppress_detection(0.5)
+            except Exception:
+                pass
+
+        threading.Thread(target=monitor, daemon=True, name="BarkSuppressMonitor").start()
 
     def wait_for_completion(self, timeout: float = 5.0) -> bool:
         """
