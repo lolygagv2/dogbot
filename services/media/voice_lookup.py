@@ -37,6 +37,38 @@ def _try_paths(dog_dir: str, command_id: str) -> Optional[str]:
     return None
 
 
+def _find_first_dog_folder() -> Optional[str]:
+    """Find the dog folder with the smallest timestamp (the first dog the
+    owner added). Used as the "house voice" fallback before shipped defaults,
+    so an owner's recordings populate every slot for every dog as long as
+    they've recorded it on at least one of their dogs.
+
+    Returns the folder name (e.g. 'dog_1777167142852'), not the full path.
+    """
+    try:
+        if not os.path.isdir(VOICE_ROOT):
+            return None
+        candidates = []
+        for name in os.listdir(VOICE_ROOT):
+            if not name.startswith('dog_'):
+                continue
+            if _GENERIC_TRACKER_RE.match(name):
+                continue  # skip dog_0, dog_-1 etc — tracker IDs, not real profiles
+            full = os.path.join(VOICE_ROOT, name)
+            if not os.path.isdir(full):
+                continue
+            suffix = name.split('_', 1)[1]
+            if not suffix.isdigit():
+                continue
+            candidates.append((int(suffix), name))
+        if not candidates:
+            return None
+        candidates.sort()
+        return candidates[0][1]
+    except Exception:
+        return None
+
+
 def resolve_voice_file(
     command_id: str,
     *,
@@ -82,7 +114,19 @@ def resolve_voice_file(
             path = p
             break
 
-    # Fall back to default
+    # House-voice fallback: try the FIRST dog the owner added before the
+    # shipped defaults. An owner who's only recorded sit+speak for their new
+    # dog still gets their own voice for good/no/come/etc. via their first
+    # dog's folder — instead of jumping straight to canned defaults.
+    if path is None:
+        first = _find_first_dog_folder()
+        if first and first not in candidates:
+            p = _try_paths(first, command_id)
+            if p:
+                resolved = f"{first} (first-added)"
+                path = p
+
+    # Final fallback to shipped defaults
     if path is None:
         path = _try_paths(DEFAULT_DIR, command_id)
 
