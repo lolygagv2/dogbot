@@ -678,33 +678,16 @@ class XboxHybridControllerFixed:
         self._last_dog_check = current_time
         return None
 
-    def _get_dog_audio_path(self, sound_name: str) -> str:
-        """Get audio path using centralized voice lookup.
+    def _play_voice_command(self, command_name: str):
+        """Play a per-dog voice command via the server's /audio/play_command endpoint.
 
-        Uses resolve_voice_file() with full fallback chain:
-        ArUco (5s TTL) > session dog > select_dog > default
-        Supports multi-extension (.wav, .mp3, .m4a, .aac)
-
-        Args:
-            sound_name: Sound name without extension (e.g., "good", "no", "quiet")
-
-        Returns:
-            API path like "/talks/default/good.mp3"
+        Per-dog override resolution (ArUco / session dog / select_dog / default)
+        happens server-side because the Xbox controller is a subprocess of
+        main_treatbot — it has its own (empty) state singleton and cannot see
+        the main robot's active dog. Resolving locally would always fall
+        through to the default folder.
         """
-        try:
-            from services.media.voice_lookup import resolve_voice_file
-            full_path = resolve_voice_file(sound_name)
-            if full_path:
-                # Convert full path to API path
-                # /home/morgan/dogbot/VOICEMP3/talks/... -> /talks/...
-                api_path = full_path.replace("/home/morgan/dogbot/VOICEMP3", "")
-                logger.debug(f"Using voice file: {api_path}")
-                return api_path
-        except Exception as e:
-            logger.warning(f"Voice lookup failed: {e}")
-
-        # Fallback
-        return f"/talks/default/{sound_name}.mp3"
+        self.api_request('POST', '/audio/play_command', {"command": command_name})
 
     def _start_api_worker(self):
         """Start the async API worker thread"""
@@ -1271,9 +1254,8 @@ class XboxHybridControllerFixed:
                 if not hasattr(self, '_last_rt_time'):
                     self._last_rt_time = 0
                 if current_time - self._last_rt_time > 0.3:  # 300ms cooldown
-                    audio_path = self._get_dog_audio_path("good")
-                    logger.info(f"RT: Playing 'Good' ({audio_path})")
-                    self.api_request('POST', '/audio/play/file', {"filepath": audio_path})
+                    logger.info("RT: Playing 'Good'")
+                    self._play_voice_command("good")
                     self._last_rt_time = current_time
             else:
                 self.state.right_trigger = 0.0
@@ -1685,13 +1667,11 @@ class XboxHybridControllerFixed:
                 # Get current command name and advance index
                 sound_name = self._command_names[self._command_cycle_index]
                 self._command_cycle_index = (self._command_cycle_index + 1) % len(self._command_names)
-                # Resolve dog-specific path
-                filepath = self._get_dog_audio_path(sound_name)
                 logger.debug(f"B button: Queued '{sound_name}' (0.3s delay)")
                 # Schedule playback after 0.3s delay (allows rapid cycling)
                 def play_command():
-                    logger.info(f"B button: Playing '{sound_name}' ({filepath})")
-                    self.api_request('POST', '/audio/play/file', {"filepath": filepath})
+                    logger.info(f"B button: Playing '{sound_name}'")
+                    self._play_voice_command(sound_name)
                 self._command_pending_timer = Timer(0.3, play_command)
                 self._command_pending_timer.start()
 
@@ -1728,9 +1708,8 @@ class XboxHybridControllerFixed:
         elif number == 5:  # Right bumper - Play "No" audio
             self.state.right_bumper = pressed
             if pressed:
-                audio_path = self._get_dog_audio_path("no")
-                logger.info(f"RB: Playing 'No' ({audio_path})")
-                self.api_request('POST', '/audio/play/file', {"filepath": audio_path})
+                logger.info("RB: Playing 'No'")
+                self._play_voice_command("no")
 
         elif number == 10:  # Right stick click - Center camera
             if pressed:
@@ -2086,9 +2065,8 @@ class XboxHybridControllerFixed:
 
     def play_reward_sound(self):
         """Play TREAT sound (Y button) - uses per-dog voice if available"""
-        audio_path = self._get_dog_audio_path("treat")
-        logger.info(f"Y button: Playing 'Treat' sound ({audio_path})")
-        self.api_request('POST', '/audio/play/file', {"filepath": audio_path})
+        logger.info("Y button: Playing 'Treat'")
+        self._play_voice_command("treat")
 
 
     def play_selected_talk(self):
@@ -2131,10 +2109,8 @@ class XboxHybridControllerFixed:
                 dpad_sounds = ["quiet", "come"]
                 sound_name = dpad_sounds[self._dpad_right_index]
                 self._dpad_right_index = (self._dpad_right_index + 1) % len(dpad_sounds)
-                # Get dog-specific path
-                audio_path = self._get_dog_audio_path(sound_name)
-                logger.info(f"D-pad right: Playing '{sound_name}' ({audio_path})")
-                self.api_request('POST', '/audio/play/file', {"filepath": audio_path})
+                logger.info(f"D-pad right: Playing '{sound_name}'")
+                self._play_voice_command(sound_name)
                 self.last_dpad_time = current_time
 
         elif number == 7:  # D-pad Y axis
