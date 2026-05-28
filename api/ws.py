@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from typing import Set, Dict, Any
 from fastapi import WebSocket, WebSocketDisconnect
@@ -399,9 +400,20 @@ class TreatBotWebSocketServer:
                     result = {"success": False, "command": command, "error": "Pan/tilt service not available"}
 
             elif command in ("treat", "dispense_treat"):
-                # {"command": "treat"} or {"command": "dispense_treat"}
+                # {"command": "treat", "count": N, "reason": "...", "dog_id": "..."}
                 if self.dispenser:
-                    self.dispenser.dispense_treat()
+                    count = max(1, min(10, int(data.get("count", 1))))
+                    reason = data.get("reason", "manual")
+                    dog_id = data.get("dog_id")
+                    if count == 1:
+                        self.dispenser.dispense_treat(dog_id=dog_id, reason=reason)
+                    else:
+                        # Multi-dispense blocks ~1.5s per treat — run off the WS thread
+                        threading.Thread(
+                            target=self.dispenser.dispense_multiple,
+                            kwargs={"count": count, "dog_id": dog_id, "reason": reason},
+                            daemon=True, name="TreatMultiDispense",
+                        ).start()
                 else:
                     result = {"success": False, "command": command, "error": "Dispenser not available"}
 
@@ -1413,14 +1425,30 @@ class TreatBotWebSocketServer:
             return {"success": False, "error": "Pan/tilt service not available"}
 
         elif command == "dispense_treat":
-            # {"count": 1, "reason": "manual"}
-            count = params.get("count", 1)
+            # {"count": N, "reason": "...", "dog_id": "..."}
+            # Bug fix: count was being passed as the first positional arg,
+            # which is dog_id — every multi-dispense request silently dispensed
+            # one treat and mis-attributed it to a dog named "3"/"5"/etc.
+            count = max(1, min(10, int(params.get("count", 1))))
             reason = params.get("reason", "manual")
+            dog_id = params.get("dog_id")
 
-            if self.dispenser:
-                success = self.dispenser.dispense_treat(count)
-                return {"success": success, "count": count, "reason": reason}
-            return {"success": False, "error": "Dispenser service not available"}
+            if not self.dispenser:
+                return {"success": False, "error": "Dispenser service not available"}
+
+            if count == 1:
+                success = self.dispenser.dispense_treat(dog_id=dog_id, reason=reason)
+                return {"success": success, "count": 1, "reason": reason}
+
+            # Multi-dispense blocks ~1.5s per treat — run off the WS thread.
+            # Per-treat progress is published via the treat_dispensed bus event,
+            # so the app can update its UI as each one lands.
+            threading.Thread(
+                target=self.dispenser.dispense_multiple,
+                kwargs={"count": count, "dog_id": dog_id, "reason": reason},
+                daemon=True, name="TreatMultiDispense",
+            ).start()
+            return {"success": True, "count": count, "reason": reason, "async": True}
 
         elif command == "emergency_stop":
             if self.motor:

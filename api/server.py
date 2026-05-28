@@ -765,14 +765,16 @@ async def dispense_treat(request: TreatRequest):
     try:
         dispenser = get_dispenser_service()
 
-        if request.count == 1:
+        count = max(1, min(10, int(request.count)))
+        if count == 1:
             success = dispenser.dispense_treat(
                 dog_id=request.dog_id,
                 reason=request.reason
             )
+            dispensed = 1 if success else 0
         else:
             dispensed = dispenser.dispense_multiple(
-                count=request.count,
+                count=count,
                 dog_id=request.dog_id,
                 reason=request.reason
             )
@@ -780,7 +782,8 @@ async def dispense_treat(request: TreatRequest):
 
         return {
             "success": success,
-            "treats_dispensed": request.count if success else 0,
+            "treats_dispensed": dispensed,
+            "requested": count,
             "dog_id": request.dog_id,
             "reason": request.reason
         }
