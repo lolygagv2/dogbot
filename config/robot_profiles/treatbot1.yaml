@@ -8,12 +8,12 @@ description: "Primary demo unit with matched motors"
 camera:
   rotation: 0  # degrees clockwise (0, 90, 180, 270)
   # Gimbal servo limits (pan_tilt.py)
-  pan_min: 10
+  pan_min: -180
   pan_max: 200
-  tilt_min: 20
-  tilt_max: 160
-  pan_center: 110   # Calibrated center (may differ from mechanical 90)
-  tilt_center: 90
+  tilt_min: 50
+  tilt_max: 280
+  pan_center: 120   # Calibrated center (may differ from mechanical 90)  (Right is negative, left is positive)
+  tilt_center: 60
   # Coach mode auto-tracking limits (tighter to avoid ceiling/floor)
   coach_pan_min: 55
   coach_pan_max: 145
@@ -34,6 +34,15 @@ dispenser:
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:
   slow_pulse: 1560  # legacy — no longer used for dispenser
+
+# Battery monitor (services/power/battery_monitor.py) — ADS1115 ADC on A0.
+# Each ADS1115 + voltage-divider pair is individually off, so calibration is
+# per-unit. Calibrated 2026-05-29: A0 read 3.839V raw at a metered 13.8V pack
+# -> factor 13.8 / 3.839 = 3.595. (Class default 4.308 gave a false 16.5V/94%.)
+# To recalibrate: measure pack with a meter, then factor = meter_V / adc_voltage
+# (adc_voltage is in GET /battery status).
+battery:
+  calibration_factor: 3.595
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:
