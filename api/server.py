@@ -2309,12 +2309,12 @@ async def camera_center():
     """Center camera to default position"""
     try:
         pantilt_service = get_pantilt_service()
-        pantilt_service.center()
+        pantilt_service.center_camera(reason="api_camera_center")
 
         return {
             "success": True,
             "message": "Camera centered",
-            "position": pantilt_service.get_position()
+            "position": pantilt_service.get_status().get("current_position")
         }
     except Exception as e:
         logger.error(f"Camera center error: {e}")
