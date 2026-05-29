@@ -1,3 +1,4 @@
+# /etc/systemd/system/treatbot.service
 [Unit]
 Description=TreatBot Main System
 After=network.target bluetooth.target
@@ -14,7 +15,13 @@ Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 Environment=PIPEWIRE_RUNTIME_DIR=/run/user/1000
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 EnvironmentFile=/home/morgan/dogbot/.env
-ExecStartPre=/bin/sleep 10
+# Wait for the user PipeWire session before starting. A cold boot can bring
+# treatbot up ~80s before pipewire-pulse; if pygame initialises before the pulse
+# socket exists it falls back to direct ALSA, grabs the USB card's hw PCM, and
+# locks PipeWire out of the card — which silently kills bark-detection capture.
+# Waiting for the socket keeps pygame on PipeWire so capture+playback coexist.
+ExecStartPre=/bin/sleep 5
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 120); do [ -S /run/user/1000/pulse/native ] && { echo "pulse socket ready after ${i}s"; sleep 2; exit 0; }; sleep 1; done; echo "WARNING: pulse socket not ready after 120s, starting on ALSA fallback"; exit 0'
 ExecStart=/home/morgan/dogbot/env_new/bin/python /home/morgan/dogbot/main_treatbot.py
 Restart=on-failure
 RestartSec=5
