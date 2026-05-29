@@ -179,10 +179,15 @@ class BarkAudioBufferArecord:
                             logger.warning(
                                 f"Bark capture has produced {self.silent_chunks} all-zero chunks "
                                 f"in a row from device={self.device}. Mic is dead or audio routing "
-                                f"is broken (check 'wpctl status' / 'arecord -l'). "
-                                f"Bark detection will not trigger until this is resolved."
+                                f"is broken (check 'wpctl status' / 'arecord -l')."
                             )
                             self._silent_warned = True
+                            # Runtime failover: a silent PipeWire 'default' almost always
+                            # means something grabbed the USB card's hw PCM directly (e.g.
+                            # pygame playback after a cold-boot race), evicting PipeWire from
+                            # the card. The capture PCM is still readable directly, so switch
+                            # to plughw:{card},0 and recover without a restart.
+                            self._attempt_silent_failover()
                     else:
                         self.silent_chunks = 0
                         self._silent_warned = False
@@ -210,6 +215,39 @@ class BarkAudioBufferArecord:
                 time.sleep(1.0)
 
         logger.info("Recording loop ended")
+
+    def _attempt_silent_failover(self):
+        """
+        Switch from a silent PipeWire 'default' source to direct ALSA plughw capture.
+
+        Called by the watchdog when the current device has produced a run of all-zero
+        chunks. If we're still on a PipeWire device, fail over to plughw:{usb_card},0,
+        which reads the USB capture PCM directly and works even when PipeWire has been
+        locked out of the card (verified: capture PCM stays free while pygame holds the
+        playback PCM). Subsequent _record_chunk() calls pick up self.device immediately.
+        """
+        if self.device.startswith(('plughw', 'hw:')):
+            logger.error(
+                f"Bark capture already on direct ALSA ({self.device}) and still silent — "
+                f"this is a hardware/mic fault, not audio routing. No failover available."
+            )
+            return
+
+        usb_card = _find_usb_card_number()
+        if usb_card is None:
+            logger.error("Bark capture failover: no USB audio card found to fail over to.")
+            return
+
+        new_device = f'plughw:{usb_card},0'
+        logger.warning(
+            f"Bark capture failing over: {self.device} -> {new_device} "
+            f"(PipeWire 'default' is dead; reading the USB card directly). "
+            f"AEC is bypassed on this path — speaker-echo suppression handles it."
+        )
+        self.device = new_device
+        # Give the new device a clean evaluation window.
+        self.silent_chunks = 0
+        self._silent_warned = False
 
     def _record_chunk(self) -> Optional[np.ndarray]:
         """

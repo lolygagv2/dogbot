@@ -27,26 +27,70 @@ def _detect_usb_audio_card() -> int:
 # Detect USB audio card dynamically (can be 0, 1, or 2 depending on boot order)
 USB_AUDIO_CARD = _detect_usb_audio_card()
 
+logger = logging.getLogger('USBAudio')
+
+
+def _wait_for_pulse_socket(timeout: float = 30.0) -> bool:
+    """
+    Wait for the PipeWire-pulse socket to appear before probing pygame.
+
+    Cold-boot race: treatbot.service can start BEFORE the user PipeWire session is
+    up (observed 2026-05-29: treatbot at boot+14s, pipewire-pulse at boot+92s). If
+    pygame probes SDL_AUDIODRIVER=pulseaudio before the socket exists, it silently
+    falls back to direct ALSA (plughw) and grabs the USB card's hardware PCM. That
+    locks PipeWire out of the whole card, collapsing it to a Dummy node with NO
+    capture source — so bark detection (which captures via PipeWire 'default')
+    records pure silence (energy 0.0000) and never fires. Waiting here keeps pygame
+    on PipeWire so playback and bark capture can coexist on the one USB device.
+    """
+    sock = os.environ.get('PULSE_SERVER', '').replace('unix:', '').strip()
+    if not sock:
+        sock = os.path.join(os.environ.get('XDG_RUNTIME_DIR', '/run/user/1000'),
+                            'pulse', 'native')
+    deadline = time.time() + timeout
+    waited = False
+    while time.time() < deadline:
+        if os.path.exists(sock):
+            if waited:
+                logger.info(f"PipeWire-pulse socket ready at {sock}")
+            return True
+        waited = True
+        time.sleep(0.5)
+    logger.warning(
+        f"PipeWire-pulse socket {sock} did not appear within {timeout:.0f}s — "
+        f"falling back to direct ALSA playback. Bark detection will rely on its "
+        f"runtime plughw failover until a restart with PipeWire available."
+    )
+    return False
+
+
 # Route pygame through PipeWire (via pipewire-pulse) for echo cancellation support.
 # PipeWire's echo-cancel module needs both playback and capture to flow through it.
-# Falls back to direct ALSA if PipeWire socket is unavailable (e.g. systemd service context).
+# Falls back to direct ALSA only if PipeWire is genuinely unavailable.
 _audio_backend = 'alsa'
 if os.path.exists('/usr/bin/pipewire-pulse'):
+    # Handle the cold-boot race before committing to a backend (see above).
+    _wait_for_pulse_socket(timeout=30.0)
     os.environ['SDL_AUDIODRIVER'] = 'pulseaudio'
     import pygame
     try:
         pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
         pygame.mixer.quit()
         _audio_backend = 'pulseaudio'
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            f"pygame PipeWire/pulseaudio init failed ({e}); falling back to direct "
+            f"ALSA plughw:{USB_AUDIO_CARD},0. This locks PipeWire out of the USB card "
+            f"— bark detection will depend on its runtime plughw failover."
+        )
         os.environ['SDL_AUDIODRIVER'] = 'alsa'
         os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
 else:
+    logger.warning("pipewire-pulse binary not found; using direct ALSA plughw playback.")
     os.environ['SDL_AUDIODRIVER'] = 'alsa'
     os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
     import pygame
 
-logger = logging.getLogger('USBAudio')
 logger.info(f"USB Audio detected on card {USB_AUDIO_CARD}, backend: {_audio_backend}")
 
 class USBAudioService:
