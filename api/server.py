@@ -5387,34 +5387,43 @@ async def camera_stream_contract():
 
 @app.post("/servo/pan")
 async def servo_pan_contract(request: ServoAngleRequest):
-    """Set pan servo angle: -90 to +90 degrees"""
+    """Set pan servo: app sends a degree offset from this robot's calibrated center.
+
+    Center and travel limits come from the robot profile (pan_center / pan_min /
+    pan_max), never hardcoded — every gimbal's physical PWM->angle mapping differs,
+    so a fixed 90-center / 0-180 clamp pushes one robot past its stop and starves
+    another of range.
+    """
     try:
         pantilt = get_pantilt_service()
         if not pantilt:
             raise HTTPException(status_code=503, detail="Pan/tilt service not available")
 
-        # Convert contract range (-90 to +90) to internal range (0 to 180, centered at 90)
-        internal_angle = int(90 + request.angle)
-        internal_angle = max(0, min(180, internal_angle))
-
-        pantilt.move_camera(pan=internal_angle)
+        # Offset from the per-robot calibrated center; move_camera() clamps to
+        # the profile's pan_limits via _move_to_position().
+        target_pan = pantilt.center_pan + request.angle
+        pantilt.move_camera(pan=target_pan)
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": {"code": "SERVO_ERROR", "message": str(e)}}
 
 @app.post("/servo/tilt")
 async def servo_tilt_contract(request: ServoAngleRequest):
-    """Set tilt servo angle: -45 to +45 degrees"""
+    """Set tilt servo: app sends a degree offset from this robot's calibrated center.
+
+    Center and travel limits come from the robot profile (tilt_center / tilt_min /
+    tilt_max), never hardcoded — the old 45-135 clamp assumed a generic 90-centered
+    servo and sat above this gimbal's level horizon, so the D-pad could never tilt down.
+    """
     try:
         pantilt = get_pantilt_service()
         if not pantilt:
             raise HTTPException(status_code=503, detail="Pan/tilt service not available")
 
-        # Convert contract range (-45 to +45) to internal range (45 to 135, centered at 90)
-        internal_angle = int(90 + request.angle)
-        internal_angle = max(45, min(135, internal_angle))
-
-        pantilt.move_camera(tilt=internal_angle)
+        # Offset from the per-robot calibrated center; move_camera() clamps to
+        # the profile's tilt_limits via _move_to_position().
+        target_tilt = pantilt.center_tilt + request.angle
+        pantilt.move_camera(tilt=target_tilt)
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": {"code": "SERVO_ERROR", "message": str(e)}}
