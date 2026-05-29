@@ -2294,7 +2294,7 @@ async def get_camera_position():
     """Get current camera pan/tilt position"""
     try:
         pantilt_service = get_pantilt_service()
-        position = pantilt_service.get_position()
+        position = pantilt_service.get_status().get("current_position")
 
         return {
             "success": True,
@@ -3820,14 +3820,14 @@ async def websocket_control(websocket: WebSocket):
                 pan = data.get("pan")
                 tilt = data.get("tilt")
 
-                if pan is not None:
-                    pantilt_service.set_pan(pan)
-                if tilt is not None:
-                    pantilt_service.set_tilt(tilt)
+                # move_camera() applies the per-robot yaml limits; pass only the
+                # axes provided so a partial command keeps the other axis put.
+                if pan is not None or tilt is not None:
+                    pantilt_service.move_camera(pan=pan, tilt=tilt)
 
                 await websocket.send_json({
                     "type": "camera_ack",
-                    "position": pantilt_service.get_position()
+                    "position": pantilt_service.get_status().get("current_position")
                 })
 
             elif command == "stop":
