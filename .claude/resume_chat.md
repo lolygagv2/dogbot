@@ -1,5 +1,42 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-29 (treatbot3) — Gimbal D-pad fix + camera API method-name bugs, fleet-wide deploy + tb2 reconcile
+
+**Duration:** ~ full session
+**Robot:** treatbot3 (this unit); changes deployed fleet-wide via origin/main
+**Status:** ✅ 3 commits pushed to main (`c863842`, `2e73c35`, `41b834a`) + tb2 dispenser commit (`adabeb6`). All 5 robots pulled + restarted + endpoints verified live. tb2 reconciled off its divergent branch.
+
+### What was reported / asked
+1. App gimbal D-pad: pressing "down" snapped the camera UP ~30° and refused to go lower; Center worked. Then user removed app-side clamps and wanted the robot (yaml) to be the sole limit gate.
+2. `/camera/center` failed in app with `'PanTiltService' object has no attribute 'center'`.
+
+### Root cause #1 — hardcoded servo angles (gimbal D-pad)
+The app D-pad uses the `/servo/pan` + `/servo/tilt` contract endpoints (NOT `/camera/pantilt`, which the drive-screen joystick uses). Old code did `internal = 90 + angle`, clamp pan `0-180` / tilt `45-135`. That assumes a generic 90-centered servo, but each gimbal's physical PWM→angle map differs (servo horn spline, mount offset). treatbot3's level horizon is `tilt_center: -12`; the 45-135 clamp's floor (internal 45) sat ~57° ABOVE level, so the D-pad could never tilt down. PWM scale is fixed in `_angle_to_pulse`: 500–2500µs = −90°..+270° (~5.56µs/°); `pan_min` below −90 is dead (treatbot3 had −135, corrected to −90).
+
+**Fix (`c863842`):** rewrote `/servo/pan` + `/servo/tilt` to `target = pantilt.center_{pan,tilt} + request.angle`, then `move_camera()` which clamps to yaml `pan_limits`/`tilt_limits` via `_move_to_position`. Verified every runtime servo path funnels through that clamp → robot is sole safety gate. Live-tested ±999 offsets clamp exactly to yaml (pan −90..269, tilt −29..238).
+
+### Root cause #2 — nonexistent method names in API (3 endpoints)
+`PanTiltService` has NO `center()`, `get_position()`, `set_pan()`, or `set_tilt()`. Real methods: `center_camera(reason=...)`, `get_status()` (→ `current_position` dict), `move_camera(pan=,tilt=)`.
+- `2e73c35`: `/camera/center` called `center()` + `get_position()` → fixed.
+- `41b834a`: `/camera/position` (GET) called `get_position()`; websocket "camera" command called `set_pan()`/`set_tilt()`/`get_position()` (camera control over WS fully broken) → routed through `move_camera()` + `get_status()`.
+These were broken on EVERY unit, not robot-specific.
+
+### Fleet deploy (all via ff-only pulls, never clobbering per-unit yaml)
+- SSH reachable as bare `treatbot1..5` (also `.localN`); key `~/.ssh/id_ed25519`. GOTCHA: bare ssh cmd does NOT cd into repo and `cd ... &&` got stripped — use `git -C /home/morgan/dogbot` and absolute grep paths.
+- tb1, tb4, tb5: clean fast-forward to `41b834a`, restarted, `/camera/position` + `/camera/center` verified.
+- **tb2 reconcile:** was on divergent branch `f900adc` (a local-only per-unit dispenser commit `reverse_steps 40→75`, forked at `c863842`) + uncommitted work. Stashed → `git rebase origin/main` (clean, commit only touched treatbot2.yaml) → pushed rebased commit as `adabeb6` → `stash pop` (its uncommitted server.py center-fix auto-merged away, identical to main). Restarted + verified.
+
+### Left uncommitted intentionally (per user)
+- **tb3** `config/robot_profiles/treatbot3.yaml`: per-unit tuning (tilt_min −35, dispenser steps_per_slot 150 / step_delay 0.0050). User said don't worry about it.
+- **tb2** `config/robot_profiles/treatbot2.yaml`: had dangerous out-of-range gimbal limits; corrected `tilt_min −180 → −90` and `pan_max 320 → 270` (servo physical floor/ceiling), left `tilt_max 250` / `pan_min −10`. Left UNCOMMITTED + service NOT restarted on tb2 for those yaml values — user will tweak/commit later. Plus tb2 `.claude/resume_chat.md` (scratch).
+
+### Next steps / watch items
+- tb2: review + commit the corrected treatbot2.yaml gimbal limits when ready, then restart to apply.
+- App D-pad up-travel: app sends ±45 tilt offset, so it can't reach an asymmetric gimbal's full up-range (tilt_max 238). Separate UX item if full up-travel is wanted.
+- IDE-buffer revert gotcha recurred: edits to files open in the user's IDE silently reverted off disk twice — re-grep disk after editing an open file before restarting.
+
+---
+
 ## Session: 2026-05-28 (late, treatbot5) — R2 bark-spam root-cause + R3/R4 force_trick fixes, pushed to main
 
 **Duration:** ~1.5 hours
