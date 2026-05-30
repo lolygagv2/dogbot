@@ -2104,8 +2104,17 @@ class TreatBotMain:
                 time.sleep(check_interval)
 
                 if wifi.is_ap_mode() or self._wifi_ap_active:
+                    # Adopt an AP that's already up — e.g. one the root-run
+                    # wifi-provision.service raised at boot. Don't tear it down
+                    # until we've genuinely waited reconnect_interval. (The old
+                    # `or 0` default fired on the very first check and killed
+                    # that AP, after which the morgan-owned rebuild hit EPERM
+                    # on the root-owned config and the AP died for good.)
+                    self._wifi_ap_active = True
+                    if self._wifi_disconnected_since is None:
+                        self._wifi_disconnected_since = time.time()
                     # Already in AP mode - periodically try to reconnect
-                    if time.time() - (self._wifi_disconnected_since or 0) > reconnect_interval:
+                    if time.time() - self._wifi_disconnected_since > reconnect_interval:
                         self.logger.info("WiFi monitor: Attempting to reconnect to known networks...")
                         # Stop AP temporarily to scan/connect
                         wifi.stop_hotspot()
@@ -2124,8 +2133,8 @@ class TreatBotMain:
                             # No known networks - restart AP
                             self.logger.info("WiFi monitor: No known networks, restarting AP mode")
                             serial = wifi.get_device_serial()
-                            ssid = f"WIMZ-{serial}"
-                            wifi.start_demo_hotspot(ssid=ssid, password="wimz1234")
+                            ssid = f"WIMZ-Demo-{serial}"
+                            wifi.start_demo_hotspot(ssid=ssid, password="wimzdemo")
                             self._wifi_ap_active = True
                             self._wifi_disconnected_since = time.time()
                     continue
@@ -2147,10 +2156,10 @@ class TreatBotMain:
                             # Start AP mode for direct connection
                             self.logger.warning(f"WiFi disconnected for {elapsed:.0f}s - starting AP mode")
                             serial = wifi.get_device_serial()
-                            ssid = f"WIMZ-{serial}"
-                            if wifi.start_demo_hotspot(ssid=ssid, password="wimz1234"):
+                            ssid = f"WIMZ-Demo-{serial}"
+                            if wifi.start_demo_hotspot(ssid=ssid, password="wimzdemo"):
                                 self._wifi_ap_active = True
-                                self.logger.info(f"AP mode started: {ssid} (password: wimz1234)")
+                                self.logger.info(f"AP mode started: {ssid} (password: wimzdemo)")
                                 # Play announcement
                                 try:
                                     self.usb_audio.play_file("/wimz/ap_mode.mp3")

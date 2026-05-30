@@ -56,6 +56,7 @@ class WiFiManager:
         self.interface = interface or self.DEFAULT_INTERFACE
         self._cached_networks = []  # Cache scan results before AP mode
         self._in_ap_mode = False
+        self._wifi_driver: Optional[str] = None  # cached for netdev recovery
         # Serialize all wireless operations to prevent kernel driver deadlock
         self._op_lock = threading.RLock()
 
@@ -359,6 +360,131 @@ class WiFiManager:
         logger.warning(f"SSID '{ssid}' not found after {timeout}s ({attempt} attempts)")
         return False
 
+    # ── AP interface resilience + cross-user file handling ───────────
+
+    def _sudo_rm(self, path: str):
+        """Remove a file that may be root-owned.
+
+        wifi-provision.service runs as root and creates /tmp/wimz-*.conf and
+        .pid files owned by root. The treatbot app runs as 'morgan', so a plain
+        os.remove()/open('w') on those files raises EPERM and the AP can never
+        be rebuilt. Removing via sudo lets either user manage the AP.
+        """
+        try:
+            self._run_cmd(["sudo", "rm", "-f", path])
+        except Exception as e:
+            logger.debug(f"_sudo_rm({path}) failed: {e}")
+
+    def _cache_wifi_driver(self):
+        """Remember the kernel module backing wlanX while it still exists, so
+        _ensure_interface_ready() can reload the right driver if the netdev is
+        torn down by a failed hostapd AP-mode init."""
+        if self._wifi_driver:
+            return
+        try:
+            link = os.path.realpath(
+                f"/sys/class/net/{self.interface}/device/driver/module"
+            )
+            mod = os.path.basename(link)
+            if mod and mod != "module":
+                self._wifi_driver = mod
+                logger.info(f"WiFi driver module: {mod}")
+        except Exception as e:
+            logger.debug(f"Could not detect WiFi driver: {e}")
+
+    def _interface_present(self) -> bool:
+        """True if the wlan netdev currently exists in the kernel."""
+        return os.path.exists(f"/sys/class/net/{self.interface}")
+
+    def _wait_for_interface(self, timeout: int) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._interface_present():
+                logger.info(f"{self.interface} present again")
+                time.sleep(1)  # let the netdev settle
+                return True
+            time.sleep(1)
+        return False
+
+    def _reclaim_for_ap(self) -> bool:
+        """Put a freshly-recovered interface back into AP-ready (unmanaged) state."""
+        self._run_nmcli(["device", "disconnect", self.interface])
+        self._run_nmcli(["device", "set", self.interface, "managed", "no"])
+        time.sleep(0.5)
+        return True
+
+    def _ensure_interface_ready(self, timeout: int = 15) -> bool:
+        """Make sure wlanX exists before AP setup; recover it if it vanished.
+
+        A failed hostapd nl80211 AP-mode init can leave the brcmfmac/rtw88
+        netdev torn down ('Could not read interface flags: No such device'),
+        after which every later command fails and the AP can't be rebuilt.
+        Bring the interface back so AP bring-up always starts from a live
+        device.
+        """
+        if self._interface_present():
+            return True
+
+        logger.warning(f"{self.interface} missing — attempting recovery")
+
+        # 1) Let NetworkManager re-probe / power the radio back on
+        self._run_nmcli(["radio", "wifi", "on"])
+        self._run_nmcli(["device", "set", self.interface, "managed", "yes"])
+        if self._wait_for_interface(timeout):
+            return self._reclaim_for_ap()
+
+        # 2) Last resort: reload the WiFi driver module
+        if self._wifi_driver:
+            logger.warning(f"Reloading WiFi driver {self._wifi_driver}")
+            self._run_cmd(["sudo", "modprobe", "-r", self._wifi_driver])
+            time.sleep(2)
+            self._run_cmd(["sudo", "modprobe", self._wifi_driver])
+            if self._wait_for_interface(timeout):
+                return self._reclaim_for_ap()
+
+        logger.error(f"{self.interface} could not be recovered")
+        return False
+
+    def _start_hostapd_with_retry(self, attempts: int = 3) -> bool:
+        """Configure the interface IP and start hostapd, retrying on failure.
+
+        AP-mode nl80211 init can fail intermittently if hostapd grabs the
+        interface mid-transition. Each retry re-settles (and recovers) the
+        interface before trying again. Assumes HOSTAPD_CONF is already written.
+        """
+        for attempt in range(1, attempts + 1):
+            if not self._ensure_interface_ready():
+                logger.error("Interface unavailable — cannot start hostapd")
+                return False
+
+            # Static AP IP on the interface
+            self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
+            self._run_cmd(["sudo", "ip", "addr", "add", f"{self.HOTSPOT_IP}/24", "dev", self.interface])
+            self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
+            time.sleep(1.5)  # let the driver settle before AP-mode init
+
+            success, output = self._run_cmd(
+                ["sudo", "hostapd", "-B", "-P", HOSTAPD_PID, HOSTAPD_CONF],
+                timeout=15
+            )
+            if success:
+                logger.info(f"hostapd started (attempt {attempt}/{attempts})")
+                return True
+
+            first = output.strip().splitlines()[0] if output.strip() else "unknown error"
+            logger.warning(f"hostapd attempt {attempt}/{attempts} failed: {first}")
+
+            # Clean up the half-started hostapd + cycle the interface before retry
+            self._run_cmd(["sudo", "pkill", "-f", f"hostapd.*{HOSTAPD_CONF}"])
+            time.sleep(0.5)
+            self._run_cmd(["sudo", "ip", "link", "set", self.interface, "down"])
+            time.sleep(1)
+            self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
+            time.sleep(2)
+
+        logger.error(f"hostapd failed to start after {attempts} attempts")
+        return False
+
     def start_demo_hotspot(self, ssid: str = "WIMZ-Demo", password: str = "wimzdemo") -> bool:
         """Start a clean WiFi AP for direct robot control (no captive portal, no DNS hijack).
 
@@ -375,18 +501,16 @@ class WiFiManager:
             self._cached_networks = self._do_scan()
             logger.info(f"Cached {len(self._cached_networks)} networks")
 
-            # Step 1: Tell NetworkManager to stop managing wlan0
+            # Recover the interface if a prior AP attempt tore it down, then
+            # release it from NetworkManager for AP mode.
+            self._cache_wifi_driver()
+            self._ensure_interface_ready()
             self._run_nmcli(["device", "disconnect", self.interface])
             self._run_nmcli(["device", "set", self.interface, "managed", "no"])
             time.sleep(0.5)
 
-            # Step 2: Configure interface with static IP
-            self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
-            self._run_cmd(["sudo", "ip", "addr", "add", f"{self.HOTSPOT_IP}/24", "dev", self.interface])
-            self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
-            time.sleep(0.5)
-
-            # Step 3: Write hostapd config
+            # Write hostapd config (clear any root-owned stale copy first so a
+            # morgan-run caller can overwrite a file created by the root service)
             hostapd_config = f"""interface={self.interface}
 driver=nl80211
 ssid={ssid}
@@ -401,6 +525,7 @@ wpa_passphrase={password}
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 """
+            self._sudo_rm(HOSTAPD_CONF)
             try:
                 with open(HOSTAPD_CONF, 'w') as f:
                     f.write(hostapd_config)
@@ -408,11 +533,12 @@ rsn_pairwise=CCMP
                 logger.error(f"Failed to write hostapd config: {e}")
                 return False
 
-            # Step 4: Write dnsmasq config — DHCP only, NO DNS hijack
+            # Write dnsmasq config — DHCP only, NO DNS hijack
             dnsmasq_config = f"""interface={self.interface}
 bind-interfaces
 dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,24h
 """
+            self._sudo_rm(DNSMASQ_CONF)
             try:
                 with open(DNSMASQ_CONF, 'w') as f:
                     f.write(dnsmasq_config)
@@ -420,18 +546,14 @@ dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,24h
                 logger.error(f"Failed to write dnsmasq config: {e}")
                 return False
 
-            # Step 5: Start hostapd
-            success, output = self._run_cmd([
-                "sudo", "hostapd", "-B", "-P", HOSTAPD_PID, HOSTAPD_CONF
-            ], timeout=10)
-
-            if not success:
-                logger.error(f"Failed to start hostapd: {output}")
+            # Configure interface + start hostapd (with retry/recovery)
+            if not self._start_hostapd_with_retry():
+                logger.error("Failed to start hostapd for demo AP")
                 self._cleanup_ap()
                 return False
 
-            # Step 6: Start dnsmasq for DHCP only
-            self._run_cmd(["pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
+            # Start dnsmasq for DHCP only
+            self._run_cmd(["sudo", "pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
             time.sleep(0.3)
 
             success, output = self._run_cmd([
@@ -458,18 +580,15 @@ dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,24h
             self._cached_networks = self._do_scan()
             logger.info(f"Cached {len(self._cached_networks)} networks")
 
-            # Step 1: Tell NetworkManager to stop managing wlan0
+            # Recover the interface if a prior AP attempt tore it down, then
+            # release it from NetworkManager for AP mode.
+            self._cache_wifi_driver()
+            self._ensure_interface_ready()
             self._run_nmcli(["device", "disconnect", self.interface])
             self._run_nmcli(["device", "set", self.interface, "managed", "no"])
             time.sleep(0.5)
 
-            # Step 2: Configure interface with static IP (needs sudo if not root)
-            self._run_cmd(["sudo", "ip", "addr", "flush", "dev", self.interface])
-            self._run_cmd(["sudo", "ip", "addr", "add", f"{self.HOTSPOT_IP}/24", "dev", self.interface])
-            self._run_cmd(["sudo", "ip", "link", "set", self.interface, "up"])
-            time.sleep(0.5)
-
-            # Step 3: Write hostapd config
+            # Write hostapd config (clear any root-owned stale copy first)
             hostapd_config = f"""interface={self.interface}
 driver=nl80211
 ssid={ssid}
@@ -484,6 +603,7 @@ wpa_passphrase={password}
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 """
+            self._sudo_rm(HOSTAPD_CONF)
             try:
                 with open(HOSTAPD_CONF, 'w') as f:
                     f.write(hostapd_config)
@@ -492,12 +612,13 @@ rsn_pairwise=CCMP
                 logger.error(f"Failed to write hostapd config: {e}")
                 return False
 
-            # Step 4: Write dnsmasq config (DHCP + DNS hijack for captive portal)
+            # Write dnsmasq config (DHCP + DNS hijack for captive portal)
             dnsmasq_config = f"""interface={self.interface}
 bind-interfaces
 dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
 address=/#/{self.HOTSPOT_IP}
 """
+            self._sudo_rm(DNSMASQ_CONF)
             try:
                 with open(DNSMASQ_CONF, 'w') as f:
                     f.write(dnsmasq_config)
@@ -506,21 +627,16 @@ address=/#/{self.HOTSPOT_IP}
                 logger.error(f"Failed to write dnsmasq config: {e}")
                 return False
 
-            # Step 5: Start hostapd (needs sudo if not root)
-            success, output = self._run_cmd([
-                "sudo", "hostapd", "-B", "-P", HOSTAPD_PID, HOSTAPD_CONF
-            ], timeout=10)
-
-            if not success:
-                logger.error(f"Failed to start hostapd: {output}")
+            # Configure interface + start hostapd (with retry/recovery)
+            if not self._start_hostapd_with_retry():
+                logger.error("Failed to start hostapd")
                 self._cleanup_ap()
                 return False
 
             logger.info("hostapd started")
 
-            # Step 6: Start dnsmasq for DHCP + DNS
-            # Kill any existing dnsmasq on this interface first
-            self._run_cmd(["pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
+            # Start dnsmasq for DHCP + DNS — kill any existing first
+            self._run_cmd(["sudo", "pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
             time.sleep(0.3)
 
             success, output = self._run_cmd([
@@ -555,12 +671,11 @@ address=/#/{self.HOTSPOT_IP}
         self._run_cmd(["sudo", "pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
         time.sleep(0.5)
 
-        # Clean up config files
-        for f in [HOSTAPD_CONF, DNSMASQ_CONF, HOSTAPD_PID, DNSMASQ_PID]:
-            try:
-                os.remove(f)
-            except FileNotFoundError:
-                pass
+        # Clean up config/PID files. These may be root-owned (created by the
+        # root-run wifi-provision.service), so remove via sudo — a plain
+        # os.remove() as 'morgan' would raise EPERM and leave stale configs.
+        for path in [HOSTAPD_CONF, DNSMASQ_CONF, HOSTAPD_PID, DNSMASQ_PID]:
+            self._sudo_rm(path)
 
     def _wait_for_nm_ready(self, timeout: int = 20) -> bool:
         """Wait for NetworkManager to show wlan0 in a scannable state (disconnected)"""
