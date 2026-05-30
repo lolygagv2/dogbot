@@ -1,14 +1,19 @@
+battery:
+  # Per-unit voltage-divider calibration. TB2's divider reads high on the class
+  # default (4.308): 3.843V ADC -> 16.55V (showed 94%) while the pack measured
+  # 14.33V on a meter. Factor = 14.33 / 3.843 = 3.729 brings the reading true.
+  calibration_factor: 3.729
 camera:
   coach_pan_max: 145
   coach_pan_min: 55
   coach_tilt_max: 85
   coach_tilt_min: 25
   pan_center: 134
-  pan_max: 320
-  pan_min: -60
+  pan_max: 270
+  pan_min: -10
   rotation: 0
   tilt_center: 90
-  tilt_max: 200
+  tilt_max: 250
   tilt_min: 45
 controller:
   max_rpm: 100
