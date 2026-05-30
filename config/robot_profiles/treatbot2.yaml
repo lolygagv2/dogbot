@@ -1,8 +1,12 @@
 battery:
-  # Per-unit voltage-divider calibration. TB2's divider reads high on the class
-  # default (4.308): 3.843V ADC -> 16.55V (showed 94%) while the pack measured
-  # 14.33V on a meter. Factor = 14.33 / 3.843 = 3.729 brings the reading true.
-  calibration_factor: 3.729
+  # Per-unit voltage-divider calibration = divider ratio (V_batt / V_adc).
+  # 2026-05-30: the old divider fed >3.6V into the 3.3V-powered ADS1115 A0 across
+  # the whole 12-16.8V range, so the input clamped (~3.84V) and the reading froze
+  # (any factor just rescaled the frozen value). Divider replaced with 100k (top) /
+  # 20k (bottom) = 6:1 ratio so 16.8V -> 2.80V at A0, fully on-scale. Factor 6.0 is
+  # nominal; fine-tune to (meter_V / raw_adc_V) after the swap. See memory
+  # project_battery_ads_clamp.
+  calibration_factor: 6.0
 camera:
   coach_pan_max: 145
   coach_pan_min: 55
