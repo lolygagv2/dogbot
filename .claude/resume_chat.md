@@ -31,6 +31,62 @@
 
 ---
 
+## Session: 2026-05-30 (treatbot5) — CRITICAL motor runaway fix (dead-man's watchdog) + local-transport plan
+
+**Robot:** treatbot5 (live); safety fix deployed fleet-wide.
+**Status:** ✅ Safety fix committed + pushed to origin/main (`c89f448`). Live + watchdog-verified
+on **treatbot5 only** (local: `active`, `Motor safety watchdog started (timeout=500ms)`).
+⚠️ **treatbot1/2/3/4 NOT yet deployed — Morgan is updating them manually.** Each needs:
+`cd /home/morgan/dogbot && git pull --ff-only origin main && sudo systemctl restart treatbot.service`
+then confirm the watchdog log line. (Agent fleet-deploy failed: non-interactive ssh runs from
+/home/morgan and the snapshot didn't cd into dogbot; service stop also takes ~15-30s.)
+
+### THE critical bug (user nearly lost a robot)
+While holding "forward" in the app, the app↔robot link dropped and **the robot kept driving
+forward indefinitely** — user had to physically catch it. Root cause: `MotorCommandBus.send_command`
+latched the last PWM into the hardware with **no watchdog**. The stop command never arrived on
+disconnect, so the motor held forever. The Xbox path only survived via its own 50ms re-send loop,
+whose comment "keep the motor-bus watchdog satisfied" referenced a watchdog that **was never
+implemented**; the app/WebRTC path had no backstop at all.
+
+### Fix (commit c89f448 — `core/motor_command_bus.py` + `services/streaming/webrtc.py`)
+1. **Dead-man's watchdog thread in MotorCommandBus**: forces motors to 0 if no fresh command in
+   500ms. App pulses every ~50ms while held (user confirmed) → tolerates ~10 dropped pulses, no
+   false stops. Only acts on a stale *movement* command (stale zero already safe; also prevents
+   re-firing every tick). Protects ALL sources (app/WebRTC/API/network drop/app crash).
+2. **WebRTC teardown stops motors**: `_stop_motors_safety()` from `_cleanup_connection`
+   (failed/disconnected/closed) and data-channel `on_close`. Plain-WS path already did this on
+   disconnect; the data-channel path carrying motor cmds did not.
+- No protocol/signaling changes. Fleet-safe (routes through send_command for both controller types).
+
+### Local-mode transport decision (agreed, NOT yet implemented on robot)
+WebRTC video on the LAN is fragile (this session: connected, held ~100s, dropped → "buffering" →
+every reconnect timed out). Decision = **HYBRID**: video over **MJPEG** (`GET /video/feed`, already
+exists), control over **`/ws/local`** (already used), **WebRTC audio-ONLY** (user requires two-way
+audio). Robot TODO: make local WebRTC offer audio-only; confirm /video/feed FPS/quality.
+**Deferred** because the Flutter Claude is editing app signaling in parallel — landing a protocol
+change mid-rewrite would collide.
+
+### App-side (handed to Flutter Claude, NOT robot bugs)
+- Coordination note: `/home/morgan/.claude/plans/flutter-robot-coordination-notes.md` (transport
+  contract, must/must-not, endpoints).
+- **"Robot 02" shown for Robot 05**: app's own log shows `new=wimz_robot_02`; robot is correctly
+  `wimz_robot_05` and **never sends a device-id over /ws/local** (verified `api/ws.py`). Stale
+  cached device label in the app — app-side fix. (User flagged as trust/"fraud" risk — high
+  priority app-side, but not a robot lie.)
+- "Manage Devices" sometimes hangs (likely same device-state path).
+- The `100.x` ICE candidate = Tailscale/cellular, harmless (Private Relay confirmed OFF).
+
+### Next session
+1. Land audio-only local WebRTC + MJPEG confirmation (after Flutter app signaling settles).
+2. Deploy `c89f448` to treatbot1 + treatbot4 when reachable.
+3. Reconnect-after-drop robustness (leftover-session blocking new offers — investigate robot half).
+4. Pre-existing uncommitted `treatbot5.yaml` gimbal change still in working tree (pan_min -180,
+   tilt_min 80, tilt_max 290) — contradicts in-file calibration comments; confirm physically tested
+   before committing.
+
+---
+
 ## Session: 2026-05-29 (treatbot3) — Gimbal D-pad fix + camera API method-name bugs, fleet-wide deploy + tb2 reconcile
 
 **Duration:** ~ full session

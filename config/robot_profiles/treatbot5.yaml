@@ -11,10 +11,10 @@ camera:
   # Gimbal servo limits (pan_tilt.py) — calibrated 2026-05-17 via Xbox-stick sweep
   # MG996R servos; tilt convention differs from treatbot3 (pos=up, larger numbers).
   # Hit mechanical wall at tilt=57 → set tilt_min=60 (~3° safety margin).
-  pan_min: -80
+  pan_min: -180
   pan_max: 268
-  tilt_min: 60
-  tilt_max: 236
+  tilt_min: 80
+  tilt_max: 290
   pan_center: 46    # Live-read where camera physically looks dead-ahead on this mount (re-centered 2026-05-25)
   tilt_center: 97   # Live-read level horizon (asymmetric range; re-centered 2026-05-25)
   # Coach mode auto-tracking limits — INHERITED from treatbot3; needs separate tuning
