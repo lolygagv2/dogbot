@@ -28,7 +28,9 @@ class BarkGateConfig:
 
     # Timing (in milliseconds)
     min_bark_duration_ms: int = 150   # Barks are typically 100-500ms (raised to filter clicks)
-    max_bark_duration_ms: int = 1000  # Reject above this — sustained >1s is speech/music, not a bark
+    max_bark_duration_ms: int = 1200  # Segmentation window: sustained/rapid barking is split into
+                                      # events of at most this length (was a hard speech-reject that
+                                      # silently dropped continuous barking — spectral/ML now veto speech)
     grace_period_ms: int = 150        # Wait for bark "tail" before ending
     bark_cooldown_ms: int = 1000      # Cooldown between barks (raised from 800)
 
@@ -107,11 +109,28 @@ class BarkGate:
                 self.waiting_grace = False
                 logger.debug(f"Bark start: energy={energy:.3f}")
             else:
-                # Bark continuing - track peak
+                # Bark continuing - track peak, cancel any pending grace
                 if energy > self.peak_energy:
                     self.peak_energy = energy
-                # Reset grace period if energy spiked again
                 self.waiting_grace = False
+
+                # Sustained / rapid-fire barking keeps energy above threshold for
+                # many chunks in a row, so the window never closes via the grace
+                # path. Previously it grew unbounded until it tripped the old
+                # "too long → speech" reject and the ENTIRE barking burst was
+                # silently dropped (observed ~29s blobs, zero barks logged, so SG
+                # never reached its 3-barks/60s intervention threshold). Instead,
+                # segment it: once a run reaches max_bark_duration_ms, emit a bark
+                # now and start a fresh window, so continuous barking produces a
+                # steady stream of events. Genuine speech/music is rejected by the
+                # downstream spectral + ML stages, not by a gate-level duration cap.
+                if timestamp_ms - self.bark_start_time >= cfg.max_bark_duration_ms:
+                    result = self._emit_bark(timestamp_ms - self.bark_start_time, timestamp_ms)
+                    # Restart the window regardless of whether cooldown suppressed
+                    # this particular emit, so we keep tracking the ongoing burst.
+                    self.bark_start_time = timestamp_ms
+                    self.peak_energy = energy
+                    self.waiting_grace = False
 
         elif self.in_bark and not self.waiting_grace:
             # Energy dropped below threshold - start grace period
@@ -125,43 +144,50 @@ class BarkGate:
                 duration = self.grace_start_time - self.bark_start_time
                 self.in_bark = False
                 self.waiting_grace = False
-
-                # Validate: duration check (too short = click, too long = speech/music)
-                if duration < cfg.min_bark_duration_ms:
-                    logger.debug(f"Rejected: too short ({duration}ms < {cfg.min_bark_duration_ms}ms)")
-                    return result
-                if duration > cfg.max_bark_duration_ms:
-                    logger.info(f"Rejected: too long ({duration}ms > {cfg.max_bark_duration_ms}ms — likely speech)")
-                    return result
-
-                # Validate: cooldown check
-                if timestamp_ms - self.last_valid_bark_time < cfg.bark_cooldown_ms:
-                    logger.debug(f"Rejected: cooldown active")
-                    return result
-
-                # Valid bark! Classify distance by peak energy
-                if self.peak_energy >= cfg.thresh_close:
-                    distance = 'close'
-                elif self.peak_energy >= cfg.thresh_mid:
-                    distance = 'mid'
-                else:
-                    distance = 'far'
-
-                self.last_valid_bark_time = timestamp_ms
-                self.total_barks += 1
-                self.barks_by_distance[distance] += 1
-
-                result = {
-                    'is_bark': True,
-                    'distance': distance,
-                    'peak': self.peak_energy,
-                    'duration_ms': duration
-                }
-
-                logger.info(f"BARK detected: {distance}, peak={self.peak_energy:.3f}, "
-                           f"duration={duration}ms")
+                result = self._emit_bark(duration, timestamp_ms)
 
         return result
+
+    def _emit_bark(self, duration: int, timestamp_ms: int) -> Dict[str, Any]:
+        """Validate a bark window (min-duration + cooldown) and build the event dict.
+
+        Returns the bark result dict, or {'is_bark': False} if the window was
+        rejected (too short = click, or still inside the post-bark cooldown).
+        The upper-duration bound is intentionally NOT enforced here: sustained
+        barking is segmented by the caller, and speech/music is rejected by the
+        downstream spectral + ML stages — a gate-level duration cap only ever
+        threw away real barking.
+        """
+        cfg = self.config
+
+        if duration < cfg.min_bark_duration_ms:
+            logger.debug(f"Rejected: too short ({duration}ms < {cfg.min_bark_duration_ms}ms)")
+            return {'is_bark': False}
+
+        if timestamp_ms - self.last_valid_bark_time < cfg.bark_cooldown_ms:
+            logger.debug("Rejected: cooldown active")
+            return {'is_bark': False}
+
+        # Valid bark! Classify distance by peak energy
+        if self.peak_energy >= cfg.thresh_close:
+            distance = 'close'
+        elif self.peak_energy >= cfg.thresh_mid:
+            distance = 'mid'
+        else:
+            distance = 'far'
+
+        self.last_valid_bark_time = timestamp_ms
+        self.total_barks += 1
+        self.barks_by_distance[distance] += 1
+
+        logger.info(f"BARK detected: {distance}, peak={self.peak_energy:.3f}, "
+                   f"duration={duration}ms")
+        return {
+            'is_bark': True,
+            'distance': distance,
+            'peak': self.peak_energy,
+            'duration_ms': duration
+        }
 
     def reset(self):
         """Reset state (e.g., when switching dogs or modes)"""

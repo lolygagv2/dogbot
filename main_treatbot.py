@@ -752,10 +752,22 @@ class TreatBotMain:
                     loudness_db = event.data.get('loudness_db', -30)
                     if loudness_db < -20:
                         return  # Too quiet — likely speech or ambient noise
+                    # Silent Guardian is emotion-agnostic — it stops ALL barking, so the
+                    # emotion classifier is not awaited and the event arrives with
+                    # emotion='unknown', confidence=0.0. The app's event feed needs a
+                    # populated label + non-zero confidence to surface the bark (otherwise
+                    # SG looks dead even while it's hearing barks), so present a confirmed
+                    # bark as 'attention'. A real classified emotion from COACH mode passes
+                    # through unchanged.
+                    emotion = event.data.get('emotion') or 'unknown'
+                    confidence = event.data.get('confidence') or 0.0
+                    if emotion == 'unknown':
+                        emotion = 'attention'
+                        confidence = 1.0  # bark detection itself is certain (gate + spectral)
                     event_type = 'bark'
                     event_data = {
-                        'emotion': event.data.get('emotion'),
-                        'confidence': event.data.get('confidence', 0),
+                        'emotion': emotion,
+                        'confidence': confidence,
                         'loudness_db': loudness_db,
                     }
                     should_throttle = True
