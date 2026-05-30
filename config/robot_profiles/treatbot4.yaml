@@ -13,7 +13,7 @@ camera:
   # after tilt-servo replacement (new servo's level position = code-angle 43).
   pan_min: -89
   pan_max: 269
-  tilt_min: -45     # ~50° physical down from level (100 code-units below center)
+  tilt_min: -10     # ~50° physical down from level (100 code-units below center)
   tilt_max: 143     # ~50° physical up from level (100 code-units above center)
   pan_center: 67    # Where camera physically looks dead-ahead (treatbot3 value)
   tilt_center: 43   # Calibrated level horizon (new tilt servo, 2026-05-17)
@@ -40,10 +40,10 @@ camera:
 # 2026-05-25: UART finally working after fixing PDN_UART wire to pin 4, VIO to 3V3, GND shared,
 # and 1K resistor on Pi TX leg only (pin 8). Settings below now actually take effect.
 dispenser:
-  steps_per_slot: 144       # ~32.4° per dispense (137 × 1.05, dialed in live 2026-05-26)
-  step_delay: 0.010         # Half-period per step (slower = more torque on torque-speed curve)
+  steps_per_slot: 147       # ~32.4° per dispense (137 × 1.05, dialed in live 2026-05-26)
+  step_delay: 0.0060         # Half-period per step (slower = more torque on torque-speed curve)
   max_retries: 3            # Anti-jam retry attempts per dispense
-  reverse_steps: 70         # Steps to reverse during anti-jam
+  reverse_steps: 88         # Steps to reverse during anti-jam
   irun: 31                  # TMC2209 run current (0-31, 31=max ~1.1A)
   ihold: 5                  # TMC2209 hold current (low to save battery)
   microstepping: 8          # Reverted from 4 (which paired with steps_per_slot=137 would 2x-rotate)
