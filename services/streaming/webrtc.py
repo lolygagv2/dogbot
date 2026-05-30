@@ -260,6 +260,9 @@ class WebRTCService:
         @channel.on("close")
         def on_close():
             self.logger.info(f"Data channel closed for {session_id}")
+            # Safety: a closed data channel means motor commands can no longer
+            # arrive — stop the motors so a held movement command can't latch on.
+            self._stop_motors_safety(f"data channel close ({session_id})")
 
         @channel.on("message")
         async def on_message(message):
@@ -873,8 +876,28 @@ class WebRTCService:
         except Exception as e:
             self.logger.error(f"Safe cleanup error for {session_id}: {e}")
 
+    def _stop_motors_safety(self, reason: str):
+        """Force motors to zero on WebRTC teardown.
+
+        Defense-in-depth with the motor-bus watchdog: a dropped video/data session
+        must never leave the robot driving on its last command. Safe to call from
+        sync or async contexts — send_command is non-blocking.
+        """
+        try:
+            from core.motor_command_bus import (
+                get_motor_bus, create_motor_command, CommandSource,
+            )
+            motor_bus = get_motor_bus()
+            if motor_bus and motor_bus.running:
+                motor_bus.send_command(create_motor_command(0, 0, CommandSource.WEBRTC))
+                self.logger.info(f"[WEBRTC] Motors stopped on teardown ({reason})")
+        except Exception as e:
+            self.logger.debug(f"[WEBRTC] Motor stop on teardown failed ({reason}): {e}")
+
     async def _cleanup_connection(self, session_id: str):
         """Clean up a peer connection"""
+        # Safety first: stop motors before tearing anything down.
+        self._stop_motors_safety(f"cleanup {session_id}")
         with self._lock:
             pc = self.connections.pop(session_id, None)
             self.ice_callbacks.pop(session_id, None)

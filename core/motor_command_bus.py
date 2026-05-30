@@ -66,6 +66,16 @@ class MotorCommandBus:
         self.lock = threading.Lock()
         self.use_pid = True  # default, overridden by config
 
+        # Safety watchdog (dead-man's switch). If no fresh motor command arrives
+        # within watchdog_timeout, force motors to 0. Protects against a dropped
+        # app/WebRTC/network link leaving a movement command latched in the PWM
+        # hardware (which once drove a robot off a table). The app pulses motor
+        # commands every ~50ms while a button is held, so 500ms tolerates ~10
+        # dropped pulses before cutting — no false stops during normal driving.
+        self.watchdog_timeout = 0.5  # seconds
+        self._watchdog_running = False
+        self._watchdog_thread = None
+
         # Load PID config from robot profile
         try:
             from config.config_loader import get_config
@@ -139,6 +149,7 @@ class MotorCommandBus:
                     return False
 
             self.running = True
+            self._start_watchdog()
             self.logger.info("Motor command bus started with PID control")
             return True
 
@@ -146,8 +157,51 @@ class MotorCommandBus:
             self.logger.error(f"Failed to start motor command bus: {e}")
             return False
 
+    def _start_watchdog(self):
+        """Start the safety watchdog thread (idempotent)."""
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            return
+        self._watchdog_running = True
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop, name="MotorWatchdog", daemon=True
+        )
+        self._watchdog_thread.start()
+        self.logger.info(
+            f"Motor safety watchdog started (timeout={self.watchdog_timeout * 1000:.0f}ms)"
+        )
+
+    def _watchdog_loop(self):
+        """Force motors to 0 if no fresh command arrives within watchdog_timeout.
+
+        Only acts on a stale *movement* command — a stale zero is already safe, so
+        we leave it alone (and that's also how we avoid re-firing every tick: the
+        stop we send becomes the new zero last_command).
+        """
+        while self._watchdog_running:
+            try:
+                time.sleep(0.1)
+                if not self.running:
+                    continue
+                cmd = self.last_command
+                if cmd is None:
+                    continue
+                if cmd.left_speed == 0 and cmd.right_speed == 0:
+                    continue
+                age = time.time() - cmd.timestamp
+                if age > self.watchdog_timeout:
+                    self.logger.warning(
+                        f"[WATCHDOG] No motor command for {age * 1000:.0f}ms "
+                        f"(last L={cmd.left_speed} R={cmd.right_speed} "
+                        f"src={cmd.source.value}) — forcing STOP"
+                    )
+                    self.send_command(create_motor_command(0, 0, CommandSource.EMERGENCY))
+            except Exception as e:
+                self.logger.error(f"Motor watchdog error: {e}")
+                time.sleep(0.1)
+
     def stop(self):
         """Stop the motor command bus"""
+        self._watchdog_running = False
         self.running = False
         if self.motor_controller:
             try:
