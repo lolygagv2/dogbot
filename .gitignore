@@ -29,3 +29,6 @@ captures/
 photos/
 recordings/
 data/robot_state.json
+
+# Per-robot session log — local only, not synced across fleet
+.claude/resume_chat.md
