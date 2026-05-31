@@ -70,7 +70,8 @@ class DispenserService:
 
         # Dispensing state
         self.treats_dispensed_today = 0
-        self.last_dispense_time = 0.0
+        self.last_dispense_time = 0.0       # wall-clock — for status/display
+        self.last_dispense_mono = 0.0       # monotonic — for elapsed gates (battery idle check)
         self.min_dispense_interval = 0.0
         self.daily_limit = 300
 
@@ -352,6 +353,7 @@ class DispenserService:
                 if success:
                     self.treats_dispensed_today += 1
                     self.last_dispense_time = now
+                    self.last_dispense_mono = time.monotonic()
                     self._decrement_treat_counter()
 
                     if dog_id:

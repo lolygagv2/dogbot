@@ -222,7 +222,7 @@ class BatteryMonitorService:
         try:
             from core.motor_command_bus import get_motor_bus
             cmd = get_motor_bus().last_command
-            if cmd is not None and (now - cmd.timestamp) < self.motor_idle_required_s:
+            if cmd is not None and (now - cmd.mono) < self.motor_idle_required_s:
                 return True
         except Exception:
             pass
@@ -230,7 +230,7 @@ class BatteryMonitorService:
         # Dispenser: stepper pulls ~1.1A peak from the same rail
         try:
             from services.reward.dispenser import get_dispenser_service
-            last_dispense = get_dispenser_service().last_dispense_time
+            last_dispense = get_dispenser_service().last_dispense_mono
             if last_dispense > 0 and (now - last_dispense) < self.motor_idle_required_s:
                 return True
         except Exception:
@@ -249,7 +249,7 @@ class BatteryMonitorService:
           2. Require every step in the window to not significantly drop.
           3. Require larger total rise (~0.15V) before announcing.
         """
-        now = time.time()
+        now = time.monotonic()  # gate uses monotonic stamps (cmd.mono / last_dispense_mono)
 
         # Don't sample at all while motors are loading the rail; clear stale
         # history so the next eval window starts fresh from a quiet rail.
