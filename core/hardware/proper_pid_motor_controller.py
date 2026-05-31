@@ -128,7 +128,7 @@ class ProperPIDMotorController:
 
         # Safety systems - RE-ENABLED to prevent stuck motors
         self.watchdog_timeout = 2.0  # 2 second timeout - stop motors if no commands received
-        self.last_command_time = time.time()
+        self.last_command_time = time.monotonic()
         self.emergency_stopped = False
 
         # Additional safety: track if motors should be running
@@ -162,7 +162,7 @@ class ProperPIDMotorController:
                 return False
 
         self.running = True
-        self.last_command_time = time.time()
+        self.last_command_time = time.monotonic()
 
         # Start encoder polling thread (high frequency)
         self.encoder_thread = threading.Thread(target=self._encoder_loop, daemon=False)
@@ -270,7 +270,7 @@ class ProperPIDMotorController:
         left_rpm = max(-self.MAX_RPM, min(self.MAX_RPM, left_rpm))
         right_rpm = max(-self.MAX_RPM, min(self.MAX_RPM, right_rpm))
 
-        current_time = time.time()
+        current_time = time.monotonic()
 
         with self.lock:
             self.left.target_rpm = left_rpm
@@ -331,7 +331,7 @@ class ProperPIDMotorController:
                 },
                 'safety': {
                     'emergency_stopped': self.emergency_stopped,
-                    'time_since_command': time.time() - self.last_command_time
+                    'time_since_command': time.monotonic() - self.last_command_time
                 }
             }
 
@@ -450,7 +450,7 @@ class ProperPIDMotorController:
             start = time.time()
 
             try:
-                current_time = time.time()
+                current_time = time.monotonic()
 
                 # Watchdog safety check - no commands at all
                 time_since_cmd = current_time - self.last_command_time
@@ -683,7 +683,7 @@ class ProperPIDMotorController:
         Applies PWM_MIN/PWM_MAX limits automatically.
         """
         with self.lock:
-            current_time = time.time()
+            current_time = time.monotonic()
 
             # Update command time to prevent watchdog timeout
             self.last_command_time = current_time
@@ -777,7 +777,7 @@ class MotorControllerPolling(ProperPIDMotorController):
         Applies PWM_MIN/PWM_MAX limits automatically.
         """
         with self.lock:
-            current_time = time.time()
+            current_time = time.monotonic()
 
             # Update command time to prevent watchdog timeout
             self.last_command_time = current_time

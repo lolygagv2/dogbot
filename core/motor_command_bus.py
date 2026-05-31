@@ -26,11 +26,18 @@ class MotorCommand:
     left_speed: int
     right_speed: int
     source: CommandSource
-    timestamp: float
+    timestamp: float        # wall-clock (epoch) — for display/serialization only
+    mono: float = 0.0       # monotonic seconds — for elapsed/age safety checks
 
 def create_motor_command(left: int, right: int, source: CommandSource) -> MotorCommand:
-    """Create a motor command with current timestamp"""
-    return MotorCommand(left, right, source, time.time())
+    """Create a motor command stamped with both wall-clock and monotonic time.
+
+    `mono` (time.monotonic) is what the safety watchdog measures age against, so a
+    system-clock jump (this robot has no RTC battery and steps ~hours when NTP
+    syncs late) can never make a stale movement command look fresh — or trip a
+    spurious stop. `timestamp` (wall-clock) is kept only for status/logging.
+    """
+    return MotorCommand(left, right, source, time.time(), time.monotonic())
 
 
 def map_stick_to_motor_command(
@@ -187,7 +194,7 @@ class MotorCommandBus:
                     continue
                 if cmd.left_speed == 0 and cmd.right_speed == 0:
                     continue
-                age = time.time() - cmd.timestamp
+                age = time.monotonic() - cmd.mono
                 if age > self.watchdog_timeout:
                     self.logger.warning(
                         f"[WATCHDOG] No motor command for {age * 1000:.0f}ms "
