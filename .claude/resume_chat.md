@@ -1,5 +1,41 @@
 # WIM-Z Resume Chat Log
 
+## Session: 2026-05-31 (treatbot5) — fixed phone→robot local-AP demo (3 bugs)
+
+**Robot:** treatbot5
+**Status:** ✅ Complete — fixes live on treatbot5 + committed and pushed to `main` (`c5e85b1`).
+
+### Problem
+Phone→robot Direct Local AP demo was broken: login worked and commands partly worked, but (1) video showed "connecting" forever, (2) connection felt shaky, (3) after ~2 voice commands the phone dropped and `WIMZ-Demo` AP never came back. Required a power-cycle.
+
+### Root causes (all confirmed in treatbot5 logs, prev boot `-b -1` + `logs/treatbot.log.1`)
+1. **AP killed itself the instant a phone associated.** `_wifi_monitor_loop` (main_treatbot.py) tore down the hotspot every `reconnect_interval`=120s to hunt for known wifi, with NO client check. Logs caught it: phone associated 17:31:43, `Stopping hotspot` fired the *same second*, ~38s of no network, then user power-cycled. The rejoin also failed with NM error "A 'wireless' setting is required if no AP path was given."
+2. **MJPEG `/video/feed` opened a 2nd `Picamera2()`** while DetectorService already owns the single camera → always failed → "connecting forever." WebRTC can't work on the AP (no STUN/TURN reachable) — that's expected; MJPEG is the local-AP video path.
+3. **RelayClient hammered `wss://api.wimzai.com` every 30s** on the AP (no internet) → churn.
+   - NOTE: the "92% CPU" SafetyMonitor alert was **Claude Code itself** running on the Pi, NOT a robot load problem. Zero CPU-high alerts during the actual demo.
+
+### Fixes (commits `42b22fc`, `c5e85b1` — now on `main`)
+- `main_treatbot.py` — defer AP rejoin while any STA associated; interval 120→300s.
+- `services/network/wifi_manager.py` — new `has_associated_stations()` via `iw dev wlan0 station dump` (L2 association — fires immediately, unlike ARP which misses a just-associated phone; this was the Flutter team's catch). `try_connect_known()` now brings saved profiles up by name (`nmcli connection up <name>`) to fix the NM rejoin error.
+- `api/server.py` — `/video/feed` streams `detector.get_last_frame_with_timestamp()` (same source as WebRTC video_track) + client-disconnect handling + 10s idle bail-out.
+- `services/cloud/relay_client.py` — `_reconnect_loop` skips dialing while `is_ap_mode()` (checked via run_in_executor so the blocking pgrep doesn't stall the asyncio loop).
+
+### Verified
+- MJPEG: 45 frames / 1.36 MB in ~2s, valid JPEG. Contract confirmed: `GET /video/feed` → 200, `content-type: multipart/x-mixed-replace; boundary=frame`, no auth.
+- Two clean service restarts (relay connect + monitor start, no errors).
+
+### Flutter app (separate repo) shipped Build 115 in parallel
+- MJPEG endpoint corrected + probed (`/video/feed` then legacy `/camera/stream`).
+- Cleartext HTTP allowed for LAN (Android network_security_config + iOS NSAllowsLocalNetworking) — without it, plain http to 192.168.4.1 is blocked = "connecting forever".
+- WebRTC give-up shortened to 6s in local mode → flips to MJPEG fast.
+
+### Next steps / unresolved
+1. **Real-phone soak test (NOT yet done):** join `WIMZ-Demo`, drive/stream >5 min. Success = NO `Stopping hotspot` in log while a STA is associated; expect periodic `STA associated on AP (...) — keeping AP up, deferring rejoin`. Couldn't self-test — forcing AP mode cuts the Pi's own wlan0 link.
+2. Possible dual-AP-manager interplay (root `wifi_provision.service` + main_treatbot monitor) — watch if issues persist (see commit 48885bd history).
+3. Memory updated: `project_direct_ap.md` (was stale "fully working").
+
+---
+
 ## Session: 2026-05-30 (treatbot3) — git sync + stash cleanup, committed tb3 per-unit tuning
 
 **Duration:** ~5 min
