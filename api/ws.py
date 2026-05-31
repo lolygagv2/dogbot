@@ -240,13 +240,16 @@ class TreatBotWebSocketServer:
             self.led.initialize()
         if self.led:
             self.led.set_pattern('idle')
-        # Set blue LED solid on via direct GPIO (stops the "flashing" look)
+        # Set blue LED solid on (stops the "flashing" look). Use LedService's
+        # controller — the single GPIO 25 owner — not api.server's separate
+        # lgpio claim, which loses the startup race and silently fails.
         try:
-            from api.server import blue_led_direct_control
-            blue_led_direct_control(True)
-            self.logger.info("App connected via local WS — LED idle, blue LED solid ON")
+            led = self.led.led if self.led else None
+            if led is not None and getattr(led, 'blue_chip', None):
+                led.blue_on()
+                self.logger.info("App connected via local WS — LED idle, blue LED solid ON")
         except Exception as e:
-            self.logger.warning(f"Blue LED direct control failed (non-critical): {e}")
+            self.logger.warning(f"Blue LED on failed (non-critical): {e}")
 
     async def _handle_get_status(self, websocket: WebSocket):
         """Respond to get_status with robot online/paired status"""
@@ -522,18 +525,29 @@ class TreatBotWebSocketServer:
 
             elif command == "mood_led":
                 # {"command": "mood_led", "action": "on"/"off"/"toggle"}
-                # Controls the BLUE LED TUBE (GPIO25), NOT NeoPixels
+                # Controls the BLUE LED TUBE (GPIO25), NOT NeoPixels.
+                # Route through LedService's controller — the SINGLE legitimate
+                # owner of GPIO 25. The old api.server.blue_led_direct_control()
+                # made its own lgpio.gpio_claim_output() on the same pin, lost
+                # the startup race with LedController, and then failed silently
+                # for the whole process — which is why mood_led did nothing over
+                # the local/AP path while the relay path (already on LedService)
+                # worked. (Same fix as relay_client._handle_mood_led.)
                 action = data.get("action", "toggle").lower()
                 try:
-                    from api.server import blue_led_direct_control
-                    import api.server as srv
+                    from services.media.led import get_led_service
+                    led = get_led_service().led
+                    if led is None or not getattr(led, 'blue_chip', None):
+                        raise RuntimeError("blue LED controller not initialized")
                     if action == "on":
-                        blue_led_direct_control(True)
+                        ok = bool(led.blue_on())
                     elif action == "off":
-                        blue_led_direct_control(False)
-                    elif action == "toggle":
-                        blue_led_direct_control(not srv._blue_led_state)
+                        ok = bool(led.blue_off())
+                    else:
+                        ok = bool(led.blue_off() if getattr(led, 'blue_is_on', False)
+                                  else led.blue_on())
                     result["action"] = action
+                    result["success"] = ok
                 except Exception as e:
                     self.logger.error(f"mood_led error: {e}")
                     result = {"success": False, "command": command, "error": str(e)}
