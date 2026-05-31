@@ -69,6 +69,25 @@ class WiFiManager:
             success, output = self._run_cmd(["pgrep", "-f", f"hostapd.*{HOSTAPD_CONF}"])
             return success
 
+    def has_associated_stations(self) -> bool:
+        """True if any STA is associated to our AP, via `iw station dump` (L2).
+
+        Unlike get_hotspot_clients() (which parses the ARP table and only sees a
+        client *after* it has done DHCP/ARP), this reflects association the
+        instant the phone connects. That closes the race where the WiFi monitor
+        tore the AP down in the same second a phone associated — before it ever
+        got an IP, so the ARP table was still empty.
+
+        Only meaningful while in AP mode: on a station interface `iw station
+        dump` lists the upstream router, so callers MUST gate this on AP mode.
+        """
+        success, output = self._run_cmd(
+            ["iw", "dev", self.interface, "station", "dump"], timeout=5
+        )
+        if not success:
+            return False
+        return any(line.strip().startswith("Station") for line in output.splitlines())
+
     def get_active_ap_ssid(self) -> Optional[str]:
         """Return SSID of the currently running AP by parsing the hostapd config."""
         try:
@@ -239,8 +258,28 @@ class WiFiManager:
 
             logger.info(f"Found {len(saved)} saved WiFi connections")
 
-            # Try to bring up the device and auto-connect
             nmcli_timeout = min(timeout, 10)
+
+            # Reactivate a saved profile *by name* first. Coming out of AP mode,
+            # wlan0 has no active profile, so a bare `nmcli device connect wlan0`
+            # fails with "A 'wireless' setting is required if no AP path was
+            # given" (NM has nothing to auto-pick) — the exact error that left
+            # the robot stranded for ~40s during the demo. Bringing a saved
+            # connection up by name avoids it and is what actually recovers WiFi.
+            for conn in saved:
+                name = conn.get('name')
+                if not name:
+                    continue
+                ok, _out = self._run_nmcli(
+                    ["connection", "up", name, "ifname", self.interface],
+                    timeout=nmcli_timeout
+                )
+                if ok and self.is_connected():
+                    status = self.get_connection_status()
+                    logger.info(f"Connected to {status['ssid']} ({status['ip_address']}) via '{name}'")
+                    return True
+
+            # Fall back to letting NM auto-pick an in-range autoconnect profile.
             success, output = self._run_nmcli(
                 ["device", "connect", self.interface],
                 timeout=nmcli_timeout

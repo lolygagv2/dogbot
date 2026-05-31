@@ -2122,16 +2122,25 @@ class TreatBotMain:
                         # it. stop_hotspot() kicks the client mid-session and
                         # the rebuild frequently stutters (NM reclaim races,
                         # ~40s of no network), which is exactly the "connected,
-                        # then dropped, AP never came back" failure. Defer the
-                        # rejoin attempt for another full interval instead.
+                        # then dropped, AP never came back" failure.
+                        #
+                        # Use L2 association (iw station dump), NOT the ARP
+                        # table: a phone that just associated has no ARP entry
+                        # yet, which is the precise race that kicked the user in
+                        # the same second they connected. Defer rejoin while any
+                        # STA is associated.
                         try:
-                            clients = wifi.get_hotspot_clients()
+                            sta_connected = wifi.has_associated_stations()
                         except Exception:
-                            clients = []
-                        if clients:
+                            sta_connected = False
+                        if sta_connected:
+                            try:
+                                clients = wifi.get_hotspot_clients()
+                            except Exception:
+                                clients = []
+                            who = ', '.join(c.get('ip', '?') for c in clients) if clients else 'associating (no IP yet)'
                             self.logger.info(
-                                f"WiFi monitor: {len(clients)} client(s) on AP "
-                                f"({', '.join(c.get('ip', '?') for c in clients)}) "
+                                f"WiFi monitor: STA associated on AP ({who}) "
                                 "— keeping AP up, deferring rejoin"
                             )
                             self._wifi_disconnected_since = time.time()
