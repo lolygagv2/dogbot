@@ -734,11 +734,15 @@ class TreatBotWebSocketServer:
                 await self._handle_delete_dog(websocket, data)
                 return
 
-            elif command == "servo_center":
+            elif command in ("servo_center", "camera_center", "center"):
+                # center() does NOT exist on the pan/tilt service — the only
+                # centering method is center_camera() (calibrated center from
+                # the per-unit yaml). Calling center() silently failed (caught
+                # below), which is why the app's center button did nothing.
                 try:
                     from services.motion.pan_tilt import get_pan_tilt_service
                     pan_tilt = get_pan_tilt_service()
-                    pan_tilt.center()
+                    pan_tilt.center_camera(reason="app_servo_center")
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
 

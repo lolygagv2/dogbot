@@ -524,6 +524,48 @@ class WiFiManager:
         logger.error(f"hostapd failed to start after {attempts} attempts")
         return False
 
+    def _demo_hostapd_conf(self, ssid: str, password: str, band: str) -> str:
+        """Build the demo AP hostapd.conf for a given band.
+
+        band='5g' → 5 GHz ch36 (non-DFS in US), 802.11n HT40, WMM on: far more
+        airtime + lower latency, which is what the laggy driving needed.
+        band='2g' → 2.4 GHz ch6 fallback for older phones / longer range.
+
+        WMM (wmm_enabled=1) is on for both — it's required for 802.11n rates and
+        enables 802.11e airtime QoS so small control packets aren't stuck behind
+        bulk video.
+        """
+        if band == "5g":
+            radio = (
+                "country_code=US\n"
+                "ieee80211d=1\n"
+                "hw_mode=a\n"
+                "channel=36\n"
+                "ieee80211n=1\n"
+                "ht_capab=[HT40+][SHORT-GI-40]\n"
+            )
+        else:
+            radio = (
+                "hw_mode=g\n"
+                "channel=6\n"
+                "ieee80211n=1\n"
+                "ht_capab=[HT40+][SHORT-GI-20]\n"
+            )
+        return (
+            f"interface={self.interface}\n"
+            "driver=nl80211\n"
+            f"ssid={ssid}\n"
+            f"{radio}"
+            "wmm_enabled=1\n"
+            "macaddr_acl=0\n"
+            "auth_algs=1\n"
+            "ignore_broadcast_ssid=0\n"
+            "wpa=2\n"
+            f"wpa_passphrase={password}\n"
+            "wpa_key_mgmt=WPA-PSK\n"
+            "rsn_pairwise=CCMP\n"
+        )
+
     def start_demo_hotspot(self, ssid: str = "WIMZ-Demo", password: str = "wimzdemo") -> bool:
         """Start a clean WiFi AP for direct robot control (no captive portal, no DNS hijack).
 
@@ -548,29 +590,10 @@ class WiFiManager:
             self._run_nmcli(["device", "set", self.interface, "managed", "no"])
             time.sleep(0.5)
 
-            # Write hostapd config (clear any root-owned stale copy first so a
-            # morgan-run caller can overwrite a file created by the root service)
-            hostapd_config = f"""interface={self.interface}
-driver=nl80211
-ssid={ssid}
-hw_mode=g
-channel=6
-wmm_enabled=0
-macaddr_acl=0
-auth_algs=1
-ignore_broadcast_ssid=0
-wpa=2
-wpa_passphrase={password}
-wpa_key_mgmt=WPA-PSK
-rsn_pairwise=CCMP
-"""
+            # Clear any root-owned stale hostapd config first (so a morgan-run
+            # caller can overwrite a file the root wifi-provision service made).
+            # The per-band config is written in the bring-up loop below.
             self._sudo_rm(HOSTAPD_CONF)
-            try:
-                with open(HOSTAPD_CONF, 'w') as f:
-                    f.write(hostapd_config)
-            except Exception as e:
-                logger.error(f"Failed to write hostapd config: {e}")
-                return False
 
             # Write dnsmasq config — DHCP only, NO DNS hijack
             dnsmasq_config = f"""interface={self.interface}
@@ -585,9 +608,27 @@ dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,24h
                 logger.error(f"Failed to write dnsmasq config: {e}")
                 return False
 
-            # Configure interface + start hostapd (with retry/recovery)
-            if not self._start_hostapd_with_retry():
-                logger.error("Failed to start hostapd for demo AP")
+            # Bring the AP up. Prefer 5 GHz ch36 (non-DFS): far more airtime and
+            # much lower latency than 2.4 GHz ch6, which drowned drive commands
+            # behind the video stream and made driving laggy/dangerous. Fall back
+            # to 2.4 GHz if 5 GHz won't start (older phone, range, regulatory).
+            started = False
+            for band, label in (("5g", "5 GHz ch36"), ("2g", "2.4 GHz ch6")):
+                try:
+                    with open(HOSTAPD_CONF, 'w') as f:
+                        f.write(self._demo_hostapd_conf(ssid, password, band))
+                except Exception as e:
+                    logger.error(f"Failed to write hostapd config: {e}")
+                    self._cleanup_ap()
+                    return False
+                logger.info(f"[LOCAL] Bringing up demo AP on {label}...")
+                if self._start_hostapd_with_retry(attempts=2 if band == "5g" else 3):
+                    logger.info(f"[LOCAL] Demo AP hostapd up on {label}")
+                    started = True
+                    break
+                logger.warning(f"[LOCAL] {label} AP failed to start — trying next band")
+            if not started:
+                logger.error("Failed to start hostapd for demo AP on any band")
                 self._cleanup_ap()
                 return False
 

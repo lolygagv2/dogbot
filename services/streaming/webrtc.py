@@ -244,7 +244,29 @@ class WebRTCService:
                         self.logger.error(f"Emergency stop API fallback failed: {e}")
 
             else:
-                self.logger.debug(f"Unknown data channel message type: {msg_type}")
+                # Route every non-drive command (led, mood_led, treat, servo,
+                # servo_center, audio, mode, ...) through the SAME canonical
+                # handler the local WebSocket uses. Previously these were just
+                # logged and dropped, so over WebRTC the LED/mood-LED/center
+                # buttons did nothing. Route, don't duplicate (no parallel
+                # handlers). The WS handler echoes a response to a websocket;
+                # the data channel has none, so feed it a sink that no-ops.
+                try:
+                    from api.ws import get_websocket_server
+
+                    class _SinkWS:
+                        async def send_text(self, *_a, **_k):
+                            return
+                        async def send_bytes(self, *_a, **_k):
+                            return
+
+                    ws_server = get_websocket_server()
+                    await ws_server._execute_contract_command(
+                        _SinkWS(), {**data, "command": msg_type}
+                    )
+                    self.logger.debug(f"Data channel command routed to WS handler: {msg_type}")
+                except Exception as e:
+                    self.logger.warning(f"Data channel command '{msg_type}' route failed: {e}")
 
         except json.JSONDecodeError:
             self.logger.warning(f"Invalid JSON in data channel: {message[:100]}")
