@@ -2095,7 +2095,10 @@ class TreatBotMain:
         wifi = get_wifi_manager()
         check_interval = 30  # seconds between checks
         disconnect_threshold = 60  # seconds before AP fallback
-        reconnect_interval = 120  # try to reconnect every 2 minutes while in AP
+        # Try to rejoin a known network this often while in AP mode. Kept long
+        # so an active demo session isn't interrupted; a connected phone defers
+        # it entirely (see client check below).
+        reconnect_interval = 300  # seconds between rejoin attempts while in AP
 
         self.logger.info("WiFi monitor started")
 
@@ -2115,6 +2118,24 @@ class TreatBotMain:
                         self._wifi_disconnected_since = time.time()
                     # Already in AP mode - periodically try to reconnect
                     if time.time() - self._wifi_disconnected_since > reconnect_interval:
+                        # NEVER tear down the AP while a phone is connected to
+                        # it. stop_hotspot() kicks the client mid-session and
+                        # the rebuild frequently stutters (NM reclaim races,
+                        # ~40s of no network), which is exactly the "connected,
+                        # then dropped, AP never came back" failure. Defer the
+                        # rejoin attempt for another full interval instead.
+                        try:
+                            clients = wifi.get_hotspot_clients()
+                        except Exception:
+                            clients = []
+                        if clients:
+                            self.logger.info(
+                                f"WiFi monitor: {len(clients)} client(s) on AP "
+                                f"({', '.join(c.get('ip', '?') for c in clients)}) "
+                                "— keeping AP up, deferring rejoin"
+                            )
+                            self._wifi_disconnected_since = time.time()
+                            continue
                         self.logger.info("WiFi monitor: Attempting to reconnect to known networks...")
                         # Stop AP temporarily to scan/connect
                         wifi.stop_hotspot()

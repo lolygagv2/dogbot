@@ -417,32 +417,38 @@ async def dashboard():
 
 @app.get("/video/feed")
 async def video_feed():
-    """MJPEG video stream endpoint"""
-    if not CAMERA_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Camera not available")
+    """MJPEG video stream endpoint.
+
+    Sources frames from the DetectorService's shared frame buffer instead of
+    opening its own Picamera2. The Pi has a single camera which the detector
+    already owns; a second Picamera2() here fails ("camera already in use"),
+    so the app's MJPEG fallback showed "connecting" forever. The WebRTC video
+    track already pulls frames the same way (detector.get_last_frame_*), so
+    this keeps a single owner of the camera and works on the local AP.
+    """
+    detector = get_detector_service()
+    if detector is None:
+        raise HTTPException(status_code=503, detail="Detector service not available")
 
     def generate_mjpeg():
-        camera = get_camera()
-        if camera is None:
-            return
-
-        frame_time = 1/30  # Target 30 FPS
-        last_frame_time = time.time()
+        target_interval = 1 / 15  # cap at 15 FPS (detector capture is ~5-15 FPS)
+        idle_deadline = time.time() + 10  # bail if no frames ever arrive
 
         try:
             while True:
-                current_time = time.time()
+                loop_start = time.time()
 
-                # Skip frames if we're falling behind to prevent latency buildup
-                time_since_last = current_time - last_frame_time
-                if time_since_last < frame_time:
-                    time.sleep(frame_time - time_since_last)
+                frame, _ts = detector.get_last_frame_with_timestamp()
+                if frame is None:
+                    if time.time() > idle_deadline:
+                        logger.warning("MJPEG: no frames from detector for 10s — ending stream")
+                        return
+                    time.sleep(0.1)
+                    continue
+                idle_deadline = time.time() + 10
 
-                # Capture frame
-                frame = camera.capture_array()
-                last_frame_time = time.time()
-
-                # Process AI detection overlays if enabled
+                # Optional AI overlays (off by default; the detector already
+                # runs inference, so re-running it here is intentionally gated).
                 if ai_detection_enabled:
                     ai = get_ai_controller()
                     if ai is not None:
@@ -452,17 +458,26 @@ async def video_feed():
                         except Exception as e:
                             logger.debug(f"AI processing error (continuing without overlay): {e}")
 
-                # Convert to JPEG with optimized settings for speed
-                _, buffer = cv2.imencode('.jpg', frame, [
-                    cv2.IMWRITE_JPEG_QUALITY, 50,  # Lower quality for speed
-                    cv2.IMWRITE_JPEG_OPTIMIZE, 1   # Enable optimization
+                ok, buffer = cv2.imencode('.jpg', frame, [
+                    cv2.IMWRITE_JPEG_QUALITY, 60,
+                    cv2.IMWRITE_JPEG_OPTIMIZE, 1,
                 ])
-                frame_bytes = buffer.tobytes()
+                if not ok:
+                    time.sleep(target_interval)
+                    continue
 
                 # Yield frame in MJPEG format
                 yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
+                # Pace the loop so we don't spin re-encoding identical frames
+                elapsed = time.time() - loop_start
+                if elapsed < target_interval:
+                    time.sleep(target_interval - elapsed)
+
+        except (GeneratorExit, ConnectionError):
+            # Client disconnected — stop cleanly so the generator doesn't leak.
+            return
         except Exception as e:
             logger.error(f"Video streaming error: {e}")
             return

@@ -1153,12 +1153,35 @@ class RelayClient:
 
         # Note: Silent Guardian continues running - it's autonomous
 
+    async def _is_serving_local_ap(self) -> bool:
+        """True if the robot is currently hosting its local AP (no cloud route).
+
+        is_ap_mode() runs a blocking pgrep and may grab the wifi manager's lock
+        during an AP transition, so run it in the default executor rather than
+        on this asyncio loop.
+        """
+        try:
+            from services.network.wifi_manager import get_wifi_manager
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, get_wifi_manager().is_ap_mode)
+        except Exception:
+            return False
+
     async def _reconnect_loop(self):
         """Reconnection loop with exponential backoff (1s, 2s, 4s, ... max 30s)"""
         backoff = 1.0  # Start at 1 second
 
         while self._running:
             if not self._connected:
+                # Don't dial the cloud relay while the robot is serving its
+                # local AP — there's no internet route, so every attempt fails
+                # after the backoff and just adds churn/log noise during a demo.
+                # Wait out AP mode instead. (Checked off-loop so the blocking
+                # pgrep in is_ap_mode() doesn't stall this event loop.)
+                if await self._is_serving_local_ap():
+                    await asyncio.sleep(15)
+                    continue
+
                 self.logger.info(f"Attempting reconnection in {backoff:.1f}s...")
                 await asyncio.sleep(backoff)
 
