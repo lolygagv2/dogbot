@@ -138,6 +138,10 @@ class LEDController:
         self.blue_chip = None
         self.pixels = None
 
+        # Guards the blue-tube GPIO25 claim against concurrent re-init attempts
+        # (relay / WS / WebRTC / ambient mode can all call blue_on/off).
+        self._blue_init_lock = threading.Lock()
+
         # Try hardware init (may fail in AP mode if wifi-provision holds GPIO)
         self._initialize_blue_led()
         self._initialize_neopixels()
@@ -200,9 +204,26 @@ class LEDController:
         """Check if LED system is properly initialized"""
         return (self.blue_chip is not None) or (self.pixels is not None)
 
+    def _ensure_blue_init(self) -> bool:
+        """Ensure the blue tube's GPIO25 is claimed, retrying the startup init.
+
+        The one-shot init in __init__ races other GPIO25 claimants at boot and
+        can lose with 'GPIO busy' — after which the tube stayed dead for the
+        whole process and every app mood_led command failed silently. Instead,
+        re-attempt the claim lazily whenever a command arrives: the pin is
+        almost always free by then, so this self-heals without a restart.
+        Lock + double-check so concurrent callers don't double-claim.
+        """
+        if self.blue_chip is not None:
+            return True
+        with self._blue_init_lock:
+            if self.blue_chip is not None:
+                return True
+            return self._initialize_blue_led()
+
     def blue_on(self):
         """Turn blue LED on"""
-        if not self.blue_chip:
+        if not self._ensure_blue_init():
             print("Blue LED not initialized")
             return False
         try:
@@ -216,7 +237,7 @@ class LEDController:
 
     def blue_off(self):
         """Turn blue LED off"""
-        if not self.blue_chip:
+        if not self._ensure_blue_init():
             print("Blue LED not initialized")
             return False
         try:

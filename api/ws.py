@@ -245,8 +245,9 @@ class TreatBotWebSocketServer:
         # lgpio claim, which loses the startup race and silently fails.
         try:
             led = self.led.led if self.led else None
-            if led is not None and getattr(led, 'blue_chip', None):
-                led.blue_on()
+            # blue_on() lazily (re)claims GPIO25, so don't pre-gate on blue_chip
+            # — the on-connect blue tube self-heals past the boot-time race.
+            if led is not None and led.blue_on():
                 self.logger.info("App connected via local WS — LED idle, blue LED solid ON")
         except Exception as e:
             self.logger.warning(f"Blue LED on failed (non-critical): {e}")
@@ -537,8 +538,10 @@ class TreatBotWebSocketServer:
                 try:
                     from services.media.led import get_led_service
                     led = get_led_service().led
-                    if led is None or not getattr(led, 'blue_chip', None):
-                        raise RuntimeError("blue LED controller not initialized")
+                    if led is None:
+                        raise RuntimeError("LED service unavailable")
+                    # Don't pre-check blue_chip: blue_on/off lazily (re)claim GPIO25,
+                    # self-healing the boot-time 'GPIO busy' race. ok reflects reality.
                     if action == "on":
                         ok = bool(led.blue_on())
                     elif action == "off":
