@@ -1145,8 +1145,43 @@ class TreatBotMain:
                     self.logger.debug(f"Mode set={mode_name} -> {resp.status_code}")
 
                 elif command == 'motor':
-                    # Motor commands should go via WebRTC data channel for low latency
-                    self.logger.debug(f"Motor command ignored (use WebRTC data channel)")
+                    # Analog drive over the relay path. The WebRTC data channel is
+                    # the low-latency preferred path, but it is not always open
+                    # (e.g. data channel never negotiated) and the app falls back
+                    # to relay. Route to the SAME shared bus helpers used by the
+                    # WebRTC handler and relay_client's 'motor_command' handler —
+                    # do not drop. App sends pre-mixed {left, right} floats in
+                    # [-1.0, 1.0]; bus applies per-channel deadzone + the +/-70
+                    # safety clamp, and the dead-man watchdog stops on link loss.
+                    try:
+                        from core.motor_command_bus import (
+                            get_motor_bus, map_stick_to_motor_command, CommandSource,
+                        )
+                        try:
+                            from config.config_loader import get_config
+                            deadzone = float(
+                                get_config().raw.get('controller', {}).get('app_input_deadzone', 0.10)
+                            )
+                        except Exception:
+                            deadzone = 0.10
+
+                        cmd = map_stick_to_motor_command(
+                            params.get('left', 0),
+                            params.get('right', 0),
+                            CommandSource.RELAY,
+                            deadzone=deadzone,
+                        )
+                        bus = get_motor_bus()
+                        if bus and bus.running:
+                            bus.send_command(cmd)
+                            if abs(cmd.left_speed) > 10 or abs(cmd.right_speed) > 10:
+                                self.logger.debug(
+                                    f"Motor (relay): L={cmd.left_speed}% R={cmd.right_speed}%"
+                                )
+                        else:
+                            self.logger.warning("Motor command dropped: motor bus unavailable")
+                    except Exception as e:
+                        self.logger.error(f"Motor relay handler error: {e}")
 
                 elif command == 'stop':
                     # Emergency stop - stop motors
