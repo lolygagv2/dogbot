@@ -86,6 +86,14 @@ class WebRTCService:
         # Per-session data channels (used to push video_quality updates to app)
         self.data_channels: Dict[str, Any] = {}
 
+        # Per-session pending-teardown timers. ICE 'disconnected' is transient
+        # per the WebRTC spec (brief packet loss / Wi-Fi roam) and usually
+        # self-heals back to 'connected'. We start a grace timer instead of
+        # tearing down immediately, and cancel it if the session recovers.
+        # Immediate teardown on 'disconnected' was killing recoverable sessions,
+        # dropping the motor data channel and forcing the relay fallback.
+        self._disconnect_timers: Dict[str, "asyncio.Task"] = {}
+
         # Connection state
         self._lock = threading.Lock()
         self._detector = None  # Lazy loaded
@@ -430,9 +438,14 @@ class WebRTCService:
                 'state': state
             }, 'webrtc_service')
 
-            if state in ["failed", "closed", "disconnected"]:
+            if state == "connected":
+                self._cancel_disconnect_timer(session_id, "connectionState=connected")
+            elif state in ["failed", "closed"]:
                 self.logger.info(f"[WEBRTC] Session {session_id} {state} - cleaning up (mode unchanged)")
                 await self._cleanup_connection(session_id)
+            elif state == "disconnected":
+                # Transient — give it a grace window to self-heal before teardown.
+                self._schedule_disconnect_grace(session_id, "connectionState")
 
         # ICE candidate handler — log candidate types for latency diagnosis
         @pc.on("icecandidate")
@@ -462,14 +475,18 @@ class WebRTCService:
             try:
                 state = pc.iceConnectionState
                 self.logger.info(f"[WEBRTC] ICE state {session_id}: {state}")
-                # Log selected candidate pair when connected
+                # Log selected candidate pair when connected; recovery also
+                # cancels any pending teardown from a prior 'disconnected'.
                 if state == "completed" or state == "connected":
+                    self._cancel_disconnect_timer(session_id, f"ICE={state}")
                     await self._log_ice_candidate_pair(pc, session_id)
-                # Proactively clean up on ICE failure to prevent crashes
-                if state in ["failed", "disconnected", "closed"]:
-                    self.logger.warning(f"[WEBRTC] ICE {state} for {session_id}, scheduling cleanup...")
-                    # Use asyncio.create_task to avoid blocking
+                # Terminal states tear down immediately. 'disconnected' is
+                # transient (WebRTC spec) — give it a grace window to self-heal.
+                elif state in ["failed", "closed"]:
+                    self.logger.warning(f"[WEBRTC] ICE {state} for {session_id}, cleaning up...")
                     asyncio.create_task(self._safe_cleanup_connection(session_id))
+                elif state == "disconnected":
+                    self._schedule_disconnect_grace(session_id, "ICE")
             except Exception as e:
                 self.logger.error(f"[WEBRTC] ICE state change handler error: {e}")
 
@@ -710,9 +727,14 @@ class WebRTCService:
                 'state': state
             }, 'webrtc_service')
 
-            if state in ["failed", "closed", "disconnected"]:
+            if state == "connected":
+                self._cancel_disconnect_timer(session_id, "connectionState=connected")
+            elif state in ["failed", "closed"]:
                 self.logger.info(f"[WEBRTC] Session {session_id} {state} - cleaning up (mode unchanged)")
                 await self._cleanup_connection(session_id)
+            elif state == "disconnected":
+                # Transient — give it a grace window to self-heal before teardown.
+                self._schedule_disconnect_grace(session_id, "connectionState")
 
         # ICE candidate handler — log candidate types for latency diagnosis
         @pc.on("icecandidate")
@@ -742,10 +764,14 @@ class WebRTCService:
                 state = pc.iceConnectionState
                 self.logger.info(f"[WEBRTC] ICE state {session_id}: {state}")
                 if state == "completed" or state == "connected":
+                    self._cancel_disconnect_timer(session_id, f"ICE={state}")
                     await self._log_ice_candidate_pair(pc, session_id)
-                if state in ["failed", "disconnected", "closed"]:
-                    self.logger.warning(f"[WEBRTC] ICE {state} for {session_id}, scheduling cleanup...")
+                elif state in ["failed", "closed"]:
+                    self.logger.warning(f"[WEBRTC] ICE {state} for {session_id}, cleaning up...")
                     asyncio.create_task(self._safe_cleanup_connection(session_id))
+                elif state == "disconnected":
+                    # Transient — grace window to self-heal before teardown.
+                    self._schedule_disconnect_grace(session_id, "ICE")
             except Exception as e:
                 self.logger.error(f"[WEBRTC] ICE state change handler error: {e}")
 
@@ -889,6 +915,62 @@ class WebRTCService:
             'remote_addr': remote_addr,
         }, 'webrtc_service')
 
+    # Grace period (seconds) to let a transient ICE 'disconnected' recover
+    # before tearing the session down. Tuned to cover a brief Wi-Fi roam /
+    # packet-loss burst without leaving a dead session lingering for long.
+    ICE_DISCONNECT_GRACE_S = 6.0
+
+    def _cancel_disconnect_timer(self, session_id: str, reason: str = "") -> None:
+        """Cancel a pending teardown timer because the session recovered."""
+        task = self._disconnect_timers.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+            self.logger.info(
+                f"[WEBRTC] {session_id} recovered ({reason}) — cancelled pending teardown"
+            )
+
+    def _schedule_disconnect_grace(self, session_id: str, source: str) -> None:
+        """Start (once) a grace timer that tears the session down only if it is
+        still not connected after ICE_DISCONNECT_GRACE_S. Cancelled by
+        _cancel_disconnect_timer if the connection recovers in the meantime."""
+        if session_id in self._disconnect_timers:
+            return  # already counting down for this session
+
+        # Safety: while the link is down, motor commands can't arrive reliably,
+        # so stop now (defense-in-depth with the 500ms motor-bus watchdog). If
+        # the session recovers, the app simply resumes sending commands.
+        self._stop_motors_safety(f"{source} disconnect grace ({session_id})")
+
+        async def _grace():
+            try:
+                await asyncio.sleep(self.ICE_DISCONNECT_GRACE_S)
+            except asyncio.CancelledError:
+                return
+            self._disconnect_timers.pop(session_id, None)
+            with self._lock:
+                pc = self.connections.get(session_id)
+            if pc is None:
+                return  # already gone
+            ice = getattr(pc, 'iceConnectionState', None)
+            conn = getattr(pc, 'connectionState', None)
+            if ice in ("connected", "completed") or conn == "connected":
+                self.logger.info(
+                    f"[WEBRTC] {session_id} recovered before grace expiry "
+                    f"(ice={ice} conn={conn})"
+                )
+                return
+            self.logger.warning(
+                f"[WEBRTC] {session_id} still down after {self.ICE_DISCONNECT_GRACE_S}s "
+                f"(ice={ice} conn={conn}) — tearing down"
+            )
+            await self._cleanup_connection(session_id)
+
+        self._disconnect_timers[session_id] = asyncio.create_task(_grace())
+        self.logger.info(
+            f"[WEBRTC] {session_id} {source} disconnected — waiting "
+            f"{self.ICE_DISCONNECT_GRACE_S}s for recovery before teardown"
+        )
+
     async def _safe_cleanup_connection(self, session_id: str):
         """Safe cleanup wrapper that catches all exceptions to prevent crashes"""
         try:
@@ -920,6 +1002,10 @@ class WebRTCService:
         """Clean up a peer connection"""
         # Safety first: stop motors before tearing anything down.
         self._stop_motors_safety(f"cleanup {session_id}")
+        # Drop any pending grace timer for this session (we're tearing down now).
+        timer = self._disconnect_timers.pop(session_id, None)
+        if timer and not timer.done():
+            timer.cancel()
         with self._lock:
             pc = self.connections.pop(session_id, None)
             self.ice_callbacks.pop(session_id, None)
