@@ -769,6 +769,12 @@ class TreatBotMain:
                         'emotion': emotion,
                         'confidence': confidence,
                         'loudness_db': loudness_db,
+                        # Dog attribution (resolved from ArUco→profile match) so a
+                        # backlogged bark in cloud history can name the dog. Source
+                        # event always carries these (bark_detector.py:525); they
+                        # were previously dropped here. May be None if no marker seen.
+                        'dog_id': event.data.get('dog_id'),
+                        'dog_name': event.data.get('dog_name'),
                     }
                     should_throttle = True
 
@@ -787,6 +793,51 @@ class TreatBotMain:
                     # contract names (guardian, training, etc). Skip duplicate here to
                     # avoid sending a second event with wrong/None mode values.
                     pass
+
+                # Silent Guardian lifecycle + interventions. These were published
+                # as SYSTEM events (silent_guardian.py) and persisted locally, but
+                # never forwarded to the relay — so cloud activity history showed
+                # the barks that triggered SG but not the robot's response. Forward
+                # them as a single 'guardian' event discriminated by 'action' so the
+                # app's activity feed can render "intervened / escalated" entries.
+                # Not throttled: low-frequency, discrete events.
+                elif event.subtype == 'sg_escalation':
+                    event_type = 'guardian'
+                    event_data = {
+                        'action': 'intervention',
+                        'dog_id': event.data.get('dog_id'),
+                        'dog_name': event.data.get('dog_name'),
+                        'escalation_level': event.data.get('escalation_level'),
+                        'interventions_in_hour': event.data.get('interventions_in_hour'),
+                        'session_id': event.data.get('session_id'),
+                    }
+
+                elif event.subtype == 'sg_reset':
+                    event_type = 'guardian'
+                    event_data = {
+                        'action': 'reset',
+                        'reason': event.data.get('reason'),
+                        'quiet_minutes': event.data.get('quiet_minutes'),
+                        'previous_level': event.data.get('previous_level'),
+                        'session_id': event.data.get('session_id'),
+                    }
+
+                elif event.subtype == 'silent_guardian_started':
+                    event_type = 'guardian'
+                    event_data = {
+                        'action': 'started',
+                        'session_id': event.data.get('session_id'),
+                        'max_treats': event.data.get('max_treats'),
+                    }
+
+                elif event.subtype == 'silent_guardian_stopped':
+                    event_type = 'guardian'
+                    event_data = {
+                        'action': 'stopped',
+                        'session_id': event.data.get('session_id'),
+                        'interventions': event.data.get('interventions'),
+                        'treats': event.data.get('treats'),
+                    }
 
                 elif event.subtype == 'mission.started':
                     event_type = 'mission_progress'

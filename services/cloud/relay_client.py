@@ -16,6 +16,8 @@ import logging
 import os
 import threading
 import time
+import uuid
+from datetime import datetime
 from typing import Optional, Dict, Any, Callable
 from dataclasses import dataclass
 
@@ -1333,6 +1335,14 @@ class RelayClient:
             'device_id': self.config.device_id,
             **data
         }
+
+        # Stable id + timestamp so the relay can persist this as a durable
+        # activity-history entry (GET /api/activity) that survives even when no
+        # app is connected to receive it live. The robot is the authoritative
+        # source of event time; setdefault never clobbers a caller that already
+        # supplied its own id/timestamp.
+        message.setdefault('id', uuid.uuid4().hex)
+        message.setdefault('timestamp', datetime.utcnow().isoformat() + 'Z')
 
         asyncio.run_coroutine_threadsafe(self._send(message), self._loop)
 
