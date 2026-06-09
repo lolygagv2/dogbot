@@ -575,6 +575,7 @@ class TreatBotMain:
                 self.bus.subscribe('audio', self._forward_event_to_relay)
                 self.bus.subscribe('safety', self._forward_event_to_relay)
                 self.bus.subscribe('system', self._forward_event_to_relay)
+                self.bus.subscribe('reward', self._forward_event_to_relay)
                 self.bus.subscribe('cloud', self._handle_cloud_command)
                 self.logger.debug("Event forwarding to relay enabled")
                 self.logger.debug("Cloud command handler enabled")
@@ -802,6 +803,26 @@ class TreatBotMain:
                         'message': event.data.get('message'),
                     }
                     # Alerts are not throttled - always send immediately
+
+            elif event.type == EventType.REWARD:
+                # Treat dispenses are published on the 'reward' channel
+                # (services/reward/dispenser.py). They were persisted locally
+                # but never forwarded, so the app's reward/activity history
+                # stayed empty. Forward as 'treat_dispensed' (the relay already
+                # maps this key to its treat_dispensed activity type). Discrete,
+                # low-frequency event — not throttled.
+                if event.subtype in ('treat_dispensed', 'dispensed', 'reward_given'):
+                    event_type = 'treat_dispensed'
+                    event_data = {
+                        'dog_id': event.data.get('dog_id'),
+                        'dog_name': event.data.get('dog_name'),
+                        'reason': event.data.get('reason'),
+                        'behavior': event.data.get('behavior'),
+                        'confidence': event.data.get('confidence', 0),
+                        'treats_dispensed': event.data.get('treats_dispensed', 1),
+                        'total_today': event.data.get('total_today'),
+                        'remaining': event.data.get('remaining'),
+                    }
 
             elif event.type == EventType.SYSTEM:
                 if event.subtype == 'mode_changed':
