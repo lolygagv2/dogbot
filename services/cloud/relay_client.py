@@ -816,6 +816,21 @@ class RelayClient:
             })
             return
 
+        # Handle controller_* — remote Bluetooth game-controller pairing.
+        # All branches delegate to the single ControllerManager brain, which
+        # does the (slow, blocking) bluetoothctl work on its own worker thread
+        # and pushes controller_status/scan_result/pair_progress/error events
+        # back via the emitter registered in main_treatbot. We ack immediately.
+        if command.startswith('controller_'):
+            try:
+                from services.control.controller_manager import get_controller_manager
+                ack = get_controller_manager().handle_command(command, params)
+            except Exception as e:
+                self.logger.error(f"controller command error: {e}")
+                ack = {'success': False, 'error': str(e)}
+            await self._send({'type': 'command_ack', 'command': command, **ack})
+            return
+
         # Publish command to event bus for other services to handle
         self.bus.publish(CloudEvent(
             subtype='command',

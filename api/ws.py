@@ -168,6 +168,11 @@ class TreatBotWebSocketServer:
         await self.manager.connect(websocket)
         self.logger.info(f"WebSocket connected. Path: {websocket.url.path}")
 
+        # Register this socket loop as a sink for controller-pairing events so
+        # spontaneous updates (auto-reconnect, scan trickle) reach local-AP
+        # clients. Once per process; the emitter fans out to all connections.
+        self._register_controller_emitter()
+
         # Signal that an app client is connected (LED idle, publish event)
         self._on_app_connected()
 
@@ -749,6 +754,21 @@ class TreatBotWebSocketServer:
 
             elif command == "delete_dog":
                 await self._handle_delete_dog(websocket, data)
+                return
+
+            elif command.startswith("controller_"):
+                # Remote Bluetooth game-controller pairing over the local-AP
+                # socket. Same ControllerManager brain as the relay path; the
+                # spontaneous events come back via the emitter registered in
+                # handle_websocket(). Params may be nested under "data" or flat.
+                from services.control.controller_manager import get_controller_manager
+                params = data.get("data")
+                if not params:
+                    params = {k: v for k, v in data.items()
+                              if k not in ("type", "command")}
+                ack = get_controller_manager().handle_command(command, params)
+                await self.manager.send_to_one(
+                    websocket, {"type": "command_ack", "command": command, **ack})
                 return
 
             elif command in ("servo_center", "camera_center", "center"):
@@ -1686,6 +1706,36 @@ class TreatBotWebSocketServer:
         return telemetry
 
     # Event handlers - broadcast in both legacy and contract formats
+    def _register_controller_emitter(self):
+        """Wire ControllerManager events to local-AP websocket clients (once).
+
+        Runs inside the websocket coroutine, so we capture the live api event
+        loop here and use run_coroutine_threadsafe to push from the manager's
+        worker thread. Idempotent — register_emitter dedupes anyway."""
+        if getattr(self, '_controller_emitter_registered', False):
+            return
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            from services.control.controller_manager import get_controller_manager
+            mgr = get_controller_manager()
+
+            def _emit(payload):
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self.manager.send_to_all(payload), loop)
+                except Exception:
+                    pass
+
+            mgr.register_emitter(_emit)
+            # Ensure the manager is running even if main() never started it
+            # (e.g. relay disabled but local-AP active).
+            mgr.start()
+            self._controller_emitter_registered = True
+            self.logger.info("Controller pairing events wired to local-AP")
+        except Exception as e:
+            self.logger.debug(f"controller emitter register failed: {e}")
+
     async def _broadcast_contract_event(self, event_type: str, data: Dict[str, Any]):
         """Broadcast event in API contract format"""
         from datetime import datetime

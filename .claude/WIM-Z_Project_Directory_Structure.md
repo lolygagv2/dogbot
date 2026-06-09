@@ -132,7 +132,8 @@
          webrtc.py                  # WebRTC video streaming
          video_track.py             # Video track for WebRTC
       control/
-         xbox_controller.py         # Xbox controller service
+         xbox_controller.py         # Xbox controller INPUT service (reads /dev/input/jsX)
+         controller_manager.py      # In-app BT pairing brain (scan/pair/trust/reconnect) — owns the bond only
          bluetooth_esc.py           # Bluetooth ESC gamepad
          gamepad.py                 # Gamepad input (placeholder)
          gui.py                     # GUI monitoring service

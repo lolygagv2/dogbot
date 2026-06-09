@@ -90,6 +90,7 @@ class TreatBotMain:
         self.api_server = None
         self.relay_client = None
         self.webrtc_service = None
+        self.controller_manager = None
 
         # Mode audio mappings - voice announcements for mode changes
         self.mode_audio_files = {
@@ -577,6 +578,21 @@ class TreatBotMain:
                 self.bus.subscribe('cloud', self._handle_cloud_command)
                 self.logger.debug("Event forwarding to relay enabled")
                 self.logger.debug("Cloud command handler enabled")
+
+                # Remote Bluetooth game-controller pairing. Start the manager and
+                # register the relay as an event sink so controller_status /
+                # scan_result / pair_progress / error reach the app. send_event is
+                # thread-safe; the manager calls it from its own worker thread.
+                try:
+                    from services.control.controller_manager import get_controller_manager
+                    self.controller_manager = get_controller_manager()
+                    relay = self.relay_client
+                    self.controller_manager.register_emitter(
+                        lambda payload: relay.send_event(payload.get('type'), payload))
+                    self.controller_manager.start()
+                    self.logger.info("Controller pairing manager started")
+                except Exception as e:
+                    self.logger.error(f"Controller pairing manager failed: {e}")
 
             # Start dog event logger (persistent behavior logging)
             from services.logging.dog_event_logger import get_dog_event_logger
