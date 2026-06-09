@@ -112,6 +112,12 @@ class SilentGuardianMode:
         self.session_start_time = None
         self.treats_dispensed = 0
         self.interventions_triggered = 0
+        # Summary counters persisted at session end. These were never tracked,
+        # so end_silent_guardian_session() always wrote 0 for them (compounded by
+        # the positional-arg mismatch at the call sites — see stop()).
+        self.total_barks = 0          # barks passing the loudness threshold
+        self.successful_quiets = 0    # quiet periods achieved (treat OR praise)
+        self.max_escalation_level = 0 # highest escalation level reached
 
         # Bark tracking
         self.last_bark_time = 0.0
@@ -358,6 +364,9 @@ class SilentGuardianMode:
             self.session_start_time = time.time()
             self.treats_dispensed = 0
             self.interventions_triggered = 0
+            self.total_barks = 0
+            self.successful_quiets = 0
+            self.max_escalation_level = 0
             self.escalation_events = []
             self.quiet_since = 0.0
             self.total_escalation_resets = 0
@@ -410,8 +419,11 @@ class SilentGuardianMode:
         if self.session_id:
             self.store.end_silent_guardian_session(
                 self.session_id,
-                self.interventions_triggered,
-                self.treats_dispensed
+                total_barks=self.total_barks,
+                interventions=self.interventions_triggered,
+                successful_quiets=self.successful_quiets,
+                treats_dispensed=self.treats_dispensed,
+                max_escalation=self.max_escalation_level,
             )
 
         # Wait for thread
@@ -487,6 +499,7 @@ class SilentGuardianMode:
 
         logger.info(f"Bark detected: {dog_name or dog_id or 'unknown'} (conf: {confidence:.2f}, loud: {loudness_db:.1f}dB)")
         self.last_bark_time = time.time()
+        self.total_barks += 1  # confirmed bark (passed loudness threshold)
         self.quiet_since = 0.0  # Any bark resets the continuous quiet timer
 
         # Handle based on current state
@@ -519,6 +532,8 @@ class SilentGuardianMode:
 
             # Calculate escalation level
             self.current_escalation_level = self._get_escalation_level()
+            self.max_escalation_level = max(self.max_escalation_level,
+                                            self.current_escalation_level)
 
             self.fsm_state = SGState.INTERVENTION
             self.intervention_start_time = now
@@ -599,14 +614,20 @@ class SilentGuardianMode:
         if self.session_id:
             self.store.end_silent_guardian_session(
                 self.session_id,
-                self.interventions_triggered,
-                self.treats_dispensed
+                total_barks=self.total_barks,
+                interventions=self.interventions_triggered,
+                successful_quiets=self.successful_quiets,
+                treats_dispensed=self.treats_dispensed,
+                max_escalation=self.max_escalation_level,
             )
 
         self.session_id = self.store.start_silent_guardian_session()
         self.session_start_time = time.time()
         self.treats_dispensed = 0
         self.interventions_triggered = 0
+        self.total_barks = 0
+        self.successful_quiets = 0
+        self.max_escalation_level = 0
         self.escalation_events = []
         self.quiet_since = 0.0
         self.total_escalation_resets = 0
@@ -965,6 +986,9 @@ class SilentGuardianMode:
 
         # Track consecutive interventions for progressive quiet
         self.consecutive_interventions += 1
+        # A quiet period was genuinely achieved (we're past the bark-state safety
+        # checks). Counts whether the outcome is a treat or praise-only.
+        self.successful_quiets += 1
 
         # Check treat limit
         max_treats = self.config.get('session_limits', {}).get('max_treats', 11)
