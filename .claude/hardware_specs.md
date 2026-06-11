@@ -1,4 +1,44 @@
-# TreatBot Hardware Specifications
+# TreatBot / WIM-Z Hardware Specifications
+
+> **Status:** Build 106 · June 2026 · Fleet of 5 units (treatbot1–5), all built & operational
+> **Audience:** Engineering source-of-truth + investor reference.
+> **Per-unit truth:** every unit's calibration lives in `config/robot_profiles/<id>.yaml`, loaded by hostname at boot. The application code is identical across the fleet — only the profile differs.
+
+---
+
+## 🛰️ Fleet Overview (5 Units, 2 Hardware Generations)
+
+WIM-Z ships as a small fleet of physically distinct units running one shared codebase. All per-unit variation is isolated to a single profile yaml; this is the design that makes the platform manufacturable. Two hardware generations exist:
+
+| | **Gen-1** (treatbot1–2) | **Gen-2** (treatbot3–5) |
+|---|---|---|
+| Motor driver | L298N H-bridge | Cytron MDD10A (10A dual-channel, DIR+PWM) |
+| Drive motors | 2× DFRobot 6V 210RPM metal-gear, **with encoders** | 2× 9V brushed, **no encoders** |
+| Closed-loop control | PID via encoder feedback (available) | Open-loop PWM (no encoders → PID disabled) |
+| Camera | Sony IMX500 (on-sensor AI) | RPi Camera Module 3 Wide (IMX708) |
+| Driver code | `core/hardware/proper_pid_motor_controller.py` | `core/hardware/motor_controller_cytron.py` |
+
+**Per-unit notes:**
+- **treatbot1** — Primary demo unit. Matched 1.6Ω/1.7Ω motors, best-calibrated gimbal. IMX500.
+- **treatbot2** — Backup unit; needs motor compensation (L 0.75 / R 1.0). Rebuilt battery divider (100k/20k).
+- **treatbot3** — Production #3. Cytron + 9V brushed, IMX708 Wide. High-ratio (~54:1) battery divider.
+- **treatbot4** — Production #4. IMX708 Wide **NoIR** (IR-cut removed) for night-vision mode; cam1 CSI port damaged → wired to CSI0.
+- **treatbot5** — Production #5. Cytron + 9V brushed, IMX708 Wide. UART/motor wiring issues resolved May 2026.
+
+### Per-Unit Calibration Snapshot
+*Authoritative values live in `config/robot_profiles/*.yaml`; this is a point-in-time summary (June 2026).*
+
+| Unit | Battery cal factor | Pan/Tilt center | Dispenser steps/slot | Motor L/R mult | Camera |
+|------|------|------|------|------|------|
+| treatbot1 | 3.595 | 120 / 60 | 137 | 1.2 / 0.9 | IMX500 |
+| treatbot2 | 6.0 | 134 / 90 | 137 | 0.75 / 1.0 | IMX500 |
+| treatbot3 | 54.28 | 67 / −12 | 150 | 1.0 / 1.06 | IMX708 Wide |
+| treatbot4 | 5.638 | 67 / 43 | 147 | 1.0 / 1.0 | IMX708 Wide NoIR |
+| treatbot5 | 51.29 | 46 / 97 | 147 | 1.0 / 1.0 | IMX708 Wide |
+
+> **Why per-unit calibration is a manufacturing requirement:** every ADS1115 + voltage-divider pair reads differently (factors range 3.6–54×), every gimbal mount is physically offset, and every dispenser needs its slot-step dialed in. These are required assembly-line steps captured in the profile yaml, not code changes.
+
+---
 
 ## 🔧 SERVO SYSTEM - 3 Servos Total
 
@@ -231,12 +271,17 @@ camera_auto_detect=1
   - **Encoders:** Built-in quadrature encoders
   - **✅ STATUS:** Working with error-free operation, 50ms rate limiting applied
   - **✅ COMPLETE:** PWM/control issues resolved, safety fixes implemented
-- **Motor Driver:** L298N H-Bridge
+- **Motor Driver (Gen-1, treatbot1–2):** L298N H-Bridge
   - **Logic Power:** 5V (from buck converter)
   - **Motor Power:** Direct from battery (12-16.8V)
   - **Voltage Drop:** ~1.4V typical
   - **Max Current:** 2A per channel
   - **Effective Motor Voltage:** 12.6V (14V - 1.4V drop)
+- **Motor Driver (Gen-2, treatbot3–5):** Cytron MDD10A
+  - **Type:** 10A dual-channel, DIR + PWM per motor (low voltage drop vs L298N)
+  - **Motors:** 2× 9V brushed, **no encoders** → PID disabled, open-loop PWM
+  - **Driver code:** `core/hardware/motor_controller_cytron.py`, selected when `controller.driver == "cytron"` in the profile yaml
+  - **Why the switch:** simpler/cheaper drivetrain for production units; trades closed-loop odometry for lower cost and higher current headroom
 - **Speed Control:** PWM on enable pins
   - **Safe PWM Range:** 40-70% duty cycle 
   - **Maximum PWM:** 75% duty cycle (9V effective - absolute max)
@@ -299,6 +344,12 @@ camera_auto_detect=1
   - Over-discharge protection
   - Over-charge protection
   - Cell balancing
+
+### ⚠️ Per-Unit Battery Monitoring (ADS1115)
+- **Sensing:** ADS1115 ADC on A0 reads a resistive voltage divider off the pack.
+- **CRITICAL:** every ADS1115 + divider pair reads differently, so `battery.calibration_factor` is **per-unit** (see fleet table: 3.595–54.28× across the fleet). An uncalibrated unit reports a false SoC (e.g. treatbot1 default 4.308 → false 16.5V/94%).
+- **Divider variance:** Gen-1 units use low-ratio dividers (~4–6:1); some Gen-2 units use high-ratio (~51–54:1). The factor must be recalibrated if divider resistors are ever swapped.
+- **Recalibrate:** meter the pack, then `factor = meter_V / adc_voltage` (adc_voltage is in `GET /battery`).
 
 ### Power Distribution
 **Buck Converter 1:**
@@ -379,6 +430,8 @@ camera_auto_detect=1
 - **Protocol:** HTTP/WebSocket/WebRTC
 - **Port:** 8000 (API), 8080 (dashboard)
 - **Range:** ~30m indoor
+- **Radio:** **Onboard `wlan0` (brcmfmac) only.** USB WiFi dongles (RTL8822BU / Edimax) were removed fleet-wide May 2026 — they caused band-flapping, dual-interface routing conflicts, and at least one unclean hard-reset. NetworkManager profiles are MAC-locked to `wlan0` to prevent a second interface from latching on.
+- **Local-AP demo mode:** each unit can self-host a 5 GHz access point (`WIMZ-*` → `192.168.4.1`) so a phone connects directly with no internet/relay (WebRTC + MJPEG fallback). See product roadmap.
 - **Features:**
   - Live camera stream
   - Mission control
@@ -517,6 +570,8 @@ camera_auto_detect=1
 
 ---
 
-**Last Hardware Update:** April 17, 2026 - Stepper motor, GPIO mapping, camera options
-**Software Status:** Build 83 complete (April 2026) - All core systems validated
-**Next Phase:** Manufacturing prep and per-unit calibration
+**Last Hardware Update:** June 2026 — Fleet overview (5 units, 2 generations), Cytron MDD10A drivetrain, IMX708 Wide/NoIR cameras, per-unit ADS1115 battery calibration, onboard-only WiFi
+**Software Status:** Build 106 (June 2026) — All core systems validated across the fleet
+**Next Phase:** Manufacturing prep, per-unit calibration jigs, power-button single-point-of-failure redesign
+
+> **GPIO note:** the pin map above reflects the Gen-1 (treatbot1) wiring. Gen-2 units (Cytron driver) reassign the motor-control pins to DIR/PWM lines — see each unit's `HARDWARE_NOTE` block in `config/robot_profiles/<id>.yaml` for the authoritative per-unit wiring.

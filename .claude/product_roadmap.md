@@ -1,24 +1,43 @@
 # WIM-Z (Watchful Intelligent Mobile Zen) Product Roadmap
-*Last Updated: April 17, 2026*
+*Last Updated: June 2026 · Build 106*
 
 ## Mission Statement
 Build the world's first autonomous AI-powered pet training robot - the WIM-Z (Watchful Intelligent Mobile Zen) - that combines mobility, edge AI inference, and behavioral learning to create a premium pet care experience.
 
 ---
 
-## Current Status: Build 40 Complete - Validation Phase
+## 📊 Investor Status Summary (June 2026)
 
-### Build Phase: **COMPLETE**
-All core hardware and software systems are operational. Build 40 implemented critical fixes for app integration (mission events, AI display, tracking). Awaiting live testing validation.
+**Where we are:** Functional, multi-unit prototype fleet. **Five robots (treatbot1–5) are built and operational**, all running one shared codebase with per-unit calibration. The platform is past proof-of-concept and into reliability hardening + manufacturing prep.
 
-### Recent Build History
-| Build | Date | Focus | Status |
-|-------|------|-------|--------|
-| 40 | Feb 2 | Mission fields, AI display, coach events | ✅ Code complete |
-| 38 | Feb 1 | Video overlay, bounding boxes, nudge tracking | ✅ Reviewed |
-| 36 | Jan 31 | Mission aliases, frame freshness, faster detection | ✅ Reviewed |
-| 35 | Jan 31 | Schedule API (dog_id, type fields) | ✅ Reviewed |
-| 34 | Jan 31 | Mission pipeline, dog ID, servo safety | ✅ Reviewed |
+**What works today (demonstrable):**
+- **Autonomous behavior modes** — Coach (active trick training), Silent Guardian (anti-nuisance-barking), Manual, and Mission modes, driven by on-robot edge AI.
+- **Edge AI** — dog detection + pose estimation on Hailo-8 (26 TOPS) at 30+ FPS; bark detection via a TFLite classifier with bandpass filtering.
+- **Reward loop** — vision/audio → decision → treat dispense → reward logged to cloud history, closed end-to-end.
+- **Remote + local control** — live WebRTC video, manual driving, and treat dispensing from a mobile app over an AWS relay, *and* a no-internet local-AP mode (phone ↔ robot direct).
+- **Cloud activity history** — barks, guardian events, treats, and battery telemetry forwarded to the relay for the app's history feed.
+
+**Known reliability work in flight (see Known Issues / Roadmap below):**
+- Rare silent hard-freezes under investigation (power-button single-point-of-failure + power-delivery; no software crash trace).
+- Mission Scheduler auto-start and Weekly Summary accuracy still need validation.
+- Data layer to be refactored into ML/analytics-friendly schema (design pending).
+
+**Two hardware generations** (full detail in `hardware_specs.md`): Gen-1 (tb1–2, L298N + encoder motors + IMX500, PID-capable) and Gen-2 (tb3–5, Cytron MDD10A + 9V brushed + IMX708 Wide; tb4 = NoIR night-vision).
+
+---
+
+## Current Status: Build 106 — Fleet Reliability Hardening
+
+### Build Phase: **CORE COMPLETE — HARDENING**
+All core hardware and software systems are operational across the 5-unit fleet. Focus since April 2026 has shifted from feature-build to per-unit calibration, fleet reliability (WiFi, timing, power), and cloud-history correctness.
+
+### Recent Build History (selected)
+| Period | Focus | Status |
+|-------|-------|--------|
+| Jun 2026 | Cloud activity history (guardian/treat/bark events), in-app BT controller pairing, WebRTC ICE grace-period | ✅ Shipped |
+| May 2026 | Silent Guardian overhaul (BPM fast-escalation, offline catch-up), local-AP demo mode, per-dog/house voice, night mode, adaptive-bitrate WebRTC, fleet-wide monotonic-timing fix | ✅ Shipped |
+| May 2026 | Fleet bring-up: per-unit battery/gimbal/dispenser calibration (tb2–tb5), Cytron drivetrain, IMX708 cameras, WiFi onboard-only | ✅ Shipped |
+| Feb 2026 | Build 34–40: mission events, AI overlay, coach events, schedule API | ✅ Shipped |
 
 ---
 
@@ -124,11 +143,71 @@ All core hardware and software systems are operational. Build 40 implemented cri
 
 ---
 
+## 🚀 Shipped Since Build 40 (April → June 2026)
+
+### Fleet Bring-Up & Calibration
+- [x] **5-unit fleet operational** (treatbot1–5), one codebase + per-unit `robot_profiles/*.yaml`
+- [x] Gen-2 drivetrain: **Cytron MDD10A** + 9V brushed motors (tb3–5)
+- [x] **IMX708 Wide** cameras on Gen-2; **NoIR** night-vision variant on tb4
+- [x] **Per-unit ADS1115 battery calibration** (factors 3.6–54×) — fixes false SoC readings
+- [x] Per-unit gimbal center/limits + dispenser steps-per-slot tuning across the fleet
+- [x] TMC2209 UART brought up on Gen-2 dispensers (tb4/tb5 wiring fixes)
+
+### Reliability & Safety
+- [x] **Fleet-wide monotonic-timing fix** — no RTC battery → clock jumps at boot; all safety/timeout checks moved to `time.monotonic()` (motor dead-man watchdogs, charge gate)
+- [x] Motor **dead-man's watchdog** + stop-motors on WebRTC teardown
+- [x] **WiFi onboard-only** — removed flaky USB dongles, MAC-locked NM profiles, closed dual-AP-manager conflict
+- [x] Blue-LED GPIO25 self-heal (survives boot race)
+
+### Connectivity
+- [x] **Local-AP demo mode** — 5 GHz `WIMZ-*` AP, phone ↔ robot direct (WebRTC data-channel + MJPEG fallback), no internet
+- [x] **Adaptive-bitrate/resolution WebRTC** + memory monitoring
+- [x] **In-app Bluetooth game-controller pairing** over relay and local-AP
+- [x] Relay commands: `mood_led`, `audio_volume`, `motor`, volume telemetry
+
+### Behavior & Training
+- [x] **Silent Guardian overhaul** — BPM-based fast-escalation, offline catch-up, sustained-bark segmentation, anti-farming treat cooldown
+- [x] **Per-dog voice + house voice** — owner's first dog acts as house voice before shipped defaults; command audio routed per-dog
+- [x] **Night mode** — kills blue tube light; pairs with tb4 NoIR camera
+- [x] Coach robustness: 2-consecutive-frame commit for `spin`, bark-duration rejection, per-dog `force_trick`
+
+### Cloud Activity History
+- [x] Robot forwards **guardian / bark / treat_dispensed / battery** events to relay → app history feed
+- [x] Silent Guardian session-summary column-shift + zero-fill bug fixed (correct kwargs + 3 new counters)
+
+---
+
+## 🩺 Known Issues / Risk Register (June 2026)
+
+| Issue | Impact | Status |
+|-------|--------|--------|
+| **Rare silent hard-freeze** (no kernel/software trace; corrupt journal) | Requires physical power-pull to recover | Under investigation — power-delivery/brownout + power-button SPOF suspected |
+| **Power-button single-point-of-failure** | GPIO21 relay routes all power-off authority through a software watcher; if the system hangs, the button can't power it off | Redesign needed (button must keep a hardware-direct OFF path) |
+| **Mission Scheduler** auto-start / time windows | Scheduled missions may not fire | Implemented, **not yet validated** |
+| **Weekly Summary** accuracy | Investor/owner-facing stats may be wrong | Tested, not 100% accurate |
+| **SG post-cap behavior** | After the 11-treat session cap, SG keeps intervening but never rewards → possible behavior extinction | Design decision pending |
+| **Data schema** not ML/analytics-friendly | Limits continual-learning + reporting | Refactor design doc pending (do not backfill old rows) |
+
+---
+
+## 🛰️ Fleet Status (All 5 Built & Operational)
+
+| Unit | Role | Drivetrain | Camera | Notes |
+|------|------|-----------|--------|-------|
+| treatbot1 | Primary demo | L298N + 6V encoder (PID) | IMX500 | Best-calibrated; matched motors |
+| treatbot2 | Backup | L298N + 6V encoder (PID) | IMX500 | Motor compensation; rebuilt battery divider |
+| treatbot3 | Production #3 | Cytron + 9V brushed | IMX708 Wide | High-ratio battery divider |
+| treatbot4 | Production #4 | Cytron + 9V brushed | IMX708 Wide **NoIR** | Night-vision; cam on CSI0 (cam1 port damaged) |
+| treatbot5 | Production #5 | Cytron + 9V brushed | IMX708 Wide | UART/motor wiring resolved May 2026 |
+
+---
+
 ## 🔄 Needs Testing/Rework
 
 ### Weekly Summary (`core/weekly_summary.py`)
 - [x] Tested with real data (not 100% accurate)
 - [x] Mission stats added in Build 38 (works mostly)
+- [ ] Verify report accuracy before it becomes an owner/investor-facing metric
 
 ### Mission Scheduler (`core/mission_scheduler.py`)
 - [ ] Auto-scheduling not yet tested
@@ -225,4 +304,4 @@ Phone can connect directly to robot WiFi hotspot (WIMZ-*) without internet:
 
 ---
 
-*Updated: February 2, 2026 - Build 40 review*
+*Updated: June 2026 — Build 106. Fleet status, April→June shipped features, known-issues risk register, investor status summary.*

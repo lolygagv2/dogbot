@@ -1,10 +1,31 @@
 # WIM-Z Development TODO List
-*Last Updated: April 17, 2026*
+*Last Updated: June 2026 · Build 106*
 
-## Current Status: Build 83 Complete
+## Current Status: Build 106 — Fleet Reliability Hardening
 
-**Build Phase:** COMPLETE - All core systems operational
-**Current Focus:** Production validation and manufacturing prep
+**Build Phase:** CORE COMPLETE — hardening + manufacturing prep
+**Fleet:** 5 units (treatbot1–5) built & operational, one codebase + per-unit profiles
+**Current Focus:** Reliability (power/freeze, timing), cloud-history correctness, per-unit calibration, validation of scheduler + summaries
+
+---
+
+## 🔥 CURRENT OPEN ITEMS (June 2026)
+
+### Reliability / Safety (highest priority)
+- [ ] **Silent hard-freeze RCA** — recurring lockups with no kernel/software trace (corrupt journal). Confirm power-delivery/brownout vs hang. Next step: capture `vcgencmd get_throttled` / PMIC after an event.
+- [ ] **Power-button SPOF redesign** — GPIO21 relay gates the only power-off path behind a software watcher; a hang makes the button useless (must pull wire). Restore a hardware-direct OFF path.
+
+### Validation (blocking "done" claims)
+- [ ] **Mission Scheduler** — validate auto-start, time-window enforcement, once/daily/weekly logic (implemented, never tested)
+- [ ] **Weekly Summary** accuracy — verify before it becomes an owner/investor metric
+- [ ] End-to-end cloud history after service restart — SG run → bark/guardian/treat all appear in app history (fixes committed 3250698 / f18adb2, dormant until restart)
+
+### Silent Guardian design decisions (user's call)
+- [ ] Expose `treat_eligibility_cooldown` (hardcoded 600s in `silent_guardian.py:132`) to profile yaml
+- [ ] Decide **post-cap behavior** — after the 11-treat session cap, SG keeps intervening but never rewards → possible behavior extinction over an 8h session
+
+### Data / ML
+- [ ] **Data refactor** — reshape all data into human/ML-friendly tables for analytics + continual learning. Design MD to be written first; do **not** start coding or backfill old rows yet (see memory: project_data_refactor).
 
 ---
 
@@ -220,4 +241,4 @@ curl -X POST http://localhost:8000/mode/set -H "Content-Type: application/json" 
 
 ---
 
-*Updated: April 17, 2026 - Build 83*
+*Updated: June 2026 — Build 106. Added current open-items (reliability, validation, SG design, data refactor); fleet now 5 units.*
