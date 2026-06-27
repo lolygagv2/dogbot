@@ -51,6 +51,7 @@ from core.mission_scheduler import get_mission_scheduler
 
 # Mode handlers
 from modes.silent_guardian import get_silent_guardian_mode
+from modes.night_sentry import get_night_sentry_mode
 from modes.night_mode_controller import get_night_mode_controller
 from orchestrators.coaching_engine import get_coaching_engine
 
@@ -99,6 +100,7 @@ class TreatBotMain:
             'coach': '/home/morgan/dogbot/VOICEMP3/wimz/CoachMode.mp3',
             'manual': '/home/morgan/dogbot/VOICEMP3/wimz/ManualMode.mp3',
             'mission': '/home/morgan/dogbot/VOICEMP3/wimz/MissionMode.mp3',
+            'night_sentry': '/home/morgan/dogbot/VOICEMP3/wimz/WIMZ_nsentry.mp3',
         }
         self.startup_audio = '/home/morgan/dogbot/VOICEMP3/wimz/WimZOnline.mp3'
         self.low_battery_audio = '/home/morgan/dogbot/VOICEMP3/wimz/Wimz_lowpower.mp3'
@@ -112,6 +114,7 @@ class TreatBotMain:
 
         # Mode handlers
         self.silent_guardian_mode = None
+        self.night_sentry_mode = None
         self.coaching_engine = None
         self.night_mode = None
 
@@ -470,6 +473,10 @@ class TreatBotMain:
             # Silent Guardian mode handler
             self.silent_guardian_mode = get_silent_guardian_mode()
             self.logger.info("Silent Guardian mode handler ready")
+
+            # Night Sentry mode handler (demo watch mode)
+            self.night_sentry_mode = get_night_sentry_mode()
+            self.logger.info("Night Sentry mode handler ready")
 
             # Coaching engine
             self.coaching_engine = get_coaching_engine()
@@ -874,6 +881,33 @@ class TreatBotMain:
                         'session_id': event.data.get('session_id'),
                         'interventions': event.data.get('interventions'),
                         'treats': event.data.get('treats'),
+                    }
+
+                elif event.subtype == 'sentry_detection':
+                    # Night Sentry spotted a dog/animal. Push the snapshot to the
+                    # app via the existing 'photo' event (which the app already
+                    # renders), then forward a lightweight 'sentry_detection'
+                    # history entry (no image — keep history rows small).
+                    image_b64 = event.data.get('image_b64')
+                    if image_b64 and self.relay_client and self.relay_client.connected:
+                        import os as _os
+                        from datetime import datetime as _dt
+                        snap = event.data.get('snapshot_path') or 'sentry.jpg'
+                        self.relay_client.send_event('photo', {
+                            'data': image_b64,
+                            'filename': _os.path.basename(snap),
+                            'timestamp': _dt.now().isoformat(),
+                            'resolution': '640x640',
+                            'size_bytes': len(image_b64),
+                            'with_hud': False,
+                        })
+                        self.logger.info(f"Night Sentry photo sent to app ({len(image_b64)} chars b64)")
+                    event_type = 'sentry_detection'
+                    event_data = {
+                        'confidence': event.data.get('confidence'),
+                        'dog_id': event.data.get('dog_id'),
+                        'dog_name': event.data.get('dog_name'),
+                        'timestamp': event.data.get('timestamp'),
                     }
 
                 elif event.subtype == 'mission.started':
@@ -1959,6 +1993,12 @@ class TreatBotMain:
                     self.logger.info("Coach mode stopped")
                 # NOTE: AI detection continues running in all modes (it's a perception layer)
 
+            # Stop Night Sentry if leaving that mode (guarantees motors halt)
+            if previous_mode == 'night_sentry':
+                if self.night_sentry_mode and self.night_sentry_mode.running:
+                    self.night_sentry_mode.stop()
+                    self.logger.info("Night Sentry mode stopped")
+
             # Start Silent Guardian if entering that mode
             if new_mode == 'silent_guardian':
                 if self.silent_guardian_mode:
@@ -1971,6 +2011,12 @@ class TreatBotMain:
                 if self.coaching_engine:
                     self.coaching_engine.start()
                     self.logger.info("Coach mode started")
+
+            # Start Night Sentry if entering that mode
+            if new_mode == 'night_sentry':
+                if self.night_sentry_mode:
+                    self.night_sentry_mode.start()
+                    self.logger.info("Night Sentry mode started")
 
             # Bark detection management - only run in modes that NEED it
             # SILENT_GUARDIAN: always on (core functionality)

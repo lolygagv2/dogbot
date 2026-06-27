@@ -334,7 +334,7 @@ class XboxHybridControllerFixed:
         self.dpad_cooldown = 0.3  # 300ms cooldown between D-pad presses
 
         # Mode cycling (SELECT/Back button) - includes IDLE for passive listening
-        self.cycle_modes = ['manual', 'idle', 'coach', 'silent_guardian']
+        self.cycle_modes = ['manual', 'idle', 'coach', 'silent_guardian', 'night_sentry']
         self.current_mode_index = 0  # Start with manual
         self.last_mode_cycle_time = 0
         self.mode_cycle_cooldown = 0.15  # 150ms debounce - fast mode cycling allowed

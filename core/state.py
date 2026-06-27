@@ -20,6 +20,7 @@ class SystemMode(Enum):
     COACH = "coach"                       # Opportunistic trick training when dog approaches
     MISSION = "mission"                   # Running a structured mission/program
     PHOTOGRAPHY = "photography"
+    NIGHT_SENTRY = "night_sentry"         # Demo watch mode — body sweep + dog detection alerts
     MANUAL = "manual"
     EMERGENCY = "emergency"
     SHUTDOWN = "shutdown"

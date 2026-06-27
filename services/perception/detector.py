@@ -738,7 +738,10 @@ class DetectorService:
                 # Lightweight AI: SILENT_GUARDIAN (detection only, no behavior classification)
                 # No AI: IDLE, MANUAL (just frame capture for WebRTC)
                 full_ai_modes = [SystemMode.COACH, SystemMode.MISSION]
-                lightweight_ai_mode = (current_mode == SystemMode.SILENT_GUARDIAN)
+                # Night Sentry uses lightweight detection (dog detection only, no
+                # behavior/pose) — same as Silent Guardian — so it can alert on
+                # what the camera sees without the full pose pipeline cost.
+                lightweight_ai_mode = current_mode in (SystemMode.SILENT_GUARDIAN, SystemMode.NIGHT_SENTRY)
                 run_full_ai = current_mode in full_ai_modes
 
                 dogs = []

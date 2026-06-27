@@ -70,12 +70,13 @@ class ModeFSM:
         # Transition rules
         # Note: SILENT_GUARDIAN <-> COACH requires manual switch (API/schedule)
         self.valid_transitions = {
-            SystemMode.IDLE: [SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
-            SystemMode.SILENT_GUARDIAN: [SystemMode.IDLE, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
-            SystemMode.COACH: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
-            SystemMode.MISSION: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
-            SystemMode.PHOTOGRAPHY: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.EMERGENCY, SystemMode.MANUAL],
-            SystemMode.MANUAL: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY],
+            SystemMode.IDLE: [SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.NIGHT_SENTRY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.SILENT_GUARDIAN: [SystemMode.IDLE, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.NIGHT_SENTRY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.COACH: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.NIGHT_SENTRY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.MISSION: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.PHOTOGRAPHY, SystemMode.NIGHT_SENTRY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.PHOTOGRAPHY: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.NIGHT_SENTRY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.NIGHT_SENTRY: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
+            SystemMode.MANUAL: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.NIGHT_SENTRY, SystemMode.EMERGENCY],
             SystemMode.EMERGENCY: [SystemMode.SHUTDOWN]
         }
 
@@ -312,7 +313,7 @@ class ModeFSM:
 
     def set_mode_override(self, mode: SystemMode, duration: float = None) -> bool:
         """Override automatic mode transitions"""
-        if mode not in [SystemMode.PHOTOGRAPHY, SystemMode.MANUAL, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.IDLE]:
+        if mode not in [SystemMode.PHOTOGRAPHY, SystemMode.MANUAL, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.IDLE, SystemMode.NIGHT_SENTRY]:
             self.logger.error(f"Cannot override to mode: {mode.value}")
             return False
 

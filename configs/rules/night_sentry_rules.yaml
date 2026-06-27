@@ -1,0 +1,22 @@
+# Night Sentry — demo watch mode configuration
+# Robot sweeps a small arc, pauses to watch, and on dog/animal detection
+# captures a still + raises a 'sentry_detection' event (forwarded to cloud so
+# the app shows the photo). Detection is dog-only (on-device model limitation).
+# All knobs live here — no per-unit yaml values.
+
+detection:
+  confidence_threshold: 0.60   # minimum dog_detected confidence to alert on
+
+sweep:
+  enabled: false               # MOTOR GATE — keep false until stand-tested (Phase 2)
+  motor_speed_pct: 45          # clamped to 40-70 in code; motor bus also caps at 70
+  waypoint_count: 4            # number of watch points across the arc
+  burst_seconds: 0.35          # per-pivot burst length (short, like Silent Guardian)
+  settle_seconds: 0.10         # halt + settle between bursts (>= 50ms rule)
+
+watch:
+  dwell_seconds: 3.0           # how long to watch at each waypoint
+
+alert:
+  cooldown_seconds: 60         # minimum seconds between alerts (anti-spam)
+  upload_photo: true           # attach base64 snapshot to the cloud event
