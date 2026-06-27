@@ -7,7 +7,7 @@ description: "Production unit #3 — Cytron motor driver, 9V brushed motors (no 
 
 # Camera settings (detector.py) — IMX708 Pi Camera Module 3 Wide
 camera:
-  rotation: 0  # degrees clockwise (0, 90, 180, 270) — re-tune per unit
+  rotation: 180  # degrees clockwise (0, 90, 180, 270) — re-tune per unit
   # Gimbal servo limits (pan_tilt.py) — calibrated 2026-05-10 via Xbox-stick sweep
   # MG996R servos; ~170deg physical pan, ~150deg physical tilt
   pan_min: -90      # servo physical floor (-90..270 range in _angle_to_pulse); below here is dead
