@@ -1,0 +1,8 @@
+[Unit]
+Description=WIM-Z liveness healthcheck (restarts treatbot if /health is unresponsive)
+After=treatbot.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/morgan/dogbot/scripts/wimz-healthcheck.sh
+# Runs as root (system unit) so it can systemctl restart treatbot.service.
