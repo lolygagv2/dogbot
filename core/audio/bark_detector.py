@@ -223,30 +223,31 @@ class BarkDetector:
             duration_ms=gate_result['duration_ms']
         )
 
-        # Stage 2: Emotion classification (async, non-blocking)
-        # Submit audio to background thread — BarkEvent fires immediately without
-        # emotion data. Follow-up bark_emotion event published when classification
-        # completes (typically 200-500ms with SG lightweight pipeline freeing CPU).
+        # Stage 2: notbark veto + emotion — SYNCHRONOUS.
+        # We classify BEFORE emitting the bark so a 'notbark' verdict rejects the
+        # false positive outright (SG never reacts to speech/TV/music/robot audio).
+        # This is the mechanism the retrained model relies on: strengthen the
+        # 'notbark' class and non-barks get vetoed here in real time.
+        # Fails OPEN: if the classifier isn't loaded yet or errors, we emit the
+        # bark rather than risk dropping a real one. Warm inference is ~20-50ms.
         if self.enable_emotion and self._classifier_loaded and self._audio_buffer:
-            audio_snapshot = [chunk.copy() for chunk in self._audio_buffer]
-            emotion_job = {
-                'audio_chunks': audio_snapshot,
-                'bark_event': event,
-                'dog_id': dog_id,
-                'dog_name': dog_name
-            }
             try:
-                # Non-blocking put — drop if queue full (previous job still running)
-                self._emotion_queue.put_nowait(emotion_job)
-                logger.info("Emotion: submitted to background thread")
-            except queue.Full:
-                logger.info("Emotion: skipped (background thread busy)")
+                snapshot = [chunk.copy() for chunk in self._audio_buffer]
+                result = self._classify_emotion_from_chunks(snapshot)
+                if result is not None:
+                    if result['emotion'] == 'notbark':
+                        logger.info(f"notbark veto (sync): rejecting false positive "
+                                    f"(notbark={result['confidence']:.2f})")
+                        return None
+                    # Real bark — attach emotion immediately (no more conf=0.00)
+                    event.emotion = result['emotion']
+                    event.emotion_confidence = result['confidence']
+            except Exception as e:
+                logger.error(f"Synchronous notbark classification failed (emitting bark): {e}")
         elif not self.enable_emotion:
             logger.info("Emotion: skipped (disabled)")
         elif not self._classifier_loaded:
-            logger.info("Emotion: skipped (not loaded)")
-        elif not self._audio_buffer:
-            logger.info("Emotion: skipped (no audio buffer)")
+            logger.info("Emotion: skipped (classifier not loaded yet — emitting bark)")
 
         # Stage 3: Record analytics
         if dog_id:
