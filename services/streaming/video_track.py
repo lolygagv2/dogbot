@@ -176,6 +176,12 @@ class WIMZVideoTrack(VideoStreamTrack):
 
             ai = self.detector.ai
 
+            # Detections are in AI (lores) coordinates; the stream frame may be
+            # higher resolution (dual-stream) — scale overlay coords to match.
+            from services.perception.detector import AI_RESOLUTION
+            sx = frame.shape[1] / AI_RESOLUTION[0]
+            sy = frame.shape[0] / AI_RESOLUTION[1]
+
             # Get tracked dogs from dog tracker
             if hasattr(ai, 'dog_tracker') and ai.dog_tracker:
                 tracked = ai.dog_tracker.get_tracked_dogs()
@@ -184,7 +190,8 @@ class WIMZVideoTrack(VideoStreamTrack):
                     # Draw bounding box
                     bbox = dog_data.get('bbox')
                     if bbox and len(bbox) >= 4:
-                        x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+                        x1, y1, x2, y2 = [int(v * s) for v, s in
+                                          zip(bbox[:4], (sx, sy, sx, sy))]
 
                         # Green box for detected dog
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -211,7 +218,7 @@ class WIMZVideoTrack(VideoStreamTrack):
                     # Draw pose keypoints if available
                     keypoints = dog_data.get('keypoints', [])
                     if keypoints:
-                        self._draw_pose(frame, keypoints)
+                        self._draw_pose(frame, keypoints, sx, sy)
 
             # Add timestamp
             timestamp = time.strftime("%H:%M:%S")
@@ -239,15 +246,15 @@ class WIMZVideoTrack(VideoStreamTrack):
 
         return frame
 
-    def _draw_pose(self, frame: np.ndarray, keypoints: list):
-        """Draw pose skeleton on frame"""
+    def _draw_pose(self, frame: np.ndarray, keypoints: list, sx: float = 1.0, sy: float = 1.0):
+        """Draw pose skeleton on frame (keypoints in AI coords, scaled by sx/sy)"""
         if not keypoints or len(keypoints) < 17:
             return
 
         # Draw keypoint circles
         for i, kp in enumerate(keypoints[:17]):
             if len(kp) >= 3 and kp[2] > 0.3:  # confidence threshold
-                x, y = int(kp[0]), int(kp[1])
+                x, y = int(kp[0] * sx), int(kp[1] * sy)
                 if 0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]:
                     cv2.circle(frame, (x, y), 4, (0, 165, 255), -1)  # Orange
 
@@ -257,8 +264,8 @@ class WIMZVideoTrack(VideoStreamTrack):
                 kp1, kp2 = keypoints[i], keypoints[j]
                 if len(kp1) >= 3 and len(kp2) >= 3:
                     if kp1[2] > 0.3 and kp2[2] > 0.3:
-                        x1, y1 = int(kp1[0]), int(kp1[1])
-                        x2, y2 = int(kp2[0]), int(kp2[1])
+                        x1, y1 = int(kp1[0] * sx), int(kp1[1] * sy)
+                        x2, y2 = int(kp2[0] * sx), int(kp2[1] * sy)
                         cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Yellow
 
     def _add_status_overlay(self, frame: np.ndarray):

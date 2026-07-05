@@ -15,19 +15,22 @@ from core.bus import get_bus, publish_vision_event
 from core.state import get_state, SystemMode
 from core.store import get_store
 
-# Mode-based resolution configuration
-# AI modes need 640x640 for Hailo inference
-# IDLE uses 640x640 to eliminate camera reconfig delay when switching to AI modes
+# Dual-stream configuration (R-STREAM / work order §2B):
+# The camera always produces TWO streams — a fixed 640x640 'lores' stream that
+# feeds Hailo inference, and a 'main' stream for WebRTC/snapshots/recording.
+# MODE_RESOLUTIONS now controls ONLY the main (stream) resolution; AI never
+# sees a resolution change, and AI-mode switches need no camera reconfig.
+AI_RESOLUTION = (640, 640)  # lores stream, fixed — Hailo model input
 MODE_RESOLUTIONS = {
-    SystemMode.IDLE: (640, 640),             # AI-ready, instant mode switch
+    SystemMode.IDLE: (1280, 720),            # 720p stream, instant mode switch
     SystemMode.MANUAL: (1920, 1080),          # No AI, full HD video
-    SystemMode.SILENT_GUARDIAN: (640, 640),  # AI active
-    SystemMode.COACH: (640, 640),            # AI active
+    SystemMode.SILENT_GUARDIAN: (1280, 720), # AI on lores, 720p stream
+    SystemMode.COACH: (1280, 720),           # AI on lores, 720p stream
     SystemMode.PHOTOGRAPHY: (1920, 1080),     # High res photos
-    SystemMode.EMERGENCY: (640, 640),        # Safety mode
-    SystemMode.SHUTDOWN: (640, 640),         # Shutting down
+    SystemMode.EMERGENCY: (1280, 720),       # Safety mode
+    SystemMode.SHUTDOWN: (1280, 720),        # Shutting down
 }
-DEFAULT_RESOLUTION = (640, 640)
+DEFAULT_RESOLUTION = (1280, 720)
 from core.ai_controller_3stage_fixed import AI3StageControllerFixed
 from config.config_loader import get_config
 
@@ -119,9 +122,13 @@ class DetectorService:
         # Camera pause state (for MANUAL mode)
         self._camera_paused = False
         self._ai_paused = False
-        self._last_frame = None  # Store last frame for snapshots
+        # _last_frame holds the MAIN (stream-resolution) frame for
+        # snapshots/WebRTC/recording; AI consumes the lores frame returned
+        # directly by _capture_frame()
+        self._last_frame = None
         self._last_frame_time = 0
         self._frame_lock = threading.Lock()
+        self._dual_stream = False  # set by _initialize_camera
 
         # Performance tracking
         self.frame_count = 0
@@ -195,6 +202,22 @@ class DetectorService:
             self.logger.error(f"Detector initialization error: {e}")
             return False
 
+    def _build_camera_config(self, stream_resolution: tuple):
+        """Build the camera configuration for a given main-stream resolution.
+
+        Dual-stream when supported: main = stream/snapshot feed at
+        stream_resolution, lores = fixed AI_RESOLUTION feed for Hailo.
+        Respects the single-stream fallback chosen at init.
+        """
+        if self._dual_stream:
+            return self.camera.create_video_configuration(
+                main={"size": stream_resolution, "format": "RGB888"},
+                lores={"size": AI_RESOLUTION, "format": "RGB888"}
+            )
+        return self.camera.create_preview_configuration(
+            main={"size": AI_RESOLUTION, "format": "RGB888"}
+        )
+
     def _initialize_camera(self) -> bool:
         """Initialize camera for frame capture"""
         try:
@@ -230,10 +253,25 @@ class DetectorService:
                 self._current_resolution = target_resolution
                 self.logger.info(f"Camera resolution for {current_mode.value}: {target_resolution}")
 
-                config = self.camera.create_preview_configuration(
-                    main={"size": target_resolution, "format": "RGB888"}
-                )
-                self.camera.configure(config)
+                # Dual-stream: main feeds WebRTC/snapshots, lores feeds Hailo.
+                # Falls back to single-stream if lores RGB888 is unsupported.
+                try:
+                    config = self.camera.create_video_configuration(
+                        main={"size": target_resolution, "format": "RGB888"},
+                        lores={"size": AI_RESOLUTION, "format": "RGB888"}
+                    )
+                    self.camera.configure(config)
+                    self._dual_stream = True
+                except Exception as e:
+                    self.logger.warning(
+                        f"Dual-stream config failed ({e}), falling back to "
+                        f"single {AI_RESOLUTION} stream"
+                    )
+                    config = self.camera.create_preview_configuration(
+                        main={"size": AI_RESOLUTION, "format": "RGB888"}
+                    )
+                    self.camera.configure(config)
+                    self._dual_stream = False
                 self.camera.start()
 
                 # Wait for camera to stabilize
@@ -324,27 +362,40 @@ class DetectorService:
             self.logger.warning(f"Could not apply saved calibration: {e}")
 
     def _capture_frame(self):
-        """Capture a frame from the camera"""
+        """Capture a frame from the camera.
+
+        Returns the lores (AI-resolution) frame for inference. The main
+        (stream-resolution) frame is stored in _last_frame for
+        snapshots/WebRTC/recording. Single-stream fallback returns/stores
+        the same frame.
+        """
         if not self.camera_initialized or self.camera is None:
             self.logger.debug("Camera not initialized or None")
             return None
         try:
-            frame = self.camera.capture_array()
+            if self._dual_stream:
+                # One request, both streams — no extra frame latency
+                (frame, stream_frame), _md = self.camera.capture_arrays(["lores", "main"])
+            else:
+                frame = self.camera.capture_array()
+                stream_frame = None  # single-stream: main frame doubles for both
 
             # Apply rotation from robot config (0, 90, 180, 270 degrees clockwise)
             config = get_config()
             rotation = config.camera.rotation
-            if rotation == 90:
-                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-            elif rotation == 180:
-                frame = cv2.rotate(frame, cv2.ROTATE_180)
-            elif rotation == 270:
-                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            # rotation == 0: no rotation needed
+            rotate_code = {
+                90: cv2.ROTATE_90_CLOCKWISE,
+                180: cv2.ROTATE_180,
+                270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+            }.get(rotation)
+            if rotate_code is not None:
+                frame = cv2.rotate(frame, rotate_code)
+                if stream_frame is not None:
+                    stream_frame = cv2.rotate(stream_frame, rotate_code)
 
-            # Store last frame for snapshots (thread-safe)
+            # Store last main-stream frame for snapshots/WebRTC (thread-safe)
             with self._frame_lock:
-                self._last_frame = frame.copy()
+                self._last_frame = stream_frame if stream_frame is not None else frame.copy()
                 self._last_frame_time = time.time()
 
             return frame
@@ -478,19 +529,15 @@ class DetectorService:
             except Exception as e:
                 self.logger.warning(f"Error stopping camera: {e}")
 
-            # Reconfigure
+            # Reconfigure (main/stream size only — lores AI stream is fixed)
             try:
-                config = self.camera.create_preview_configuration(
-                    main={"size": new_resolution, "format": "RGB888"}
-                )
+                config = self._build_camera_config(new_resolution)
                 self.camera.configure(config)
             except Exception as e:
                 self.logger.error(f"Error configuring camera at {new_resolution}: {e}")
                 # Try to restore old resolution
                 try:
-                    config = self.camera.create_preview_configuration(
-                        main={"size": old_resolution, "format": "RGB888"}
-                    )
+                    config = self._build_camera_config(old_resolution)
                     self.camera.configure(config)
                     self.camera.start()
                     self.logger.warning(f"Restored previous resolution {old_resolution}")
@@ -553,9 +600,7 @@ class DetectorService:
             return
         try:
             self.camera.stop()
-            config = self.camera.create_preview_configuration(
-                main={"size": resolution, "format": "RGB888"}
-            )
+            config = self._build_camera_config(resolution)
             self.camera.configure(config)
             self.camera.start()
             self._current_resolution = resolution

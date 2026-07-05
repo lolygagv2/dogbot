@@ -189,6 +189,12 @@ class PhotoCaptureService:
     def _draw_dog_boxes(self, frame: np.ndarray, ai_controller) -> np.ndarray:
         """Draw bounding boxes and labels for detected dogs"""
         try:
+            # Tracker coords are in AI (lores) space; the snapshot frame may be
+            # higher resolution (dual-stream) — scale coords to match.
+            from services.perception.detector import AI_RESOLUTION
+            sx = frame.shape[1] / AI_RESOLUTION[0]
+            sy = frame.shape[0] / AI_RESOLUTION[1]
+
             # Get tracked dogs from dog_tracker
             if hasattr(ai_controller, 'dog_tracker') and ai_controller.dog_tracker:
                 tracked = ai_controller.dog_tracker.get_tracked_dogs()
@@ -198,7 +204,8 @@ class PhotoCaptureService:
                     if not bbox or len(bbox) < 4:
                         continue
 
-                    x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+                    x1, y1, x2, y2 = [int(v * s) for v, s in
+                                      zip(bbox[:4], (sx, sy, sx, sy))]
 
                     # Draw thin white/light blue bounding box (2px)
                     box_color = (235, 206, 135)  # Light blue (BGR)
