@@ -1,0 +1,23 @@
+# /etc/systemd/system/wimz-alive.service
+# R-BOOT: LED sign of life seconds after power-on, long before the full
+# Python stack (~25s). Breathes the NeoPixel ring, latches a dim glow, exits.
+[Unit]
+Description=WIM-Z early sign of life (LED breathing)
+DefaultDependencies=no
+# local-fs: venv + repo live on /home. sysinit: device nodes (spidev) ready.
+After=local-fs.target sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+User=morgan
+Group=morgan
+SupplementaryGroups=spi
+WorkingDirectory=/home/morgan/dogbot
+Environment=PYTHONPATH=/home/morgan/dogbot
+ExecStart=/home/morgan/dogbot/env_new/bin/python /home/morgan/dogbot/scripts/wimz_alive.py
+TimeoutStartSec=30
+
+[Install]
+WantedBy=sysinit.target

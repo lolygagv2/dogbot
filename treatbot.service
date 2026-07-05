@@ -1,7 +1,9 @@
 # /etc/systemd/system/treatbot.service
 [Unit]
 Description=TreatBot Main System
-After=network.target bluetooth.target
+# wimz-alive: ordering only — the early LED script must release SPI before
+# our LedService claims it
+After=network.target bluetooth.target wimz-alive.service
 Wants=network.target
 # Allow up to 10 start attempts per 5 min before giving up. Watchdog/timeout
 # restart cycles take >40s each, so only a fast crash loop (bad deploy, human

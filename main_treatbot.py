@@ -259,6 +259,23 @@ class TreatBotMain:
         """Initialize hardware services"""
         services_status = {}
 
+        # LED service FIRST — visible sign of life before the slow inits
+        # (camera, AI, audio buffers). R-BOOT: user sees the robot is alive.
+        try:
+            self.led = get_led_service()
+            if self.led:
+                services_status['led'] = self.led.initialize()
+                if services_status['led']:
+                    self.logger.info("LED service initialized successfully")
+                else:
+                    self.logger.warning("LED service failed to initialize")
+            else:
+                services_status['led'] = False
+                self.logger.error("Failed to get LED service instance")
+        except Exception as e:
+            self.logger.error(f"LED service failed: {e}")
+            services_status['led'] = False
+
         # Detector service
         try:
             self.detector = get_detector_service()
@@ -266,14 +283,6 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"Detector service failed: {e}")
             services_status['detector'] = False
-
-        # Bark detector service
-        try:
-            self.bark_detector = get_bark_detector_service()
-            services_status['bark_detector'] = self.bark_detector.initialize()
-        except Exception as e:
-            self.logger.error(f"Bark detector service failed: {e}")
-            services_status['bark_detector'] = False
 
         # Pan/tilt service
         try:
@@ -325,22 +334,6 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"Audio service failed: {e}")
             services_status['sfx'] = False
-
-        # LED service
-        try:
-            self.led = get_led_service()
-            if self.led:
-                services_status['led'] = self.led.initialize()
-                if services_status['led']:
-                    self.logger.info("LED service initialized successfully")
-                else:
-                    self.logger.warning("LED service failed to initialize")
-            else:
-                services_status['led'] = False
-                self.logger.error("Failed to get LED service instance")
-        except Exception as e:
-            self.logger.error(f"LED service failed: {e}")
-            services_status['led'] = False
 
         # USB Audio service (voice announcements)
         try:
@@ -406,6 +399,15 @@ class TreatBotMain:
             self.logger.error(f"Cloud/WebRTC services failed: {e}")
             services_status['cloud_relay'] = False
             services_status['webrtc'] = False
+
+        # Bark detector service — deliberately LAST (R-BOOT): its ~2.4s of
+        # arecord buffer priming used to sit in front of camera/API/stream.
+        try:
+            self.bark_detector = get_bark_detector_service()
+            services_status['bark_detector'] = self.bark_detector.initialize()
+        except Exception as e:
+            self.logger.error(f"Bark detector service failed: {e}")
+            services_status['bark_detector'] = False
 
         # Check critical services
         # Note: detector is non-critical - Silent Guardian mode uses bark detection only
