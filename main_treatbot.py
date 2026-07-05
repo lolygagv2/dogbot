@@ -2522,6 +2522,15 @@ class TreatBotMain:
     def _stop_subsystems(self) -> None:
         """Stop all subsystems"""
         try:
+            # Flush + close the spec data store first (bounded: batcher drains
+            # in one transaction, well inside the 25s stop budget)
+            try:
+                from core.data.wimz_store import _instance as _wimz_instance
+                if _wimz_instance is not None:
+                    _wimz_instance.close()
+            except Exception as e:
+                self.logger.warning(f"WimzStore close failed: {e}")
+
             # Stop services
             if self.detector:
                 self.detector.stop_detection()
