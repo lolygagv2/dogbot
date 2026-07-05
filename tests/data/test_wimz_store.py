@@ -102,7 +102,13 @@ def test_batcher_and_writes():
 
     dog = store.get_or_create_dog(legacy_id='aruco_315', name='Elsa')
     assert dog == store.get_or_create_dog(legacy_id='aruco_315')
-    assert dog == store.get_or_create_dog(name='elsa')
+    # Live identity requires a verified tag: name guesses and tracker
+    # indexes must NOT attribute or mint identity
+    assert store.get_or_create_dog(name='elsa') is None
+    assert store.get_or_create_dog(legacy_id='dog_0', name='belly') is None
+    assert store._conn.execute("SELECT COUNT(*) FROM dog").fetchone()[0] == 1
+    # Backfill/app registration may vouch for a name
+    assert dog == store.get_or_create_dog(name='elsa', allow_unverified=True)
     row = store._conn.execute("SELECT id_method, qr_code_id FROM dog WHERE dog_id=?",
                               (dog,)).fetchone()
     assert row == ('qr', 'aruco_315'), row

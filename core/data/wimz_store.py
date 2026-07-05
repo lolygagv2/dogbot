@@ -201,14 +201,29 @@ class WimzStore:
     def get_device_id(self) -> str:
         return self._device_id
 
+    # Verified physical tag ids only ('aruco_315'). Tracker indexes ('dog_0'),
+    # session-scoped ids, and bare name guesses must NOT mint identity.
+    _TAG_RE = __import__('re').compile(r'^aruco_\d+$')
+
     @_safe
     def get_or_create_dog(self, legacy_id: str = None, name: str = None,
-                          id_method: str = 'qr') -> Optional[str]:
-        """Stable dog_id lookup by tag id (qr_code_id) or case-insensitive name.
+                          id_method: str = 'qr',
+                          allow_unverified: bool = False) -> Optional[str]:
+        """Stable dog_id lookup by verified tag id (qr_code_id).
+
+        Live producers attribute rows ONLY when the physical tag was read —
+        an unverified identity returns None and the row stays dog_id=NULL
+        (spec: 'NULL if unidentified'; wrong identity poisons the
+        longitudinal record). allow_unverified=True is for backfill/app
+        registration, where a human vouches for the name.
 
         Per spec v0.3: ArUco markers are represented via qr_code_id with
         id_method='qr' ("QR" covers ArUco throughout the fleet).
         """
+        if legacy_id and not self._TAG_RE.match(str(legacy_id)):
+            legacy_id = None  # tracker index / guess — not a physical tag
+        if not legacy_id and not allow_unverified:
+            return None
         if not legacy_id and not name:
             return None
         with self._lock:
@@ -366,6 +381,18 @@ class WimzStore:
                  'machine', media_id, now, now))
             self._conn.commit()
         return attempt_id
+
+    @_safe
+    def attach_media_to_attempt(self, attempt_id: str, media_id: str) -> None:
+        """Link a clip registered after the attempt row was written (the
+        recorder stops after the attempt is logged)."""
+        if not attempt_id or not media_id:
+            return
+        with self._lock:
+            self._conn.execute(
+                "UPDATE training_attempt SET media_id=?, updated_at=? WHERE attempt_id=?",
+                (media_id, _now_ms(), attempt_id))
+            self._conn.commit()
 
     @_safe
     def log_dispense(self, session_id: str, trigger: str, dog_id: str = None,

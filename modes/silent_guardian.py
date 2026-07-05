@@ -1077,6 +1077,7 @@ class SilentGuardianMode:
                 treat_given=False,  # No treat during cooldown
                 music_played=(self.current_escalation_level == 4)
             )
+            self._log_quiet_attempt(success=True, reward_dispensed=0, dispense_id=None)
             return
 
         # Full reward: LED celebration + audio + treat
@@ -1120,6 +1121,41 @@ class SilentGuardianMode:
             treat_given=True,
             music_played=(self.current_escalation_level == 4)
         )
+        self._log_quiet_attempt(
+            success=True,
+            reward_dispensed=getattr(self.dispenser, 'last_dispense_confirmed', 0)
+            if self.dispenser else 0,
+            dispense_id=getattr(self.dispenser, 'last_wimz_dispense_id', None)
+            if self.dispenser else None)
+
+    def _log_quiet_attempt(self, success: bool, reward_dispensed: int,
+                           dispense_id: Optional[str]):
+        """Spec training_attempt for the SG quiet loop — cue (escalation audio)
+        -> response (quiet achieved) -> reward. trick_label='quiet' per spec §4."""
+        try:
+            now_ms = int(time.time() * 1000)
+            cue_ts_ms = int(self.intervention_start_time * 1000) \
+                if self.intervention_start_time else now_ms
+            wimz_dog = self.wimz.get_or_create_dog(
+                legacy_id=self.intervention_dog_id
+                if self.intervention_dog_id and self.intervention_dog_id != 'unknown'
+                else None,
+                name=self.intervention_dog_name)
+            self.wimz.log_training_attempt(
+                self.wimz_session_id,
+                trick_label='quiet',
+                dog_id=wimz_dog,
+                cue_ts_ms=cue_ts_ms,
+                cue_event_id=self._last_cue_event_id,
+                cue_type='voice',
+                detected_response='quiet',
+                response_ts_ms=now_ms,
+                latency_ms=now_ms - cue_ts_ms,
+                success=1 if success else 0,
+                reward_dispensed=reward_dispensed,
+                dispense_id=dispense_id)
+        except Exception as e:
+            logger.debug(f"wimz quiet attempt failed: {e}")
 
     def _process_cooldown(self):
         """Process cooldown between interventions"""

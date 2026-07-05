@@ -31,6 +31,7 @@ from core.bus import get_bus, VisionEvent, publish_system_event
 from services.perception.bark_detector import get_bark_detector_service
 from core.state import get_state, SystemMode
 from core.store import get_store
+from core.data import get_wimz_store
 from core.behavior_interpreter import get_behavior_interpreter
 
 # Services
@@ -71,6 +72,11 @@ class DogSession:
     behavior_detected: Optional[str] = None
     success: bool = False
     attempt: int = 1  # Track attempt number (1 or 2)
+    # Spec-store linkage (WIMZ_Data_Architecture_Spec §4/§6)
+    wimz_cue_event_id: Optional[str] = None
+    wimz_response_event_id: Optional[str] = None
+    response_confidence: Optional[float] = None
+    response_ts_ms: Optional[int] = None
 
 
 @dataclass
@@ -253,6 +259,14 @@ class CoachingEngine:
             self.listening_for_barks = False
             logger.info("[COACH] State reset to WAITING_FOR_DOG")
 
+            # Spec store session (dual-write; one session per coach activation)
+            self.wimz = get_wimz_store()
+            self.wimz_session_id = self.wimz.start_session(
+                'training', 'autonomous',
+                model_versions={'detection': self.wimz.model_id_for('dogdetector_14'),
+                                'pose': self.wimz.model_id_for('dogpose_14')})
+            self._last_attempt_id = None
+
             # Subscribe to vision events (use string, not class)
             self.bus.subscribe('vision', self._on_vision_event)
             # Subscribe to audio events for bark detection (speak trick)
@@ -298,6 +312,11 @@ class CoachingEngine:
             except Exception as e:
                 logger.warning(f"Error stopping video on engine stop: {e}")
             self._session_video_path = None
+
+        # Close the spec store session
+        if getattr(self, 'wimz_session_id', None):
+            self.wimz.end_session(self.wimz_session_id)
+            self.wimz_session_id = None
 
         # Re-enable AGC when leaving coaching mode
         set_agc(True)
@@ -366,6 +385,22 @@ class CoachingEngine:
                 if behavior:
                     self.current_session.behavior_detected = behavior
                     logger.info(f"Behavior detected during coaching: {behavior}")
+
+                    # Spec pose event; id becomes training_attempt.response_event_id
+                    try:
+                        conf = event.data.get('confidence')
+                        wimz_dog = self.wimz.get_or_create_dog(
+                            legacy_id=self.current_session.dog_id,
+                            name=self.current_session.dog_name)
+                        ts_ms = int(time.time() * 1000)
+                        self.current_session.wimz_response_event_id = self.wimz.log_event(
+                            self.wimz_session_id, 'pose', {'pose': behavior},
+                            dog_id=wimz_dog, ts_ms=ts_ms, confidence=conf,
+                            model_id=self.wimz.model_id_for('dogpose_14'))
+                        self.current_session.response_confidence = conf
+                        self.current_session.response_ts_ms = ts_ms
+                    except Exception as e:
+                        logger.debug(f"wimz pose event failed: {e}")
 
     def _on_audio_event(self, event):
         """Handle audio events for bark detection (speak trick)"""
@@ -787,6 +822,19 @@ class CoachingEngine:
             logger.debug(f"Listening for barks (speak trick) from {self._listening_started_at:.3f}...")
 
         self.current_session.command_time = time.time()
+
+        # Spec cue_issued event; id becomes training_attempt.cue_event_id
+        try:
+            wimz_dog = self.wimz.get_or_create_dog(
+                legacy_id=self.current_session.dog_id,
+                name=self.current_session.dog_name)
+            self.current_session.wimz_cue_event_id = self.wimz.log_event(
+                self.wimz_session_id, 'cue_issued',
+                {'trick': trick, 'cue_type': 'voice', 'text': f'{trick}.mp3'},
+                dog_id=wimz_dog, label_source='auto_rule')
+        except Exception as e:
+            logger.debug(f"wimz cue event failed: {e}")
+
         self.fsm_state = CoachState.WATCHING
         logger.info(f"[COACH] Command issued: {trick} (target={target_behavior}) → WATCHING")
 
@@ -1084,8 +1132,13 @@ class CoachingEngine:
         # Stop video recording if active
         if self._session_video_path:
             try:
-                self.video_recorder.stop_recording()
+                result = self.video_recorder.stop_recording()
                 logger.info(f"Coaching video saved: {self._session_video_path}")
+                # Link the clip to the attempt row written in _log_session
+                media_id = result.get('media_id') if isinstance(result, dict) else None
+                if media_id and getattr(self, '_last_attempt_id', None):
+                    self.wimz.attach_media_to_attempt(self._last_attempt_id, media_id)
+                    self._last_attempt_id = None
             except Exception as e:
                 logger.warning(f"Error stopping video: {e}")
             self._session_video_path = None
@@ -1161,7 +1214,8 @@ class CoachingEngine:
                 logger.debug(f"Dispensing treat: dog={dog_id}, trick={trick}, behavior={behavior}")
                 self.dispenser.dispense_treat(
                     dog_id=dog_id,
-                    reason='coaching_reward'
+                    reason='coaching_reward',
+                    wimz_session_id=getattr(self, 'wimz_session_id', None)
                 )
                 logger.debug("Treat dispensed successfully")
 
@@ -1199,6 +1253,39 @@ class CoachingEngine:
             )
         except Exception as e:
             logger.error(f"Failed to log coaching session: {e}")
+
+        # Spec training_attempt — THE closed-loop row (spec §6). media_id is
+        # attached in _state_cooldown when the clip finishes writing.
+        try:
+            s = self.current_session
+            cue_ts_ms = int((s.command_time or time.time()) * 1000)
+            latency_ms = None
+            if s.response_ts_ms and s.command_time:
+                latency_ms = s.response_ts_ms - cue_ts_ms
+            dispense_id = None
+            reward_dispensed = 0
+            if success and self.dispenser:
+                dispense_id = getattr(self.dispenser, 'last_wimz_dispense_id', None)
+                reward_dispensed = getattr(self.dispenser, 'last_dispense_confirmed', 0)
+            wimz_dog = self.wimz.get_or_create_dog(legacy_id=dog_id, name=s.dog_name)
+            self._last_attempt_id = self.wimz.log_training_attempt(
+                self.wimz_session_id,
+                trick_label=s.trick_requested,
+                dog_id=wimz_dog,
+                cue_ts_ms=cue_ts_ms,
+                cue_event_id=s.wimz_cue_event_id,
+                cue_type='voice',
+                detected_response=s.behavior_detected,
+                response_ts_ms=s.response_ts_ms,
+                response_event_id=s.wimz_response_event_id,
+                latency_ms=latency_ms,
+                success=1 if success else 0,
+                confidence=s.response_confidence,
+                reward_dispensed=reward_dispensed,
+                dispense_id=dispense_id,
+                model_versions={'pose': self.wimz.model_id_for('dogpose_14')})
+        except Exception as e:
+            logger.error(f"wimz training_attempt failed: {e}")
 
     def get_status(self) -> Dict[str, Any]:
         """Get coaching engine status"""

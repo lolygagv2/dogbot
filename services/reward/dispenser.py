@@ -78,8 +78,11 @@ class DispenserService:
         self._beam_callback = None
         self._last_beam_break_mono = 0.0  # monotonic ts of most recent beam break
 
-        # Last spec dispense_log id — read by callers linking training_attempt
+        # Last spec dispense_log id + confirmation — read by callers linking
+        # training_attempt (spec §6: reward_dispensed reads dispensed_confirmed
+        # when the beam is present, motor completion otherwise)
         self.last_wimz_dispense_id = None
+        self.last_dispense_confirmed = 0
 
         # Dispensing state
         self.treats_dispensed_today = 0
@@ -479,6 +482,7 @@ class DispenserService:
                 self._check_tmc_diagnostics('dispense rotation')
 
                 # Spec dispense_log row (+ paired treat_dispensed event)
+                self.last_dispense_confirmed = confirmed if self.beam_enabled else int(success)
                 try:
                     wimz = get_wimz_store()
                     wimz_dog = wimz.get_or_create_dog(legacy_id=dog_id) if dog_id else None
