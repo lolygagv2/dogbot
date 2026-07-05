@@ -19,9 +19,13 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple, List
 
+from core.data import get_wimz_store, DATA_ROOT
+
 logger = logging.getLogger(__name__)
 
 # Photo storage configuration
+# Photos live in the spec media tree (/data/media/...) since REC; PHOTO_DIR
+# is the legacy flat dir, kept only as a read fallback for old files.
 PHOTO_DIR = Path("/home/morgan/dogbot/photos")
 MAX_PHOTOS = 100
 JPEG_QUALITY = 85
@@ -102,14 +106,20 @@ class PhotoCaptureService:
             # Base64 encode
             b64_data = base64.b64encode(jpeg_data.tobytes()).decode('utf-8')
 
-            # Generate filename and save locally
+            # Save into the spec media tree + register a media_asset row
             timestamp = datetime.now()
-            filename = f"wimz_{timestamp.strftime('%Y%m%d_%H%M%S')}.jpg"
-            filepath = PHOTO_DIR / filename
+            wimz = get_wimz_store()
+            filepath = wimz.media_path_for(ext='jpg')
+            filename = filepath.name
 
-            # Save locally
             with open(filepath, 'wb') as f:
                 f.write(jpeg_data.tobytes())
+
+            wimz.register_media(
+                str(filepath), 'image', codec='jpeg',
+                width=frame_bgr.shape[1], height=frame_bgr.shape[0],
+                start_ts_ms=int(timestamp.timestamp() * 1000),
+                retention_class='ephemeral')
 
             # Cleanup old photos
             self._cleanup_old_photos()
@@ -443,34 +453,40 @@ class PhotoCaptureService:
         self.logger.debug(f"Treat indicator triggered for {duration}s")
 
     def _cleanup_old_photos(self):
-        """Delete oldest photos if over MAX_PHOTOS limit"""
+        """Cull oldest ephemeral photos beyond MAX_PHOTOS (spec retention:
+        'ephemeral: short window, cull aggressively'). Removes file + row.
+        Also trims the legacy flat photos/ dir."""
         try:
-            photos = sorted(PHOTO_DIR.glob("wimz_*.jpg"), key=lambda p: p.stat().st_mtime)
+            wimz = get_wimz_store()
+            rows = wimz.list_media(kind='image', retention_class='ephemeral',
+                                   limit=100000)
+            for media_id, rel_path, _size, _created in rows[MAX_PHOTOS:]:
+                wimz.cull_media(media_id)
+                self.logger.debug(f"Culled ephemeral photo: {rel_path}")
 
-            if len(photos) > MAX_PHOTOS:
-                to_delete = photos[:len(photos) - MAX_PHOTOS]
-                for photo in to_delete:
+            # Legacy flat dir (pre-spec photos)
+            legacy = sorted(PHOTO_DIR.glob("wimz_*.jpg"), key=lambda p: p.stat().st_mtime)
+            if len(legacy) > MAX_PHOTOS:
+                for photo in legacy[:len(legacy) - MAX_PHOTOS]:
                     photo.unlink()
-                    self.logger.debug(f"Deleted old photo: {photo.name}")
 
         except Exception as e:
             self.logger.warning(f"Photo cleanup error: {e}")
 
     def get_recent_photos(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get list of recent photos"""
+        """Get list of recent photos (media_asset rows, spec media tree)"""
         try:
-            photos = sorted(PHOTO_DIR.glob("wimz_*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
-
+            wimz = get_wimz_store()
             result = []
-            for photo in photos[:limit]:
-                stat = photo.stat()
+            for _mid, rel_path, size_bytes, created_at in wimz.list_media(
+                    kind='image', limit=limit):
+                p = DATA_ROOT / rel_path
                 result.append({
-                    "filename": photo.name,
-                    "filepath": str(photo),
-                    "size_bytes": stat.st_size,
-                    "timestamp": datetime.fromtimestamp(stat.st_mtime).isoformat()
+                    "filename": p.name,
+                    "filepath": str(p),
+                    "size_bytes": size_bytes,
+                    "timestamp": datetime.fromtimestamp(created_at / 1000).isoformat()
                 })
-
             return result
 
         except Exception as e:

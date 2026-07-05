@@ -181,10 +181,21 @@ class VideoRecorder:
                     "filename": self.current_filename
                 }
 
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.current_filename = f"{filename_prefix}_{timestamp}.mp4"
-            output_path = self.output_dir / self.current_filename
+            # Callers historically passed prefixes already ending in '.mp4'
+            # (produced double-suffixed files) — strip defensively.
+            if filename_prefix.endswith('.mp4'):
+                filename_prefix = filename_prefix[:-4]
+
+            # Allocate a spec media-tree path; prefix is kept for logs only,
+            # linkage lives in the media_asset row (REC work item)
+            from core.data import get_wimz_store
+            wimz = get_wimz_store()
+            self._wimz_session_id = wimz.ensure_ambient_session()
+            output_path = wimz.media_path_for(session_id=self._wimz_session_id,
+                                              ext='mp4')
+            self.current_filename = output_path.name
+            self._wimz_output_path = output_path
+            self._wimz_prefix = filename_prefix
 
             # Initialize video writer
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -256,6 +267,24 @@ class VideoRecorder:
         self.current_filename = None
         self.frame_count = 0
 
+        # Register the clip in the spec store (REC work item)
+        media_id = None
+        output_path = getattr(self, '_wimz_output_path', None)
+        if output_path is not None:
+            try:
+                from core.data import get_wimz_store
+                now_ms = int(time.time() * 1000)
+                media_id = get_wimz_store().register_media(
+                    str(output_path), 'video', codec='mp4v',
+                    session_id=getattr(self, '_wimz_session_id', None),
+                    width=self.resolution[0], height=self.resolution[1],
+                    duration_ms=int(duration * 1000),
+                    start_ts_ms=now_ms - int(duration * 1000), end_ts_ms=now_ms,
+                    retention_class='standard')
+            except Exception as e:
+                self.logger.warning(f"media_asset registration failed: {e}")
+            self._wimz_output_path = None
+
         self.logger.info(f"Stopped recording: {filename} ({frames} frames, {duration:.1f}s)")
 
         return {
@@ -263,7 +292,8 @@ class VideoRecorder:
             "filename": filename,
             "frames": frames,
             "duration": duration,
-            "fps_actual": frames / duration if duration > 0 else 0
+            "fps_actual": frames / duration if duration > 0 else 0,
+            "media_id": media_id
         }
 
     def _recording_loop(self):
@@ -505,8 +535,22 @@ class VideoRecorder:
             return status
 
     def list_recordings(self) -> List[Dict[str, Any]]:
-        """List all saved recordings"""
+        """List all saved recordings (media_asset rows, spec media tree)"""
+        from core.data import get_wimz_store, DATA_ROOT
         recordings = []
+        try:
+            for _mid, rel_path, size_bytes, created_at in \
+                    get_wimz_store().list_media(kind='video', limit=500):
+                p = DATA_ROOT / rel_path
+                recordings.append({
+                    "filename": p.name,
+                    "path": str(p),
+                    "size_mb": (size_bytes or 0) / (1024 * 1024),
+                    "created": datetime.fromtimestamp(created_at / 1000).isoformat()
+                })
+        except Exception as e:
+            self.logger.error(f"list_recordings error: {e}")
+        # Legacy flat dir (pre-backfill files)
         for f in sorted(self.output_dir.glob("*.mp4"), key=lambda x: x.stat().st_mtime, reverse=True):
             stat = f.stat()
             recordings.append({
@@ -554,10 +598,12 @@ class VideoRecorder:
         self._stop_event.clear()
         self.logger.info(f"VIDEO_RECORD: Starting, resolution={resolution_label}, max_duration={duration}")
 
-        # Generate filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"wimz_{timestamp}.mp4"
-        output_path = self.output_dir / filename
+        # Allocate a spec media-tree path (REC work item)
+        from core.data import get_wimz_store
+        wimz = get_wimz_store()
+        hr_session_id = wimz.ensure_ambient_session()
+        output_path = wimz.media_path_for(session_id=hr_session_id, ext='mp4')
+        filename = output_path.name
 
         # Pause AI detection
         ai_was_running = False
@@ -609,6 +655,20 @@ class VideoRecorder:
             file_size = output_path.stat().st_size if output_path.exists() else 0
             stopped_early = self._stop_event.is_set()
 
+            # media_asset row (REC work item)
+            media_id = None
+            try:
+                now_ms = int(time.time() * 1000)
+                media_id = wimz.register_media(
+                    str(output_path), 'video', codec='mp4v',
+                    session_id=hr_session_id,
+                    width=target_res[0], height=target_res[1],
+                    duration_ms=int(actual_duration * 1000),
+                    start_ts_ms=now_ms - int(actual_duration * 1000),
+                    end_ts_ms=now_ms, retention_class='standard')
+            except Exception as e:
+                self.logger.warning(f"media_asset registration failed: {e}")
+
             self.logger.info(f"VIDEO_RECORD: Stopped after {actual_duration:.1f}s, file={filename}, size={file_size} bytes{' (early stop)' if stopped_early else ''}")
 
             return {
@@ -619,6 +679,7 @@ class VideoRecorder:
                 "resolution": resolution_label,
                 "size_bytes": file_size,
                 "frames": frames,
+                "media_id": media_id,
             }
 
         except Exception as e:

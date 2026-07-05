@@ -225,16 +225,21 @@ class NightSentryMode:
             if frame is None:
                 logger.warning("Night Sentry: no frame available for snapshot")
                 return None, None
-            os.makedirs(CAPTURE_DIR, exist_ok=True)
-            ts = time.strftime('%Y%m%d_%H%M%S')
-            path = os.path.join(CAPTURE_DIR, f"sentry_{ts}.jpg")
             bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             ok, buf = cv2.imencode('.jpg', bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
             if not ok:
                 return None, None
             data = buf.tobytes()
-            with open(path, 'wb') as f:
+            # Spec media tree + media_asset row (REC work item)
+            from core.data import get_wimz_store
+            wimz = get_wimz_store()
+            p = wimz.media_path_for(ext='jpg')
+            with open(p, 'wb') as f:
                 f.write(data)
+            wimz.register_media(str(p), 'image', codec='jpeg',
+                                width=frame.shape[1], height=frame.shape[0],
+                                retention_class='ephemeral')
+            path = str(p)
             return path, base64.b64encode(data).decode('ascii')
         except Exception as e:
             logger.error(f"Night Sentry snapshot failed: {e}")

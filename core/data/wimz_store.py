@@ -428,6 +428,37 @@ class WimzStore:
             self._conn.commit()
         return media_id
 
+    def list_media(self, kind: str = None, retention_class: str = None,
+                   limit: int = 100) -> list:
+        """Media rows newest-first: (media_id, rel_path, size_bytes, created_at)."""
+        q = "SELECT media_id, rel_path, size_bytes, created_at FROM media_asset"
+        clauses, args = [], []
+        if kind:
+            clauses.append("kind=?"); args.append(kind)
+        if retention_class:
+            clauses.append("retention_class=?"); args.append(retention_class)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += " ORDER BY created_at DESC LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            return self._conn.execute(q, args).fetchall()
+
+    @_safe
+    def cull_media(self, media_id: str) -> None:
+        """Delete a media file + its row (retention culling — ephemeral only
+        by policy; behavioral rows are never culled, spec §3)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT rel_path FROM media_asset WHERE media_id=?", (media_id,)).fetchone()
+            if not row:
+                return
+            p = self._root / row[0]
+            if p.exists():
+                p.unlink()
+            self._conn.execute("DELETE FROM media_asset WHERE media_id=?", (media_id,))
+            self._conn.commit()
+
     def media_path_for(self, session_id: str = None, dog_id: str = None,
                        ext: str = 'jpg') -> Path:
         """Allocate a spec §3 media path: media/{dog|_unassigned}/{date}/{session}/{uuid}.{ext}"""
