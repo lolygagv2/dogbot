@@ -1092,7 +1092,8 @@ class SilentGuardianMode:
         if self.dispenser:
             self.dispenser.dispense_treat(
                 dog_id=self.intervention_dog_id,
-                reason='silent_guardian_reward'
+                reason='silent_guardian_reward',
+                wimz_session_id=getattr(self, 'wimz_session_id', None)
             )
             self.treats_dispensed += 1
             self.last_treat_time = time.time()  # Start eligibility cooldown

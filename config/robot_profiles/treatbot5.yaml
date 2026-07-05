@@ -37,6 +37,10 @@ dispenser:
   sgthrs: 0                 # StallGuard disabled — broken at low RPM regardless
   chopper_mode: "spreadcycle"  # Full rated torque (audible whine); now actually applied via UART (fixed 2026-05-27)
   shaft_invert: true        # This unit wired with opposite rotation vs TB1/3/4; flip TMC2209 GCONF bit 4 (verified 2026-05-27 after carousel reinstall)
+  beam_enabled: false       # IR through-beam dispense confirmation — flip to true once sensor is wired on GPIO26
+  beam_pin: 26              # Through-beam receiver output (config/pins.py TREAT_BEAM)
+  beam_timeout_s: 5.0       # Fire -> beam-break window (slot rotation itself takes ~2.9s)
+  beam_active_low: true     # Broken beam pulls output LOW (open-collector receiver)
 
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:

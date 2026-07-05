@@ -38,11 +38,16 @@ class TreatBotPins:
     # TMC2209 UART: GPIO14 (Pin 8, TX via 1K) + GPIO15 (Pin 10, RX) → TMC2209 Pin 4 (PDN_UART)
     STEPPER_UART = '/dev/ttyAMA0'
 
+    # Treat dispense confirmation — IR through-beam below the carousel drop
+    # (beam broken = treat physically ejected; spec dispensed_confirmed)
+    TREAT_BEAM = 26  # GPIO26 (Pin 37) - through-beam receiver output
+
     # Available pins for future expansion
-    FREE_PINS = [20, 21, 26]  # GPIO numbers available for sensors, etc.
+    FREE_PINS = [20, 21]  # GPIO numbers available for sensors, etc.
     # Note: GPIO5, GPIO6 now used for Motor 2 encoders
     # Note: GPIO12, GPIO16, GPIO24 now used for stepper dispenser
     # Note: GPIO14, GPIO15 now used for TMC2209 UART
+    # Note: GPIO26 reserved for treat through-beam sensor
 
     @classmethod
     def validate_pins(cls):

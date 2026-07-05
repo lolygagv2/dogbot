@@ -175,6 +175,25 @@ class DispenserConfig:
         return self._config.get('max_retries', 3)
 
     @property
+    def beam_enabled(self) -> bool:
+        """IR through-beam dispense confirmation (spec dispensed_confirmed)."""
+        return self._config.get('beam_enabled', False)
+
+    @property
+    def beam_pin(self) -> int:
+        return self._config.get('beam_pin', 26)
+
+    @property
+    def beam_timeout_s(self) -> float:
+        """Fire -> beam-break window before the dispense counts unconfirmed."""
+        return self._config.get('beam_timeout_s', 5.0)
+
+    @property
+    def beam_active_low(self) -> bool:
+        """True: beam-broken pulls the receiver output LOW (common open-collector)."""
+        return self._config.get('beam_active_low', True)
+
+    @property
     def reverse_steps(self) -> int:
         return self._config.get('reverse_steps', 40)
 

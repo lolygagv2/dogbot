@@ -21,6 +21,7 @@ import lgpio
 from core.bus import get_bus, publish_reward_event
 from core.state import get_state
 from core.store import get_store
+from core.data import get_wimz_store
 from config.config_loader import get_config
 from config.pins import TreatBotPins
 
@@ -67,6 +68,18 @@ class DispenserService:
         self.CW = 1   # Clockwise = dispense direction
         self.CCW = 0   # Counter-clockwise = reverse/unjam
         self.shaft_invert = robot_config.dispenser.shaft_invert
+
+        # IR through-beam dispense confirmation (spec dispensed_confirmed).
+        # Config-gated: beam_enabled=false until the sensor is physically wired.
+        self.beam_enabled = robot_config.dispenser.beam_enabled
+        self.beam_pin = robot_config.dispenser.beam_pin
+        self.beam_timeout_s = robot_config.dispenser.beam_timeout_s
+        self.beam_active_low = robot_config.dispenser.beam_active_low
+        self._beam_callback = None
+        self._last_beam_break_mono = 0.0  # monotonic ts of most recent beam break
+
+        # Last spec dispense_log id — read by callers linking training_attempt
+        self.last_wimz_dispense_id = None
 
         # Dispensing state
         self.treats_dispensed_today = 0
@@ -245,6 +258,22 @@ class DispenserService:
             lgpio.gpio_write(self.gpio_chip, self.step_pin, 0)
             lgpio.gpio_write(self.gpio_chip, self.dir_pin, self.CW)
 
+            # Through-beam sensor: persistent edge alert; the callback just
+            # timestamps the latest beam break (dispense logic compares it
+            # against the fire time).
+            if self.beam_enabled:
+                try:
+                    edge = lgpio.FALLING_EDGE if self.beam_active_low else lgpio.RISING_EDGE
+                    lgpio.gpio_claim_alert(self.gpio_chip, self.beam_pin, edge,
+                                           lgpio.SET_PULL_UP)
+                    self._beam_callback = lgpio.callback(
+                        self.gpio_chip, self.beam_pin, edge, self._on_beam_edge)
+                    self.logger.info(f"Through-beam sensor armed on GPIO{self.beam_pin} "
+                                     f"(active_{'low' if self.beam_active_low else 'high'})")
+                except Exception as e:
+                    self.logger.error(f"Through-beam init failed (continuing unconfirmed): {e}")
+                    self.beam_enabled = False
+
             self.initialized = True
             self.logger.info(
                 f"Stepper dispenser initialized: "
@@ -273,6 +302,71 @@ class DispenserService:
         self._refill_stop_requested = True
         self._disable_motor()
         self.logger.warning("EMERGENCY STOP — motor disabled")
+
+    # =========================================================================
+    # THROUGH-BEAM CONFIRMATION + TMC DIAGNOSTICS (BEAM work item)
+    # =========================================================================
+
+    def _on_beam_edge(self, chip, gpio, level, timestamp):
+        """lgpio alert callback — timestamp the beam break (treat ejected)."""
+        self._last_beam_break_mono = time.monotonic()
+
+    def _wait_beam_confirm(self, fire_mono: float) -> tuple:
+        """Wait for a beam break after fire_mono, up to beam_timeout_s.
+
+        Returns (dispensed_confirmed 0/1, confirm_latency_ms or None).
+        With no beam sensor configured: (0, None) — never fake a confirm.
+        """
+        if not self.beam_enabled:
+            return 0, None
+        deadline = fire_mono + self.beam_timeout_s
+        while time.monotonic() < deadline:
+            if self._last_beam_break_mono > fire_mono:
+                latency_ms = int((self._last_beam_break_mono - fire_mono) * 1000)
+                return 1, latency_ms
+            time.sleep(0.02)
+        return 0, None
+
+    def _check_tmc_diagnostics(self, context: str) -> None:
+        """StallGuard/driver flags — DIAGNOSTIC ONLY, never gates success.
+
+        StallGuard is proven unreliable at our ~1.9-3 RPM dispense speed
+        (sgthrs=0 fleet-wide); the through-beam is the confirmation. Here we
+        only read DRV_STATUS after a rotation: any stall/thermal/short flag
+        becomes a spec `error` event and triggers the anti-jam wiggle.
+        """
+        if not self.uart:
+            return
+        try:
+            drv_status = self._tmc_read(0x6F)
+            if drv_status is None:
+                return
+            flags = {
+                'stall': bool(drv_status & (1 << 31)),
+                'overtemp_warning': bool(drv_status & (1 << 26)),
+                'overtemp_shutdown': bool(drv_status & (1 << 25)),
+                'short_a': bool(drv_status & (1 << 27)),
+                'short_b': bool(drv_status & (1 << 28)),
+            }
+            raised = [k for k, v in flags.items() if v]
+            if not raised:
+                return
+            self.logger.warning(f"TMC2209 diagnostic flags after {context}: {raised}")
+            try:
+                wimz = get_wimz_store()
+                wimz.log_event(
+                    None, 'error',
+                    {'code': 'dispenser_stall',
+                     'detail': f"DRV_STATUS flags {raised} after {context}"},
+                    label_source='auto_rule')
+            except Exception:
+                pass
+            if 'stall' in raised:
+                # Lock is already held by the dispense path — use the inner wiggle
+                self.logger.info("Stall flag set — running anti-jam wiggle")
+                self._anti_jam_wiggle_inner()
+        except Exception as e:
+            self.logger.debug(f"TMC diagnostic read failed: {e}")
 
     def _rotate_carousel(self) -> bool:
         """
@@ -315,10 +409,25 @@ class DispenserService:
             self.logger.error(f"Carousel rotation error: {e}")
             return False
 
+    # reason -> spec dispense_log.trigger vocabulary
+    _TRIGGER_MAP = {
+        'coaching_reward': 'attempt',
+        'silent_guardian_reward': 'attempt',
+        'mission_reward': 'attempt',
+        'manual': 'manual_pilot',
+        'schedule': 'schedule',
+    }
+
     def dispense_treat(self, dog_id: Optional[str] = None, reason: str = "manual",
-                       behavior: str = "", confidence: float = 0.0) -> bool:
+                       behavior: str = "", confidence: float = 0.0,
+                       wimz_session_id: Optional[str] = None) -> bool:
         """
         Dispense a single treat.
+
+        Args:
+            wimz_session_id: spec session for the dispense_log row (modes pass
+                theirs; falls back to the ambient session). The resulting
+                dispense_id is exposed as self.last_wimz_dispense_id.
 
         Returns:
             bool: True if treat was dispensed successfully
@@ -348,7 +457,39 @@ class DispenserService:
                 return False
 
             try:
+                self.last_wimz_dispense_id = None
+                fire_mono = time.monotonic()
                 success = self._rotate_carousel()
+
+                # Physical confirmation via through-beam (0/None when no sensor)
+                confirmed, confirm_latency_ms = self._wait_beam_confirm(fire_mono)
+                if success and self.beam_enabled and not confirmed:
+                    # Motor moved but no treat crossed the beam — likely jam.
+                    # One wiggle + retry rotation, then re-check the beam.
+                    self.logger.warning("Beam did not break — anti-jam + one retry")
+                    self._anti_jam_wiggle_inner()
+                    retry_mono = time.monotonic()
+                    success = self._rotate_carousel()
+                    confirmed, confirm_latency_ms = self._wait_beam_confirm(retry_mono)
+                    if confirm_latency_ms is not None:
+                        # Report latency from the original fire for jam trending
+                        confirm_latency_ms += int((retry_mono - fire_mono) * 1000)
+
+                # StallGuard/driver flags — diagnostic only, never gates success
+                self._check_tmc_diagnostics('dispense rotation')
+
+                # Spec dispense_log row (+ paired treat_dispensed event)
+                try:
+                    wimz = get_wimz_store()
+                    wimz_dog = wimz.get_or_create_dog(legacy_id=dog_id) if dog_id else None
+                    self.last_wimz_dispense_id = wimz.log_dispense(
+                        wimz_session_id,
+                        trigger=self._TRIGGER_MAP.get(reason, 'manual_pilot'),
+                        dog_id=wimz_dog,
+                        dispensed_confirmed=confirmed,
+                        confirm_latency_ms=confirm_latency_ms)
+                except Exception as e:
+                    self.logger.warning(f"wimz dispense log failed: {e}")
 
                 if success:
                     self.treats_dispensed_today += 1
@@ -714,6 +855,12 @@ class DispenserService:
 
     def cleanup(self) -> None:
         """Clean shutdown — disable motor, close GPIO and UART"""
+        if self._beam_callback is not None:
+            try:
+                self._beam_callback.cancel()
+            except Exception:
+                pass
+            self._beam_callback = None
         if self.gpio_chip is not None:
             try:
                 lgpio.gpio_write(self.gpio_chip, self.en_pin, 1)  # Disable motor
