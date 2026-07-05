@@ -37,6 +37,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.bus import get_bus, publish_system_event
 from core.state import get_state, SystemMode
 from core.store import get_store
+from core.data import get_wimz_store
 from core.bark_frequency_tracker import get_bark_frequency_tracker
 
 # Services
@@ -361,6 +362,12 @@ class SilentGuardianMode:
 
             # Start database session
             self.session_id = self.store.start_silent_guardian_session()
+            # Spec store session (dual-write; WIMZ_Data_Architecture_Spec §4)
+            self.wimz = get_wimz_store()
+            self.wimz_session_id = self.wimz.start_session(
+                'monitor', 'autonomous',
+                model_versions={'audio': self.wimz.model_id_for('dog_bark_classifier')})
+            self._last_cue_event_id = None
             self.session_start_time = time.time()
             self.treats_dispensed = 0
             self.interventions_triggered = 0
@@ -425,6 +432,9 @@ class SilentGuardianMode:
                 treats_dispensed=self.treats_dispensed,
                 max_escalation=self.max_escalation_level,
             )
+        if getattr(self, 'wimz_session_id', None):
+            self.wimz.end_session(self.wimz_session_id)
+            self.wimz_session_id = None
 
         # Wait for thread
         if self.mode_thread and self.mode_thread.is_alive():
@@ -443,6 +453,36 @@ class SilentGuardianMode:
 
         logger.info("Silent Guardian stopped")
 
+    def _log_bark_event(self, event, gate: str):
+        """Write a spec `bark` event row (spec §5; rule 5: keep hard negatives).
+
+        gate: 'passed' | 'below_loudness' | 'veto_rejected' — recorded in the
+        payload so rejected/low barks are kept as training hard negatives.
+        """
+        try:
+            data = event.data
+            dog_id = data.get('dog_id')
+            dog_name = data.get('dog_name')
+            wimz_dog = None
+            if (dog_id and dog_id != 'unknown') or dog_name:
+                wimz_dog = self.wimz.get_or_create_dog(
+                    legacy_id=dog_id if dog_id and dog_id != 'unknown' else None,
+                    name=dog_name)
+            payload = {
+                'db': data.get('loudness_db'),
+                'duration_ms': data.get('duration_ms'),
+                'class': 'notbark' if gate == 'veto_rejected' else 'bark',
+                'emotion': data.get('emotion'),
+                'gate': gate,
+            }
+            self.wimz.log_event(
+                self.wimz_session_id, 'bark', payload,
+                dog_id=wimz_dog,
+                confidence=data.get('confidence'),
+                model_id=self.wimz.model_id_for('dog_bark_classifier'))
+        except Exception as e:
+            logger.debug(f"wimz bark event log failed: {e}")
+
     def _on_audio_event(self, event):
         """Handle bark events"""
         # Don't process events if not running
@@ -450,6 +490,7 @@ class SilentGuardianMode:
             return
 
         if event.subtype == 'bark_false_positive':
+            self._log_bark_event(event, gate='veto_rejected')  # hard negative, kept
             logger.info(f"ML says not a bark (notbark={event.data.get('confidence', 0):.2f}) — "
                        f"cancelling any pending intervention")
             # Reset bark tracker count so false positive doesn't accumulate toward threshold
@@ -488,6 +529,7 @@ class SilentGuardianMode:
         confidence_minimum = bark_config.get('confidence_minimum', 0.35)
 
         if loudness_db < loudness_threshold:
+            self._log_bark_event(event, gate='below_loudness')  # hard negative, kept
             logger.info(f"BARK_BELOW_THRESHOLD: {loudness_db:.1f}dB < {loudness_threshold}dB — ignoring")
             return
 
@@ -498,6 +540,7 @@ class SilentGuardianMode:
             logger.info(f"Bark emotion: conf={confidence:.2f} (logged, not gating)")
 
         logger.info(f"Bark detected: {dog_name or dog_id or 'unknown'} (conf: {confidence:.2f}, loud: {loudness_db:.1f}dB)")
+        self._log_bark_event(event, gate='passed')
         self.last_bark_time = time.time()
         self.total_barks += 1  # confirmed bark (passed loudness threshold)
         self.quiet_since = 0.0  # Any bark resets the continuous quiet timer
@@ -554,6 +597,20 @@ class SilentGuardianMode:
                 dog_name=dog_name,
                 escalation_level=self.current_escalation_level
             )
+
+            # Spec cue_issued event — the intervention IS the 'quiet' cue.
+            # Event id kept for the training_attempt row on quiet-achieved.
+            try:
+                wimz_dog = self.wimz.get_or_create_dog(
+                    legacy_id=dog_id if dog_id and dog_id != 'unknown' else None,
+                    name=dog_name)
+                self._last_cue_event_id = self.wimz.log_event(
+                    self.wimz_session_id, 'cue_issued',
+                    {'trick': 'quiet', 'cue_type': 'voice',
+                     'text': f'escalation_level_{self.current_escalation_level}'},
+                    dog_id=wimz_dog, label_source='auto_rule')
+            except Exception as e:
+                logger.debug(f"wimz cue event log failed: {e}")
 
             # Publish to bus so DogEventLogger persists it in dog_events
             # and main_treatbot forwards it over the relay WebSocket to the app.
