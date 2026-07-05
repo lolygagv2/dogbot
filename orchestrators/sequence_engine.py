@@ -37,7 +37,10 @@ class SequenceEngine:
         # Sequence state
         self.active_sequences = {}  # sequence_id -> thread
         self.sequence_counter = 0
-        self._lock = threading.Lock()
+        # RLock: _stop_all_sequences() is called both standalone and from
+        # inside lock-holding callers (execute_sequence L128, stop_all_sequences
+        # L386). A plain Lock self-deadlocked every shutdown -> 90s SIGKILL.
+        self._lock = threading.RLock()
 
         # Built-in sequences (fallbacks if YAML files missing)
         self.builtin_sequences = {

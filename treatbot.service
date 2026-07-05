@@ -3,9 +3,15 @@
 Description=TreatBot Main System
 After=network.target bluetooth.target
 Wants=network.target
+# Allow up to 10 start attempts per 5 min before giving up. Watchdog/timeout
+# restart cycles take >40s each, so only a fast crash loop (bad deploy, human
+# present) can trip this.
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 User=morgan
 Group=morgan
 WorkingDirectory=/home/morgan/dogbot
@@ -23,8 +29,26 @@ EnvironmentFile=/home/morgan/dogbot/.env
 ExecStartPre=/bin/sleep 5
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 120); do [ -S /run/user/1000/pulse/native ] && { echo "pulse socket ready after ${i}s"; sleep 2; exit 0; }; sleep 1; done; echo "WARNING: pulse socket not ready after 120s, starting on ALSA fallback"; exit 0'
 ExecStart=/home/morgan/dogbot/env_new/bin/python /home/morgan/dogbot/main_treatbot.py
-Restart=on-failure
-RestartSec=5
+
+# --- Hang hardening (R-CRASH) ---
+# Main loop pings WATCHDOG=1 at 1Hz; 30s = 30 missed pings of margin. Watchdog
+# fire sends SIGABRT, which faulthandler turns into an all-thread stack dump
+# in the journal — every hang self-documents.
+WatchdogSec=30
+# Covers ExecStartPre worst case (~127s cold-boot pulse wait) + ~17s init.
+TimeoutStartSec=180
+# Hardened stop path is bounded well under this (idempotent stop(), WebRTC
+# cleanup on its owning loop with 5s timeout, daemon main-loop thread).
+TimeoutStopSec=25
+Restart=always
+RestartSec=10
+# SIGTERM to main python only; it shuts down the Xbox subprocess itself
+# (killpg + 5s wait + SIGKILL). Final SIGKILL still hits the whole cgroup.
+KillMode=mixed
+# Baseline RSS ~540MB after hours of uptime (8GB RAM) — 2G is ~3.7x headroom.
+# A leak now ends in a clean OOM-kill + restart instead of a silent death.
+MemoryMax=2G
+
 StandardOutput=journal
 StandardError=journal
 

@@ -11,6 +11,7 @@ import signal
 import logging
 import threading
 import faulthandler
+import psutil
 from typing import Dict, Any, Optional
 
 # Enable faulthandler: kill -USR1 <pid> dumps all thread stacks to stderr/journal
@@ -42,6 +43,7 @@ from services.cloud.relay_client import get_relay_client, configure_relay_from_y
 from services.streaming.webrtc import get_webrtc_service, configure_webrtc_from_yaml
 from services.streaming.audio_track import get_audio_track
 from api.server import run_server
+from utils.sd_notify import sd_notify
 
 # Orchestrators
 from orchestrators.sequence_engine import get_sequence_engine
@@ -147,6 +149,11 @@ class TreatBotMain:
         self.start_time = time.time()
         self.loop_count = 0
         self.last_heartbeat = time.time()
+        self._proc = psutil.Process()  # for RSS logging
+
+        # Shutdown idempotence guard (stop() is reached from both the signal
+        # handler and main()'s finally block)
+        self._stopping = False
 
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -2221,10 +2228,11 @@ class TreatBotMain:
         self._wifi_monitor_thread.start()
         self.logger.info("WiFi monitor started (auto AP fallback enabled)")
 
-        # Start main loop
+        # Start main loop. daemon=True: a stuck tick must not hold interpreter
+        # exit hostage (stop() only joins this thread for 2s anyway).
         self.main_thread = threading.Thread(
             target=self._main_loop,
-            daemon=False,
+            daemon=True,
             name="TreatBotMain"
         )
         self.main_thread.start()
@@ -2237,6 +2245,8 @@ class TreatBotMain:
         elif current_mode == SystemMode.MANUAL:
             self.logger.info("Xbox controller active - staying in MANUAL mode")
 
+        # Tell systemd we're up (Type=notify); starts the WatchdogSec clock
+        sd_notify("READY=1")
         self.logger.info("TreatBot main system started")
         return True
 
@@ -2376,6 +2386,9 @@ class TreatBotMain:
                 # CRITICAL: Send heartbeat FIRST, before any potentially blocking calls
                 # This ensures safety monitor knows we're alive even if other operations block
                 self.safety.heartbeat()
+                # systemd watchdog ping — deliberately only from this loop: if it
+                # hangs or exits (emergency break), pings stop and systemd restarts us
+                sd_notify("WATCHDOG=1")
                 self.last_heartbeat = current_time
 
                 # Update system telemetry (non-blocking, will skip if can't acquire lock)
@@ -2455,13 +2468,21 @@ class TreatBotMain:
             'mode': self.state.mode.value,
             'loop_count': self.loop_count,
             'safety_level': self.safety.current_level.value,
-            'active_sequences': self.sequence_engine.get_status()['active_sequences']
+            'active_sequences': self.sequence_engine.get_status()['active_sequences'],
+            'rss_mb': round(self._proc.memory_info().rss / (1024 * 1024))
         }
 
         self.logger.info(f"System status: {status}")
 
     def stop(self) -> None:
         """Stop the TreatBot system gracefully"""
+        # stop() is reached from both the signal handler and main()'s finally
+        # block — running the shutdown sequence twice hangs the stop path
+        if self._stopping:
+            self.logger.info("Stop already in progress, skipping duplicate")
+            return
+        self._stopping = True
+        sd_notify("STOPPING=1")
         self.logger.info("Stopping TreatBot system...")
 
         self.running = False
@@ -2527,17 +2548,25 @@ class TreatBotMain:
             if self.night_mode:
                 self.night_mode.stop()
 
-            # Stop cloud relay and WebRTC
-            if self.relay_client:
-                self.relay_client.stop()
+            # Stop WebRTC FIRST — its peer connections live on the relay/api
+            # event loop, so cleanup must be scheduled on that loop (bounded),
+            # and before relay_client.stop() tears the loop down. Awaiting the
+            # coroutine on a fresh loop (old code) could block forever.
             if self.webrtc_service:
                 import asyncio
-                try:
-                    loop = asyncio.new_event_loop()
-                    loop.run_until_complete(self.webrtc_service.cleanup())
-                    loop.close()
-                except Exception as e:
-                    self.logger.warning(f"WebRTC cleanup error: {e}")
+                loop = getattr(self.webrtc_service, '_loop', None)
+                if loop is not None and loop.is_running():
+                    try:
+                        fut = asyncio.run_coroutine_threadsafe(
+                            self.webrtc_service.cleanup(), loop)
+                        fut.result(timeout=5.0)
+                    except Exception as e:
+                        self.logger.warning(f"WebRTC cleanup timed out/failed (continuing): {e}")
+                # else: loop never ran -> no connections to clean up
+
+            # Stop cloud relay (already bounded internally)
+            if self.relay_client:
+                self.relay_client.stop()
 
             # Stop USB audio
             try:
