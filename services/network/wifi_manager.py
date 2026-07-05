@@ -65,9 +65,17 @@ class WiFiManager:
         with self._op_lock:
             if self._in_ap_mode:
                 return True
-            # Check if hostapd is running with our config
-            success, output = self._run_cmd(["pgrep", "-f", f"hostapd.*{HOSTAPD_CONF}"])
-            return success
+            # Check if hostapd is running with our config. pgrep exits 1 when
+            # nothing matches — that's the NORMAL WiFi-mode answer, not a
+            # command failure, so don't route it through _run_cmd's warning
+            # (it was flooding the journal every 30s from the WiFi monitor).
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-f", f"hostapd.*{HOSTAPD_CONF}"],
+                    capture_output=True, text=True, timeout=10)
+                return result.returncode == 0
+            except Exception:
+                return False
 
     def has_associated_stations(self) -> bool:
         """True if any STA is associated to our AP, via `iw station dump` (L2).

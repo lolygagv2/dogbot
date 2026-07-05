@@ -2264,12 +2264,13 @@ class TreatBotMain:
         from services.network.wifi_manager import get_wifi_manager
 
         wifi = get_wifi_manager()
-        check_interval = 30  # seconds between checks
-        disconnect_threshold = 60  # seconds before AP fallback
-        # Try to rejoin a known network this often while in AP mode. Kept long
-        # so an active demo session isn't interrupted; a connected phone defers
-        # it entirely (see client check below).
-        reconnect_interval = 300  # seconds between rejoin attempts while in AP
+        # Work order §3B: the robot must never sit unreachable. AP comes up
+        # within ~seconds of a WiFi drop (15s threshold @ 15s checks), and
+        # WiFi rejoin retries every 60s — a connected phone defers rejoin
+        # entirely (see the STA-association check below).
+        check_interval = 15  # seconds between checks
+        disconnect_threshold = 15  # seconds before AP fallback
+        reconnect_interval = 60  # seconds between rejoin attempts while in AP
 
         self.logger.info("WiFi monitor started")
 

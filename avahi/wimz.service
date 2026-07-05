@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone='no'?><!--*-nxml-*-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- WIM-Z DNS-SD advert (DISCOVER work item).
+     Install: sudo cp avahi/wimz.service /etc/avahi/services/
+     avahi-daemon picks it up automatically (no restart needed).
+     %h expands to the hostname (treatbot5), so this file is fleet-generic.
+     The app browses _wimz._tcp to find robots, or resolves <host>.local;
+     on the AP fallback it also tries 192.168.4.1 directly (work order 3B). -->
+<service-group>
+  <name replace-wildcards="yes">WIM-Z %h</name>
+  <service>
+    <type>_wimz._tcp</type>
+    <port>8000</port>
+    <txt-record>device=%h</txt-record>
+    <txt-record>api=http</txt-record>
+    <txt-record>ws=/ws/local</txt-record>
+    <txt-record>vendor=wimzai</txt-record>
+  </service>
+</service-group>
