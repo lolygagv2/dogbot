@@ -5857,7 +5857,10 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, debug: bool = False):
         host=host,
         port=port,
         reload=debug,
-        log_level="info" if not debug else "debug"
+        log_level="info" if not debug else "debug",
+        # No per-request access logs: joystick driving sends ~20 motor POSTs/sec,
+        # and the journald writes starve the pygame audio feeder (R-MUSIC).
+        access_log=debug
     )
 
 if __name__ == "__main__":

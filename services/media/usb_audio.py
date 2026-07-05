@@ -27,6 +27,10 @@ def _detect_usb_audio_card() -> int:
 # Detect USB audio card dynamically (can be 0, 1, or 2 depending on boot order)
 USB_AUDIO_CARD = _detect_usb_audio_card()
 
+# Mixer buffer in samples. 512 (~23ms @ 22050Hz) underruns when the main process
+# is busy (e.g. 20Hz motor commands while driving); 2048 (~93ms) gives headroom.
+MIXER_BUFFER = 2048
+
 logger = logging.getLogger('USBAudio')
 
 
@@ -74,7 +78,7 @@ if os.path.exists('/usr/bin/pipewire-pulse'):
     os.environ['SDL_AUDIODRIVER'] = 'pulseaudio'
     import pygame
     try:
-        pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+        pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=MIXER_BUFFER)
         pygame.mixer.quit()
         _audio_backend = 'pulseaudio'
     except Exception as e:
@@ -125,7 +129,7 @@ class USBAudioService:
 
         try:
             # Initialize pygame mixer for audio playback (USB audio device)
-            pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+            pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=MIXER_BUFFER)
             self.initialized = True
             self.logger.info(f"USB Audio service initialized successfully (driver={os.environ.get('SDL_AUDIODRIVER', 'default')})")
         except Exception as e:
@@ -134,7 +138,7 @@ class USBAudioService:
                 os.environ['SDL_AUDIODRIVER'] = 'alsa'
                 os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
                 try:
-                    pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+                    pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=MIXER_BUFFER)
                     self.initialized = True
                     self.logger.info(f"USB Audio service initialized successfully (ALSA fallback, plughw:{USB_AUDIO_CARD},0)")
                 except Exception as e2:
@@ -207,7 +211,7 @@ class USBAudioService:
             time.sleep(0.3)
 
             # Reinitialize
-            pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+            pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=MIXER_BUFFER)
             self.initialized = True
             self.logger.info("Audio system reinitialized successfully")
             return True
@@ -217,7 +221,7 @@ class USBAudioService:
             try:
                 os.environ['SDL_AUDIODRIVER'] = 'alsa'
                 os.environ['AUDIODEV'] = f'plughw:{USB_AUDIO_CARD},0'
-                pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+                pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=MIXER_BUFFER)
                 self.initialized = True
                 self.logger.info("Audio reinitialized via ALSA fallback")
                 return True
