@@ -356,3 +356,16 @@ curl -X POST http://localhost:8000/audio/play/file \
 ---
 
 *This structure document is the authoritative reference for file locations in the WIM-Z project.*
+
+## Added 2026-07-05 (reliability + data architecture session)
+- `core/data/` — WIMZ spec data store package (spec v0.3): `ids.py` (UUIDv7),
+  `schema.py` (verbatim spec DDL — change the spec first!), `wimz_store.py`
+  (WimzStore singleton, /data/wimz.db, batched writes)
+- `utils/sd_notify.py` — zero-dep systemd notifier (READY/WATCHDOG/STOPPING)
+- `scripts/wimz_alive.py` + `wimz-alive.service` — early-boot LED sign of life
+- `scripts/backfill_wimz.py` — one-time idempotent history backfill into wimz.db
+- `avahi/wimz.service` — DNS-SD advert (_wimz._tcp:8000), installed to /etc/avahi/services/
+- `tests/data/test_wimz_store.py` — incl. schema-vs-spec fidelity test
+- `tests/diagnostics/test_fps_pipeline_isolation.py` — §1A TEST 1-6 benchmarks
+- `treatbot.service` — now Type=notify + watchdog (unit and code deploy TOGETHER)
+- `/data/` (filesystem, not repo) — wimz.db + media tree per spec §3
