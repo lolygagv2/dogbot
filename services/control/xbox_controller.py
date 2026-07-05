@@ -110,13 +110,15 @@ class XboxControllerService:
                 if self.is_connected:
                     self._monitor_controller_process()
 
-                # Monitor device activity for manual input detection
-                if self.is_connected:
-                    self._check_device_activity()
+                # NOTE: We deliberately do NOT infer "manual input" from the js0
+                # device file. /dev/input/js0 mtime changes on (re)connect, not on
+                # stick movement, so the old _check_device_activity() turned every
+                # controller reconnect into a phantom mode change (SG -> MANUAL).
+                # Mode is now changed ONLY by the mode button / app / API. Genuine
+                # driving still reaches the motors via /motor/control regardless of
+                # mode (the motor bus has no mode gate).
 
                 # NOTE: Manual input timeout is handled by mode_fsm.py
-                # Removed duplicate _check_manual_timeout() call - was causing race condition
-                # where service would switch back to SILENT_GUARDIAN immediately after mode change
 
                 time.sleep(2.0)  # Check every 2 seconds
 
@@ -237,36 +239,14 @@ class XboxControllerService:
                 'last_input_time': self.last_manual_input_time
             }, source='xbox_service')
 
-    def _check_device_activity(self):
-        """Monitor device file for controller activity"""
-        try:
-            if os.path.exists(self.device_path):
-                device_stat = os.stat(self.device_path)
-                current_activity = device_stat.st_mtime  # Use mtime instead of atime
-
-                if current_activity > self.last_device_activity:
-                    # Device has been accessed (controller input detected)
-                    self.on_manual_input()
-                    self.last_device_activity = current_activity
-                    logger.debug("Xbox controller activity detected")
-        except Exception as e:
-            logger.debug(f"Device activity check error: {e}")
-
     def on_manual_input(self):
-        """Called when manual input is detected (external API)"""
+        """Record that manual input occurred. Does NOT change mode.
+
+        Mode is changed only by the mode button / app / API. This method is kept
+        for timestamp bookkeeping and is intentionally free of any set_mode() /
+        mode-changing side effects so controller activity can never hijack mode.
+        """
         self.last_manual_input_time = time.time()
-
-        # Switch to manual mode if not already
-        current_mode = self.state.get_mode()
-        if current_mode != SystemMode.MANUAL:
-            self.state.set_mode(SystemMode.MANUAL, "Xbox controller input")
-            logger.info("Switched to MANUAL mode due to controller input")
-
-        # Publish manual input event
-        publish_system_event('manual_input_detected', {
-            'timestamp': self.last_manual_input_time,
-            'source': 'xbox_controller'
-        }, source='xbox_service')
 
     def get_status(self) -> Dict[str, Any]:
         """Get controller service status"""

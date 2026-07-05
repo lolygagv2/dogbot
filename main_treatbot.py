@@ -563,11 +563,12 @@ class TreatBotMain:
             # Subscribe to controller events for mode transitions
             self.bus.subscribe('system', self._on_system_event)
 
-            # Start Bluetooth controller if available
+            # Start Bluetooth controller if available.
+            # NOTE: Do NOT auto-switch to MANUAL just because a controller is
+            # present at boot. Mode is changed only by the mode button / app / API.
             if self.bluetooth_controller and self.bluetooth_controller.is_connected:
                 self.bluetooth_controller.start()
-                self.logger.info("Bluetooth controller active - Press START to enter MANUAL mode")
-                self.state.set_mode(SystemMode.MANUAL, "Bluetooth controller ready")
+                self.logger.info("Bluetooth controller active - press the mode button to enter MANUAL mode")
 
             # Start cloud relay client if enabled
             if self.relay_client and self.relay_client.config.enabled:
@@ -2075,30 +2076,19 @@ class TreatBotMain:
         """Handle system events (controller connect/disconnect, etc.)"""
         try:
             if event.subtype == 'controller_disconnected':
-                current_mode = self.state.get_mode()
-                if current_mode == SystemMode.MANUAL:
-                    # HOTFIX: Only revert if no app user is connected — app owns mode control when connected
-                    app_connected = False
-                    try:
-                        if self.relay_client and hasattr(self.relay_client, '_app_connected'):
-                            app_connected = self.relay_client._app_connected
-                    except Exception:
-                        pass
-
-                    if app_connected:
-                        self.logger.info("Xbox controller disconnected - app is connected, keeping MANUAL mode")
-                    else:
-                        # Return to pre-manual mode (e.g. SG), not always IDLE
-                        pre_mode = self.mode_fsm.pre_manual_mode if self.mode_fsm else SystemMode.IDLE
-                        self.logger.info(f"Xbox controller disconnected - no app, returning to {pre_mode.value}")
-                        self.state.set_mode(pre_mode, f"Controller disconnected, restoring {pre_mode.value}")
+                # Disconnecting / powering off the controller must NOT change mode.
+                # (Previously this reverted MANUAL -> pre-manual mode, which — combined
+                # with the connect->MANUAL handler and the js0 mtime phantom — knocked
+                # the robot out of Silent Guardian on every controller reconnect.)
+                # Mode is changed only by the mode button / app / API.
+                self.logger.info("Xbox controller disconnected (mode unchanged)")
 
             elif event.subtype == 'controller_connected':
-                # Controller connected - switch to Manual mode
-                current_mode = self.state.get_mode()
-                if current_mode != SystemMode.MANUAL:
-                    self.logger.info("Xbox controller connected - switching to Manual mode")
-                    self.mode_fsm.force_mode(SystemMode.MANUAL, "Xbox controller connected")
+                # Connecting the controller must NOT change mode. A power/BLE
+                # transport event is not intent to drive. The sticks still drive the
+                # motors in any mode (motor bus has no mode gate); use the mode
+                # button to enter MANUAL when you actually want exclusive control.
+                self.logger.info("Xbox controller connected (mode unchanged)")
 
             elif event.subtype == 'profiles_updated':
                 # Dog profiles updated — push to DogTracker + coaching/mission engines

@@ -202,32 +202,14 @@ class ModeFSM:
         # Otherwise stay in Coach mode indefinitely until manually switched
 
     def _evaluate_manual_transitions(self, now: float) -> None:
-        """Evaluate transitions from MANUAL mode"""
-        if self.last_manual_input_time == 0:
-            return  # No manual input recorded yet
+        """MANUAL mode is sticky: no automatic exit.
 
-        # Check if Xbox controller is connected - if so, NEVER timeout
-        # The Xbox controller will send periodic manual_input_detected events
-        # but we'll also check for the controller process
-        try:
-            import subprocess
-            result = subprocess.run(['pgrep', '-f', 'xbox_hybrid_controller'],
-                                  capture_output=True, text=True, timeout=0.5)
-            if result.returncode == 0:
-                # Xbox controller is running, stay in MANUAL mode
-                self.last_manual_input_time = now  # Reset timeout
-                return
-        except:
-            pass  # If check fails, continue with normal timeout logic
-
-        time_since_manual = now - self.last_manual_input_time
-
-        # Manual timeout -> return to previous mode (before entering MANUAL)
-        if time_since_manual > self.timeouts['manual_timeout']:
-            # Return to the mode we were in before entering MANUAL
-            target_mode = self.pre_manual_mode
-            self.logger.info(f"Manual timeout, returning to previous mode: {target_mode.value}")
-            self._transition_to(target_mode, ModeTransition.MANUAL_TIMEOUT)
+        Per design decision (2026-07-05): the mode is changed ONLY by the mode
+        button / app / API. MANUAL no longer times out on its own, so leaving
+        the controller idle (or turning it off) does NOT drop the robot out of
+        MANUAL. Press the mode button (or use the app) to leave MANUAL.
+        """
+        return
 
     def _transition_to(self, new_mode: SystemMode, trigger: ModeTransition) -> None:
         """Execute mode transition"""
@@ -287,29 +269,19 @@ class ModeFSM:
             self._transition_to(SystemMode.EMERGENCY, ModeTransition.EMERGENCY)
 
         elif event.subtype == 'manual_input_detected':
-            # Xbox controller input detected
+            # Controller input observed. We only record the timestamp; we do NOT
+            # change mode. Mode is changed only by the mode button / app / API.
             self.last_manual_input_time = time.time()
-            current_mode = self.state.get_mode()
-
-            # Switch to manual mode if not already
-            if current_mode != SystemMode.MANUAL:
-                # Save current mode so we can return to it when controller disconnects
-                self.pre_manual_mode = current_mode
-                self.logger.info(f"Saving pre-manual mode: {current_mode.value}")
-                self._transition_to(SystemMode.MANUAL, ModeTransition.MANUAL_INPUT)
 
         elif event.subtype == 'controller_connected':
-            # Controller connected - if no recent activity, stay in current mode
-            self.logger.info("Xbox controller connected")
+            # Connecting a controller must NOT change mode (a power/BLE transport
+            # event is not intent to drive). Log only.
+            self.logger.info("Xbox controller connected (mode unchanged)")
 
         elif event.subtype == 'controller_disconnected':
-            # Controller disconnected - if in manual mode, return to previous mode
-            current_mode = self.state.get_mode()
-            if current_mode == SystemMode.MANUAL:
-                # Return to the mode we were in before entering MANUAL
-                target_mode = self.pre_manual_mode
-                self.logger.info(f"Controller disconnected, returning to previous mode: {target_mode.value}")
-                self._transition_to(target_mode, ModeTransition.USER_OVERRIDE)
+            # Disconnecting / powering off a controller must NOT change mode.
+            # Log only.
+            self.logger.info("Xbox controller disconnected (mode unchanged)")
 
     def set_mode_override(self, mode: SystemMode, duration: float = None) -> bool:
         """Override automatic mode transitions"""
