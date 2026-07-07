@@ -37,10 +37,24 @@ dispenser:
   sgthrs: 0                 # StallGuard disabled — broken at low RPM regardless
   chopper_mode: "spreadcycle"  # Full rated torque (audible whine); now actually applied via UART (fixed 2026-05-27)
   shaft_invert: true        # This unit wired with opposite rotation vs TB1/3/4; flip TMC2209 GCONF bit 4 (verified 2026-05-27 after carousel reinstall)
-  beam_enabled: false       # IR through-beam dispense confirmation — flip to true once sensor is wired on GPIO26
-  beam_pin: 26              # Through-beam receiver output (config/pins.py TREAT_BEAM)
-  beam_timeout_s: 5.0       # Fire -> beam-break window (slot rotation itself takes ~2.9s)
-  beam_active_low: true     # Broken beam pulls output LOW (open-collector receiver)
+  # IR through-beam dispense confirmation at the chute (wired + live-verified
+  # 2026-07-06/07). Sensor: 5mm 850nm pair, NPN out, <10deg receive cone.
+  #   Emitter red (via 220R) -> pin 2 (5V) | emitter black -> pin 6 (GND)
+  #   Receiver red -> pin 4 (5V) | black -> pin 25 (GND) | white OUT -> pin 26
+  #   (GPIO7, freed from SPI CE1 via dtoverlay=spi0-1cs in /boot/firmware/
+  #   config.txt) + external 1K pull-up from OUT to 3.3V pin 17 (datasheet
+  #   requires it; Pi internal ~50K alone loses to output leakage).
+  # NOT GPIO26 — that's the Pololu kill-pulse pin.
+  # Verified polarity: beam locked = HIGH, beam broken/no IR = LOW -> treat
+  # falling = falling edge = active_low true. Alignment is touchy (<10deg):
+  # if dispenses stop confirming, check the pin idles HIGH before blaming code.
+  beam_enabled: true
+  beam_pin: 7               # Through-beam receiver output (config/pins.py TREAT_BEAM)
+  beam_active_low: true
+  # Confirm window is anchored BEFORE rotation (dispenser.py fire_mono), and
+  # rotation alone is ~3s here (147 steps x 2x0.010s) — must cover rotation
+  # + fall. Early-returns on beam break, so success is never slowed.
+  beam_timeout_s: 4.0
 
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:

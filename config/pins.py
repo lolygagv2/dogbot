@@ -40,14 +40,19 @@ class TreatBotPins:
 
     # Treat dispense confirmation — IR through-beam below the carousel drop
     # (beam broken = treat physically ejected; spec dispensed_confirmed)
-    TREAT_BEAM = 26  # GPIO26 (Pin 37) - through-beam receiver output
+    # GPIO7 = SPI0 CE1, freed via dtoverlay=spi0-1cs (NeoPixel keeps CE0).
+    # Do NOT use GPIO26 — that's the Pololu OFF kill-pulse pin.
+    # Sensor runs on 5V (pins 2/4) with external 1K pull-up to 3.3V (pin 17).
+    # Verified: beam locked = HIGH, broken = LOW (falling edge on treat drop).
+    TREAT_BEAM = 7  # GPIO7 (Pin 26) - through-beam receiver output, active-low
 
     # Available pins for future expansion
     FREE_PINS = [20, 21]  # GPIO numbers available for sensors, etc.
     # Note: GPIO5, GPIO6 now used for Motor 2 encoders
     # Note: GPIO12, GPIO16, GPIO24 now used for stepper dispenser
     # Note: GPIO14, GPIO15 now used for TMC2209 UART
-    # Note: GPIO26 reserved for treat through-beam sensor
+    # Note: GPIO7 (SPI CE1, freed) used for treat through-beam sensor
+    # Note: GPIO26 is the Pololu OFF kill pulse (power system) — never reuse
 
     @classmethod
     def validate_pins(cls):
