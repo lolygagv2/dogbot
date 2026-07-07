@@ -34,6 +34,20 @@ dispenser:
   microstepping: 8          # Microstepping multiplier (MRES=5)
   sgthrs: 0                 # StallGuard disabled — known issue at low speed
   chopper_mode: "spreadcycle"  # spreadcycle = full rated torque (audible whine); stealthchop = quiet, ~50-70% torque
+  # IR through-beam dispense confirmation at the chute (wired 2026-07-07).
+  # Sensor: 5mm 850nm pair, NPN out, <10deg receive cone.
+  #   Emitter red (via 220R) -> pin 2 (5V) | emitter black -> pin 6 (GND)
+  #   Receiver red -> pin 4 (5V) | black -> pin 25 (GND) | white OUT -> pin 26
+  #   (GPIO7, freed from SPI CE1 via dtoverlay=spi0-1cs in /boot/firmware/
+  #   config.txt) + external 1K pull-up from OUT to 3.3V pin 17.
+  # NOT GPIO26 — that's the Pololu kill-pulse pin.
+  # Polarity: beam locked = HIGH, beam broken/no IR = LOW -> active_low true.
+  # Alignment touchy (<10deg): if dispenses stop confirming, check the pin
+  # idles HIGH (pinctrl get 7) before blaming code.
+  beam_enabled: true
+  beam_pin: 7               # Through-beam receiver output (config/pins.py TREAT_BEAM)
+  beam_active_low: true
+  beam_timeout_s: 4.0
 
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:
