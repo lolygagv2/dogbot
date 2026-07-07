@@ -46,6 +46,9 @@ Idempotent — safe to re-run.
 - `/etc/modprobe.d/rtw88.conf` — disables the rtw88 USB-WiFi deep power-save
   that causes beacon-loss disconnects.
 - NetworkManager `wifi.powersave 2` on all saved connections.
+- `dtoverlay=spi0-1cs` in `/boot/firmware/config.txt` — frees GPIO7 (pin 26)
+  for the treat through-beam sensor (NeoPixel keeps CE0). Harmless on units
+  without the sensor. Needs a power cycle to take effect.
 
 ## Per-device manual steps (not scriptable)
 
@@ -53,6 +56,51 @@ Idempotent — safe to re-run.
 - **Per-unit calibration** — `config/robot_profiles/treatbotN.yaml`: battery
   calibration factor, motor inversion, gimbal centers/limits. Seed from an
   existing profile and tune. See `.claude/resume_chat.md` bring-up entries.
+- **Treat through-beam sensor** — see the section below; hardware install +
+  alignment, then one config flip.
+
+## Treat through-beam sensor (per-unit hardware install) {#beam}
+
+Confirms treats physically leave the chute (spec `dispensed_confirmed` +
+beam-counted `dispensed_count`; see DISPENSE-VERIFY in
+`services/reward/dispenser.py`). Reference install: treatbot5, 2026-07-07
+(commits `a052c1e`, `6778432`). First done on treatbot5 — copy that unit.
+
+**Parts:** 5 mm 850 nm IR through-beam pair (2-wire emitter, 3-wire NPN
+receiver), 220 Ω (emitter), **1 kΩ (receiver pull-up — required, the Pi's
+internal ~50 kΩ is too weak and the line sticks LOW)**.
+
+**Wiring (robot powered off):**
+
+| Wire | Pi header pin |
+|---|---|
+| Emitter red, through 220 Ω | pin 2 (5 V) |
+| Emitter black | pin 6 (GND) |
+| Receiver red | pin 4 (5 V) |
+| Receiver black | pin 25 (GND) |
+| Receiver white (OUT, NPN) | pin 26 (GPIO7) |
+| 1 kΩ resistor | between OUT line and pin 17 (**3.3 V — NEVER 5 V**) |
+
+Both sensors run on **5 V** (the "3-5V" marketing is wrong — undervolted, the
+output latches LOW). The NPN open-collector output + 3.3 V pull-up keeps the
+GPIO Pi-safe.
+
+**Prerequisite:** `setup_device.sh` has run and the unit has been power
+cycled, so GPIO7 is free (`pinctrl get 7` shows `ip`/`no`, not `op`).
+
+**Alignment (the #1 failure mode — <10° receive cone):** mount emitter and
+receiver coaxial across the drop path, watching live:
+`watch -n 0.2 pinctrl get 7` — **`hi` = beam locked (good), `lo` = no beam.**
+Adjust until it idles solidly `hi`; a card swiped through the gap must flip
+it `lo` and back. Debugging notes: fingertips pass bright IR (use a card),
+never wrap sensors in foil (conductive — shorts the output).
+
+**Enable:** in the unit's `config/robot_profiles/treatbotN.yaml` dispenser
+section set `beam_enabled: true`, `beam_pin: 7`, `beam_active_low: true`,
+`beam_timeout_s: 4.0` (copy the treatbot5 block), restart
+`treatbot.service`, and confirm the journal logs
+`Through-beam sensor armed on GPIO7 (active_low)`. Verify end-to-end with a
+dispense: `dispense_log.dispensed_count` should be ≥1.
 
 ## Verify (after step 6)
 

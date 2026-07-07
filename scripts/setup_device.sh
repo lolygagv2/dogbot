@@ -48,6 +48,18 @@ while IFS=: read -r conn ctype; do
     fi
 done < <(nmcli -t -f NAME,TYPE connection show)
 
+# --- 5. Free GPIO7 (SPI0 CE1, pin 26) for the treat through-beam sensor ---
+# Safe on all units: NeoPixel uses CE0/spidev0.0 which spi0-1cs preserves.
+# Units without the sensor just gain a free GPIO. Takes effect after the
+# power cycle below. Sensor wiring/enable: docs/NEW_ROBOT_SETUP.md §beam.
+BOOTCFG=/boot/firmware/config.txt
+if grep -q "^dtoverlay=spi0-1cs" "$BOOTCFG"; then
+    echo "[setup] spi0-1cs overlay already present"
+else
+    echo "[setup] adding dtoverlay=spi0-1cs to $BOOTCFG (frees GPIO7 for treat beam)"
+    printf '\n# Free GPIO7 (SPI0 CE1, pin 26) for treat through-beam sensor.\n# Keeps CE0/spidev0.0 alive for the WS2812 NeoPixel driver.\ndtoverlay=spi0-1cs\n' >> "$BOOTCFG"
+fi
+
 # --- Verify ---------------------------------------------------------------
 echo
 echo "[setup] verification:"
@@ -60,6 +72,9 @@ systemctl is-enabled --quiet wimz-audio.service \
 [ -f /etc/modprobe.d/rtw88.conf ] \
     && echo "  OK   /etc/modprobe.d/rtw88.conf present" \
     || echo "  FAIL rtw88.conf missing"
+grep -q "^dtoverlay=spi0-1cs" "$BOOTCFG" \
+    && echo "  OK   spi0-1cs overlay in config.txt (GPIO7 free after power cycle)" \
+    || echo "  FAIL spi0-1cs overlay missing"
 
 echo
 echo "[setup] Done. Reboot to activate the WiFi driver change + load new code:"
