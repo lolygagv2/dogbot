@@ -10,6 +10,7 @@ If resistance is detected, reverses and retries (mimics manual tap-to-clear).
 """
 
 import threading
+from collections import deque
 import serial
 import struct
 import time
@@ -77,6 +78,19 @@ class DispenserService:
         self.beam_active_low = robot_config.dispenser.beam_active_low
         self._beam_callback = None
         self._last_beam_break_mono = 0.0  # monotonic ts of most recent beam break
+        # DISPENSE-VERIFY: every break timestamped for windowed counting.
+        # ~20ms debounce merges flickers from a single tumbling treat; two
+        # stacked treats arrive further apart and count as 2.
+        self._beam_breaks = deque(maxlen=256)  # monotonic timestamps
+        self.BEAM_DEBOUNCE_S = 0.020
+        self.COUNT_WINDOW_S = 6.0     # count window after rotation completes
+        self.DISPENSE_CAP = 2         # max treats credited per normal dispense
+        self.ANTIJAM_CAP = 6          # max treats credited per anti-jam run
+        # Sticky failure state — set when the full retry ladder yields zero
+        # treats. Cleared by: service restart, treat-counter update/reset, or
+        # any later beam-confirmed dispense. Surfaced via get_status().
+        self.empty_or_jammed = False
+        self.last_unjam_count = 0  # treats beam-counted by last manual unjam
 
         # Last spec dispense_log id + confirmation — read by callers linking
         # training_attempt (spec §6: reward_dispensed reads dispensed_confirmed
@@ -312,23 +326,51 @@ class DispenserService:
 
     def _on_beam_edge(self, chip, gpio, level, timestamp):
         """lgpio alert callback — timestamp the beam break (treat ejected)."""
-        self._last_beam_break_mono = time.monotonic()
+        now = time.monotonic()
+        self._last_beam_break_mono = now
+        self._beam_breaks.append(now)
 
-    def _wait_beam_confirm(self, fire_mono: float) -> tuple:
-        """Wait for a beam break after fire_mono, up to beam_timeout_s.
+    def _count_breaks_since(self, start_mono: float) -> int:
+        """Debounced count of beam breaks after start_mono (20ms merge)."""
+        count = 0
+        last_counted = None
+        for ts in list(self._beam_breaks):
+            if ts <= start_mono:
+                continue
+            if last_counted is None or (ts - last_counted) > self.BEAM_DEBOUNCE_S:
+                count += 1
+                last_counted = ts
+        return count
 
-        Returns (dispensed_confirmed 0/1, confirm_latency_ms or None).
-        With no beam sensor configured: (0, None) — never fake a confirm.
+    def _count_beam_window(self, fire_mono: float, cap: int) -> tuple:
+        """Count treats crossing the beam after fire_mono (DISPENSE-VERIFY).
+
+        The window runs until COUNT_WINDOW_S after the rotation has finished
+        (i.e. after this call starts), finalizing early once `cap` treats are
+        counted — nothing more to learn. Breaks <20ms apart merge into one
+        treat (single tumble); stacked-but-separate treats count individually.
+
+        Returns (counted 0..cap, first_latency_ms or None, overage 0/1).
+        With no beam sensor configured: (0, None, 0) — never fake a confirm.
         """
         if not self.beam_enabled:
-            return 0, None
-        deadline = fire_mono + self.beam_timeout_s
+            return 0, None, 0
+        deadline = time.monotonic() + self.COUNT_WINDOW_S
         while time.monotonic() < deadline:
-            if self._last_beam_break_mono > fire_mono:
-                latency_ms = int((self._last_beam_break_mono - fire_mono) * 1000)
-                return 1, latency_ms
+            if self._count_breaks_since(fire_mono) >= cap:
+                break
             time.sleep(0.02)
-        return 0, None
+        # small settle so a break racing the deadline still lands
+        time.sleep(0.05)
+        raw = self._count_breaks_since(fire_mono)
+        first = next((ts for ts in list(self._beam_breaks) if ts > fire_mono), None)
+        latency_ms = int((first - fire_mono) * 1000) if first is not None else None
+        overage = 1 if raw > cap else 0
+        if overage:
+            self.logger.warning(
+                f"Beam counted {raw} breaks (cap {cap}) — treat counter likely "
+                f"stale or treats crumbling; crediting {cap}")
+        return min(raw, cap), latency_ms, overage
 
     def _check_tmc_diagnostics(self, context: str) -> None:
         """StallGuard/driver flags — DIAGNOSTIC ONLY, never gates success.
@@ -462,27 +504,54 @@ class DispenserService:
             try:
                 self.last_wimz_dispense_id = None
                 fire_mono = time.monotonic()
-                success = self._rotate_carousel()
+                counted = 0
+                confirm_latency_ms = None
+                overage = 0
+                attempts = 0
+                success = False
 
-                # Physical confirmation via through-beam (0/None when no sensor)
-                confirmed, confirm_latency_ms = self._wait_beam_confirm(fire_mono)
-                if success and self.beam_enabled and not confirmed:
-                    # Motor moved but no treat crossed the beam — likely jam.
-                    # One wiggle + retry rotation, then re-check the beam.
-                    self.logger.warning("Beam did not break — anti-jam + one retry")
-                    self._anti_jam_wiggle_inner()
-                    retry_mono = time.monotonic()
+                # DISPENSE-VERIFY ladder: rotate and count treats through the
+                # beam (cap 2 — stacked pairs are real, more is a stale treat
+                # counter). Zero treats -> re-dispense, up to 3 rotations.
+                for attempt in range(1, 4):
+                    attempts = attempt
+                    attempt_mono = time.monotonic()
                     success = self._rotate_carousel()
-                    confirmed, confirm_latency_ms = self._wait_beam_confirm(retry_mono)
-                    if confirm_latency_ms is not None:
-                        # Report latency from the original fire for jam trending
-                        confirm_latency_ms += int((retry_mono - fire_mono) * 1000)
+                    if not success:
+                        break  # motor-level failure — not a jam, stop the ladder
+                    counted, latency, overage = self._count_beam_window(
+                        attempt_mono, self.DISPENSE_CAP)
+                    if latency is not None and confirm_latency_ms is None:
+                        # latency from the ORIGINAL fire, for jam trending
+                        confirm_latency_ms = latency + int((attempt_mono - fire_mono) * 1000)
+                    if not self.beam_enabled or counted >= 1:
+                        break
+                    if attempt < 3:
+                        self.logger.warning(
+                            f"Dispense attempt {attempt}: motor OK but no treat "
+                            f"crossed beam — auto re-dispensing")
+
+                # Rung 4: three empty rotations -> full anti-jam, still counting
+                if self.beam_enabled and success and counted == 0:
+                    self.logger.warning(
+                        "3 dispenses, zero treats counted — running anti-jam procedure")
+                    attempts = 4
+                    aj_mono = time.monotonic()
+                    self._anti_jam_wiggle_inner()
+                    counted, latency, overage = self._count_beam_window(
+                        aj_mono, self.ANTIJAM_CAP)
+                    if latency is not None and confirm_latency_ms is None:
+                        confirm_latency_ms = latency + int((aj_mono - fire_mono) * 1000)
 
                 # StallGuard/driver flags — diagnostic only, never gates success
                 self._check_tmc_diagnostics('dispense rotation')
 
-                # Spec dispense_log row (+ paired treat_dispensed event)
+                confirmed = 1 if counted >= 1 else 0
+                # Without a beam sensor, motor completion remains the only truth
+                credit = counted if self.beam_enabled else (1 if success else 0)
                 self.last_dispense_confirmed = confirmed if self.beam_enabled else int(success)
+
+                # Spec dispense_log row (+ paired treat_dispensed event)
                 try:
                     wimz = get_wimz_store()
                     wimz_dog = wimz.get_or_create_dog(legacy_id=dog_id) if dog_id else None
@@ -490,19 +559,49 @@ class DispenserService:
                         wimz_session_id,
                         trigger=self._TRIGGER_MAP.get(reason, 'manual_pilot'),
                         dog_id=wimz_dog,
-                        dispensed_confirmed=confirmed,
-                        confirm_latency_ms=confirm_latency_ms)
+                        dispensed_confirmed=self.last_dispense_confirmed,
+                        confirm_latency_ms=confirm_latency_ms,
+                        dispensed_count=counted,
+                        attempts=max(attempts, 1),
+                        overage=overage)
                 except Exception as e:
                     self.logger.warning(f"wimz dispense log failed: {e}")
 
-                if success:
-                    self.treats_dispensed_today += 1
+                if self.beam_enabled and success and credit == 0:
+                    # Full ladder exhausted, zero treats — out of treats or jam
+                    # beyond anti-jam's reach. Sticky until refill/restart.
+                    self.empty_or_jammed = True
+                    self.logger.error(
+                        "DISPENSER EMPTY/JAMMED: full retry ladder yielded no "
+                        "treats — carousel empty or needs repair (sticky; "
+                        "clears on treat-counter update or restart)")
+                    try:
+                        get_wimz_store().log_event(
+                            None, 'error',
+                            {'code': 'dispenser_empty', 'attempts': attempts})
+                    except Exception:
+                        pass
+                    publish_reward_event('dispenser_empty', {
+                        'dog_id': dog_id,
+                        'reason': reason,
+                        'attempts': attempts,
+                        'treats_loaded': self.treats_loaded,
+                        'timestamp': now
+                    }, 'dispenser_service')
+                    return False
+
+                if success and credit > 0:
+                    self.treats_dispensed_today += credit
                     self.last_dispense_time = now
                     self.last_dispense_mono = time.monotonic()
-                    self._decrement_treat_counter()
+                    for _ in range(credit):
+                        self._decrement_treat_counter()
+                    # A physically-confirmed dispense proves we're not empty
+                    if confirmed:
+                        self.empty_or_jammed = False
 
                     if dog_id:
-                        self.dog_treat_counts[dog_id] = self.dog_treat_counts.get(dog_id, 0) + 1
+                        self.dog_treat_counts[dog_id] = self.dog_treat_counts.get(dog_id, 0) + credit
                         self.dog_cooldowns[dog_id] = now
 
                     self.store.log_reward(
@@ -510,7 +609,7 @@ class DispenserService:
                         behavior=behavior,
                         confidence=confidence,
                         success=True,
-                        treats_dispensed=1,
+                        treats_dispensed=credit,
                         mission_name=self.state.mission.name
                     )
 
@@ -519,7 +618,9 @@ class DispenserService:
                         'reason': reason,
                         'behavior': behavior,
                         'confidence': confidence,
-                        'treats_dispensed': 1,
+                        'treats_dispensed': credit,
+                        'confirmed': self.last_dispense_confirmed,
+                        'attempts': max(attempts, 1),
                         'total_today': self.treats_dispensed_today,
                         'remaining': self.treats_remaining,
                         'timestamp': now
@@ -527,7 +628,9 @@ class DispenserService:
 
                     remaining = max(0, self.treats_loaded - self.treats_dispensed_session)
                     self.logger.info(
-                        f"[TREAT] Dispensing treat #{self.treats_dispensed_today} of 44 | "
+                        f"[TREAT] Dispensed {credit} treat(s) "
+                        f"(confirmed={self.last_dispense_confirmed}, "
+                        f"attempts={max(attempts, 1)}) #{self.treats_dispensed_today} today | "
                         f"Remaining: {remaining} | Dog: {dog_id or 'unknown'} | Reason: {reason}"
                     )
                     return True
@@ -542,7 +645,12 @@ class DispenserService:
             self._dispense_lock.release()
 
     def anti_jam_wiggle(self) -> bool:
-        """Anti-jam sequence: reverse, pause, forward with extra steps to clear."""
+        """Anti-jam sequence: reverse, pause, forward with extra steps to clear.
+
+        DISPENSE-VERIFY: treats shaken loose are beam-counted (cap 6) into
+        self.last_unjam_count, credited to the treat counters, and logged as
+        a dispense_log row. Any treat out clears empty_or_jammed.
+        """
         acquired = self._dispense_lock.acquire(timeout=self.DISPENSE_TIMEOUT + 2)
         if not acquired:
             self.logger.error("DISPENSER_UNJAM: Lock timeout")
@@ -552,7 +660,27 @@ class DispenserService:
             if not self.initialized:
                 self.logger.error("DISPENSER_UNJAM: Not initialized")
                 return False
-            return self._anti_jam_wiggle_inner()
+            aj_mono = time.monotonic()
+            result = self._anti_jam_wiggle_inner()
+            counted, latency_ms, overage = self._count_beam_window(
+                aj_mono, self.ANTIJAM_CAP)
+            self.last_unjam_count = counted
+            if self.beam_enabled:
+                self.logger.info(f"DISPENSER_UNJAM: {counted} treat(s) crossed beam")
+                try:
+                    get_wimz_store().log_dispense(
+                        None, trigger='manual_pilot',
+                        dispensed_confirmed=1 if counted else 0,
+                        confirm_latency_ms=latency_ms,
+                        dispensed_count=counted, attempts=1, overage=overage)
+                except Exception as e:
+                    self.logger.warning(f"wimz unjam log failed: {e}")
+                if counted > 0:
+                    self.empty_or_jammed = False
+                    self.treats_dispensed_today += counted
+                    for _ in range(counted):
+                        self._decrement_treat_counter()
+            return result
         finally:
             self._dispense_lock.release()
 
@@ -791,6 +919,9 @@ class DispenserService:
         self.treats_loaded = max(0, count)
         self.treats_dispensed_session = 0
         self._save_treat_counter()
+        # Refill/counter update = human intervention — clear the sticky
+        # empty-or-jammed state (DISPENSE-VERIFY reset rule)
+        self.empty_or_jammed = False
         self.logger.info(f"TREAT_COUNTER: set to {self.treats_loaded}")
         publish_reward_event('treats_loaded', {
             'treats_loaded': self.treats_loaded,
@@ -803,6 +934,7 @@ class DispenserService:
         self.treats_loaded = 0
         self.treats_dispensed_session = 0
         self._save_treat_counter()
+        self.empty_or_jammed = False  # DISPENSE-VERIFY reset rule
         self.logger.info("TREAT_COUNTER: Reset to 0")
 
     def test_dispense(self) -> bool:
@@ -824,6 +956,9 @@ class DispenserService:
             'treats_dispensed': self.treats_dispensed_session,
             'treats_remaining': self.treats_remaining,
             'treats_low': self.treats_remaining < 5,
+            'beam_enabled': self.beam_enabled,
+            'empty_or_jammed': self.empty_or_jammed,
+            'last_dispense_confirmed': self.last_dispense_confirmed,
             'dog_treat_counts': self.dog_treat_counts.copy(),
             'config': {
                 'steps_per_slot': self.steps_per_slot,

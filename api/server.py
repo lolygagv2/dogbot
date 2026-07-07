@@ -829,7 +829,10 @@ async def treat_unjam():
     try:
         dispenser = get_dispenser_service()
         success = await asyncio.to_thread(dispenser.anti_jam_wiggle)
-        return {"success": success, "message": "Unjam sequence complete" if success else "Unjam failed"}
+        return {"success": success,
+                "treats_counted": dispenser.last_unjam_count,
+                "empty_or_jammed": dispenser.empty_or_jammed,
+                "message": "Unjam sequence complete" if success else "Unjam failed"}
     except Exception as e:
         logger.error(f"Treat unjam error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})

@@ -837,8 +837,20 @@ class TreatBotMain:
                         'behavior': event.data.get('behavior'),
                         'confidence': event.data.get('confidence', 0),
                         'treats_dispensed': event.data.get('treats_dispensed', 1),
+                        'confirmed': event.data.get('confirmed'),
                         'total_today': event.data.get('total_today'),
                         'remaining': event.data.get('remaining'),
+                    }
+                elif event.subtype == 'dispenser_empty':
+                    # DISPENSE-VERIFY: full retry ladder yielded zero treats —
+                    # carousel empty or jammed beyond anti-jam. App should show
+                    # "out of treats / needs repair". Rare, never throttled.
+                    event_type = 'dispenser_empty'
+                    event_data = {
+                        'dog_id': event.data.get('dog_id'),
+                        'reason': event.data.get('reason'),
+                        'attempts': event.data.get('attempts'),
+                        'treats_loaded': event.data.get('treats_loaded'),
                     }
 
             elif event.type == EventType.SYSTEM:

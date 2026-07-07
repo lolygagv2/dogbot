@@ -239,6 +239,9 @@ CREATE TABLE dispense_log (
   attempt_id       TEXT,                    -- soft ref to training_attempt
   dispensed_confirmed INTEGER NOT NULL DEFAULT 0, -- v0.2: IR through-beam broke = treat physically ejected
   confirm_latency_ms  INTEGER,                    -- v0.2: fire -> beam-break in ms; also a jam-trend signal
+  dispensed_count  INTEGER NOT NULL DEFAULT 0,    -- v0.4: beam-counted treats (post-cap: <=2 dispense, <=6 anti-jam)
+  attempts         INTEGER NOT NULL DEFAULT 1,    -- v0.4: rotations used (1..3 normal, 4 = anti-jam round ran)
+  overage          INTEGER NOT NULL DEFAULT 0,    -- v0.4: 1 = more beam breaks than cap (treat counter likely stale)
   synced           INTEGER NOT NULL DEFAULT 0,
   created_at       INTEGER NOT NULL
 );
@@ -459,6 +462,14 @@ corpus/       ML-ready datasets: vision (COCO/YOLO) + behavioral (Parquet)
 
 ## Changelog
 
+- **0.4** Additive-only. Three columns on `dispense_log` for beam-counted
+  dispense verification (`dispensed_count`, `attempts`, `overage`): the IR
+  through-beam now counts individual treats (20ms debounce, 6s window after
+  rotation; caps 2/dispense, 6/anti-jam) and the dispenser escalates
+  0-treat dispenses through a retry ladder (3 rotations -> anti-jam ->
+  `error` event code `dispenser_empty` + sticky empty_or_jammed status,
+  cleared by treat-counter update, confirmed dispense, or restart). No
+  existing tables or columns changed.
 - **0.3** Additive-only. Added `color` and `treats_per_reward` (both app-authoritative, robot-consumed) to `dog`. Clarified that ArUco markers are represented via the existing `qr_code_id` / `id_method='qr'` — the fleet's physical markers are ArUco but are called "QR" everywhere; no separate identity fields added. No existing tables or columns changed.
 - **0.2** Additive-only. Added `session_report` table (Relay-generated per-session natural-language summary, with `input_hash` idempotency guard) and two columns on `dispense_log` (`dispensed_confirmed`, `confirm_latency_ms`) for IR-through-beam dispense confirmation. No existing tables or columns changed.
 - **0.1** Initial draft. Core schema, event taxonomy, closed-loop model, local-first sync and consent design.

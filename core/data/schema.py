@@ -4,7 +4,19 @@ Do not edit the DDL here. The spec is the source of truth: change it there
 first (version bump + changelog), then mirror it here. See spec §10.
 """
 
-SCHEMA_VERSION = "0.3"
+SCHEMA_VERSION = "0.4"
+
+# Spec §10 — explicit stepwise migrations, additive-only. Key = the version a
+# live DB is at; value = statements that bring it to the NEXT version. Applied
+# in sequence by WimzStore._bootstrap_schema until SCHEMA_VERSION is reached.
+MIGRATIONS = {
+    "0.3": [
+        "ALTER TABLE dispense_log ADD COLUMN dispensed_count INTEGER NOT NULL DEFAULT 0;",
+        "ALTER TABLE dispense_log ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1;",
+        "ALTER TABLE dispense_log ADD COLUMN overage INTEGER NOT NULL DEFAULT 0;",
+        "UPDATE schema_meta SET value='0.4' WHERE key='schema_version';",
+    ],
+}
 
 # Spec §3 — connection pragmas, applied on every open.
 PRAGMAS = [
@@ -145,6 +157,9 @@ CREATE TABLE dispense_log (
   attempt_id       TEXT,                    -- soft ref to training_attempt
   dispensed_confirmed INTEGER NOT NULL DEFAULT 0, -- v0.2: IR through-beam broke = treat physically ejected
   confirm_latency_ms  INTEGER,                    -- v0.2: fire -> beam-break in ms; also a jam-trend signal
+  dispensed_count  INTEGER NOT NULL DEFAULT 0,    -- v0.4: beam-counted treats (post-cap: <=2 dispense, <=6 anti-jam)
+  attempts         INTEGER NOT NULL DEFAULT 1,    -- v0.4: rotations used (1..3 normal, 4 = anti-jam round ran)
+  overage          INTEGER NOT NULL DEFAULT 0,    -- v0.4: 1 = more beam breaks than cap (treat counter likely stale)
   synced           INTEGER NOT NULL DEFAULT 0,
   created_at       INTEGER NOT NULL
 );
@@ -219,5 +234,5 @@ CREATE TABLE schema_meta (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.3');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.4');
 """

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from core.data.ids import uuid7
-from core.data.schema import PRAGMAS, SPEC_DDL, SCHEMA_VERSION
+from core.data.schema import PRAGMAS, SPEC_DDL, SCHEMA_VERSION, MIGRATIONS
 
 logger = logging.getLogger('WimzStore')
 
@@ -133,8 +133,19 @@ class WimzStore:
                 "SELECT value FROM schema_meta WHERE key='schema_version'"
             ).fetchone()
             version = version[0] if version else None
+            # Spec §10: migration is explicit — apply known stepwise
+            # migrations (additive-only) until current.
+            while version != SCHEMA_VERSION and version in MIGRATIONS:
+                for stmt in MIGRATIONS[version]:
+                    self._conn.execute(stmt)
+                self._conn.commit()
+                new_version = self._conn.execute(
+                    "SELECT value FROM schema_meta WHERE key='schema_version'"
+                ).fetchone()[0]
+                logger.info(f"wimz.db migrated {version} -> {new_version}")
+                version = new_version
             if version != SCHEMA_VERSION:
-                # Spec §10: refuse writes on mismatch — migration is explicit.
+                # Unknown version and no migration path — refuse writes.
                 self._writable = False
                 logger.error(
                     f"wimz.db schema_version={version} != expected {SCHEMA_VERSION}; "
@@ -398,7 +409,8 @@ class WimzStore:
     def log_dispense(self, session_id: str, trigger: str, dog_id: str = None,
                      slot: int = None, attempt_id: str = None,
                      dispensed_confirmed: int = 0, confirm_latency_ms: int = None,
-                     ts_ms: int = None) -> Optional[str]:
+                     dispensed_count: int = 0, attempts: int = 1,
+                     overage: int = 0, ts_ms: int = None) -> Optional[str]:
         """Write-through; also enqueues the paired treat_dispensed event (spec §6)."""
         if not self._writable or self._closed:
             return None
@@ -409,10 +421,12 @@ class WimzStore:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO dispense_log (dispense_id, session_id, dog_id, ts, slot, trigger, "
-                "attempt_id, dispensed_confirmed, confirm_latency_ms, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "attempt_id, dispensed_confirmed, confirm_latency_ms, "
+                "dispensed_count, attempts, overage, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (dispense_id, session_id, dog_id, ts_ms or now, slot, trigger,
-                 attempt_id, dispensed_confirmed, confirm_latency_ms, now))
+                 attempt_id, dispensed_confirmed, confirm_latency_ms,
+                 dispensed_count, attempts, overage, now))
             self._conn.commit()
         self.log_event(session_id, 'treat_dispensed',
                        payload={'slot': slot} if slot is not None else {},
