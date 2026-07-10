@@ -6,7 +6,7 @@ description: "Primary demo unit with matched motors"
 
 # Camera settings (detector.py)
 camera:
-  rotation: 0  # degrees clockwise (0, 90, 180, 270)
+  rotation: 180  # degrees clockwise (0, 90, 180, 270) — camera mounted inverted (verified 2026-07-10)
   # Gimbal servo limits (pan_tilt.py)
   pan_min: -180
   pan_max: 200
