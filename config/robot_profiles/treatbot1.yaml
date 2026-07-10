@@ -31,6 +31,19 @@ dispenser:
   microstepping: 8          # Microstepping multiplier (MRES=5)
   sgthrs: 0                 # StallGuard disabled — SG_RESULT=0 at our low speed, any threshold causes false positives
 
+  # IR through-beam dispense confirmation at the chute (see tb3 for wiring).
+  #   Receiver OUT -> pin 26 (GPIO7, freed from SPI CE1 via dtoverlay=spi0-1cs)
+  #   + external 1K pull-up OUT->3.3V (pin 17).  NOT GPIO26 (Pololu kill-pulse).
+  # Polarity (verified 2026-07-10 on the working sensor): beam intact = HIGH,
+  #   treat break = LOW -> falling edge -> active_low true. Confirmed steady
+  #   HIGH idle via `pinctrl get 7`; pin/pull-up proven good (bare = HIGH).
+  # History: first receiver module was dead (output stuck LOW regardless of
+  #   beam); replaced. Pi pad + software were fine all along.
+  beam_enabled: true
+  beam_pin: 7               # Through-beam receiver output (config/pins.py TREAT_BEAM)
+  beam_active_low: true     # beam intact = HIGH, break = LOW (dark-on sensor)
+  beam_timeout_s: 4.0
+
 # Servo settings (servo_controller.py) — pan/tilt only, winch servo removed
 servo:
   slow_pulse: 1560  # legacy — no longer used for dispenser
