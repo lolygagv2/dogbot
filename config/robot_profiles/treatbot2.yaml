@@ -15,7 +15,7 @@ camera:
   pan_center: 134
   pan_max: 270
   pan_min: -10
-  rotation: 0
+  rotation: 180
   tilt_center: 90
   tilt_max: 250
   tilt_min: 45
@@ -37,6 +37,15 @@ controller:
     joystick_scale: 1.0
 description: Backup unit with motor compensation required
 dispenser:
+  # IR through-beam dispense confirmation at the chute (aligned + live-verified
+  # 2026-07-10 on this unit — pin idles HIGH when beam locked, card swipe -> LOW).
+  # Wiring per docs/NEW_ROBOT_SETUP.md §beam; OUT on GPIO7 (pin 26), freed from
+  # SPI CE1 by dtoverlay=spi0-1cs, external 1K pull-up OUT->3.3V (pin 17).
+  # Polarity: beam intact = HIGH, break = LOW -> falling edge = active_low true.
+  beam_enabled: true
+  beam_pin: 7
+  beam_active_low: true
+  beam_timeout_s: 4.0
   ihold: 5
   irun: 31
   max_retries: 3
