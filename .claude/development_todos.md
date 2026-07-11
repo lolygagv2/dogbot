@@ -22,7 +22,7 @@
 
 ### Silent Guardian design decisions (user's call)
 - [x] Expose `treat_eligibility_cooldown` (was hardcoded in `silent_guardian.py`) to profile yaml — now reads `session_limits.treat_eligibility_cooldown`, default 600s
-- [ ] Decide **post-cap behavior** — after the 11-treat session cap, SG keeps intervening but never rewards → possible behavior extinction over an 8h session
+- [x] **Post-cap behavior** (decided: keep intervening, no treats) — after the treat cap, SG now continues with verbal praise + LED and logs each quiet as `treat_given=False` (praise mitigates extinction; post-cap quiets now appear in history). `silent_guardian.py` treat-limit branch.
 
 ### Data / ML
 - [ ] **Data refactor** — reshape all data into human/ML-friendly tables for analytics + continual learning. Design MD to be written first; do **not** start coding or backfill old rows yet (see memory: project_data_refactor).

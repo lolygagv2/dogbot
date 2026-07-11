@@ -1050,11 +1050,27 @@ class SilentGuardianMode:
         # checks). Counts whether the outcome is a treat or praise-only.
         self.successful_quiets += 1
 
-        # Check treat limit
+        # Check treat limit — after the session cap, KEEP INTERVENING with
+        # verbal praise (prevents behavior extinction over a long session) but
+        # dispense no more treats. Treat it as a normal praise-only outcome:
+        # LED + audio + logged, so post-cap quiets still show up in history.
         max_treats = self.config.get('session_limits', {}).get('max_treats', 11)
         if self.treats_dispensed >= max_treats:
-            logger.info(f"Treat limit reached ({self.treats_dispensed}/{max_treats})")
+            logger.info(f"Treat limit reached ({self.treats_dispensed}/{max_treats}) - praise only, no treat")
+            if self.led:
+                self.led.set_pattern('success', duration=2.0)
             self._play_audio('good.mp3')
+
+            self.store.log_sg_intervention(
+                session_id=self.session_id,
+                dog_id=self.intervention_dog_id,
+                dog_name=self.intervention_dog_name,
+                escalation_level=self.current_escalation_level,
+                quiet_achieved=True,
+                treat_given=False,  # Session treat cap reached
+                music_played=(self.current_escalation_level == 4)
+            )
+            self._log_quiet_attempt(success=True, reward_dispensed=0, dispense_id=None)
             return
 
         # Check treat eligibility (anti-farming)
