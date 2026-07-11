@@ -1,0 +1,22 @@
+[Unit]
+Description=WIM-Z power watch (freeze RCA: samples throttled/EXT5V/temp to SD)
+# Start early and independently so we capture power state before and after
+# the heavy Python stack — brownouts often correlate with load spikes.
+DefaultDependencies=no
+After=local-fs.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/home/morgan/dogbot/scripts/wimz-power-watch.sh
+Restart=always
+RestartSec=5
+# Graceful stop writes a "# STOP" marker so clean reboots are distinguishable
+# from freezes; give it a moment to flush.
+TimeoutStopSec=10
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

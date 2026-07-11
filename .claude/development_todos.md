@@ -12,7 +12,7 @@
 ## 🔥 CURRENT OPEN ITEMS (June 2026)
 
 ### Reliability / Safety (highest priority)
-- [ ] **Silent hard-freeze RCA** — recurring lockups with no kernel/software trace (corrupt journal). Confirm power-delivery/brownout vs hang. Next step: capture `vcgencmd get_throttled` / PMIC after an event.
+- [ ] **Silent hard-freeze RCA** — recurring lockups with no kernel/software trace (corrupt journal). Confirm power-delivery/brownout vs hang. **Evidence collector now live**: `wimz-power-watch.service` samples throttled/EXT5V/temp/core-V to `logs/power_watch.csv` every 30s, fsync'd, so the last pre-freeze sample survives the power cycle. Next step: read that CSV after the next freeze — EXT5V sag/throttled≠0 before the gap = brownout; rails healthy up to the gap = true hang. (Currently deployed on treatbot2 only.)
 - [ ] **Power-button SPOF redesign** — GPIO21 relay gates the only power-off path behind a software watcher; a hang makes the button useless (must pull wire). Restore a hardware-direct OFF path.
 
 ### Validation (blocking "done" claims)
