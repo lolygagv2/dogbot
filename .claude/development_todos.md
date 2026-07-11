@@ -21,7 +21,7 @@
 - [ ] End-to-end cloud history after service restart — SG run → bark/guardian/treat all appear in app history (fixes committed 3250698 / f18adb2, dormant until restart)
 
 ### Silent Guardian design decisions (user's call)
-- [ ] Expose `treat_eligibility_cooldown` (hardcoded 600s in `silent_guardian.py:132`) to profile yaml
+- [x] Expose `treat_eligibility_cooldown` (was hardcoded in `silent_guardian.py`) to profile yaml — now reads `session_limits.treat_eligibility_cooldown`, default 600s
 - [ ] Decide **post-cap behavior** — after the 11-treat session cap, SG keeps intervening but never rewards → possible behavior extinction over an 8h session
 
 ### Data / ML

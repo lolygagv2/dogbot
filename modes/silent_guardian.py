@@ -136,7 +136,10 @@ class SilentGuardianMode:
 
         # Anti-treat-farming: eligibility cooldown after treats
         self.last_treat_time = 0.0  # When last treat was dispensed
-        self.treat_eligibility_cooldown = 600.0  # 10 minutes before treats available again
+        # 10 min default before treats available again; per-unit override via profile session_limits
+        self.treat_eligibility_cooldown = float(
+            self.config.get('session_limits', {}).get('treat_eligibility_cooldown', 600.0)
+        )
         self.consecutive_interventions = 0  # For progressive quiet requirements
         self.treat_eligible = True  # Whether treats can be given
 
