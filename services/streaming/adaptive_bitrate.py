@@ -220,6 +220,7 @@ class AdaptiveBitrateController:
         return loss, rtt, observed
 
     async def _run(self) -> None:
+        ticks = 0
         try:
             while self._running:
                 await asyncio.sleep(self.LOOP_INTERVAL)
@@ -227,6 +228,18 @@ class AdaptiveBitrateController:
                     break
                 loss, rtt, observed = await self._read_stats()
                 self._loss, self._rtt = loss, rtt
+                # Periodic INFO trace of the raw step-up/down inputs — without
+                # this the journal can't answer "why is it stuck at low?"
+                ticks += 1
+                if ticks % 4 == 0:
+                    obs_k = f"{observed // 1000}k" if observed else "none"
+                    self.logger.info(
+                        f"[ABR] {self.session_id}: stats loss={loss:.1%} "
+                        f"rtt={rtt * 1000:.0f}ms observed={obs_k} "
+                        f"cap={self.current_tier.bitrate // 1000}k "
+                        f"media_confirmed={self._media_confirmed} "
+                        f"tier={self.current_tier.name}"
+                    )
                 # Adaptive decision — skipped under manual override.
                 if self._manual_tier is None:
                     self._evaluate(loss, rtt, observed)
