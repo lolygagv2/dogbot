@@ -372,13 +372,17 @@ class DispenserService:
                 f"stale or treats crumbling; crediting {cap}")
         return min(raw, cap), latency_ms, overage
 
-    def _check_tmc_diagnostics(self, context: str) -> None:
+    def _check_tmc_diagnostics(self, context: str,
+                               beam_confirmed: bool = False) -> None:
         """StallGuard/driver flags — DIAGNOSTIC ONLY, never gates success.
 
         StallGuard is proven unreliable at our ~1.9-3 RPM dispense speed
         (sgthrs=0 fleet-wide); the through-beam is the confirmation. Here we
         only read DRV_STATUS after a rotation: any stall/thermal/short flag
-        becomes a spec `error` event and triggers the anti-jam wiggle.
+        becomes a spec `error` event and triggers the anti-jam wiggle —
+        unless the beam already confirmed a treat (beam_confirmed): the flag
+        raises spuriously on ordinary rotations, and wiggling a loaded
+        carousel after a confirmed dispense shakes out extra treats.
         """
         if not self.uart:
             return
@@ -407,9 +411,14 @@ class DispenserService:
             except Exception:
                 pass
             if 'stall' in raised:
-                # Lock is already held by the dispense path — use the inner wiggle
-                self.logger.info("Stall flag set — running anti-jam wiggle")
-                self._anti_jam_wiggle_inner()
+                if beam_confirmed:
+                    self.logger.info(
+                        "Stall flag set but beam confirmed the dispense — "
+                        "skipping anti-jam wiggle")
+                else:
+                    # Lock is already held by the dispense path — use the inner wiggle
+                    self.logger.info("Stall flag set — running anti-jam wiggle")
+                    self._anti_jam_wiggle_inner()
         except Exception as e:
             self.logger.debug(f"TMC diagnostic read failed: {e}")
 
@@ -544,7 +553,9 @@ class DispenserService:
                         confirm_latency_ms = latency + int((aj_mono - fire_mono) * 1000)
 
                 # StallGuard/driver flags — diagnostic only, never gates success
-                self._check_tmc_diagnostics('dispense rotation')
+                self._check_tmc_diagnostics(
+                    'dispense rotation',
+                    beam_confirmed=self.beam_enabled and counted >= 1)
 
                 confirmed = 1 if counted >= 1 else 0
                 # Without a beam sensor, motor completion remains the only truth
