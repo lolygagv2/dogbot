@@ -61,6 +61,11 @@ class AdaptiveBitrateController:
     RTT_GOOD = 0.3               # <300ms RTT is part of "good"
     BITRATE_CONSTRAINED = 0.80   # observed/cap below this -> REMB says step down
     BITRATE_HEADROOM = 0.95      # observed/cap at/above this -> REMB has headroom
+    # aiortc VP8 MIN_BITRATE (codecs/vpx.py). REMB deadlock: the receiver
+    # estimates bandwidth from what it receives, aiortc never probes above the
+    # current send rate, so an estimate latched at this floor can never rise
+    # on its own — the stream pins at 250kbps forever on a perfect link.
+    REMB_FLOOR = 250_000
 
     def __init__(self, session_id: str, pc, video_track, logger=None,
                  on_change: Optional[Callable] = None):
@@ -259,9 +264,23 @@ class AdaptiveBitrateController:
         now = time.monotonic()
         cap = self.current_tier.bitrate
 
+        # REMB-floor escape: estimate pinned at the VP8 floor on a clean link
+        # (loss/rtt measured independently via RTCP receiver reports) is the
+        # deadlock, not a real constraint. Re-assert the tier cap each tick so
+        # the receiver sees real throughput and its estimate can unlatch; if
+        # the link genuinely can't take it, loss appears and `bad` steps down.
+        clean_link = loss < self.LOSS_GOOD and rtt < self.RTT_GOOD
+        remb_floored = (observed is not None and observed <= self.REMB_FLOOR
+                        and self._media_confirmed and clean_link)
+        if remb_floored:
+            self._set_encoder_bitrate(cap)
+        self._remb_floored = remb_floored
+
         # REMB signal: aiortc pulled target_bitrate below our cap -> constrained.
-        remb_constrained = observed is not None and observed < cap * self.BITRATE_CONSTRAINED
-        remb_headroom = observed is None or observed >= cap * self.BITRATE_HEADROOM
+        remb_constrained = (observed is not None and not remb_floored
+                            and observed < cap * self.BITRATE_CONSTRAINED)
+        remb_headroom = (observed is None or remb_floored
+                         or observed >= cap * self.BITRATE_HEADROOM)
 
         bad = (loss > self.LOSS_BAD) or (rtt > self.RTT_BAD) or remb_constrained
         good = (self._media_confirmed and loss < self.LOSS_GOOD
