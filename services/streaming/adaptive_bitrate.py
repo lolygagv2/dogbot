@@ -82,6 +82,10 @@ class AdaptiveBitrateController:
         # Latest measured network stats (for get_status / app indicator)
         self._loss = 0.0
         self._rtt = 0.0
+        # True once at least one RTCP receiver report has arrived. Until then
+        # loss/rtt are just their 0.0 initial values — a never-connected session
+        # looks "perfect" and must not step up (or show bars) on that.
+        self._media_confirmed = False
 
     # --- lifecycle -------------------------------------------------------
 
@@ -140,6 +144,8 @@ class AdaptiveBitrateController:
 
     def _bars(self) -> int:
         """Connection-quality score 0-4 from loss + RTT, for the app indicator."""
+        if not self._media_confirmed:
+            return 0
         score = 4
         if self._loss > 0.02:
             score -= 1
@@ -194,6 +200,7 @@ class AdaptiveBitrateController:
                 # RTCRemoteInboundRtpStreamStats = the receiver's report on our
                 # outbound stream (loss + RTT), delivered via RTCP.
                 if type(stat).__name__ == "RTCRemoteInboundRtpStreamStats":
+                    self._media_confirmed = True
                     fl = getattr(stat, "fractionLost", None)
                     if fl is not None:
                         # aiortc reports RTCP fraction-lost as a raw 0-255 byte;
@@ -244,7 +251,8 @@ class AdaptiveBitrateController:
         remb_headroom = observed is None or observed >= cap * self.BITRATE_HEADROOM
 
         bad = (loss > self.LOSS_BAD) or (rtt > self.RTT_BAD) or remb_constrained
-        good = (loss < self.LOSS_GOOD) and (rtt < self.RTT_GOOD) and remb_headroom
+        good = (self._media_confirmed and loss < self.LOSS_GOOD
+                and rtt < self.RTT_GOOD and remb_headroom)
 
         # If aiortc's REMB pushed target_bitrate ABOVE our tier cap (good network
         # but our tier wants a lower ceiling), re-assert the cap.

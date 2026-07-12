@@ -93,6 +93,11 @@ class RelayClient:
         # Track connected user
         self._connected_user_id: Optional[str] = None
 
+        # Watchdog timers: offer sent but no SDP answer yet, keyed by session_id.
+        # Fires a WARNING so a broken app/relay answer leg is visible in robot
+        # logs instead of sessions silently dying at 0 frames.
+        self._pending_answer_timers: Dict[str, asyncio.Task] = {}
+
         # Profile manager reference
         self._profile_manager = None
 
@@ -388,7 +393,8 @@ class RelayClient:
             except Exception as e:
                 self.logger.error(f"Handler error for {msg_type}: {e}")
         else:
-            self.logger.warning(f"Unknown message type: {msg_type}")
+            self.logger.warning(
+                f"Unknown message type: {msg_type} | keys={sorted(data.keys())}")
 
     async def _handle_webrtc_request(self, data: dict):
         """Handle WebRTC stream request from app via relay
@@ -458,6 +464,7 @@ class RelayClient:
                 f"[RTC-TIMING] step6 SDP offer sent to relay session={session_id} | "
                 f"t={time.time():.3f} mono={time.monotonic():.3f}"
             )
+            self._arm_answer_watchdog(session_id)
 
         except Exception as e:
             self.logger.error(f"Failed to create WebRTC offer: {e}", exc_info=True)
@@ -468,11 +475,36 @@ class RelayClient:
                 'error': str(e)
             })
 
+    def _arm_answer_watchdog(self, session_id: str, timeout: float = 10.0):
+        """Warn if no SDP answer arrives for this session within timeout."""
+        self._cancel_answer_watchdog(session_id)
+
+        async def _watch():
+            try:
+                await asyncio.sleep(timeout)
+                self.logger.warning(
+                    f"[WEBRTC] No SDP answer for session {session_id} after "
+                    f"{timeout:.0f}s — offer was sent to relay but the app's "
+                    f"answer never arrived (app/relay answer leg)"
+                )
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._pending_answer_timers.pop(session_id, None)
+
+        self._pending_answer_timers[session_id] = asyncio.create_task(_watch())
+
+    def _cancel_answer_watchdog(self, session_id: str):
+        task = self._pending_answer_timers.pop(session_id, None)
+        if task:
+            task.cancel()
+
     async def _handle_webrtc_answer(self, data: dict):
         """Handle SDP answer from app"""
         session_id = data.get('session_id')
         sdp = data.get('sdp')
 
+        self._cancel_answer_watchdog(session_id)
         self.logger.info(f"WebRTC answer received: session={session_id}")
         self.logger.info(
             f"[RTC-TIMING] step6b SDP answer received from app session={session_id} | "
@@ -511,6 +543,7 @@ class RelayClient:
         """
         session_id = data.get('session_id')
         self.logger.info(f"[WEBRTC] Close request: session={session_id} - mode unchanged")
+        self._cancel_answer_watchdog(session_id)
 
         if self._webrtc_service:
             await self._webrtc_service.close_connection(session_id)
