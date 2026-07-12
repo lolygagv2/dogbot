@@ -389,6 +389,15 @@ class RelayClient:
             self.logger.debug(f"Ignoring message for different device: {msg_device_id}")
             return
 
+        # Relay/app sometimes sends a bare {"command": ...} with no type
+        # (observed 2026-07-12). Route it to the normal command handler so
+        # the press isn't dropped, but keep a warning so the sender gets fixed.
+        if msg_type is None and 'command' in data:
+            self.logger.warning(
+                f"Message missing 'type', routing as command: "
+                f"command={data.get('command')}")
+            msg_type = 'command'
+
         handler = self._message_handlers.get(msg_type)
         if handler:
             try:
