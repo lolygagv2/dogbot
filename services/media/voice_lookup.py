@@ -15,9 +15,10 @@ EXTENSIONS = ('.wav', '.mp3', '.m4a', '.aac')
 VOICE_ROOT = '/home/morgan/dogbot/VOICEMP3/talks'
 DEFAULT_DIR = 'default'
 
-# Generic tracker ids look like 'dog_0', 'dog_-1000', 'dog_42'.
-# Real profile ids are timestamps like 'dog_1777167142852' (13+ digits).
-_GENERIC_TRACKER_RE = re.compile(r'^dog_-?\d{1,5}$')
+# Generic tracker ids look like 'dog_0', 'dog_-1000', 'dog_42' — plain ints,
+# never zero-padded. Real profile ids are timestamps ('dog_1777167142852'),
+# zero-padded app ids ('dog_000005'), or uuids.
+_GENERIC_TRACKER_RE = re.compile(r'^dog_-?(0|[1-9]\d{0,4})$')
 
 def is_real_dog_id(d: Optional[str]) -> bool:
     """Check if dog_id is a real profile ID vs generic tracker ID."""
@@ -29,44 +30,18 @@ def is_real_dog_id(d: Optional[str]) -> bool:
 
 
 def _try_paths(dog_dir: str, command_id: str) -> Optional[str]:
-    """Try to find voice file with any supported extension."""
+    """Try to find voice file with any supported extension.
+
+    Folder name matches voice_manager.save_voice(): 'dog_' prefix added
+    when the id doesn't already have one (uuid-style app ids).
+    """
+    if dog_dir != DEFAULT_DIR and not dog_dir.startswith('dog_'):
+        dog_dir = f"dog_{dog_dir}"
     for ext in EXTENSIONS:
         p = os.path.join(VOICE_ROOT, dog_dir, f"{command_id}{ext}")
         if os.path.exists(p):
             return p
     return None
-
-
-def _find_first_dog_folder() -> Optional[str]:
-    """Find the dog folder with the smallest timestamp (the first dog the
-    owner added). Used as the "house voice" fallback before shipped defaults,
-    so an owner's recordings populate every slot for every dog as long as
-    they've recorded it on at least one of their dogs.
-
-    Returns the folder name (e.g. 'dog_1777167142852'), not the full path.
-    """
-    try:
-        if not os.path.isdir(VOICE_ROOT):
-            return None
-        candidates = []
-        for name in os.listdir(VOICE_ROOT):
-            if not name.startswith('dog_'):
-                continue
-            if _GENERIC_TRACKER_RE.match(name):
-                continue  # skip dog_0, dog_-1 etc — tracker IDs, not real profiles
-            full = os.path.join(VOICE_ROOT, name)
-            if not os.path.isdir(full):
-                continue
-            suffix = name.split('_', 1)[1]
-            if not suffix.isdigit():
-                continue
-            candidates.append((int(suffix), name))
-        if not candidates:
-            return None
-        candidates.sort()
-        return candidates[0][1]
-    except Exception:
-        return None
 
 
 def resolve_voice_file(
@@ -77,12 +52,15 @@ def resolve_voice_file(
 ) -> Optional[str]:
     """The ONE function that decides which voice file to play.
 
-    Fallback chain:
+    Resolution: pick the dog (first real id wins), then play that dog's
+    custom recording if one exists, else the default folder. NEVER another
+    dog's recordings.
+
+    Dog priority:
       1. dog_id_override (filtered through is_real_dog_id)
       2. state.get_aruco_dog_within(seconds=5)
       3. state.get_session_dog_id() - from start_coach/start_mission
       4. state.get_current_dog_id() - from select_dog/reload_dogs
-      5. default
     """
     if state is None:
         from core.state import get_state
@@ -114,19 +92,8 @@ def resolve_voice_file(
             path = p
             break
 
-    # House-voice fallback: try the FIRST dog the owner added before the
-    # shipped defaults. An owner who's only recorded sit+speak for their new
-    # dog still gets their own voice for good/no/come/etc. via their first
-    # dog's folder — instead of jumping straight to canned defaults.
-    if path is None:
-        first = _find_first_dog_folder()
-        if first and first not in candidates:
-            p = _try_paths(first, command_id)
-            if p:
-                resolved = f"{first} (first-added)"
-                path = p
-
-    # Final fallback to shipped defaults
+    # No custom recording for this dog -> default folder. Never another
+    # dog's recordings.
     if path is None:
         path = _try_paths(DEFAULT_DIR, command_id)
 
