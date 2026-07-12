@@ -2466,8 +2466,18 @@ async def download_video(filename: str):
     # Sanitize filename — only allow safe characters
     if not re.match(r'^[\w\-\.]+\.mp4$', filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    filepath = f"/home/morgan/dogbot/recordings/{filename}"
     import os
+    # Legacy flat recordings dir (pre-spec clips)
+    filepath = f"/home/morgan/dogbot/recordings/{filename}"
+    if not os.path.exists(filepath):
+        # Spec media tree: resolve the uuid7 basename via its media_asset row
+        try:
+            from core.data import get_wimz_store
+            p = get_wimz_store().media_abs_path(filename)
+            if p and p.exists():
+                filepath = str(p)
+        except Exception as e:
+            logger.error(f"media_asset lookup failed for {filename}: {e}")
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Video not found")
     return FileResponse(filepath, media_type="video/mp4", filename=filename)

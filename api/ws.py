@@ -688,7 +688,6 @@ class TreatBotWebSocketServer:
                 # Anti-jam wiggle sequence
                 try:
                     from services.reward.dispenser import get_dispenser_service
-                    import threading
                     dispenser = get_dispenser_service()
                     threading.Thread(target=dispenser.anti_jam_wiggle, daemon=True, name="TreatUnjam").start()
                     result = {"success": True, "message": "Unjam sequence started"}
@@ -839,6 +838,45 @@ class TreatBotWebSocketServer:
                         result = {"success": False, "command": command, "error": f"Voice not found: {voice_type}"}
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "record_video":
+                # {"command": "record_video", "duration": <sec>, "resolution": "1080p"}
+                # AP-mode twin of the relay handler in main_treatbot — same
+                # recorder singleton; video_ready lands on the local WS
+                # instead of the relay. duration is capped at 30s.
+                from services.media.video_recorder import get_video_recorder
+                recorder = get_video_recorder()
+                try:
+                    duration = int(data.get("duration", 15))
+                except (TypeError, ValueError):
+                    duration = 15
+                resolution = data.get("resolution", "1080p")
+                if recorder.recording:
+                    result = {"success": False, "command": command, "error": "Already recording"}
+                else:
+                    loop = asyncio.get_running_loop()
+
+                    def _do_record():
+                        res = recorder.record_high_res(duration=duration, resolution=resolution)
+                        if res.get("success") and res.get("filename"):
+                            # Relative URL — AP-mode app resolves it against the robot's IP
+                            res["download_url"] = f"/video/download/{res['filename']}"
+                        self.logger.info(f"VIDEO_RECORD(local): video_ready — success={res.get('success')}, file={res.get('filename')}")
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                self._broadcast_contract_event("video_ready", res), loop)
+                        except Exception as e:
+                            self.logger.error(f"video_ready local broadcast failed: {e}")
+
+                    threading.Thread(target=_do_record, daemon=True, name="HighResRecordLocal").start()
+                    result["duration"] = max(1, min(30, duration))
+                    result["resolution"] = resolution
+                    self.logger.info(f"High-res recording started (local WS): {resolution} for {result['duration']}s")
+
+            elif command == "stop_recording":
+                from services.media.video_recorder import get_video_recorder
+                get_video_recorder().stop_high_res()
+                # video_ready follows from the recording thread once the clip finalizes
 
             else:
                 self.logger.warning(f"Unknown contract command: {command}")

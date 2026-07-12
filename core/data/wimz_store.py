@@ -485,6 +485,16 @@ class WimzStore:
         with self._lock:
             return self._conn.execute(q, args).fetchall()
 
+    def media_abs_path(self, filename: str) -> Optional[Path]:
+        """Absolute path of a media asset by its (uuid7-unique) file basename,
+        or None if unknown. media_id is NOT derivable from the filename —
+        register_media mints its own id — so match on rel_path instead."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT rel_path FROM media_asset WHERE rel_path LIKE ? "
+                "ORDER BY created_at DESC LIMIT 1", (f"%{filename}",)).fetchone()
+        return (self._root / row[0]) if row else None
+
     @_safe
     def cull_media(self, media_id: str) -> None:
         """Delete a media file + its row (retention culling — ephemeral only

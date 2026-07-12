@@ -1940,7 +1940,7 @@ class TreatBotMain:
                     f"{relay_base}/api/media/upload",
                     files={'file': (filename, f, 'video/mp4')},
                     data={'device_id': device_id},
-                    timeout=120.0  # Large file upload timeout
+                    timeout=30.0  # App gives up on video_ready 45s after recording ends — a hung upload must fail fast enough to still send the LAN-fallback URL inside that window
                 )
 
             if response.status_code == 200:
