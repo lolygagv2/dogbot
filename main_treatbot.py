@@ -971,7 +971,7 @@ class TreatBotMain:
                     if self.dispenser:
                         try:
                             status = self.dispenser.get_status()
-                            treats_today = status.get('total_dispensed', 0)
+                            treats_today = status.get('treats_dispensed_today', 0)
                         except Exception:
                             pass
 
