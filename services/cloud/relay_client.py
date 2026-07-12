@@ -81,6 +81,9 @@ class RelayClient:
             'webrtc_answer': self._handle_webrtc_answer,
             'webrtc_ice': self._handle_webrtc_ice,
             'webrtc_close': self._handle_webrtc_close,
+            # Relay-side name for the same teardown (observed 2026-07-12);
+            # same handler — do not fork the close path.
+            'session_ended': self._handle_webrtc_close,
             'command': self._handle_command,
             'ping': self._handle_ping,
             'profiles': self._handle_profiles,
@@ -542,7 +545,10 @@ class RelayClient:
         WebRTC session lifecycle is independent of mode state.
         """
         session_id = data.get('session_id')
-        self.logger.info(f"[WEBRTC] Close request: session={session_id} - mode unchanged")
+        reason = data.get('reason', '')
+        self.logger.info(
+            f"[WEBRTC] Close request: session={session_id}"
+            f"{f' reason={reason}' if reason else ''} - mode unchanged")
         self._cancel_answer_watchdog(session_id)
 
         if self._webrtc_service:
