@@ -352,18 +352,26 @@ class NightModeController:
             logger.warning("NightMode: camera not available, skipping day profile apply")
             return {}
 
-        # Re-enable AE first so the camera adapts to current lighting
+        # Explicitly undo every control the night profile locked. The yaml
+        # calibration below is optional per unit — if it has no color keys
+        # (treatbot5), nothing else would clear Saturation=0/AwbEnable=False
+        # and the "day" video stays black-and-white.
+        day_reset = {
+            'AeEnable': True,      # auto exposure (unlocks ExposureTime/AnalogueGain)
+            'AwbEnable': True,     # auto white balance (supersedes locked ColourGains)
+            'Saturation': 1.0,     # libcamera default — color back on
+        }
         try:
-            det.camera.set_controls({'AeEnable': True})
+            det.camera.set_controls(day_reset)
         except Exception as e:
-            logger.debug(f"NightMode: AE re-enable failed ({e})")
+            logger.warning(f"NightMode: day control reset failed ({e})")
 
-        # Re-apply the saved daytime calibration from robot profile yaml
+        # Re-apply the saved daytime calibration from robot profile yaml on top
         try:
             det._apply_saved_calibration()
         except Exception as e:
             logger.warning(f"NightMode: failed to re-apply day calibration ({e})")
-        return {'restored': 'yaml_calibration'}
+        return {**day_reset, 'restored': 'yaml_calibration'}
 
     # ---- Heartbeat + push ----
     def _maybe_heartbeat(self) -> None:
