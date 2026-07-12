@@ -848,6 +848,7 @@ class TreatBotMain:
                     event_type = 'dispenser_empty'
                     event_data = {
                         'dog_id': event.data.get('dog_id'),
+                        'dog_name': event.data.get('dog_name'),
                         'reason': event.data.get('reason'),
                         'attempts': event.data.get('attempts'),
                         'treats_loaded': event.data.get('treats_loaded'),
@@ -1005,6 +1006,24 @@ class TreatBotMain:
                         # Throttled - skip this event
                         return
                     self._relay_event_times[event_type] = current_time
+
+                # Relay contract (2026-07-12): dog_id on relay events must be the
+                # app's canonical id verbatim, or null when unattributed — the
+                # relay persists it with zero translation, so local formats
+                # ("dog_0" slot ids, "aruco_832", profile names) fragment the
+                # app's per-dog history. Translate here at the single relay
+                # boundary; internal bus payloads keep their local ids.
+                if 'dog_id' in event_data:
+                    try:
+                        from core.dog_profile_manager import get_dog_profile_manager
+                        event_data['dog_id'] = get_dog_profile_manager().resolve_app_dog_id(
+                            dog_id=event_data.get('dog_id'),
+                            dog_name=event_data.get('dog_name'),
+                            aruco_id=event_data.get('aruco_id'),
+                        )
+                    except Exception as e:
+                        self.logger.debug(f"dog_id resolve failed, sending null: {e}")
+                        event_data['dog_id'] = None
 
                 self.relay_client.send_event(event_type, event_data)
                 self.logger.debug(f"Forwarded {event_type} to relay: {event_data}")

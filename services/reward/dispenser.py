@@ -474,7 +474,8 @@ class DispenserService:
 
     def dispense_treat(self, dog_id: Optional[str] = None, reason: str = "manual",
                        behavior: str = "", confidence: float = 0.0,
-                       wimz_session_id: Optional[str] = None) -> bool:
+                       wimz_session_id: Optional[str] = None,
+                       dog_name: Optional[str] = None) -> bool:
         """
         Dispense a single treat.
 
@@ -482,6 +483,9 @@ class DispenserService:
             wimz_session_id: spec session for the dispense_log row (modes pass
                 theirs; falls back to the ambient session). The resulting
                 dispense_id is exposed as self.last_wimz_dispense_id.
+            dog_name: profile name for the reward event — dog_id is often a
+                "dog_N" tracker slot id, so the name is what lets the relay
+                boundary resolve the app's canonical dog_id for history.
 
         Returns:
             bool: True if treat was dispensed successfully
@@ -594,6 +598,7 @@ class DispenserService:
                         pass
                     publish_reward_event('dispenser_empty', {
                         'dog_id': dog_id,
+                        'dog_name': dog_name,
                         'reason': reason,
                         'attempts': attempts,
                         'treats_loaded': self.treats_loaded,
@@ -626,6 +631,7 @@ class DispenserService:
 
                     publish_reward_event('treat_dispensed', {
                         'dog_id': dog_id,
+                        'dog_name': dog_name,
                         'reason': reason,
                         'behavior': behavior,
                         'confidence': confidence,

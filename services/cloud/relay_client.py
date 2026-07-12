@@ -977,10 +977,13 @@ class RelayClient:
         {
             "type": "profiles",
             "profiles": [
-                {"name": "Bezik", "aruco_id": 832, "color": "black"},
-                {"name": "Elsa", "aruco_id": 1, "color": "yellow"}
+                {"name": "Bezik", "dog_id": "<app id>", "aruco_id": 832, "color": "black"},
+                {"name": "Elsa", "dog_id": "<app id>", "aruco_id": 1, "color": "yellow"}
             ]
         }
+
+        dog_id is the app's canonical dog id (relay contract 2026-07-12);
+        the robot stores it and echoes it verbatim on outgoing events.
         """
         profiles = data.get('profiles', [])
         self.logger.debug(f"Received {len(profiles)} dog profiles from cloud")

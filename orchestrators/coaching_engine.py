@@ -1214,6 +1214,7 @@ class CoachingEngine:
                 logger.debug(f"Dispensing treat: dog={dog_id}, trick={trick}, behavior={behavior}")
                 self.dispenser.dispense_treat(
                     dog_id=dog_id,
+                    dog_name=self.current_session.dog_name if self.current_session else None,
                     reason='coaching_reward',
                     wimz_session_id=getattr(self, 'wimz_session_id', None)
                 )

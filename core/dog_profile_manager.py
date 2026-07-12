@@ -46,6 +46,7 @@ class DogColor(Enum):
 class DogProfile:
     """Dog profile from cloud/app"""
     name: str
+    dog_id: Optional[str] = None  # app/cloud canonical id — the ONLY id the relay accepts on events
     aruco_id: Optional[int] = None
     color: DogColor = DogColor.UNKNOWN
     color_rgb: Optional[Tuple[int, int, int]] = None  # Specific RGB for matching
@@ -131,6 +132,7 @@ class DogProfileManager:
                             color = DogColor.UNKNOWN
                         profile = DogProfile(
                             name=data.get('name', 'Unknown'),
+                            dog_id=data.get('dog_id'),
                             aruco_id=data.get('aruco_id'),
                             color=color,
                             household_id=data.get('household_id', ''),
@@ -157,6 +159,7 @@ class DogProfileManager:
             for profile in self._profiles.values():
                 profiles_data.append({
                     'name': profile.name,
+                    'dog_id': profile.dog_id,
                     'aruco_id': profile.aruco_id,
                     'color': profile.color.value,
                     'household_id': profile.household_id,
@@ -193,12 +196,18 @@ class DogProfileManager:
         [
             {
                 "name": "Bezik",
+                "dog_id": "<app canonical id>",
                 "aruco_id": 832,
                 "color": "black",
                 "photo_url": "..."
             },
             ...
         ]
+
+        dog_id is the app's canonical id (relay contract 2026-07-12): the
+        relay persists whatever dog_id the robot echoes on events with zero
+        translation, so events must carry this id — never names or aruco
+        strings — or null when unattributed.
         """
         with self._lock:
             # Clear existing profiles
@@ -216,6 +225,7 @@ class DogProfileManager:
 
                     profile = DogProfile(
                         name=data.get('name', 'Unknown'),
+                        dog_id=data.get('dog_id'),
                         aruco_id=data.get('aruco_id'),
                         color=color,
                         household_id=data.get('household_id', ''),
@@ -226,7 +236,9 @@ class DogProfileManager:
                 except Exception as e:
                     self.logger.warning(f"Failed to parse profile: {e}")
 
-            self.logger.info(f"Updated {len(self._profiles)} profiles from cloud: {dict(self._aruco_map)}")
+            app_ids = {p.name: p.dog_id for p in self._profiles.values()}
+            self.logger.info(f"Updated {len(self._profiles)} profiles from cloud: "
+                             f"aruco={dict(self._aruco_map)} app_ids={app_ids}")
 
             # Persist to SQLite so profiles survive restarts
             self._persist_profiles()
@@ -412,6 +424,46 @@ class DogProfileManager:
         """Get profile by name"""
         with self._lock:
             return self._profiles.get(name.lower())
+
+    def resolve_app_dog_id(self, dog_id: Optional[str] = None,
+                           dog_name: Optional[str] = None,
+                           aruco_id: Optional[int] = None) -> Optional[str]:
+        """Map any local dog identifier to the app's canonical dog_id.
+
+        Relay contract (2026-07-12): events must echo the app's dog_id
+        verbatim or null — never local formats. Local ids in flight:
+        "dog_N" detector slot ids, "aruco_NNN" (event_publisher), profile
+        names, or already an app id (from app-issued commands).
+        """
+        with self._lock:
+            if dog_id is not None:
+                s = str(dog_id)
+                # Already the app id — pass through verbatim
+                for p in self._profiles.values():
+                    if p.dog_id and p.dog_id == s:
+                        return s
+                # "aruco_832" → marker lookup below
+                if s.startswith('aruco_'):
+                    try:
+                        aruco_id = int(s.split('_', 1)[1])
+                    except ValueError:
+                        pass
+                # Caller passed a profile name in the dog_id slot
+                elif s.lower() in self._profiles:
+                    return self._profiles[s.lower()].dog_id
+
+            if aruco_id is not None:
+                try:
+                    name = self._aruco_map.get(int(aruco_id))
+                except (TypeError, ValueError):
+                    name = None
+                if name and self._profiles.get(name):
+                    return self._profiles[name].dog_id
+
+            if dog_name and dog_name.lower() in self._profiles:
+                return self._profiles[dog_name.lower()].dog_id
+
+            return None
 
     def get_all_profiles(self) -> List[DogProfile]:
         """Get all profiles"""

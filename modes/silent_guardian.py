@@ -1112,6 +1112,7 @@ class SilentGuardianMode:
         if self.dispenser:
             self.dispenser.dispense_treat(
                 dog_id=self.intervention_dog_id,
+                dog_name=self.intervention_dog_name,
                 reason='silent_guardian_reward',
                 wimz_session_id=getattr(self, 'wimz_session_id', None)
             )
