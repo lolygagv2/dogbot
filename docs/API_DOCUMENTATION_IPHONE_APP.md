@@ -235,6 +235,47 @@ ws://[robot-ip]:8000/ws/control
 }
 ```
 
+## Music Playback Events (Cloud Relay)
+
+### audio_state Event
+
+Sent by the robot over the cloud relay whenever music playback changes state.
+Fires ONLY for playlist songs (files under `VOICEMP3/songs/`) — voice clips,
+sound effects, and mode announcements do not emit it. This is the app's single
+source for the now-playing display (verified live 2026-07-12: the app reads
+`track` and derives the display name from it; do not add title/now_playing
+fields).
+
+```json
+{
+  "event": "audio_state",
+  "device_id": "wimz_robot_05",
+  "state": "playing",            // "playing" | "stopped" | "paused"
+  "track": "default/Trancewimz.mp3",  // playlist path: <folder>/<file>.mp3
+  "playing": true,
+  "playlist_index": 6,
+  "playlist_length": 14,
+  "id": "<uuid-hex>",
+  "timestamp": "2026-07-12T22:19:04Z"
+}
+```
+
+Emitted from `services/media/usb_audio.py:_send_audio_event()` on play, stop,
+pause, and resume. Triggered by any playback route: relay commands
+(`audio_toggle`, `audio_next`, `audio_prev`), local API (`POST /audio/toggle`,
+`/audio/next`, `/audio/previous`, `/audio/play`), or the Xbox controller
+(`POST /audio/play/file`).
+
+Notes for the app:
+- Display name = `track` with folder prefix and `.mp3` extension stripped
+  (e.g. `default/Trancewimz.mp3` → `Trancewimz`).
+- The relay does NOT replay `audio_state` on reconnect (it is not in the
+  relay's feed-worthy event buffer) — the app only ever receives it live. If
+  the app (re)connects mid-song, the now-playing display stays empty until the
+  next state change.
+- Full event contract with examples also lives in `.claude/BUILD31_APP_GUIDE.md`
+  section 7.3.
+
 ## System Status
 
 ### Get Full System Status
