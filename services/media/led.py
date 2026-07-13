@@ -214,28 +214,41 @@ class LedService:
             self.logger.debug(f"Pattern finished: {pattern_name}")
 
     # Pattern implementations
-    def _pattern_off(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
-        """Turn off all LEDs (NeoPixels only - blue LED controlled by Xbox X button)"""
-        if self.led.pixels:
-            self.led.set_solid_color('off')
-        # Blue LED controlled separately by Xbox controller X button
+    def _hold_solid(self, color_name: str, duration: Optional[float],
+                    resend_interval: float = 0.3) -> None:
+        """Hold a solid color, re-sending the frame every resend_interval.
 
-    def _pattern_idle(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
-        """Idle pattern - dim white (NeoPixels only)"""
+        Motor PWM noise can glitch the first pixels of the strip (they latch a
+        corrupted frame — typically green, since WS2812 byte order is GRB).
+        A write-once pattern leaves that glitch lit indefinitely; periodic
+        re-sends erase it within one interval. Hardware root cause is the
+        3.3V data line (see hardware_specs.md) — this is the software backstop.
+        """
         if self.led.pixels:
-            self.led.set_solid_color('dim_white')
+            self.led.set_solid_color(color_name)
 
-        # Run continuously and check for blue LED commands
         start_time = time.time()
+        last_send = start_time
         while not self._stop_pattern.is_set():
             # Check for blue LED commands from Xbox controller
             self.check_blue_led_commands()
 
-            # Check duration
             if duration and (time.time() - start_time) >= duration:
                 break
 
+            if self.led.pixels and (time.time() - last_send) >= resend_interval:
+                self.led.set_solid_color(color_name)
+                last_send = time.time()
+
             time.sleep(0.1)  # Check every 100ms
+
+    def _pattern_off(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Turn off all LEDs (NeoPixels only - blue LED controlled by Xbox X button)"""
+        self._hold_solid('off', duration)
+
+    def _pattern_idle(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Idle pattern - dim white (NeoPixels only)"""
+        self._hold_solid('dim_white', duration)
 
     def _pattern_searching(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
         """Searching pattern - spinning cyan dot"""
@@ -258,12 +271,10 @@ class LedService:
 
     def _pattern_dog_detected(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
         """Dog detected - solid green (NeoPixels only)"""
-        if self.led.pixels:
-            self.led.set_solid_color('green')
-        # Blue LED controlled separately by Xbox controller X button
-
         if duration:
-            time.sleep(duration)
+            self._hold_solid('green', duration)
+        elif self.led.pixels:
+            self.led.set_solid_color('green')
 
     def _pattern_treat_launching(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
         """Treat launching - bright white flash (NeoPixels only)"""
