@@ -32,3 +32,6 @@ data/robot_state.json
 
 # Per-robot session log — local only, not synced across fleet
 .claude/resume_chat.md
+
+# Runtime state (night_mode.json etc.) — per-unit, not synced
+state/
