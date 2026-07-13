@@ -13,13 +13,11 @@ camera:
   # Hit mechanical wall at tilt=57 → set tilt_min=60 (~3° safety margin).
   pan_min: -180
   pan_max: 268
-  tilt_min: 80
+  tilt_min: 29
   tilt_max: 290
   pan_center: 46    # Live-read where camera physically looks dead-ahead on this mount (re-centered 2026-05-25)
-  tilt_center: 97   # Live-read level horizon (asymmetric range; re-centered 2026-05-25)
-  # Coach mode auto-tracking limits — INHERITED from treatbot3; needs separate tuning
-  # in coach mode (tilt is asymmetric on this unit, dog-tracking range likely needs
-  # to bias toward lower tilt to avoid ceiling stares).
+  tilt_center: 90   # Live-read level horizon (asymmetric range; re-centered 2026-05-25)
+  # Coach mode auto-tracking limits
   coach_pan_min: 18
   coach_pan_max: 162
   coach_tilt_min: 29
