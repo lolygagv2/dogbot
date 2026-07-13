@@ -989,6 +989,9 @@ class DetectorService:
                 publish_vision_event('dog_detected', {
                     'dog_id': dog_id,
                     'dog_name': dog_name,  # Cached ARUCO name or None
+                    # Provenance so the relay boundary can label vision-
+                    # identified detections (attribution contract 2026-07-13).
+                    'id_method': dog_id_methods.get(i) or ('aruco_cached' if dog_name else 'unknown'),
                     'confidence': dog.confidence,
                     'bbox': bbox,
                     'center': list(center),

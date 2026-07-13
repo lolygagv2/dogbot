@@ -629,9 +629,16 @@ class DispenserService:
                         mission_name=self.state.mission.name
                     )
 
+                    # Owner-initiated dispense with an app-supplied dog_id is a
+                    # command echo, not an identification (attribution contract
+                    # 2026-07-13 req #1/#2). Engine rewards (coach/mission/SG)
+                    # leave id_method None so the relay boundary labels them from
+                    # their carried dog / vision provenance or the fallback.
+                    id_method = 'owner_selected' if (dog_id and reason in ('manual', 'cloud_command')) else None
                     publish_reward_event('treat_dispensed', {
                         'dog_id': dog_id,
                         'dog_name': dog_name,
+                        'id_method': id_method,
                         'reason': reason,
                         'behavior': behavior,
                         'confidence': confidence,

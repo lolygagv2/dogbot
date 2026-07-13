@@ -246,6 +246,15 @@ class DogProfileManager:
             # Notify DogTracker so ArUco detection picks up new IDs immediately
             self._sync_to_dog_tracker()
 
+        # Household may have changed — reset the always-assign last-dog pointer
+        # to the app-selected dog rather than carrying a stale one (attribution
+        # contract 2026-07-13). Lazy import avoids a circular dependency.
+        try:
+            from core.state import get_state
+            get_state().reset_last_dog()
+        except Exception as e:
+            self.logger.debug(f"reset_last_dog after profile reload failed: {e}")
+
     def identify_dog(
         self,
         bbox: Optional[List[float]] = None,
@@ -464,6 +473,19 @@ class DogProfileManager:
                 return self._profiles[dog_name.lower()].dog_id
 
             return None
+
+    def sole_app_dog_id(self) -> Optional[str]:
+        """App dog_id when exactly one dog is paired to the app, else None.
+
+        Single-dog-household attribution fallback: outside mission/coaching
+        there is no session dog, so vision-only events with no visible marker
+        resolve to None. If only one dog is paired, every otherwise-
+        unattributed event must be that dog. Multi-dog homes stay strict
+        (None -> unassigned).
+        """
+        with self._lock:
+            paired = [p.dog_id for p in self._profiles.values() if p.dog_id]
+            return paired[0] if len(paired) == 1 else None
 
     def get_all_profiles(self) -> List[DogProfile]:
         """Get all profiles"""

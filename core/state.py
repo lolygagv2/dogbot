@@ -193,8 +193,19 @@ class StateManager:
         self._last_aruco_dog_id: Optional[str] = None
         self._last_aruco_time: float = 0.0
         self._session_dog_id: Optional[str] = None  # From start_coach/start_mission
+        # Always-assign last-dog pointer (attribution contract 2026-07-13):
+        # the most-recent EXPLICIT attribution — a live vision/ArUco resolution
+        # or a command dog_id (dispense_treat / start_mission / play_voice /
+        # select_dog). Consumed as the multi-dog fallback (id_method="last_dog")
+        # when nothing else resolves. Reset to the app-selected dog on reboot /
+        # profile reload rather than carrying a stale one.
+        self._last_dog_id: Optional[str] = None
+        self._last_dog_name: Optional[str] = None
         self._STATE_FILE = "/home/morgan/dogbot/data/robot_state.json"
         self._load_persisted_state()
+        # Seed the last-dog pointer from the persisted app-selected dog on boot.
+        self._last_dog_id = self._current_dog_id
+        self._last_dog_name = self._current_dog_name
 
     def lock_mode(self, reason: str):
         """Lock mode - only mission system should call this."""
@@ -245,12 +256,49 @@ class StateManager:
             self.logger.warning(f"[STATE] Could not save persisted state: {e}")
 
     def set_current_dog(self, dog_id: str, dog_name: str = None):
-        """Set current dog from app's select_dog command. Persists across restarts."""
+        """Set current dog from app's select_dog command. Persists across restarts.
+
+        An app selection is an explicit attribution, so it also advances the
+        last-dog pointer (attribution contract 2026-07-13 req #1).
+        """
         with self._lock:
             self._current_dog_id = dog_id
             self._current_dog_name = dog_name or dog_id
+            if self._is_real_dog_id(dog_id):
+                self._last_dog_id = dog_id
+                self._last_dog_name = dog_name or dog_id
             self._save_persisted_state()
             self.logger.info(f"[DOG] Selected: {self._current_dog_name} ({dog_id})")
+
+    def note_dog_attribution(self, dog_id: str, dog_name: str = None):
+        """Advance the last-dog pointer on an explicit attribution.
+
+        Called for live vision/ArUco resolutions and inbound command dog_ids
+        (dispense_treat / start_mission / play_voice). Most-recent wins.
+        Generic tracker ids (dog_0, dog_-1000) are ignored so the fallback only
+        ever points at a real app-canonical dog (attribution contract req #1/#3).
+        """
+        if not self._is_real_dog_id(dog_id):
+            return
+        with self._lock:
+            self._last_dog_id = dog_id
+            if dog_name:
+                self._last_dog_name = dog_name
+
+    def get_last_dog(self):
+        """Return (dog_id, dog_name) of the last-dog pointer, or (None, None)."""
+        with self._lock:
+            return self._last_dog_id, self._last_dog_name
+
+    def reset_last_dog(self):
+        """Reset the last-dog pointer to the app-selected dog (profile reload).
+
+        Prevents a stale last-dog from surviving a reload_dogs that changes the
+        household (attribution contract 2026-07-13).
+        """
+        with self._lock:
+            self._last_dog_id = self._current_dog_id
+            self._last_dog_name = self._current_dog_name
 
     def set_session_dog(self, dog_id: str):
         """Set dog_id for active coach/mission session. Clears on session end."""

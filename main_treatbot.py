@@ -725,6 +725,26 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"Bark feedback error: {e}")
 
+    @staticmethod
+    def _normalize_id_method(method) -> str:
+        """Map an event's local id_method to the app's provenance enum.
+
+        App enum (attribution contract 2026-07-13): qr / vision (identified),
+        owner_selected (command echo), sole_dog / last_dog (fallback). Robot
+        vision methods (aruco / aruco_cached / persistence -> marker-derived ->
+        qr; color -> vision) are translated here. An explicit id with no/unknown
+        provenance is treated as an identification (vision) — the emitter did
+        positively associate a dog with the event.
+        """
+        m = (method or '').lower()
+        if m in ('owner_selected', 'qr', 'vision', 'sole_dog', 'last_dog'):
+            return m
+        if m in ('aruco', 'aruco_cached', 'persistence'):
+            return 'qr'
+        if m == 'color':
+            return 'vision'
+        return 'vision'
+
     def _forward_event_to_relay(self, event) -> None:
         """Forward relevant events to cloud relay for app communication
 
@@ -746,7 +766,14 @@ class TreatBotMain:
                     event_type = 'detection'
                     event_data = {
                         'detected': True,
+                        # Forward dog_name/id_method so vision-identified
+                        # detections are attributed in ANY mode (attribution
+                        # contract 2026-07-13 req #2): dog_id is a generic
+                        # "dog_N" slot id, so dog_name is what lets the boundary
+                        # resolve the app's canonical dog_id.
                         'dog_id': event.data.get('dog_id'),
+                        'dog_name': event.data.get('dog_name'),
+                        'id_method': event.data.get('id_method'),
                         'confidence': event.data.get('confidence', 0),
                     }
                     should_throttle = True
@@ -833,6 +860,7 @@ class TreatBotMain:
                     event_data = {
                         'dog_id': event.data.get('dog_id'),
                         'dog_name': event.data.get('dog_name'),
+                        'id_method': event.data.get('id_method'),
                         'reason': event.data.get('reason'),
                         'behavior': event.data.get('behavior'),
                         'confidence': event.data.get('confidence', 0),
@@ -1016,14 +1044,36 @@ class TreatBotMain:
                 if 'dog_id' in event_data:
                     try:
                         from core.dog_profile_manager import get_dog_profile_manager
-                        event_data['dog_id'] = get_dog_profile_manager().resolve_app_dog_id(
+                        mgr = get_dog_profile_manager()
+                        resolved = mgr.resolve_app_dog_id(
                             dog_id=event_data.get('dog_id'),
                             dog_name=event_data.get('dog_name'),
                             aruco_id=event_data.get('aruco_id'),
                         )
+                        # Attribution contract 2026-07-13 (always-assign):
+                        # 1) Explicit attribution (a resolvable dog_id/name/aruco
+                        #    on the event — command echo or live vision) ALWAYS
+                        #    wins and advances the last-dog pointer.
+                        # 2) Fallback, in order: exactly one paired dog -> that
+                        #    dog (sole_dog); else the most-recent explicit dog
+                        #    (last_dog). Every stamped id carries id_method so a
+                        #    guess stays distinguishable from an identification.
+                        if resolved is not None:
+                            id_method = self._normalize_id_method(event_data.get('id_method'))
+                            self.state.note_dog_attribution(resolved, event_data.get('dog_name'))
+                        else:
+                            resolved = mgr.sole_app_dog_id()
+                            if resolved is not None:
+                                id_method = 'sole_dog'
+                            else:
+                                resolved, _ = self.state.get_last_dog()
+                                id_method = 'last_dog' if resolved else None
+                        event_data['dog_id'] = resolved
+                        event_data['id_method'] = id_method if resolved else None
                     except Exception as e:
                         self.logger.debug(f"dog_id resolve failed, sending null: {e}")
                         event_data['dog_id'] = None
+                        event_data['id_method'] = None
 
                 self.relay_client.send_event(event_type, event_data)
                 self.logger.debug(f"Forwarded {event_type} to relay: {event_data}")
@@ -1673,6 +1723,11 @@ class TreatBotMain:
                     dog_id = (params.get('dog_id')
                               or params.get('data', {}).get('dog_id')
                               or event.data.get('dog_id'))
+
+                    # Explicit command dog_id advances the last-dog pointer
+                    # (attribution contract 2026-07-13 req #1).
+                    if dog_id:
+                        self.state.note_dog_attribution(dog_id, params.get('dog_name'))
 
                     if not voice_type:
                         self.logger.warning(f"{command}: no voice_type provided")

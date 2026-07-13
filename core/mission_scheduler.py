@@ -178,7 +178,7 @@ class MissionScheduler:
                     continue
 
                 if self._should_start_mission(name, schedule, now, current_time, current_day):
-                    self._start_scheduled_mission(name)
+                    self._start_scheduled_mission(name, schedule.get("dog_id"))
                     return  # Only start one mission at a time
 
         # Check user-created schedules from ScheduleManager
@@ -196,7 +196,7 @@ class MissionScheduler:
                     continue
 
                 if self._should_start_mission(mission_name, schedule, now, current_time, current_day):
-                    self._start_scheduled_mission(mission_name)
+                    self._start_scheduled_mission(mission_name, schedule.get("dog_id"))
 
                     # For "once" type, auto-disable after running
                     if schedule.get("type") == "once":
@@ -309,11 +309,16 @@ class MissionScheduler:
 
         return f"Tomorrow at {start_time}"
 
-    def _start_scheduled_mission(self, name: str):
-        """Start a scheduled mission"""
-        self.logger.info(f"Auto-starting scheduled mission: {name}")
+    def _start_scheduled_mission(self, name: str, dog_id: Optional[str] = None):
+        """Start a scheduled mission.
 
-        success = self.mission_engine.start_mission(name)
+        Pass the schedule's dog_id so scheduler-started missions (which the app
+        never sees start) still lock and echo the intended dog (attribution
+        contract 2026-07-13 item 3).
+        """
+        self.logger.info(f"Auto-starting scheduled mission: {name} (dog_id={dog_id})")
+
+        success = self.mission_engine.start_mission(name, dog_id=dog_id)
 
         if success:
             self.last_started[name] = datetime.now()
