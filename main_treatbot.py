@@ -1201,11 +1201,14 @@ class TreatBotMain:
                 if command == 'treat' or command == 'dispense_treat':
                     # Treat dispensing: POST /treat/dispense
                     # Accepts both 'treat' and 'dispense_treat' command names
+                    # Beam-confirmed dispense can take ~20s+ when the first
+                    # rotation ejects nothing (beam_timeout_s wait + retries,
+                    # up to max_retries=3) — needs far more than the shared 5s.
                     resp = client.post(f'{api_base}/treat/dispense', json={
                         'reason': 'cloud_command',
                         'dog_id': params.get('dog_id'),
                         'count': params.get('count', 1)
-                    })
+                    }, timeout=35.0)
                     self.logger.debug(f"Treat dispensed -> {resp.status_code}")
 
                 elif command == 'led':
