@@ -29,6 +29,9 @@ captures/
 photos/
 recordings/
 data/robot_state.json
+# SQLite databases + journal/WAL sidecars — per-unit runtime data, never synced
+data/*.db
+data/*.db-*
 
 # Per-robot session log — local only, not synced across fleet
 .claude/resume_chat.md
