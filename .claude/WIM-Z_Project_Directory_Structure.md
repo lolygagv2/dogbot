@@ -232,6 +232,7 @@
          test_10_gates_validation.py
       hardware/
          leds_v3.py
+         beam_watch.sh              # Live GPIO7 through-beam transition monitor (chute sensor alignment)
       vision/
          test_camera_*.py
       test_behavior_fusion.py
