@@ -1,12 +1,13 @@
-# TreatBot4 — Cytron motor driver + 9V brushed motors (no encoders), IMX708 Pi Camera Module 3 Wide NoIR
+# TreatBot4 — Cytron motor driver + 9V brushed motors (no encoders), IMX708 Pi Camera Module 3 Wide
 # Hardware delta vs treatbot1/2: replaced L298N + 6V DFRobot encoder motors with Cytron driver + 9V brushed,
 # and IMX500 → IMX708 wide-angle camera. PID disabled because 9V motors lack encoders.
-# 2026-05-24: swapped to IMX708 Wide NoIR (IR-cut filter removed) for upcoming night-vision mode.
+# 2026-05-24: swapped to IMX708 Wide NoIR (IR-cut filter removed) for night-vision testing.
+# 2026-07-23: swapped back to standard IMX708 Wide (IR-cut present) — same camera as treatbot5.
 
 robot_id: "treatbot4"
-description: "Production unit #4 — Cytron motor driver, 9V brushed motors (no encoders), IMX708 Wide NoIR"
+description: "Production unit #4 — Cytron motor driver, 9V brushed motors (no encoders), IMX708 wide camera"
 
-# Camera settings (detector.py) — IMX708 Pi Camera Module 3 Wide NoIR
+# Camera settings (detector.py) — IMX708 Pi Camera Module 3 Wide
 camera:
   rotation: 180  # degrees clockwise (0, 90, 180, 270) — camera mounted inverted, same as other units
   # Gimbal servo limits — pan seeded from treatbot3, tilt calibrated 2026-05-17
@@ -23,18 +24,10 @@ camera:
   coach_tilt_min: 3
   coach_tilt_max: 83
 
-  # Daytime image profile — NoIR baseline (no IR-cut filter)
-  # AWB cannot fully solve NoIR daytime color (green channel dominant, IR bleeds into red,
-  # ColourGains only controls R+B). Best result: lock AWB-chosen gains statically + low saturation
-  # to mute residual false-color in skin/foliage. Bench-tuned 2026-05-24 against bald-head test target.
-  # Non-skin neutrals (walls, fabric, plastic) look correct; will be replaced by NIGHT_PROFILE
-  # when modes/night_mode_controller.py switches us into IR-illuminated mode.
-  awb_enable: false
-  colour_gains: [0.887, 1.52]   # (red_gain, blue_gain) — green is implicit reference
-  saturation: 0.85              # moderate — keeps color life; minor NoIR green tint on skin acceptable
-  contrast: 1.05                # slight bump for definition
-  sharpness: 1.0
-  brightness: 0.0
+  # Daytime image profile: none — standard IMX708 (IR-cut filter present) since 2026-07-23,
+  # so default auto white balance handles color correctly (same as treatbot5).
+  # The old NoIR static-gain lock (awb_enable: false, colour_gains, low saturation) was
+  # removed with the camera swap; restore it from git history if a NoIR unit goes back in.
 
 # Dispenser settings — NEMA 17 stepper + TMC2209 (dispenser.py)
 # 2026-05-25: UART finally working after fixing PDN_UART wire to pin 4, VIO to 3V3, GND shared,
@@ -119,7 +112,9 @@ controller:
 # - Motor driver: Cytron MDD10A (10A dual-channel, DIR + PWM per motor). Driver in
 #   core/hardware/motor_controller_cytron.py, dispatched by core/motor_command_bus.py
 #   when controller.driver == "cytron".
-# - Camera: IMX708 Pi Camera Module 3 Wide NoIR (IR-cut filter removed). Boot config notes
+# - Camera: IMX708 Pi Camera Module 3 Wide (standard, IR-cut present — NoIR removed 2026-07-23;
+#   note the 940nm IR illuminator is invisible to this sensor, so night mode should stay
+#   force_day/off until a NoIR goes back in). Boot config notes
 #   in .claude/hardware_specs.md (commit 90e2399). On Pi 5 this is wired to CSI0 (cam0) —
 #   cam1 port on this unit appears damaged (see 2026-05-24 troubleshooting).
 #   Verify with `rpicam-hello --list-cameras` post-deploy.
