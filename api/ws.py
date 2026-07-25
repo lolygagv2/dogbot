@@ -459,12 +459,25 @@ class TreatBotWebSocketServer:
                     result = {"success": False, "command": command, "error": str(e)}
 
             elif command == "audio":
-                # {"command": "audio", "file": "good.mp3"}
-                audio_file = data.get("file")
-                if audio_file and self.sfx:
-                    self.sfx.play_sound(audio_file)
-                elif not self.sfx:
-                    result = {"success": False, "command": command, "error": "SFX service not available"}
+                # {"command": "audio", "file": "good.mp3"} or {"stop": true}
+                # Same executor as the cloud path (main_treatbot posts these to
+                # /audio/play and /audio/stop) — call the endpoint functions
+                # directly so local and relay can't drift apart.
+                try:
+                    # Deferred: api.server imports api.ws at module level
+                    from api.server import play_audio, stop_audio
+                    if data.get("stop"):
+                        resp = await stop_audio()
+                    elif data.get("file"):
+                        resp = await play_audio({"file": data["file"]})
+                    else:
+                        resp = {"success": False, "error": "'file' or 'stop' required"}
+                    if not resp.get("success"):
+                        result = {"success": False, "command": command,
+                                  "error": resp.get("error") or resp.get("message", "audio failed")}
+                except Exception as e:
+                    self.logger.error(f"audio command error: {e}")
+                    result = {"success": False, "command": command, "error": str(e)}
 
             elif command == "mode":
                 # {"command": "mode", "mode": "training"}
@@ -541,7 +554,6 @@ class TreatBotWebSocketServer:
                 # worked. (Same fix as relay_client._handle_mood_led.)
                 action = data.get("action", "toggle").lower()
                 try:
-                    from services.media.led import get_led_service
                     led = get_led_service().led
                     if led is None:
                         raise RuntimeError("LED service unavailable")
