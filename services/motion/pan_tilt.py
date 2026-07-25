@@ -33,6 +33,7 @@ class PanTiltService:
         # Tracking state
         self.tracking_enabled = False
         self.target_position = None  # (x, y) in frame coordinates
+        self.target_bbox = None      # [x1, y1, x2, y2] in frame coordinates
         self.smoothed_target = None  # Smoothed target for less jitter
         self.last_detection_time = 0.0
         self.lost_target_time = 3.0  # seconds before starting scan
@@ -66,6 +67,7 @@ class PanTiltService:
         self.center_tilt = 90
         self.COACH_PAN_LIMITS = (55, 145)
         self.COACH_TILT_LIMITS = (25, 85)
+        self._tilt_down_sign = 1.0  # +1: larger tilt = down (default); -1: larger tilt = up
 
         # Load gimbal config from robot profile
         try:
@@ -80,6 +82,11 @@ class PanTiltService:
                 self.center_tilt = cam.get('tilt_center', 90)
                 self.COACH_PAN_LIMITS = (cam.get('coach_pan_min', 55), cam.get('coach_pan_max', 145))
                 self.COACH_TILT_LIMITS = (cam.get('coach_tilt_min', 25), cam.get('coach_tilt_max', 85))
+                # Per-unit servo direction: 'up' = larger tilt values point the
+                # camera UP (tb5 convention), 'down' = larger values point DOWN.
+                # The nudge/tracking math was written for 'down'; keep that as
+                # default so unflagged units behave exactly as before.
+                self._tilt_down_sign = -1.0 if cam.get('tilt_convention', 'down') == 'up' else 1.0
                 self.logger.info(f"Gimbal limits from config: pan={self.pan_limits}, tilt={self.tilt_limits}")
         except Exception as e:
             self.logger.warning(f"Could not load gimbal config, using defaults: {e}")
@@ -266,7 +273,22 @@ class PanTiltService:
         edge_threshold_x = self.frame_width * 0.25
         edge_threshold_y = self.frame_height * 0.25
 
-        dog_at_edge = (abs(error_x) > edge_threshold_x) or (abs(error_y) > edge_threshold_y)
+        # Bbox clipped at the top/bottom frame edge = dog partially out of
+        # view. A close dog can be bottom-clipped (legs cut off) while its
+        # CENTER still sits inside the edge zone, so the center-based check
+        # alone never fires — exactly the case where the behavior classifier
+        # produces nothing and coach sessions time out (diagnosed 2026-07-25).
+        clipped_bottom = clipped_top = False
+        if self.target_bbox:
+            clip_margin = 8  # px
+            clipped_top = self.target_bbox[1] <= clip_margin
+            clipped_bottom = self.target_bbox[3] >= self.frame_height - clip_margin
+            if clipped_top and clipped_bottom:
+                # Dog overflows both edges — tilting can't help either way
+                clipped_top = clipped_bottom = False
+
+        dog_at_edge = (abs(error_x) > edge_threshold_x) or (abs(error_y) > edge_threshold_y
+                       ) or clipped_bottom or clipped_top
 
         if not dog_at_edge:
             # Dog is comfortably centered - reset edge tracking, no nudge needed
@@ -287,6 +309,9 @@ class PanTiltService:
         # Calculate nudge direction and amount
         # Max 2 degrees per second, scaled by dt
         max_nudge = 2.0 * dt  # degrees this frame
+        # Clip-reframe is faster (6 deg/s): the coach watch window is only
+        # ~10s and a bottom-clipped dog is typically 8-15 degrees out of view
+        max_reframe = 6.0 * dt
 
         nudge_pan = 0.0
         nudge_tilt = 0.0
@@ -299,12 +324,17 @@ class PanTiltService:
             else:
                 nudge_pan = min(max_nudge, 0.5)   # Dog is left, pan left (increase pan)
 
-        # Tilt nudge (vertical)
-        if abs(error_y) > edge_threshold_y:
+        # Tilt nudge (vertical). _tilt_down_sign maps "camera down" to this
+        # unit's servo direction (tb5: larger tilt = UP, so down = negative).
+        if clipped_bottom:
+            nudge_tilt = self._tilt_down_sign * min(max_reframe, 1.0)   # Legs cut off, tilt down
+        elif clipped_top:
+            nudge_tilt = -self._tilt_down_sign * min(max_reframe, 1.0)  # Head cut off, tilt up
+        elif abs(error_y) > edge_threshold_y:
             if error_y > 0:
-                nudge_tilt = min(max_nudge, 0.3)  # Dog is low, tilt down
+                nudge_tilt = self._tilt_down_sign * min(max_nudge, 0.3)   # Dog is low, tilt down
             else:
-                nudge_tilt = -min(max_nudge, 0.3) # Dog is high, tilt up
+                nudge_tilt = -self._tilt_down_sign * min(max_nudge, 0.3)  # Dog is high, tilt up
 
         # Apply nudge with COACH mode limits
         new_pan = self.current_pan + nudge_pan
@@ -317,7 +347,16 @@ class PanTiltService:
         # Only send command if actually moving
         if abs(nudge_pan) > 0.01 or abs(nudge_tilt) > 0.01:
             self._move_to_position(new_pan, new_tilt, force=True)
-            self.logger.debug(f"Nudge: pan={nudge_pan:+.2f} tilt={nudge_tilt:+.2f} (edge time: {time_at_edge:.1f}s)")
+            if clipped_bottom or clipped_top:
+                # INFO (throttled) so clip-reframes are visible in the journal
+                if now - getattr(self, '_last_reframe_log', 0) >= 2.0:
+                    self._last_reframe_log = now
+                    edge = 'bottom' if clipped_bottom else 'top'
+                    self.logger.info(
+                        f"Coach reframe: dog clipped at {edge} edge, tilting "
+                        f"{'down' if clipped_bottom else 'up'} (tilt={self.current_tilt:.0f})")
+            else:
+                self.logger.debug(f"Nudge: pan={nudge_pan:+.2f} tilt={nudge_tilt:+.2f} (edge time: {time_at_edge:.1f}s)")
 
     def _handle_silent_guardian_mode(self, dt: float) -> None:
         """Handle camera in Silent Guardian mode - stationary wide shot, no scanning"""
@@ -545,6 +584,7 @@ class PanTiltService:
             # Update target position
             center = event.data.get('center', self.frame_center)
             self.target_position = (center[0], center[1])
+            self.target_bbox = event.data.get('bbox')  # [x1, y1, x2, y2] or None
             self.last_detection_time = time.time()
 
             self.logger.debug(f"Target updated: {self.target_position}")
@@ -552,6 +592,7 @@ class PanTiltService:
         elif event.subtype == 'detection_stopped':
             # Clear target
             self.target_position = None
+            self.target_bbox = None
 
     def move_camera(self, pan: Optional[float] = None, tilt: Optional[float] = None,
                     smooth: bool = True) -> bool:

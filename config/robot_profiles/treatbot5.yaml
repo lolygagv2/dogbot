@@ -17,6 +17,7 @@ camera:
   tilt_max: 290
   pan_center: 46    # Live-read where camera physically looks dead-ahead on this mount (re-centered 2026-05-25)
   tilt_center: 90   # Live-read level horizon (asymmetric range; re-centered 2026-05-25)
+  tilt_convention: up  # Larger tilt values = camera UP on this unit (see comment above); coach nudge/reframe inverts accordingly
   # Coach mode auto-tracking limits
   coach_pan_min: 18
   coach_pan_max: 162
