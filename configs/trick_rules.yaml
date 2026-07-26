@@ -13,7 +13,8 @@ tricks:
     description: "Dog sits on haunches"
     required_behavior: "sit"
     hold_duration_sec: 1.0        # Must hold pose this long
-    detection_window_sec: 10      # Time allowed to perform trick
+    detection_window_sec: 15      # 10->15 (2026-07-25): camera reframe travel eats
+                                  # the window head; Elsa sat at sec ~10 and lost by 1s
     alternative_behaviors: []     # No alternatives - must be "sit"
     confidence_threshold: 0.65    # Lower for fluffy dogs
     difficulty: 1
@@ -23,7 +24,7 @@ tricks:
     description: "Dog lies down (any position)"
     required_behavior: "lie"
     hold_duration_sec: 1.0
-    detection_window_sec: 10
+    detection_window_sec: 15      # 10->15 (2026-07-25): same reframe-travel reasoning as sit
     alternative_behaviors: []         # Cross removed - unreliable detection
     confidence_threshold: 0.70        # Lowered - improved aspect ratio detection
     difficulty: 2

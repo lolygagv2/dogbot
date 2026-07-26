@@ -650,7 +650,10 @@ class DispenserService:
                         'timestamp': now
                     }, 'dispenser_service')
 
-                    remaining = max(0, self.treats_loaded - self.treats_dispensed_session)
+                    # treats_loaded is already decremented per confirmed treat —
+                    # subtracting treats_dispensed_session again double-counted
+                    # (log showed "19 remaining" then "Remaining: 18" for ONE treat).
+                    remaining = self.treats_remaining
                     self.logger.info(
                         f"[TREAT] Dispensed {credit} treat(s) "
                         f"(confirmed={self.last_dispense_confirmed}, "

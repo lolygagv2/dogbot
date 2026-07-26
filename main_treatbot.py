@@ -2410,6 +2410,17 @@ class TreatBotMain:
                             self._wifi_disconnected_since = time.time()
                             continue
                         self.logger.info("WiFi monitor: Attempting to reconnect to known networks...")
+                        # Remember which AP FLAVOR we're tearing down so a failed
+                        # rejoin re-raises the SAME one. The old code always
+                        # rebuilt the demo AP (WIMZ-Demo-<serial>/wimzdemo) even
+                        # when it had torn down the local-mode/setup AP
+                        # (WIMZ-<serial>/wimzsetup) the app was told to join —
+                        # so the phone could never reconnect.
+                        prev_ap_ssid = None
+                        try:
+                            prev_ap_ssid = wifi.get_active_ap_ssid()
+                        except Exception:
+                            pass
                         # Stop AP temporarily to scan/connect
                         wifi.stop_hotspot()
                         self._wifi_ap_active = False
@@ -2424,11 +2435,16 @@ class TreatBotMain:
                             except:
                                 pass
                         else:
-                            # No known networks - restart AP
-                            self.logger.info("WiFi monitor: No known networks, restarting AP mode")
+                            # No known networks - restart the SAME AP flavor we
+                            # tore down (setup/local-mode APs keep their SSID +
+                            # wimzsetup password; anything else gets the demo AP)
                             serial = wifi.get_device_serial()
-                            ssid = f"WIMZ-Demo-{serial}"
-                            wifi.start_demo_hotspot(ssid=ssid, password="wimzdemo")
+                            if prev_ap_ssid and not prev_ap_ssid.startswith("WIMZ-Demo"):
+                                ssid, password = prev_ap_ssid, "wimzsetup"
+                            else:
+                                ssid, password = f"WIMZ-Demo-{serial}", "wimzdemo"
+                            self.logger.info(f"WiFi monitor: No known networks, restarting AP mode ({ssid})")
+                            wifi.start_demo_hotspot(ssid=ssid, password=password)
                             self._wifi_ap_active = True
                             self._wifi_disconnected_since = time.time()
                     continue

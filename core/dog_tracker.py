@@ -509,12 +509,22 @@ class DogTracker:
             else:
                 display_name = dog_name
 
+            # Blank the behavior label once stage 3 has gone silent for >2s —
+            # the latched last label otherwise displays forever (the overlay
+            # showed a stale "sit 98%" through whole failed coach sessions
+            # while classification was producing nothing; 2026-07-25).
+            behavior = tracking.get('behavior', '')
+            behavior_conf = tracking.get('behavior_confidence', 0.0)
+            if behavior and (current_time - tracking.get('behavior_time', 0)) > 2.0:
+                behavior = ''
+                behavior_conf = 0.0
+
             result[dog_name] = {
                 'bbox': bbox,
                 'name': display_name,
-                'confidence': tracking.get('behavior_confidence', 0.0),
+                'confidence': behavior_conf,
                 'id_method': id_method,
-                'behavior': tracking.get('behavior', ''),
+                'behavior': behavior,
                 'keypoints': tracking.get('keypoints', [])
             }
 
@@ -546,5 +556,6 @@ class DogTracker:
         if marker_id is not None and marker_id in self.last_known_positions:
             self.last_known_positions[marker_id]['behavior'] = behavior
             self.last_known_positions[marker_id]['behavior_confidence'] = confidence
+            self.last_known_positions[marker_id]['behavior_time'] = time.time()
             if keypoints:
                 self.last_known_positions[marker_id]['keypoints'] = keypoints
