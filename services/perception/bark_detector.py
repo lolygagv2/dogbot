@@ -550,6 +550,19 @@ class BarkDetectorService:
                 logger.debug(f"Cooldown active: {remaining:.1f}s remaining")
                 return
 
+        # DISABLED 2026-07-25 (Morgan's ruling): there is NO standalone bark
+        # reward in the product — bark-earned rewards exist only as coach
+        # mode's explicit 'speak' trick, scored in-sequence by the coaching
+        # engine. This legacy path fired celebration LEDs and published
+        # reward/'trigger' events from any qualifying bark in ANY mode
+        # (observed live: coach said "no" for sit, this path celebrated the
+        # dog 2s later; phantom reward events also reached the relay's
+        # activity history). No dispenser subscribes to it, so no treats ever
+        # dropped from it — but the feedback signal was wrong. The code below
+        # is intentionally unreachable; delete it if it's still dead in 2027.
+        logger.debug(f"Standalone bark reward suppressed ({emotion} bark)")
+        return
+
         # Trigger reward
         logger.info(f"Triggering reward for {emotion} bark")
 

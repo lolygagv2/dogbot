@@ -504,8 +504,14 @@ class PanTiltService:
         if not force and (now - self.last_servo_command_time) < self.min_command_interval:
             return
 
-        # Only move if significant change (>1 degree)
-        if abs(pan - self.current_pan) > 1 or abs(tilt - self.current_tilt) > 1:
+        # Deadband: external callers need >1° change to avoid jitter chatter,
+        # but forced internal tracking moves are intentionally sub-degree
+        # (0.3°/call at 20Hz = the designed 2-6°/s nudge/reframe rates). The
+        # old blanket 1° deadband silently swallowed every nudge, so the coach
+        # nudge/reframe never physically moved the camera — found live
+        # 2026-07-25: 35s of "tilting down" logs with tilt frozen at 90.
+        min_delta = 0.2 if force else 1.0
+        if abs(pan - self.current_pan) > min_delta or abs(tilt - self.current_tilt) > min_delta:
             try:
                 self.servo.set_camera_pan(pan)
                 self.servo.set_camera_pitch(tilt)
