@@ -18,6 +18,11 @@ camera:
   tilt_max: 143     # ~50° physical up from level (100 code-units above center)
   pan_center: 67    # Where camera physically looks dead-ahead (treatbot3 value)
   tilt_center: 43   # Calibrated level horizon (new tilt servo, 2026-05-17)
+  tilt_convention: up  # Larger tilt = camera UP (per the tilt_max comment above:
+                       # 100 code-units above center = 50 deg physical up). Same
+                       # inverted servos as treatbot5; coach nudge/reframe inverts.
+                       # Set 2026-07-25 when the servo deadband fix made nudges
+                       # actually move — without this, tb4 would reframe backwards.
   # Coach mode auto-tracking limits — 30% inset from full range
   coach_pan_min: 18
   coach_pan_max: 162
