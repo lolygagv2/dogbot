@@ -154,6 +154,9 @@ class AI3StageControllerFixed:
         self._validation_enabled = True  # Can be disabled for debugging
         self._temporal_voting_enabled = True  # Can be disabled for debugging
         self._lstm_spin_streak = {}  # dog_idx -> consecutive LSTM spin frames (anti-blip gate)
+        # Per-stage timing profile (2026-07-25 FPS investigation): accumulates
+        # seconds per stage, logged+reset every 50 processed frames.
+        self._prof = {'setup': 0.0, 'infer': 0.0, 'parse': 0.0, 'teardown': 0.0, 'stage3': 0.0, 'n': 0}
         logger.info("PoseValidator initialized for behavior filtering")
 
         # Initialize geometric classifier as fallback for poor keypoint quality
@@ -425,6 +428,7 @@ class AI3StageControllerFixed:
             detections, poses = self._run_combined_inference(frame_4k)
 
             if not detections:
+                self._prof_tick()
                 self._cached_result = (detections, [], [])
                 return self._cached_result
 
@@ -434,7 +438,10 @@ class AI3StageControllerFixed:
                 self._cached_result = (detections, poses, [])
                 return self._cached_result
 
+            _ts3 = time.perf_counter()
             behaviors = self._stage3_analyze_behavior(poses, frame_4k)
+            self._prof['stage3'] += time.perf_counter() - _ts3
+            self._prof_tick()
 
             # Cache the result
             self._cached_result = (detections, poses, behaviors)
@@ -443,6 +450,18 @@ class AI3StageControllerFixed:
         except Exception as e:
             logger.error(f"Error processing frame: {e}")
             return self._cached_result  # Return cached result on error instead of empty
+
+    def _prof_tick(self):
+        """Count one completed inference; log + reset per-stage averages every 500 (~50s at 10Hz)."""
+        self._prof['n'] += 1
+        n = self._prof['n']
+        if n >= 500:
+            p = self._prof
+            logger.info(
+                f"[PROF] {n} inferences — avg ms: hailo_setup={p['setup']/n*1000:.1f} "
+                f"infer={p['infer']/n*1000:.1f} parse={p['parse']/n*1000:.1f} "
+                f"teardown={p['teardown']/n*1000:.1f} stage3={p['stage3']/n*1000:.1f}")
+            self._prof = {'setup': 0.0, 'infer': 0.0, 'parse': 0.0, 'teardown': 0.0, 'stage3': 0.0, 'n': 0}
 
     def _run_combined_inference(self, frame_4k: np.ndarray) -> Tuple[List[Detection], List[PoseKeypoints]]:
         """Run single inference to get both detections and poses from pose model
@@ -474,10 +493,12 @@ class AI3StageControllerFixed:
                 raise RuntimeError("No active network group")
 
             try:
+                _t0 = time.perf_counter()
                 with self.active_network_group.activate(self.active_network_group_params):
                     with hpf.InferVStreams(self.active_network_group,
                                           self.active_input_vstreams_params,
                                           self.active_output_vstreams_params) as infer_pipeline:
+                        _t1 = time.perf_counter()
 
                         # Prepare input - ensure UINT8 and correct shape
                         input_tensor = np.expand_dims(frame_input, axis=0).astype(np.uint8)
@@ -486,9 +507,11 @@ class AI3StageControllerFixed:
 
                         # Run inference - this is where Hailo driver crashes can occur
                         output_data = infer_pipeline.infer(input_data)
+                        _t2 = time.perf_counter()
 
                         # Parse BOTH detections and keypoints from pose model output
                         detections, poses = self._parse_pose_model_output(output_data, w_4k, h_4k)
+                        _t3 = time.perf_counter()
 
             except OSError as e:
                 # Catch Hailo driver errors (ioctl failures, DMA errors)
@@ -507,6 +530,13 @@ class AI3StageControllerFixed:
                 # 2 FPS for the life of the process.
                 if self._min_inference_interval > 0.100:
                     self._min_inference_interval = max(0.100, self._min_inference_interval * 0.9)
+                # Accumulate per-stage timings (teardown = context-manager exit,
+                # i.e. network-group deactivate + vstream destruction)
+                _t4 = time.perf_counter()
+                self._prof['setup'] += _t1 - _t0
+                self._prof['infer'] += _t2 - _t1
+                self._prof['parse'] += _t3 - _t2
+                self._prof['teardown'] += _t4 - _t3
 
             return detections, poses
 
@@ -579,15 +609,20 @@ class AI3StageControllerFixed:
                 _, h, w, _ = bbox_out.shape
                 stride = strides[scale_idx]
 
-                # Process cells with high confidence
-                for i in range(h):
-                    for j in range(w):
-                        conf_raw = conf_out[0, i, j, 0]
-                        conf_raw = np.clip(conf_raw, -500, 500)
-                        conf = 1.0 / (1.0 + np.exp(-conf_raw))  # Sigmoid
-
-                        if conf < 0.6:  # Raised from 0.5 to 0.6 to prevent arms/objects being classified as dogs
-                            continue
+                # Vectorized confidence gate (2026-07-25, from [PROF] data):
+                # sigmoid the whole grid in one numpy op, then decode only the
+                # cells that pass (typically 0-20 of 8400 across all scales).
+                # The old per-cell Python loop cost ~67ms/frame and was the
+                # pipeline's main bottleneck (Hailo inference itself is 33ms).
+                conf_map = 1.0 / (1.0 + np.exp(-np.clip(
+                    conf_out[0, :, :, 0].astype(np.float32), -500, 500)))
+                # 0.6 threshold: raised from 0.5 to prevent arms/objects being
+                # classified as dogs.
+                for _cell in np.argwhere(conf_map >= 0.6):
+                    # Single-iteration inner loop keeps the original decode
+                    # body's indentation intact (body below is unchanged).
+                    for i, j in ((int(_cell[0]), int(_cell[1])),):
+                        conf = float(conf_map[i, j])
 
                         # Decode bounding box from DFL format (64 channels = 4 sides * 16 bins)
                         bbox_raw = bbox_out[0, i, j, :]

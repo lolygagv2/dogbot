@@ -62,8 +62,11 @@ servo:
 # Battery monitor calibration (services/power/battery_monitor.py)
 # Re-calibrated 2026-05-27: DMM 15.90V, ADS1115 A0 read 0.310V → factor = 51.29.
 # (treatbot3 needed 54.28; treatbot5 divider runs ~5.5% leaner — original 53.33 over-read by ~0.62V.)
+# Re-calibrated 2026-07-25: DMM 16.23V, A0 read 0.292V → factor = 55.58.
+# NOTE: +8.4% drift since May on the same unit — if the next calibration drifts
+# again, suspect the divider resistors or a corroding sense connection, not the math.
 battery:
-  calibration_factor: 51.29
+  calibration_factor: 55.58
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:

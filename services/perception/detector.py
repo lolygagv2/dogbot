@@ -155,6 +155,8 @@ class DetectorService:
         self._cat_a_errors = 0    # Pipeline not running
         self._cat_b_misses = 0    # Below threshold
         self._cat_c_fails = 0     # Classification fails
+        self._prof_cap_sum = 0.0  # capture timing accumulator (FPS investigation 2026-07-25)
+        self._prof_cap_n = 0
 
         # Rate limiting for detection events (prevent log spam)
         self._last_detection_event_time = 0
@@ -776,7 +778,10 @@ class DetectorService:
                 # Capture frame from camera (always, for WebRTC streaming)
                 if self._loop_iteration <= 5:
                     self.logger.debug("About to capture frame...")
+                _cap_t0 = time.perf_counter()
                 frame = self._capture_frame()
+                self._prof_cap_sum += time.perf_counter() - _cap_t0
+                self._prof_cap_n += 1
                 if frame is None:
                     self.logger.warning(f"No frame captured (camera_init={self.camera_initialized}), waiting...")
                     time.sleep(0.1)
@@ -896,6 +901,12 @@ class DetectorService:
                     self._cat_b_misses = 0
                     self._cat_c_fails = 0
                     self._stats_window_start = now
+                    if self._prof_cap_n:
+                        self.logger.info(
+                            f"[PROF] capture avg {self._prof_cap_sum / self._prof_cap_n * 1000:.1f}ms "
+                            f"over {self._prof_cap_n} frames")
+                        self._prof_cap_sum = 0.0
+                        self._prof_cap_n = 0
 
                 # CRITICAL: Minimum loop interval to prevent Hailo driver exhaustion
                 # Primary rate limiting is in AI controller, this is a safety backstop
