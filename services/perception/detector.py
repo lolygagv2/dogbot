@@ -25,7 +25,14 @@ MODE_RESOLUTIONS = {
     SystemMode.IDLE: (1280, 720),            # 720p stream, instant mode switch
     SystemMode.MANUAL: (1920, 1080),          # No AI, full HD video
     SystemMode.SILENT_GUARDIAN: (1280, 720), # AI on lores, 720p stream
-    SystemMode.COACH: (1280, 720),           # AI on lores, 720p stream
+    # COACH streams at 640x640 (the pre-2026-07-05 config classification was
+    # tuned on): the 720p software VP8 encode ate ~60% of every core
+    # (benchmarked 6cb4df1) and collapsed the detection loop to 4-5 FPS, which
+    # stretches the LSTM's 16-frame window from ~1s to ~4s of wall-clock and
+    # breaks behavior classification (diagnosed 2026-07-25). Note: picamera2
+    # requires main >= lores (640x640) in BOTH dimensions, so 854x480 is invalid.
+    # Coach mode's product function is classification, not stream quality.
+    SystemMode.COACH: (640, 640),            # AI on lores, 640x640 stream
     SystemMode.PHOTOGRAPHY: (1920, 1080),     # High res photos
     SystemMode.EMERGENCY: (1280, 720),       # Safety mode
     SystemMode.SHUTDOWN: (1280, 720),        # Shutting down

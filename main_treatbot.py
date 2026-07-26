@@ -751,7 +751,10 @@ class TreatBotMain:
         Applies 5-second throttling to detection and bark events to prevent spam.
         Mode, battery, and alert events are always forwarded immediately.
         """
-        if not self.relay_client or not self.relay_client.connected:
+        # Only require the client to exist — send_event() buffers events while
+        # the socket is down and replays them on reconnect (gap-free cloud
+        # history). Gating on .connected here would silently drop them instead.
+        if not self.relay_client:
             return
 
         try:

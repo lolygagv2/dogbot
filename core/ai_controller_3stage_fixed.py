@@ -153,6 +153,7 @@ class AI3StageControllerFixed:
         self.pose_validator = get_pose_validator(validator_config)
         self._validation_enabled = True  # Can be disabled for debugging
         self._temporal_voting_enabled = True  # Can be disabled for debugging
+        self._lstm_spin_streak = {}  # dog_idx -> consecutive LSTM spin frames (anti-blip gate)
         logger.info("PoseValidator initialized for behavior filtering")
 
         # Initialize geometric classifier as fallback for poor keypoint quality
@@ -499,6 +500,13 @@ class AI3StageControllerFixed:
                     logger.warning(f"Increased inference interval to {self._min_inference_interval:.3f}s")
                 else:
                     raise  # Re-raise non-Hailo errors
+            else:
+                # Successful inference: decay the interval back toward the
+                # 0.1s base. Without this the doubling above was a one-way
+                # ratchet — a single driver hiccup pinned the pipeline at
+                # 2 FPS for the life of the process.
+                if self._min_inference_interval > 0.100:
+                    self._min_inference_interval = max(0.100, self._min_inference_interval * 0.9)
 
             return detections, poses
 
@@ -896,6 +904,19 @@ class AI3StageControllerFixed:
                     logger.debug(f"Skipping dog {dog_idx} due to invalid pose")
                     continue
 
+                # Skip classification when the bbox is clipped at the top/bottom
+                # frame edge: a truncated dog corrupts both classifiers — the
+                # aspect ratio collapses into the 'lie' band (sitting dog reads
+                # as lie) and the bbox-relative LSTM tensor rescales the whole
+                # skeleton. Better no label than a confident wrong one; the
+                # coach clip-reframe re-frames the dog within a second or two.
+                if dog_idx < len(current_poses) and current_poses[dog_idx] is not None:
+                    _det = current_poses[dog_idx].detection
+                    _clip = 8  # px, same margin as the pan_tilt clip-reframe
+                    if _det.y1 <= _clip or _det.y2 >= self.input_size[1] - _clip:
+                        logger.debug(f"Skipping dog {dog_idx}: bbox clipped at frame edge")
+                        continue
+
                 if not self._force_geometric:
                     dog_probs = probs[dog_idx]
                     max_idx = np.argmax(dog_probs)
@@ -987,9 +1008,24 @@ class AI3StageControllerFixed:
 
                 # Process the behavior if we have one
                 if behavior_name is not None:
+                    if behavior_name != "spin":
+                        self._lstm_spin_streak.pop(dog_idx, None)
                     # SPIN bypasses temporal voting - it's a quick motion, not a held pose
                     # Temporal voting would average it out to "stand" since spin only lasts 1-2 frames
                     if behavior_name == "spin":
+                        # ...but a SINGLE-frame LSTM spin is exactly how a
+                        # stationary lying dog got labeled spin@98% at low FPS
+                        # (2026-07-25): 16 frames at ~5 FPS spans ~3-4s and
+                        # accumulated jitter reads as rotation. Require 2
+                        # consecutive LSTM spin frames before accepting. The
+                        # geometric path keeps its own multi-frame spin
+                        # detector (aspect-history) and passes through as-is.
+                        if classification_method == "lstm":
+                            streak = self._lstm_spin_streak.get(dog_idx, 0) + 1
+                            self._lstm_spin_streak[dog_idx] = streak
+                            if streak < 2:
+                                logger.debug(f"Dog {dog_idx}: single-frame LSTM spin — awaiting confirmation")
+                                continue
                         logger.debug("Spin bypasses temporal voting")
                     elif self._temporal_voting_enabled:
                         # Apply temporal voting for stable predictions (sit, stand, lie)

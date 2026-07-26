@@ -116,6 +116,14 @@ class RelayClient:
         self._message_queue: list = []
         self._max_queue_size = 50
 
+        # Event backlog: events emitted while the relay socket is down are
+        # buffered here (already stamped with id+timestamp at emission time)
+        # and replayed in order on reconnect, so cloud activity history has no
+        # gaps. The relay dedupes on the event 'id', so replays are idempotent.
+        # In-memory only: a service restart drops the backlog (v1 tradeoff).
+        from collections import deque
+        self._event_backlog: deque = deque(maxlen=500)
+
         self.logger.info(f"RelayClient initialized (enabled={config.enabled})")
 
     def set_webrtc_service(self, webrtc_service):
@@ -1259,6 +1267,8 @@ class RelayClient:
                     backoff = 1.0  # Reset to 1 second on success
                     # Flush queued messages
                     await self._flush_queue()
+                    # Replay events buffered while the socket was down
+                    await self._flush_event_backlog()
                     # Start heartbeat and telemetry in background
                     self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
                     self._telemetry_task = asyncio.create_task(self._telemetry_loop())
@@ -1273,6 +1283,18 @@ class RelayClient:
                     backoff = min(backoff * 2, 30.0)  # Double each time, cap at 30s
             else:
                 await asyncio.sleep(1.0)
+
+    async def _flush_event_backlog(self):
+        """Replay events buffered while the relay socket was down.
+
+        Events carry their original emission-time 'timestamp' and a unique
+        'id'; the relay dedupes on id, so a replay can never double-count.
+        """
+        if not self._event_backlog:
+            return
+        self.logger.info(f"Replaying {len(self._event_backlog)} buffered events after reconnect")
+        while self._event_backlog and self._connected:
+            await self._send(self._event_backlog.popleft())
 
     async def _flush_queue(self):
         """Send queued messages after reconnection"""
@@ -1391,9 +1413,6 @@ class RelayClient:
         The relay requires the "event" field to forward messages to the app.
         Device_id is included for routing/filtering on the relay/app side.
         """
-        if not self._connected or not self._loop:
-            return
-
         # Flat message format with "event" field as required by relay API
         # Always include device_id for proper routing
         message = {
@@ -1406,9 +1425,15 @@ class RelayClient:
         # activity-history entry (GET /api/activity) that survives even when no
         # app is connected to receive it live. The robot is the authoritative
         # source of event time; setdefault never clobbers a caller that already
-        # supplied its own id/timestamp.
+        # supplied its own id/timestamp. Stamped BEFORE the connectivity check
+        # so a backlogged event keeps its true emission time, not its send time.
         message.setdefault('id', uuid.uuid4().hex)
         message.setdefault('timestamp', datetime.utcnow().isoformat() + 'Z')
+
+        if not self._connected or not self._loop:
+            # Relay down: buffer for replay-on-reconnect instead of dropping.
+            self._event_backlog.append(message)
+            return
 
         asyncio.run_coroutine_threadsafe(self._send(message), self._loop)
 

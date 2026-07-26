@@ -210,6 +210,14 @@ class PanTiltService:
                 # Recenter camera once on entering Coach/Mission mode
                 if current_mode in (SystemMode.COACH, SystemMode.MISSION) and previous_mode != current_mode:
                     self.center_camera(reason=f"{current_mode.value}_mode_entry")
+                    # Nudge/reframe tracking requires tracking_enabled, but the flag
+                    # defaults to False and only the app toggle ever set it — so the
+                    # coach handler exited at its first check and the clip-reframe
+                    # never ran (diagnosed live 2026-07-25). Auto-enable on entry;
+                    # the app toggle still works to turn it off afterward.
+                    if not self.tracking_enabled:
+                        self.tracking_enabled = True
+                        self.logger.info(f"Entering {current_mode.value}: nudge tracking auto-enabled")
                     self.logger.info(f"Entering {current_mode.value}: camera centered")
                 previous_mode = current_mode
 
