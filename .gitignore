@@ -21,7 +21,10 @@ venv/
 .venv/
 VOICEMP3/songs/DOG DESENSITISATION*
 .env
-VOICEMP3/
+# Ignore all audio except the wimz/ system voice prompts (needed fleet-wide:
+# ap_mode.mp3, wifi_connected.mp3, mode announcements, etc.)
+VOICEMP3/*
+!VOICEMP3/wimz/
 __pycache__/
 logs/
 hailort*
