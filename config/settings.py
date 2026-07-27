@@ -111,6 +111,9 @@ class Colors:
     
     # Status colors
     IDLE = (30, 30, 30)        # Dim white
+    DIM_WHITE = (30, 30, 30)   # Idle pattern asks for 'dim_white' by name —
+                               # without this it getattr-fell-back to full
+                               # WHITE (255,255,255): the "blinding white idle"
     SEARCHING = (0, 255, 255)  # Cyan
     DOG_DETECTED = (0, 255, 0) # Green
     TREAT_LAUNCH = (255, 255, 255)  # Bright white

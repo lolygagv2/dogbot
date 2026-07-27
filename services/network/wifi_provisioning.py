@@ -2,12 +2,15 @@
 """
 services/network/wifi_provisioning.py - WiFi provisioning orchestrator
 
-Two-phase AP system:
+Bounded boot job:
 1. Boot → try saved WiFi (15s timeout)
 2. If no WiFi → start credential AP with captive portal (5 min timeout)
 3. If credentials received → connect to WiFi → relay mode
-4. If 5 min timeout → shut down credential AP → start WIMZ-Demo AP
-5. WIMZ-Demo runs permanently until power off or WiFi configured via API
+4. Either way, EXIT. Runtime AP fallback (WiFi loss, app-commanded local
+   mode) is owned solely by main_treatbot's WiFi monitor, which defers
+   while this service is active. This process must never park holding
+   hardware: it runs as root, and a lingering LedService here claims
+   GPIO25 + writes the NeoPixel SPI strip in parallel with treatbot's.
 """
 
 import os
@@ -17,7 +20,6 @@ import asyncio
 import logging
 import signal
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 
 # Add project root to path for imports
@@ -28,34 +30,12 @@ from services.network.captive_portal import CaptivePortal
 
 logger = logging.getLogger(__name__)
 
-# iOS/Android captive portal suppression: return "Success" so the OS
-# thinks the network has internet and doesn't auto-disconnect or nag.
-IOS_SUCCESS_HTML = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
-
-
-class _iOSSuccessHandler(BaseHTTPRequestHandler):
-    """Tiny HTTP handler that tells iOS/Android 'this network has internet'."""
-
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(IOS_SUCCESS_HTML)))
-        self.end_headers()
-        self.wfile.write(IOS_SUCCESS_HTML)
-
-    def log_message(self, format, *args):
-        pass  # Suppress request logging
-
 
 class WiFiProvisioningService:
-    """WiFi provisioning orchestrator with two-phase AP system"""
+    """WiFi provisioning orchestrator — bounded boot job, exits when done"""
 
-    HOTSPOT_PASSWORD = "wimzsetup"
     CONNECTION_TIMEOUT = 15  # seconds to wait for known WiFi
-    CREDENTIAL_AP_TIMEOUT = 300  # 5 minutes for credential AP before switching to demo
-
-    DEMO_SSID_PREFIX = "WIMZ-Demo"
-    DEMO_PASSWORD = "wimzdemo"
+    CREDENTIAL_AP_TIMEOUT = 300  # 5 minutes for credential AP, then exit
 
     def __init__(self):
         self.wifi_manager = WiFiManager()
@@ -63,9 +43,6 @@ class WiFiProvisioningService:
         self._led_service = None
         self._running = False
         self._credentials_saved = False
-        self._ios_server: Optional[HTTPServer] = None
-        self._ios_thread: Optional[threading.Thread] = None
-        self._in_demo_mode = False
         self._setup_signal_handlers()
 
     def _setup_signal_handlers(self):
@@ -77,25 +54,20 @@ class WiFiProvisioningService:
         """Handle shutdown signals"""
         logger.info(f"Received signal {signum}, shutting down...")
         self._running = False
-        self._stop_ios_server()
         if self.captive_portal:
             self.captive_portal.stop()
 
     def _init_led_controller(self):
-        """Initialize LED service (uses singleton to prevent conflicts with main system)"""
-        try:
-            # Use singleton LedService instead of creating separate LEDController
-            # This prevents SPI bus conflicts when both wifi_provisioning and treatbot run
-            from services.media.led import get_led_service
-            self._led_service = get_led_service()
-            if not self._led_service.led_initialized:
-                self._led_service.initialize()
-            logger.info("LED service initialized (singleton - no conflicts)")
-            return True
-        except Exception as e:
-            logger.warning(f"Could not initialize LED service: {e}")
-            self._led_service = None
-            return False
+        """LEDs are intentionally NOT initialized here.
+
+        This service runs as root in its own process; a LedService here is a
+        SECOND writer on the NeoPixel SPI strip and an exclusive claim on
+        GPIO25 that blocks treatbot's mood LED (the in-module "singleton"
+        never spanned processes). treatbot owns all LEDs; the _set_led_*
+        helpers below are no-ops while _led_service is None.
+        """
+        self._led_service = None
+        return False
 
     def _set_led_searching(self):
         """Set LED pattern for searching/connecting"""
@@ -141,14 +113,8 @@ class WiFiProvisioningService:
         self._led_service = None
 
     def _generate_hotspot_ssid(self) -> str:
-        """Generate hotspot SSID using device serial"""
-        serial = self.wifi_manager.get_device_serial()
-        return f"WIMZ-{serial}"
-
-    def _generate_demo_ssid(self) -> str:
-        """Generate per-unit demo SSID so TB1/TB2 don't collide."""
-        serial = self.wifi_manager.get_device_serial()
-        return f"{self.DEMO_SSID_PREFIX}-{serial}"
+        """The single fleet-wide AP SSID (shared with every runtime AP)."""
+        return self.wifi_manager.get_ap_ssid()
 
     def _on_credentials_saved(self, ssid: str):
         """Callback when WiFi credentials are saved"""
@@ -161,39 +127,12 @@ class WiFiProvisioningService:
         time.sleep(2)
         os.system("sudo reboot")
 
-    # ── iOS captive portal suppression server ────────────────────────
-
-    def _start_ios_server(self):
-        """Start a tiny HTTP server on port 80 that tells iOS the network has internet."""
-        try:
-            self._ios_server = HTTPServer(("0.0.0.0", 80), _iOSSuccessHandler)
-            self._ios_thread = threading.Thread(
-                target=self._ios_server.serve_forever,
-                daemon=True,
-                name="ios-success-http"
-            )
-            self._ios_thread.start()
-            logger.info("[LOCAL] iOS captive portal suppression server started on port 80")
-        except Exception as e:
-            logger.warning(f"[LOCAL] Could not start iOS suppression server on port 80: {e}")
-
-    def _stop_ios_server(self):
-        """Stop the iOS suppression HTTP server."""
-        if self._ios_server:
-            try:
-                self._ios_server.shutdown()
-                logger.info("[LOCAL] iOS suppression server stopped")
-            except Exception:
-                pass
-            self._ios_server = None
-            self._ios_thread = None
-
     # ── Main provisioning flow ───────────────────────────────────────
 
     def run(self) -> bool:
         """
-        Main provisioning flow.
-        Returns True if WiFi is connected, False if running in demo AP mode.
+        Main provisioning flow (bounded — always returns, process then exits).
+        Returns True if WiFi is connected, False otherwise.
         """
         self._running = True
         logger.info("=" * 50)
@@ -236,9 +175,11 @@ class WiFiProvisioningService:
                 # Credentials were saved — reboot to reconnect
                 return True
 
-            # Step 6: Credential AP timed out — switch to WIMZ-Demo
-            self._start_demo_mode()
-
+            # Step 6: Credential window closed with no credentials. Exit —
+            # treatbot's WiFi monitor owns all runtime AP fallback and will
+            # raise the same SSID once this service is no longer active.
+            logger.info("[LOCAL] Credential window closed — exiting; "
+                        "treatbot WiFi monitor owns AP fallback from here")
             return False
 
         except Exception as e:
@@ -255,7 +196,7 @@ class WiFiProvisioningService:
         Returns True if credentials were saved, False if timed out.
         """
         ssid = self._generate_hotspot_ssid()
-        password = self.HOTSPOT_PASSWORD
+        password = self.wifi_manager.AP_PASSWORD
         portal_ip = self.wifi_manager.HOTSPOT_IP
 
         logger.info(f"[LOCAL] Credential AP started — waiting {self.CREDENTIAL_AP_TIMEOUT // 60} min for WiFi setup")
@@ -313,46 +254,6 @@ class WiFiProvisioningService:
 
         return False
 
-    def _start_demo_mode(self):
-        """Start WIMZ-Demo AP for direct robot control without internet.
-
-        This AP stays up permanently until the robot is powered off
-        or WiFi is configured via the /system/wifi/connect API endpoint.
-        """
-        demo_ssid = self._generate_demo_ssid()
-        logger.info(f"[LOCAL] Starting {demo_ssid} AP...")
-
-        # Start clean AP (no DNS hijack, no captive portal)
-        if not self.wifi_manager.start_demo_hotspot(
-            ssid=demo_ssid,
-            password=self.DEMO_PASSWORD
-        ):
-            logger.error(f"[LOCAL] Failed to start {demo_ssid} AP")
-            self._set_led_error()
-            return
-
-        # Start iOS captive portal suppression on port 80
-        self._start_ios_server()
-
-        logger.info(f"[LOCAL] {demo_ssid} AP started at {self.wifi_manager.HOTSPOT_IP}:8000")
-        self._in_demo_mode = True
-
-        # Release LED controller so treatbot's LED service can claim GPIO25 + NeoPixels
-        self._cleanup_led()
-        self._led_service = None
-
-        # Block here — keep the service alive so hostapd/dnsmasq/ios-server persist
-        # The treatbot service runs independently and serves the API at :8000
-        logger.info("[LOCAL] Treatbot available at http://192.168.4.1:8000")
-        logger.info("[LOCAL] Waiting for WiFi configuration via app or power cycle...")
-
-        while self._running:
-            time.sleep(5)
-
-    @property
-    def in_demo_mode(self) -> bool:
-        return self._in_demo_mode
-
     # ── Async variants (for future use) ─────────────────────────────
 
     async def run_async(self) -> bool:
@@ -394,7 +295,7 @@ class WiFiProvisioningService:
                     return True
                 logger.info("Could not connect to any known networks")
 
-            # No connection — start credential AP with timeout, then demo mode
+            # No connection — run the credential AP window, then exit
             logger.info("Starting WiFi provisioning AP mode...")
             loop = asyncio.get_event_loop()
             credentials_received = await loop.run_in_executor(
@@ -405,8 +306,8 @@ class WiFiProvisioningService:
             if credentials_received:
                 return True
 
-            # Start demo mode (blocking in executor)
-            await loop.run_in_executor(None, self._start_demo_mode)
+            logger.info("[LOCAL] Credential window closed — exiting; "
+                        "treatbot WiFi monitor owns AP fallback from here")
             return False
 
         except Exception as e:

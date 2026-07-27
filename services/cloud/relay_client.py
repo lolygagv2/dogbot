@@ -199,6 +199,13 @@ class RelayClient:
             # Request dog profiles from cloud
             await self.request_profiles()
 
+            # Tell the relay/app how to reach us — including the local-AP
+            # credentials — so the app can offer "switch to local mode" when
+            # this robot later drops offline. nmcli/iw calls are blocking, so
+            # run them off the event loop.
+            asyncio.get_running_loop().run_in_executor(
+                None, self._send_network_state)
+
             return True
 
         except aiohttp.ClientError as e:
@@ -914,9 +921,8 @@ class RelayClient:
             from services.network.wifi_manager import get_wifi_manager
 
             wifi = get_wifi_manager()
-            serial = wifi.get_device_serial()
-            ssid = f"WIMZ-{serial}"
-            password = "wimzsetup"
+            ssid = wifi.get_ap_ssid()
+            password = wifi.AP_PASSWORD
 
             self.logger.info(f"Switching to Local Mode (AP: {ssid})")
 
@@ -925,18 +931,24 @@ class RelayClient:
                 'type': 'local_mode_starting',
                 'ssid': ssid,
                 'password': password,
-                'ip': '192.168.4.1',
-                'api': 'http://192.168.4.1:8000',
-                'ws': 'ws://192.168.4.1:8000/ws/local'
+                'ip': wifi.HOTSPOT_IP,
+                'api': f'http://{wifi.HOTSPOT_IP}:8000',
+                'ws': f'ws://{wifi.HOTSPOT_IP}:8000/ws/local'
             })
 
             # Give time for message to send
             await asyncio.sleep(1)
 
-            # Now switch to AP mode (this will disconnect us from relay)
-            success = wifi.start_hotspot(ssid, password)
+            # Now switch to AP mode (this will disconnect us from relay).
+            # Clean AP (no captive-portal DNS hijack), 5GHz-first for driving
+            # latency — same SSID as every other AP scenario.
+            success = wifi.start_demo_hotspot(ssid=ssid, password=password)
 
             if success:
+                # Sticky: user asked for this AP — the WiFi monitor must not
+                # auto-rejoin away from it (cleared by cloud-mode command,
+                # reboot, or 10 min with no stations associated).
+                wifi.ap_deliberate = True
                 self.logger.info(f"Local Mode active - AP: {ssid}")
             else:
                 self.logger.error("Failed to start AP mode")
@@ -961,6 +973,10 @@ class RelayClient:
             wifi = get_wifi_manager()
 
             self.logger.info("Switching to Cloud Mode")
+
+            # Clear stickiness BEFORE teardown so the WiFi monitor can't race
+            # back into the deliberate-AP hold while we reconnect.
+            wifi.ap_deliberate = False
 
             # Stop hotspot
             wifi.stop_hotspot()
@@ -1405,6 +1421,32 @@ class RelayClient:
             return get_dispenser_service().treats_remaining
         except Exception:
             return 0
+
+    def _send_network_state(self):
+        """Emit a network_state event describing how to reach this robot.
+
+        Runs in an executor (blocking nmcli/iw calls). Best-effort — never
+        raises into the caller.
+        """
+        try:
+            from services.network.wifi_manager import get_wifi_manager
+            wifi = get_wifi_manager()
+            status = wifi.get_connection_status()
+            self.send_event('network_state', {
+                'mode': 'ap' if wifi.is_ap_mode() else 'wifi',
+                'ssid': status.get('ssid'),
+                'ip': status.get('ip_address'),
+                'signal': wifi.get_signal_dbm(),
+                'local_ap': {
+                    'ssid': wifi.get_ap_ssid(),
+                    'password': wifi.AP_PASSWORD,
+                    'ip': wifi.HOTSPOT_IP,
+                    'api': f'http://{wifi.HOTSPOT_IP}:8000',
+                    'ws': f'ws://{wifi.HOTSPOT_IP}:8000/ws/local',
+                },
+            })
+        except Exception as e:
+            self.logger.debug(f"network_state event failed: {e}")
 
     def send_event(self, event_type: str, data: dict):
         """Send event to relay (thread-safe)

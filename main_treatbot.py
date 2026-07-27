@@ -2344,25 +2344,61 @@ class TreatBotMain:
         self.logger.info("TreatBot main system started")
         return True
 
+    @staticmethod
+    def _wifi_provisioning_active() -> bool:
+        """True while the boot-time wifi-provision.service is running.
+
+        That service owns the interface (and any credential-portal AP) for at
+        most ~5.5 min after boot; the monitor must not touch WiFi/AP state
+        while it's alive (single-AP-owner rule). Stateless check — self-heals
+        whether the service exits 0, crashes, or lands in 'failed'.
+        """
+        import subprocess
+        try:
+            return subprocess.run(
+                ["systemctl", "is-active", "--quiet", "wifi-provision.service"],
+                timeout=5).returncode == 0
+        except Exception:
+            return False
+
     def _wifi_monitor_loop(self) -> None:
-        """Monitor WiFi connection and auto-start AP mode if disconnected.
+        """Monitor WiFi and own ALL runtime AP fallback (single AP owner).
 
         Behavior:
-        - Check WiFi status every 30 seconds
-        - If disconnected for 60+ seconds, start demo AP mode
-        - While in AP mode, periodically try to reconnect to known networks
-        - Xbox controller always works (Bluetooth independent of WiFi)
+        - Defer entirely while wifi-provision.service is active (boot portal).
+        - Check every 15s; WiFi gone 30s+ -> raise the ONE AP
+          (WIMZ-<serial> / wimzsetup — same SSID as the setup portal, so a
+          phone that joined once always auto-rejoins).
+        - In AP mode: never touch the AP while a phone is associated;
+          otherwise attempt WiFi rejoin every 120s (each attempt is a
+          ~30-45s AP outage — that's why not 60s). App-commanded local mode
+          (wifi.ap_deliberate) is sticky: no rejoin until cloud-mode
+          command, reboot, or 10 min with zero stations.
+        - On home WiFi: damp BSSID roam-flapping (dual-band/mesh ping-pong,
+          ~2s video stall per roam) by pinning the strongest BSSID after
+          >=4 roams in 10 min; unpin on weak signal or disconnect.
+        - Xbox controller always works (Bluetooth independent of WiFi).
         """
+        from collections import deque
         from services.network.wifi_manager import get_wifi_manager
 
         wifi = get_wifi_manager()
-        # Work order §3B: the robot must never sit unreachable. AP comes up
-        # within ~seconds of a WiFi drop (15s threshold @ 15s checks), and
-        # WiFi rejoin retries every 60s — a connected phone defers rejoin
-        # entirely (see the STA-association check below).
-        check_interval = 15  # seconds between checks
-        disconnect_threshold = 15  # seconds before AP fallback
-        reconnect_interval = 60  # seconds between rejoin attempts while in AP
+        check_interval = 15            # seconds between checks
+        disconnect_threshold = 30      # seconds of no WiFi before AP fallback
+        reconnect_interval = 120       # seconds between rejoin attempts in AP
+        deliberate_idle_timeout = 600  # empty deliberate AP -> resume rejoin
+
+        # Roam-flap damping state
+        ROAM_FLAP_COUNT = 4      # roams...
+        ROAM_FLAP_WINDOW = 600   # ...within this many seconds = flapping
+        UNPIN_SIGNAL_DBM = -80   # pinned + this weak (2 ticks) -> unpin
+        roam_events = deque(maxlen=16)  # timestamps of observed BSSID changes
+        last_bssid = None
+        pinned_bssid = None
+        weak_signal_ticks = 0
+        boot_pin_cleared = False  # clear NM-persisted pin once per boot
+
+        no_sta_since = None  # deliberate AP: empty since when
 
         self.logger.info("WiFi monitor started")
 
@@ -2370,17 +2406,54 @@ class TreatBotMain:
             try:
                 time.sleep(check_interval)
 
+                # Boot arbitration: while wifi-provision.service is active it
+                # owns the interface and any portal AP — do nothing at all.
+                if self._wifi_provisioning_active():
+                    self._wifi_disconnected_since = None
+                    continue
+
                 if wifi.is_ap_mode() or self._wifi_ap_active:
-                    # Adopt an AP that's already up — e.g. one the root-run
-                    # wifi-provision.service raised at boot. Don't tear it down
-                    # until we've genuinely waited reconnect_interval. (The old
-                    # `or 0` default fired on the very first check and killed
-                    # that AP, after which the morgan-owned rebuild hit EPERM
-                    # on the root-owned config and the AP died for good.)
+                    if not wifi.is_ap_mode() and wifi.is_connected():
+                        # AP was torn down elsewhere (e.g. cloud-mode command)
+                        # and we're already back on WiFi — clear the stale
+                        # flag; next tick handles station mode. (Must not fall
+                        # into the AP branch here: has_associated_stations()
+                        # on a station interface counts the upstream router.)
+                        self._wifi_ap_active = False
+                        self._wifi_disconnected_since = None
+                        no_sta_since = None
+                        continue
+                    # Adopt an AP that's already up (e.g. raised via the
+                    # API/relay local-mode path).
                     self._wifi_ap_active = True
                     if self._wifi_disconnected_since is None:
                         self._wifi_disconnected_since = time.time()
-                    # Already in AP mode - periodically try to reconnect
+
+                    try:
+                        sta_connected = wifi.has_associated_stations()
+                    except Exception:
+                        sta_connected = False
+
+                    # App-commanded local mode is sticky: never auto-rejoin
+                    # away from an AP the user asked for. Give up only after
+                    # deliberate_idle_timeout with no phone associated.
+                    if wifi.ap_deliberate:
+                        if sta_connected:
+                            no_sta_since = None
+                            self._wifi_disconnected_since = time.time()
+                            continue
+                        if no_sta_since is None:
+                            no_sta_since = time.time()
+                            continue
+                        if time.time() - no_sta_since < deliberate_idle_timeout:
+                            continue
+                        self.logger.info(
+                            f"WiFi monitor: deliberate AP empty for {deliberate_idle_timeout}s "
+                            "— resuming WiFi rejoin cycle")
+                        wifi.ap_deliberate = False
+                        no_sta_since = None
+
+                    # Fallback AP: periodically try to get back on home WiFi
                     if time.time() - self._wifi_disconnected_since > reconnect_interval:
                         # NEVER tear down the AP while a phone is connected to
                         # it. stop_hotspot() kicks the client mid-session and
@@ -2393,10 +2466,6 @@ class TreatBotMain:
                         # yet, which is the precise race that kicked the user in
                         # the same second they connected. Defer rejoin while any
                         # STA is associated.
-                        try:
-                            sta_connected = wifi.has_associated_stations()
-                        except Exception:
-                            sta_connected = False
                         if sta_connected:
                             try:
                                 clients = wifi.get_hotspot_clients()
@@ -2410,17 +2479,6 @@ class TreatBotMain:
                             self._wifi_disconnected_since = time.time()
                             continue
                         self.logger.info("WiFi monitor: Attempting to reconnect to known networks...")
-                        # Remember which AP FLAVOR we're tearing down so a failed
-                        # rejoin re-raises the SAME one. The old code always
-                        # rebuilt the demo AP (WIMZ-Demo-<serial>/wimzdemo) even
-                        # when it had torn down the local-mode/setup AP
-                        # (WIMZ-<serial>/wimzsetup) the app was told to join —
-                        # so the phone could never reconnect.
-                        prev_ap_ssid = None
-                        try:
-                            prev_ap_ssid = wifi.get_active_ap_ssid()
-                        except Exception:
-                            pass
                         # Stop AP temporarily to scan/connect
                         wifi.stop_hotspot()
                         self._wifi_ap_active = False
@@ -2429,52 +2487,92 @@ class TreatBotMain:
                             status = wifi.get_connection_status()
                             self.logger.info(f"WiFi reconnected: {status.get('ssid')} ({status.get('ip_address')})")
                             self._wifi_disconnected_since = None
-                            # Announce reconnection
                             try:
                                 self.usb_audio.play_file("/wimz/wifi_connected.mp3")
-                            except:
-                                pass
+                            except Exception as e:
+                                self.logger.warning(f"WiFi announce audio failed: {e}")
+                            self._send_network_state_event(wifi)
                         else:
-                            # No known networks - restart the SAME AP flavor we
-                            # tore down (setup/local-mode APs keep their SSID +
-                            # wimzsetup password; anything else gets the demo AP)
-                            serial = wifi.get_device_serial()
-                            if prev_ap_ssid and not prev_ap_ssid.startswith("WIMZ-Demo"):
-                                ssid, password = prev_ap_ssid, "wimzsetup"
-                            else:
-                                ssid, password = f"WIMZ-Demo-{serial}", "wimzdemo"
+                            # Still no WiFi — rebuild the ONE AP (same SSID the
+                            # phone already knows; there are no flavors).
+                            ssid = wifi.get_ap_ssid()
                             self.logger.info(f"WiFi monitor: No known networks, restarting AP mode ({ssid})")
-                            wifi.start_demo_hotspot(ssid=ssid, password=password)
+                            wifi.start_demo_hotspot(ssid=ssid, password=wifi.AP_PASSWORD)
                             self._wifi_ap_active = True
                             self._wifi_disconnected_since = time.time()
                     continue
 
-                # Normal mode - check connection
+                # ── Station (home WiFi) mode ─────────────────────────────
                 if wifi.is_connected():
-                    # Connected - reset disconnect timer
                     if self._wifi_disconnected_since is not None:
                         self.logger.info("WiFi connection restored")
                         self._wifi_disconnected_since = None
+
+                    # Roam-flap damping
+                    bssid = wifi.get_current_bssid()
+                    if bssid:
+                        if not boot_pin_cleared:
+                            # NM persists a pin in the connection profile;
+                            # clear it once per boot so placement changes
+                            # (robot moved to a new spot) re-evaluate fresh.
+                            wifi.set_bssid_pin(None)
+                            boot_pin_cleared = True
+                        if last_bssid and bssid != last_bssid:
+                            roam_events.append(time.time())
+                            self.logger.info(f"WiFi roam: {last_bssid} -> {bssid}")
+                        last_bssid = bssid
+
+                        if pinned_bssid is None:
+                            now = time.time()
+                            recent = [t for t in roam_events if now - t < ROAM_FLAP_WINDOW]
+                            if len(recent) >= ROAM_FLAP_COUNT:
+                                target = wifi.get_strongest_bssid() or bssid
+                                if wifi.set_bssid_pin(target):
+                                    pinned_bssid = target
+                                    weak_signal_ticks = 0
+                                    roam_events.clear()
+                                    self.logger.warning(
+                                        f"WiFi monitor: BSSID flapping ({len(recent)} roams in "
+                                        f"{ROAM_FLAP_WINDOW}s) — pinning to {target}")
+                                    # Apply the pin (one final, deliberate blip)
+                                    wifi.reactivate_connection()
+                                    self._send_network_state_event(wifi)
+                        else:
+                            sig = wifi.get_signal_dbm()
+                            if sig is not None and sig <= UNPIN_SIGNAL_DBM:
+                                weak_signal_ticks += 1
+                            else:
+                                weak_signal_ticks = 0
+                            if weak_signal_ticks >= 2:
+                                self.logger.warning(
+                                    f"WiFi monitor: signal {sig} dBm on pinned BSSID "
+                                    f"{pinned_bssid} — unpinning, roaming free")
+                                wifi.set_bssid_pin(None)
+                                pinned_bssid = None
+                                weak_signal_ticks = 0
                 else:
-                    # Disconnected
+                    # Disconnected — free any pin so the reconnect can roam
+                    if pinned_bssid is not None:
+                        wifi.set_bssid_pin(None)
+                        pinned_bssid = None
+                        weak_signal_ticks = 0
                     if self._wifi_disconnected_since is None:
                         self._wifi_disconnected_since = time.time()
-                        self.logger.warning("WiFi disconnected - will start AP mode in 60s if not reconnected")
+                        self.logger.warning(
+                            f"WiFi disconnected - will start AP mode in {disconnect_threshold}s "
+                            "if not reconnected")
                     else:
                         elapsed = time.time() - self._wifi_disconnected_since
                         if elapsed >= disconnect_threshold:
-                            # Start AP mode for direct connection
-                            self.logger.warning(f"WiFi disconnected for {elapsed:.0f}s - starting AP mode")
-                            serial = wifi.get_device_serial()
-                            ssid = f"WIMZ-Demo-{serial}"
-                            if wifi.start_demo_hotspot(ssid=ssid, password="wimzdemo"):
+                            ssid = wifi.get_ap_ssid()
+                            self.logger.warning(f"WiFi disconnected for {elapsed:.0f}s - starting AP mode ({ssid})")
+                            if wifi.start_demo_hotspot(ssid=ssid, password=wifi.AP_PASSWORD):
                                 self._wifi_ap_active = True
-                                self.logger.info(f"AP mode started: {ssid} (password: wimzdemo)")
-                                # Play announcement
+                                self.logger.info(f"AP mode started: {ssid} (password: {wifi.AP_PASSWORD})")
                                 try:
                                     self.usb_audio.play_file("/wimz/ap_mode.mp3")
-                                except:
-                                    pass
+                                except Exception as e:
+                                    self.logger.warning(f"WiFi announce audio failed: {e}")
                             else:
                                 self.logger.error("Failed to start AP mode")
 
@@ -2483,6 +2581,19 @@ class TreatBotMain:
                 time.sleep(30)
 
         self.logger.info("WiFi monitor stopped")
+
+    def _send_network_state_event(self, wifi) -> None:
+        """Emit a network_state relay event (best-effort, never raises).
+
+        Single implementation lives in RelayClient._send_network_state();
+        events are backlogged while the relay is down and replayed on
+        reconnect — exactly what we want for a post-rejoin breadcrumb.
+        """
+        try:
+            if self.relay_client:
+                self.relay_client._send_network_state()
+        except Exception as e:
+            self.logger.debug(f"network_state event failed: {e}")
 
     def _main_loop(self) -> None:
         """Main system loop"""

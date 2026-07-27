@@ -288,22 +288,24 @@ class WIMZVideoTrack(VideoStreamTrack):
                     if coach and hasattr(coach, 'fsm_state'):
                         fsm = coach.fsm_state.value if hasattr(coach.fsm_state, 'value') else str(coach.fsm_state)
 
+                        # NOTE: the frame is BGR here (RGB conversion happens
+                        # after overlays) — colors below are BGR tuples.
                         if 'waiting_for_dog' in fsm:
                             status_text = "[COACH] Waiting for dog..."
-                            status_color = (255, 255, 0)  # Yellow
+                            status_color = (0, 255, 255)  # Yellow
                         elif 'watching' in fsm:
                             trick = coach.current_session.trick_requested if coach.current_session else "trick"
                             status_text = f"[COACH] Watching for {trick.upper()}"
-                            status_color = (0, 255, 255)  # Cyan
+                            status_color = (255, 255, 0)  # Cyan
                         elif 'greeting' in fsm or 'command' in fsm:
                             status_text = "[COACH] Commanding..."
-                            status_color = (255, 165, 0)  # Orange
+                            status_color = (0, 165, 255)  # Orange
                         elif 'success' in fsm:
                             status_text = "[COACH] SUCCESS!"
                             status_color = (0, 255, 0)  # Green
                         elif 'failure' in fsm or 'retry' in fsm:
                             status_text = "[COACH] Retry..."
-                            status_color = (255, 128, 0)  # Orange
+                            status_color = (0, 128, 255)  # Orange
                         else:
                             status_text = f"[COACH] {fsm}"
                 except Exception:
@@ -349,7 +351,7 @@ class WIMZVideoTrack(VideoStreamTrack):
 
             elif mode == SystemMode.SILENT_GUARDIAN:
                 status_text = "[SILENT GUARDIAN] Monitoring..."
-                status_color = (128, 0, 255)  # Purple
+                status_color = (255, 0, 128)  # Purple (BGR)
 
             elif mode == SystemMode.MANUAL:
                 status_text = "[MANUAL MODE]"

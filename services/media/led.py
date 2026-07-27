@@ -100,15 +100,21 @@ class LedService:
             'warm_white': (255, 180, 120)
         }
 
-    def initialize(self) -> bool:
-        """Initialize LED controller"""
+    def initialize(self, start_idle: bool = True) -> bool:
+        """Initialize LED controller.
+
+        start_idle=False is used by set_pattern's lazy-init retry: without it,
+        initialize() re-entrantly spawned an idle thread in the middle of the
+        outer set_pattern call, which then leaked past the stop logic.
+        """
         try:
             self.led = LEDController()
 
             if self.led.is_initialized():
                 self.led_initialized = True
                 self.logger.info("LED system initialized")
-                self.set_pattern('idle')
+                if start_idle:
+                    self.set_pattern('idle')
                 self.state.update_hardware(leds_initialized=True)
                 return True
             else:
@@ -135,8 +141,9 @@ class LedService:
             bool: True if pattern started successfully
         """
         if not self.led_initialized:
-            # Retry init
-            self.initialize()
+            # Retry init (start_idle=False: we're about to start a pattern —
+            # a nested set_pattern('idle') here would leak an idle thread)
+            self.initialize(start_idle=False)
             if not self.led_initialized:
                 return False
 
@@ -155,7 +162,6 @@ class LedService:
 
         try:
             self.current_pattern = pattern_name
-            self._stop_pattern.clear()
 
             # Update state
             self.state.update_hardware(led_pattern=pattern_name)
@@ -169,13 +175,16 @@ class LedService:
                 'kwargs': kwargs
             }, 'led_service')
 
-            # Start pattern thread
+            # Supersede any old thread BEFORE clearing the stop event: a
+            # leaked thread that outlived the join must see itself replaced
+            # (via _should_stop) the moment the event is no longer set.
             self.pattern_thread = threading.Thread(
                 target=self._run_pattern,
                 args=(pattern_name, duration, color, kwargs),
                 daemon=True,
                 name=f"LEDPattern_{pattern_name}"
             )
+            self._stop_pattern.clear()
             self.pattern_thread.start()
 
             self.logger.info(f"LED pattern started: {pattern_name} (manual: {manual_override})")
@@ -185,16 +194,29 @@ class LedService:
             self.logger.error(f"Pattern start error: {e}")
             return False
 
+    def _should_stop(self) -> bool:
+        """Pattern threads poll this each frame.
+
+        True when the shared stop event is set OR the calling thread has been
+        superseded (self.pattern_thread now points at a newer thread). The
+        supersession check is what kills leaked threads: the old shared-bool
+        guard let a finished thread clear pattern_running for ALL threads, so
+        _stop_current_pattern no-opped and a stale idle loop kept repainting
+        (dim-)white at ~2.5Hz underneath every later pattern.
+        """
+        if self._stop_pattern.is_set():
+            return True
+        return threading.current_thread() is not self.pattern_thread
+
     def _stop_current_pattern(self) -> None:
-        """Stop current pattern"""
-        if self.pattern_running:
-            self._stop_pattern.set()
-            if self.pattern_thread and self.pattern_thread.is_alive():
+        """Stop current pattern (unconditionally — see _should_stop)."""
+        self._stop_pattern.set()
+        if self.pattern_thread and self.pattern_thread.is_alive():
+            self.pattern_thread.join(timeout=2.0)
+            # If thread is still alive after join, warn and wait more
+            if self.pattern_thread.is_alive():
+                self.logger.warning("LED pattern thread slow to stop, waiting...")
                 self.pattern_thread.join(timeout=2.0)
-                # If thread is still alive after join, warn and wait more
-                if self.pattern_thread.is_alive():
-                    self.logger.warning("LED pattern thread slow to stop, waiting...")
-                    self.pattern_thread.join(timeout=2.0)
 
     def _run_pattern(self, pattern_name: str, duration: Optional[float],
                     color: Optional[str], kwargs: Dict[str, Any]) -> None:
@@ -229,7 +251,7 @@ class LedService:
 
         start_time = time.time()
         last_send = start_time
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             # Check for blue LED commands from Xbox controller
             self.check_blue_led_commands()
 
@@ -256,9 +278,9 @@ class LedService:
             return
 
         search_color = color or 'cyan'
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             for i in range(self.led.neopixel_count):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     break
 
                 # Check for blue LED commands from Xbox controller
@@ -293,7 +315,7 @@ class LedService:
         flash_count = 0
         max_flashes = 10 if duration else 999
 
-        while not self._stop_pattern.is_set() and flash_count < max_flashes:
+        while not self._should_stop() and flash_count < max_flashes:
             if self.led.pixels:
                 self.led.set_solid_color('red')
             # Blue LED controlled separately by Xbox controller X button
@@ -308,7 +330,7 @@ class LedService:
 
     def _pattern_charging(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
         """Charging pattern - pulsing yellow"""
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             self._pulse_effect('yellow', 2.0)
 
     def _pattern_rainbow(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
@@ -317,12 +339,12 @@ class LedService:
             return
 
         start_time = time.time()
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             if duration and time.time() - start_time > duration:
                 break
 
             for j in range(255):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     break
 
                 for i in range(self.led.neopixel_count):
@@ -348,12 +370,12 @@ class LedService:
         dot_color = color or 'cyan'
         start_time = time.time()
 
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             if duration and time.time() - start_time > duration:
                 break
 
             for i in range(self.led.neopixel_count):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     break
 
                 self.led.pixels.fill(self.colors['off'])
@@ -366,11 +388,11 @@ class LedService:
         # Rainbow for 2 seconds
         self._pattern_rainbow(2.0, None)
 
-        if not self._stop_pattern.is_set():
+        if not self._should_stop():
             # Pulse green for 1 second
             self._pulse_effect('green', 1.0)
 
-        if not self._stop_pattern.is_set():
+        if not self._should_stop():
             # Final bright flash
             if self.led.pixels:
                 self.led.set_solid_color('white')
@@ -386,7 +408,7 @@ class LedService:
         # Blue LED controlled separately by Xbox controller X button
 
         start_time = time.time()
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             if duration and time.time() - start_time > duration:
                 break
 
@@ -395,7 +417,7 @@ class LedService:
             self.led.pixels.show()
             time.sleep(0.5)
 
-            if self._stop_pattern.is_set():
+            if self._should_stop():
                 break
 
             # Flash green briefly
@@ -403,7 +425,7 @@ class LedService:
             self.led.pixels.show()
             time.sleep(0.1)
 
-            if self._stop_pattern.is_set():
+            if self._should_stop():
                 break
 
             # Back to purple
@@ -420,10 +442,10 @@ class LedService:
         steps = 20
         start_time = time.time()
 
-        while not self._stop_pattern.is_set() and time.time() - start_time < duration:
+        while not self._should_stop() and time.time() - start_time < duration:
             # Fade in
             for step in range(steps):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     return
 
                 brightness = step / steps
@@ -434,7 +456,7 @@ class LedService:
 
             # Fade out
             for step in range(steps, 0, -1):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     return
 
                 brightness = step / steps
@@ -512,12 +534,12 @@ class LedService:
         speed = kwargs.get('speed', 0.5)  # Hue change per frame
         start_time = time.time()
 
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             if duration and time.time() - start_time > duration:
                 break
 
             for i in range(self.led.neopixel_count):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     break
                 # Calculate hue based on position and time offset
                 hue = (hue_offset + (i * 360 / self.led.neopixel_count)) % 360
@@ -538,7 +560,7 @@ class LedService:
         start_time = time.time()
 
         position = 0
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             if duration and time.time() - start_time > duration:
                 break
 
@@ -574,7 +596,7 @@ class LedService:
         heat = [0] * self.led.neopixel_count
         start_time = time.time()
 
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             if duration and time.time() - start_time > duration:
                 break
 
@@ -634,7 +656,7 @@ class LedService:
         start_time = time.time()
         flash_count = 0
 
-        while not self._stop_pattern.is_set() and (time.time() - start_time) < duration:
+        while not self._should_stop() and (time.time() - start_time) < duration:
             # Quick red flash
             self.led.set_solid_color('red')
             time.sleep(0.15)
@@ -662,10 +684,10 @@ class LedService:
         # Amber color (orange-ish)
         amber = (255, 140, 0)
 
-        while not self._stop_pattern.is_set() and (time.time() - start_time) < duration:
+        while not self._should_stop() and (time.time() - start_time) < duration:
             # Breathe in (fade up) - 1.5 seconds
             for brightness in range(0, 100, 5):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     break
                 factor = brightness / 100.0
                 r = int(amber[0] * factor)
@@ -677,7 +699,7 @@ class LedService:
 
             # Breathe out (fade down) - 1.5 seconds
             for brightness in range(100, 0, -5):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     break
                 factor = brightness / 100.0
                 r = int(amber[0] * factor)
@@ -702,7 +724,7 @@ class LedService:
         self.led.set_solid_color('green')
 
         start_time = time.time()
-        while not self._stop_pattern.is_set() and (time.time() - start_time) < duration:
+        while not self._should_stop() and (time.time() - start_time) < duration:
             time.sleep(0.1)
 
         # Don't turn off - let celebration pattern take over
@@ -733,7 +755,7 @@ class LedService:
 
         # Hold for duration or indefinitely
         start_time = time.time()
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             if duration and (time.time() - start_time) >= duration:
                 break
             time.sleep(0.1)
@@ -783,13 +805,13 @@ class LedService:
         steps = 40  # More steps for smoother breathing
         start_time = time.time()
 
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             if duration and (time.time() - start_time) >= duration:
                 break
 
             # Breathe in (very slow fade up) - 2 seconds
             for step in range(steps):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     return
 
                 brightness = step / steps
@@ -800,7 +822,7 @@ class LedService:
 
             # Breathe out (very slow fade down) - 2 seconds
             for step in range(steps, 0, -1):
-                if self._stop_pattern.is_set():
+                if self._should_stop():
                     return
 
                 brightness = step / steps
@@ -823,7 +845,7 @@ class LedService:
         max_duration = duration if duration else 3.0
         start_time = time.time()
 
-        while not self._stop_pattern.is_set():
+        while not self._should_stop():
             if (time.time() - start_time) >= max_duration:
                 break
 
@@ -831,7 +853,7 @@ class LedService:
             self.led.pixels.show()
             time.sleep(0.15)
 
-            if self._stop_pattern.is_set():
+            if self._should_stop():
                 break
 
             self.led.pixels.fill(red)

@@ -268,7 +268,7 @@ class USBAudioService:
             # Handle relative paths by prepending base path
             if not filepath.startswith('/'):
                 full_path = os.path.join(self.base_path, filepath.lstrip('/'))
-            elif filepath.startswith('/talks/') or filepath.startswith('/songs/') or filepath.startswith('/02/'):
+            elif filepath.startswith(('/talks/', '/songs/', '/02/', '/wimz/')):
                 # Map short paths to full paths
                 full_path = os.path.join(self.base_path, filepath[1:])
 
@@ -461,17 +461,28 @@ class USBAudioService:
             state: 'playing', 'stopped', 'paused'
             track: Current track name (optional)
         """
+        payload = {
+            'state': state,
+            'track': track,
+            'playing': state == 'playing',
+            'playlist_index': self._current_index,
+            'playlist_length': len(self._playlist),
+        }
+
+        # Internal EventBus first: api/ws.py subscribes to the 'audio'
+        # category and broadcasts to /ws/local clients — this is the ONLY
+        # state feedback the app gets in AP/local mode (relay is down there).
+        try:
+            from core.bus import publish_audio_event
+            publish_audio_event('audio_state', payload)
+        except Exception as e:
+            self.logger.debug(f"Could not publish audio_state on bus: {e}")
+
         try:
             from services.cloud.relay_client import get_relay_client
             relay = get_relay_client()
             if relay and relay.connected:
-                relay.send_event('audio_state', {
-                    'state': state,
-                    'track': track,
-                    'playing': state == 'playing',
-                    'playlist_index': self._current_index,
-                    'playlist_length': len(self._playlist),
-                })
+                relay.send_event('audio_state', payload)
                 self.logger.debug(f"Sent audio_state event: {state}, track={track}")
         except Exception as e:
             # Don't let event sending failures affect audio playback

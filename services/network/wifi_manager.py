@@ -51,6 +51,11 @@ class WiFiManager:
     DEFAULT_INTERFACE = "wlan0"
     HOTSPOT_CONNECTION_NAME = "WIMZ-Hotspot"
     HOTSPOT_IP = "192.168.4.1"
+    # The ONE AP password, every scenario (setup portal, WiFi-loss fallback,
+    # app-commanded local mode). Paired with get_ap_ssid() — there is no other
+    # AP flavor; WIMZ-Demo was removed 2026-07 (phones couldn't follow the
+    # SSID swap mid-session).
+    AP_PASSWORD = "wimzsetup"
 
     def __init__(self, interface: str = None):
         self.interface = interface or self.DEFAULT_INTERFACE
@@ -59,6 +64,113 @@ class WiFiManager:
         self._wifi_driver: Optional[str] = None  # cached for netdev recovery
         # Serialize all wireless operations to prevent kernel driver deadlock
         self._op_lock = threading.RLock()
+        # True while the current AP was raised on explicit app/user command
+        # (local mode) — the WiFi monitor must not auto-rejoin away from it.
+        self.ap_deliberate = False
+
+    def get_ap_ssid(self) -> str:
+        """The ONE AP SSID used for every hotspot scenario."""
+        return f"WIMZ-{self.get_device_serial()}"
+
+    def get_current_bssid(self) -> Optional[str]:
+        """BSSID currently associated to (station mode), or None."""
+        success, output = self._run_cmd(
+            ["iw", "dev", self.interface, "link"], timeout=5)
+        if not success:
+            return None
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("Connected to "):
+                return line.split()[2].lower()
+        return None
+
+    def get_signal_dbm(self) -> Optional[int]:
+        """Current link signal in dBm (station mode), or None."""
+        success, output = self._run_cmd(
+            ["iw", "dev", self.interface, "link"], timeout=5)
+        if not success:
+            return None
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("signal:"):
+                try:
+                    return int(line.split()[1])
+                except (IndexError, ValueError):
+                    return None
+        return None
+
+    def get_active_connection_name(self) -> Optional[str]:
+        """NM connection profile name active on our interface, or None."""
+        success, output = self._run_nmcli(
+            ["-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            timeout=10)
+        if not success:
+            return None
+        for line in output.splitlines():
+            # NAME may contain escaped colons; DEVICE never does, so split
+            # from the right.
+            name, _, device = line.rpartition(":")
+            if device == self.interface and name:
+                return name.replace("\\:", ":")
+        return None
+
+    def get_strongest_bssid(self) -> Optional[str]:
+        """Strongest-signal BSSID broadcasting our currently-connected SSID.
+
+        Used by roam-flap damping to pick which radio/mesh node to pin to.
+        Triggers a scan (station mode only — do not call while in AP mode).
+        """
+        ssid = self.get_connection_status().get('ssid')
+        if not ssid:
+            return None
+        success, output = self._run_nmcli(
+            ["-t", "-f", "BSSID,SIGNAL,SSID", "device", "wifi", "list",
+             "ifname", self.interface],
+            timeout=20)
+        if not success:
+            return None
+        best_bssid, best_signal = None, -1
+        for line in output.splitlines():
+            # nmcli -t escapes the BSSID's colons as '\:'
+            parts = line.replace("\\:", "|").split(":")
+            if len(parts) < 3:
+                continue
+            bssid = parts[0].replace("|", ":").lower()
+            try:
+                signal = int(parts[1])
+            except ValueError:
+                continue
+            if ":".join(parts[2:]) == ssid and signal > best_signal:
+                best_bssid, best_signal = bssid, signal
+        return best_bssid
+
+    def set_bssid_pin(self, bssid: Optional[str]) -> bool:
+        """Pin the active connection to one BSSID (roam-flap damping), or
+        clear the pin with bssid=None. Takes effect on the next (re)activation.
+        """
+        name = self.get_active_connection_name()
+        if not name:
+            return False
+        # sudo: polkit denies connection-profile modification for the
+        # treatbot user (live-verified "Insufficient privileges").
+        success, _ = self._run_cmd(
+            ["sudo", "nmcli", "connection", "modify", name,
+             "802-11-wireless.bssid", bssid or ""],
+            timeout=10)
+        if success:
+            logger.info(f"BSSID pin {'set to ' + bssid if bssid else 'cleared'} on '{name}'")
+        return success
+
+    def reactivate_connection(self) -> bool:
+        """Re-activate the current connection (applies a just-set BSSID pin)."""
+        name = self.get_active_connection_name()
+        if not name:
+            return False
+        with self._op_lock:
+            success, _ = self._run_cmd(
+                ["sudo", "nmcli", "connection", "up", name,
+                 "ifname", self.interface], timeout=45)
+        return success
 
     def is_ap_mode(self) -> bool:
         """Detect if the interface is currently in AP mode by checking for hostapd process."""
@@ -574,8 +686,12 @@ class WiFiManager:
             "rsn_pairwise=CCMP\n"
         )
 
-    def start_demo_hotspot(self, ssid: str = "WIMZ-Demo", password: str = "wimzdemo") -> bool:
+    def start_demo_hotspot(self, ssid: str, password: str) -> bool:
         """Start a clean WiFi AP for direct robot control (no captive portal, no DNS hijack).
+
+        ssid/password are required on purpose: callers must pass
+        get_ap_ssid()/AP_PASSWORD so every AP scenario raises the SAME network
+        (a missed caller fails loudly instead of silently raising a stray SSID).
 
         Unlike start_hotspot(), this creates a plain WiFi network:
         - No DNS redirect (address=/#/...)

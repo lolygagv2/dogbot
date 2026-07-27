@@ -233,10 +233,9 @@ class CaptivePortal:
         await asyncio.sleep(2)  # Give the response time to reach the client
         logger.info(f"Restarting AP mode after failed connection to {failed_ssid}")
 
-        # Get the SSID we should use (from device serial)
-        serial = self.wifi_manager.get_device_serial()
-        ap_ssid = f"WIMZ-{serial}"
-        ap_password = "wimzsetup"
+        # The single fleet-wide AP SSID/password
+        ap_ssid = self.wifi_manager.get_ap_ssid()
+        ap_password = self.wifi_manager.AP_PASSWORD
 
         # Restart the hotspot
         success = self.wifi_manager.start_hotspot(ap_ssid, ap_password)

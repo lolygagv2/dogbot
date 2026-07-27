@@ -48,12 +48,9 @@ def main():
             logger.info("WiFi connected successfully - treatbot.service can start")
             return 0
         else:
-            # run() only returns False after demo mode loop exits (signal/shutdown)
-            # or if provisioning failed entirely
-            if service.in_demo_mode:
-                logger.info("WIMZ-Demo AP mode ended (shutdown signal)")
-            else:
-                logger.info("Provisioning completed without WiFi connection")
+            # No WiFi and no credentials received — exit cleanly. Runtime AP
+            # fallback is owned by treatbot's WiFi monitor (single AP owner).
+            logger.info("Provisioning completed without WiFi connection - exiting")
             return 0
 
     except KeyboardInterrupt:

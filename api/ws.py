@@ -103,6 +103,10 @@ class TreatBotWebSocketServer:
         # Telemetry task
         self.telemetry_task = None
 
+        # Captured on first websocket connect: the uvicorn loop that bus
+        # events published from plain threads must be scheduled onto.
+        self._main_loop = None
+
     def _setup_event_handlers(self):
         """Subscribe to relevant events from the bus.
         EventBus calls from threads, so wrap async handlers to schedule
@@ -113,14 +117,19 @@ class TreatBotWebSocketServer:
             """Wrap async handler for sync EventBus callback"""
             def wrapper(event):
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.ensure_future(async_handler(event))
-                    else:
-                        loop.run_until_complete(async_handler(event))
+                    loop = asyncio.get_running_loop()
                 except RuntimeError:
-                    # No event loop in this thread — create task from main loop
-                    pass
+                    loop = None
+                if loop is not None:
+                    asyncio.ensure_future(async_handler(event))
+                    return
+                # Publisher is a plain thread (audio/detector/etc.) — schedule
+                # onto the server loop captured at first client connect. The
+                # old code silently dropped these, so NO bus event published
+                # from a thread ever reached websocket clients.
+                target = self._main_loop
+                if target is not None and target.is_running():
+                    asyncio.run_coroutine_threadsafe(async_handler(event), target)
             return wrapper
 
         self.bus.subscribe("vision", _make_sync_wrapper(self._on_vision_event))
@@ -165,6 +174,11 @@ class TreatBotWebSocketServer:
 
     async def handle_websocket(self, websocket: WebSocket):
         """Handle a WebSocket connection (used by both /ws and /ws/local)"""
+        # Capture the server loop so bus events published from plain threads
+        # (audio state, detections) can be scheduled onto it for broadcast.
+        import asyncio
+        self._main_loop = asyncio.get_running_loop()
+
         await self.manager.connect(websocket)
         self.logger.info(f"WebSocket connected. Path: {websocket.url.path}")
 
@@ -223,11 +237,21 @@ class TreatBotWebSocketServer:
         state = self.state.get_full_state()
         mission_status = self.mission_engine.get_mission_status()
 
+        # Audio state too, so a (re)connecting app starts its play/pause UI
+        # in sync with the robot instead of guessing (inverted-toggle bug).
+        audio_status = None
+        try:
+            from services.media.usb_audio import get_usb_audio_service
+            audio_status = get_usb_audio_service().get_status()
+        except Exception:
+            pass
+
         await self.manager.send_to_one(websocket, {
             "type": "initial_status",
             "data": {
                 "system_state": state,
                 "mission_status": mission_status,
+                "audio_status": audio_status,
                 "timestamp": time.time()
             }
         })
@@ -601,31 +625,27 @@ class TreatBotWebSocketServer:
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
 
-            elif command == "audio_next":
+            elif command in ("audio_next", "audio_prev", "audio_toggle", "audio_stop"):
+                # Merge the service's REAL result into the response instead of
+                # a hardcoded success:true — "audio still loading" no-ops used
+                # to be reported as success, and the app's optimistic play/
+                # pause button flipped for actions that never happened
+                # (the stuck-inverted toggle bug).
                 try:
                     usb_audio = get_usb_audio_service()
-                    usb_audio.play_next()
-                except Exception as e:
-                    result = {"success": False, "command": command, "error": str(e)}
-
-            elif command == "audio_prev":
-                try:
-                    usb_audio = get_usb_audio_service()
-                    usb_audio.play_previous()
-                except Exception as e:
-                    result = {"success": False, "command": command, "error": str(e)}
-
-            elif command == "audio_toggle":
-                try:
-                    usb_audio = get_usb_audio_service()
-                    usb_audio.toggle()
-                except Exception as e:
-                    result = {"success": False, "command": command, "error": str(e)}
-
-            elif command == "audio_stop":
-                try:
-                    usb_audio = get_usb_audio_service()
-                    usb_audio.stop()
+                    action = {
+                        "audio_next": usb_audio.play_next,
+                        "audio_prev": usb_audio.play_previous,
+                        "audio_toggle": usb_audio.toggle,
+                        "audio_stop": usb_audio.stop,
+                    }[command]
+                    svc_result = action()
+                    if isinstance(svc_result, dict):
+                        result.update(svc_result)
+                        result["command"] = command
+                    elif svc_result is False:
+                        result = {"success": False, "command": command,
+                                  "error": "audio command failed"}
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
 

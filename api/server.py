@@ -3989,22 +3989,23 @@ async def enter_local_mode():
     After calling this, connect to the WIMZ-XXXX hotspot and use the API at the hotspot IP
     """
     try:
-        from services.network.wifi_manager import WiFiManager
+        from services.network.wifi_manager import get_wifi_manager
 
-        wifi = WiFiManager()
+        wifi = get_wifi_manager()
         hotspot_ip = wifi.HOTSPOT_IP
-
-        # Generate SSID
-        serial = wifi.get_device_serial()
-        ssid = f"WIMZ-{serial}"
-        password = "wimzsetup"
+        ssid = wifi.get_ap_ssid()
+        password = wifi.AP_PASSWORD
 
         logger.info(f"Switching to Local Mode (AP: {ssid})")
 
-        # Start hotspot
-        success = wifi.start_hotspot(ssid, password)
+        # Clean AP (no captive-portal DNS hijack), 5GHz-first — the single
+        # fleet SSID, same as every other AP scenario.
+        success = wifi.start_demo_hotspot(ssid=ssid, password=password)
 
         if success:
+            # Sticky: user asked for this AP — WiFi monitor won't auto-rejoin
+            # away from it (cleared by cloud-mode, reboot, or 10 min empty).
+            wifi.ap_deliberate = True
             return {
                 "status": "switching",
                 "ssid": ssid,
@@ -4029,11 +4030,15 @@ async def enter_cloud_mode():
     This stops the hotspot and reconnects to the saved WiFi network.
     """
     try:
-        from services.network.wifi_manager import WiFiManager
+        from services.network.wifi_manager import get_wifi_manager
 
-        wifi = WiFiManager()
+        wifi = get_wifi_manager()
 
         logger.info("Switching to Cloud Mode (stopping hotspot)")
+
+        # Clear stickiness before teardown so the WiFi monitor can't race
+        # back into the deliberate-AP hold while we reconnect.
+        wifi.ap_deliberate = False
 
         # Stop hotspot (returns to client mode)
         wifi.stop_hotspot()
@@ -4064,12 +4069,12 @@ async def enter_cloud_mode():
 async def get_network_status():
     """Get current network status — AP mode vs WiFi mode, with internet check."""
     try:
-        from services.network.wifi_manager import WiFiManager
+        from services.network.wifi_manager import get_wifi_manager
 
-        wifi = WiFiManager()
+        wifi = get_wifi_manager()
 
         if wifi.is_ap_mode():
-            ap_ssid = wifi.get_active_ap_ssid() or f"WIMZ-Demo-{wifi.get_device_serial()}"
+            ap_ssid = wifi.get_active_ap_ssid() or wifi.get_ap_ssid()
             return {
                 "mode": "ap",
                 "ssid": ap_ssid,
@@ -4146,9 +4151,9 @@ async def wifi_scan():
     The app should warn the user before calling this in AP mode.
     """
     try:
-        from services.network.wifi_manager import WiFiManager
+        from services.network.wifi_manager import get_wifi_manager
 
-        wifi = WiFiManager()
+        wifi = get_wifi_manager()
         in_ap = wifi.is_ap_mode()
 
         if in_ap:
@@ -4157,8 +4162,8 @@ async def wifi_scan():
             wifi.stop_hotspot()
             time.sleep(1)
             networks = wifi._do_scan()
-            # Restart demo AP
-            wifi.start_demo_hotspot()
+            wifi.start_demo_hotspot(ssid=wifi.get_ap_ssid(),
+                                    password=wifi.AP_PASSWORD)
         else:
             networks = wifi.scan_networks()
 
@@ -4182,7 +4187,7 @@ async def wifi_scan():
 
 @app.post("/system/wifi/connect")
 async def wifi_connect(request: dict):
-    """Connect to a WiFi network. Shuts down WIMZ-Demo AP if active.
+    """Connect to a WiFi network. Shuts down the WIMZ AP if active.
 
     Body: {"ssid": "NetworkName", "password": "secret"}
     """
@@ -4193,19 +4198,19 @@ async def wifi_connect(request: dict):
         raise HTTPException(status_code=400, detail="ssid is required")
 
     try:
-        from services.network.wifi_manager import WiFiManager
+        from services.network.wifi_manager import get_wifi_manager
 
-        wifi = WiFiManager()
-        logger.info(f"[LOCAL] WiFi configured via API — connecting to {ssid}, shutting down WIMZ-Demo")
+        wifi = get_wifi_manager()
+        logger.info(f"[LOCAL] WiFi configured via API — connecting to {ssid}, shutting down AP")
 
         # save_credentials() stops the hotspot, connects to WiFi, and tests internet
         result = wifi.save_credentials(ssid, password)
 
         if result["success"]:
+            wifi.ap_deliberate = False
             status = wifi.get_connection_status()
             ip = status.get("ip_address", "unknown")
             logger.info(f"[LOCAL] WiFi connected — relay mode at {ip}:8000")
-            # Clear demo AP state file so provisioning doesn't resume AP on restart
             return {
                 "success": True,
                 "message": result["message"],
@@ -4213,11 +4218,12 @@ async def wifi_connect(request: dict):
                 "has_internet": result["has_internet"]
             }
         else:
-            # Connection failed — restart demo AP so the user can retry
+            # Connection failed — restart the AP so the user can retry
             logger.warning(f"WiFi connect to '{ssid}' failed: {result['message']}")
             if result.get("should_restart_ap"):
-                logger.info("[LOCAL] Restarting WIMZ-Demo AP after failed WiFi connect")
-                wifi.start_demo_hotspot()
+                logger.info("[LOCAL] Restarting AP after failed WiFi connect")
+                wifi.start_demo_hotspot(ssid=wifi.get_ap_ssid(),
+                                        password=wifi.AP_PASSWORD)
             return {
                 "success": False,
                 "message": result["message"]
