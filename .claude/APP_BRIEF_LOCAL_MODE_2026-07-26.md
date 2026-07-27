@@ -150,6 +150,49 @@ from `initial_status.audio_status`), never a locally-toggled boolean.
    during watching; if the relay persists events, it likely wants throttling
    or a carve-out from durable history for this subtype.
 
+## 5a. UPDATE 2026-07-27 — `force_trick` is now ONE-SHOT
+
+Live testing exposed that the forced trick was sticky forever: it overrode the
+trick rotation on every subsequent session and even survived exiting and
+re-entering coach mode (engine is a boot-lifetime singleton and never cleared
+it). Fixed robot-side:
+
+- A forced trick runs exactly ONE session (success or failure), then the
+  normal sequential rotation resumes automatically.
+- Exiting coach mode discards any staged-but-unrun forced trick; re-entering
+  coach starts clean.
+- `POST /coaching/clear_forced_trick` still exists to cancel a staged trick.
+
+**App implication:** treat the trick chip as a transient action, not a pinned
+state — clear the highlight once the forced session starts (watch
+`trick_forced` / `coach_progress`), and re-send `force_trick` on every tap.
+
+## 5b. UPDATE 2026-07-27 — drive screen must reuse the WebRTC session
+
+Robot journal from the 2026-07-27 AP test: the app connected local WebRTC via
+`/ws/local` signaling (ICE LAN pair, ~2s, no STUN/TURN), ABR ramped
+400k→1500kbps at 12-13.5 FPS, and the session stayed CONNECTED until robot
+shutdown — including the whole time the drive screen showed "Non-WebRTC".
+The robot never dropped the session; the drive screen just isn't rendering it.
+
+**Required app changes:**
+1. ONE app-global WebRTC session per robot: peer connection + video track live
+   above screen level; the drive screen renders the already-connected track.
+   Per-screen players and per-screen "Try WebRTC" state (which resets on
+   navigation) are the bug.
+2. Local mode defaults to WebRTC — no "Try WebRTC" tap. MJPEG (`/video/feed`)
+   is a fallback only when WebRTC fails to connect within a timeout.
+3. NEVER run MJPEG while WebRTC is connected. MJPEG is ~4-7 Mbps vs WebRTC's
+   adaptive 0.4-1.5 Mbps; both at once saturate the robot's own AP link and
+   double the Pi's encode load — this is the drive-screen lag. Tear down the
+   MJPEG player the moment WebRTC connects.
+4. Bounding boxes are burned into the WebRTC stream robot-side; MJPEG is raw
+   frames. Boxes appear if and only if the WebRTC track is rendered.
+
+**Acceptance:** robot on AP → drive screen shows WebRTC video with boxes
+immediately, no "Try WebRTC" badge, no `/video/feed` requests while connected,
+lag gone.
+
 ## 6. Verification builds
 
 Test all of the above against a robot on `main` ≥ `60e526f` (treatbot5 is

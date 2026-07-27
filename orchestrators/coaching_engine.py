@@ -257,6 +257,12 @@ class CoachingEngine:
             self.bark_count = 0
             self.bark_timestamps.clear()
             self.listening_for_barks = False
+            if self._forced_trick:
+                logger.info(f"[COACH] Discarding stale forced trick on re-entry: {self._forced_trick}")
+            self._forced_trick = None
+            self._forced_trick_at = 0.0
+            self._forced_dog_id = None
+            self._forced_dog_name = None
             logger.info("[COACH] State reset to WAITING_FOR_DOG")
 
             # Spec store session (dual-write; one session per coach activation)
@@ -481,10 +487,17 @@ class CoachingEngine:
 
     def _select_trick(self, dog_id: str) -> str:
         """Select next trick in sequential rotation"""
-        # Check for forced trick (testing mode)
+        # Forced trick is one-shot: consume it now so the next session returns
+        # to the normal rotation. (_get_dog_name already ran for this session,
+        # so clearing the forced dog fields here is safe.) Keep _forced_trick_at
+        # — the audio-suppression window is consumed later in the COMMAND state.
         if self._forced_trick:
-            logger.info(f"Using forced trick: {self._forced_trick}")
-            return self._forced_trick
+            trick = self._forced_trick
+            self._forced_trick = None
+            self._forced_dog_id = None
+            self._forced_dog_name = None
+            logger.info(f"Using forced trick: {trick} (one-shot — rotation resumes next session)")
+            return trick
 
         history = self._get_or_create_history(dog_id)
 
