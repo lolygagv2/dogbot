@@ -105,7 +105,43 @@ playback state from the robot instead of flipping a local flag:
 **Required:** play/pause button state = last `audio_state.playing` (seeded
 from `initial_status.audio_status`), never a locally-toggled boolean.
 
-## 5. Verification builds
+## 5. Answers to Build 145's robot-instance questions (2026-07-26, commit pending)
+
+1. **`coach_progress` trick key: `trick`** — present in all three stages.
+   Payloads: greeting `{stage:'greeting', dog_name, trick}`; command
+   `{stage:'command', trick, dog_name}`; watching (every ~500ms)
+   `{stage:'watching', trick, dog_name, confidence, hold_duration, elapsed}`.
+   There is NO success/failure-stage coach_progress — terminal state comes via
+   other events.
+2. **Local socket delivery — fixed on the robot today:**
+   - `coaching_started`/`coaching_stopped` are bus system-events; the ws
+     bridge used to silently DROP all thread-published bus events (same root
+     cause as the missing local detection events). Fixed in `60e526f`;
+     **live-verified today** arriving over `/ws/local` as
+     `{"type":"event","category":"system","data":{"subtype":"coaching_started",...}}`.
+   - `coach_progress` was relay-ONLY (never on the bus) — it could never
+     reach `/ws/local` regardless. Fixed now: emitted to bus + relay, so it
+     arrives locally in the same system-event envelope with
+     `subtype: "coach_progress"`. NOTE the local envelope differs from the
+     relay's flat `{event: "coach_progress", ...}` shape.
+   - Local detection/vision events should also flow now (same wrapper fix);
+     they use `category: "vision"`.
+3. **`force_trick` semantics: NO cancel-and-replace.** `set_forced_trick`
+   only stages the trick for the NEXT session (consumed at trick-selection
+   when a new session starts); a currently-running trick always finishes
+   (success/failure/timeout) first. Also fixed today: the `/ws/local`
+   `force_trick` response is now honest — live-verified:
+   - staged OK → `{"success":true, "forced_trick":"sit", "message":"Next session will use 'sit'"}`
+   - invalid trick → `{"success":false, "error":"Invalid trick: backflip", "valid_tricks":[...]}`
+   - engine not running → `{"success":false, "error":"coaching engine not running (enter coach mode first)"}`
+   Previously ALL of these returned bare `success:true`, so Build 145's
+   diag traces would have shown phantom successes.
+4. Relay `FEED_WORTHY_EVENTS` check is Relay Claude's item (robot instance is
+   not authorized on the relay) — but note `coach_progress` fires at 2Hz
+   during watching; if the relay persists events, it likely wants throttling
+   or a carve-out from durable history for this subtype.
+
+## 6. Verification builds
 
 Test all of the above against a robot on `main` ≥ `60e526f` (treatbot5 is
 live). Local-mode regression checklist: join AP → video → drive → coach

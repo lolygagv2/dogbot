@@ -684,16 +684,11 @@ class CoachingEngine:
         trick = self.current_session.trick_requested or "trick"
 
         # Send coach_progress event for greeting stage
-        try:
-            relay = get_relay_client()
-            if relay and relay.connected:
-                relay.send_event('coach_progress', {
-                    'stage': 'greeting',
-                    'dog_name': dog_name,
-                    'trick': trick
-                })
-        except Exception:
-            pass
+        self._emit_coach_progress({
+            'stage': 'greeting',
+            'dog_name': dog_name,
+            'trick': trick
+        })
 
         # Start video recording for this coaching session
         try:
@@ -753,16 +748,11 @@ class CoachingEngine:
         trick = self.current_session.trick_requested
 
         # Send coach_progress event for command stage
-        try:
-            relay = get_relay_client()
-            if relay and relay.connected:
-                relay.send_event('coach_progress', {
-                    'stage': 'command',
-                    'trick': trick,
-                    'dog_name': self.current_session.dog_name
-                })
-        except Exception:
-            pass
+        self._emit_coach_progress({
+            'stage': 'command',
+            'trick': trick,
+            'dog_name': self.current_session.dog_name
+        })
 
         # Say the trick command using audio file from config (Layer 2)
         trick_rules = self.interpreter.get_trick_rules(trick)
@@ -890,19 +880,14 @@ class CoachingEngine:
         # Send periodic coach_progress during watching (~every 500ms)
         # Throttle by checking if half-second boundary crossed
         if int(watch_elapsed * 2) != int((watch_elapsed - 0.1) * 2):
-            try:
-                relay = get_relay_client()
-                if relay and relay.connected:
-                    relay.send_event('coach_progress', {
-                        'stage': 'watching',
-                        'trick': expected_trick,
-                        'dog_name': dog_name,
-                        'confidence': result.confidence if result else 0.0,
-                        'hold_duration': result.hold_duration if result else 0.0,
-                        'elapsed': round(watch_elapsed, 1)
-                    })
-            except Exception:
-                pass
+            self._emit_coach_progress({
+                'stage': 'watching',
+                'trick': expected_trick,
+                'dog_name': dog_name,
+                'confidence': result.confidence if result else 0.0,
+                'hold_duration': result.hold_duration if result else 0.0,
+                'elapsed': round(watch_elapsed, 1)
+            })
 
         if result.completed:
             self.current_session.success = True
@@ -1384,6 +1369,24 @@ class CoachingEngine:
         dogs_count = len(self.dogs_in_view)
         logger.info(f"FULL RESET - Session cancelled, {dogs_count} dogs ready for new session")
         return {'reset': True, 'dogs_ready': dogs_count, 'message': 'Full reset - ready for new session'}
+
+    def _emit_coach_progress(self, payload: Dict[str, Any]) -> None:
+        """Send a coach_progress event to BOTH the app surfaces.
+
+        Bus first (api/ws broadcasts system events to /ws/local — the ONLY
+        path that exists in AP mode), then relay for cloud sessions. Never
+        raises into the coaching loop.
+        """
+        try:
+            publish_system_event('coach_progress', payload, 'coaching_engine')
+        except Exception:
+            pass
+        try:
+            relay = get_relay_client()
+            if relay and relay.connected:
+                relay.send_event('coach_progress', payload)
+        except Exception:
+            pass
 
     def set_forced_trick(self, trick: str = None, dog_id: str = None,
                          dog_name: str = None, audio_pre_played: bool = False) -> Dict[str, Any]:

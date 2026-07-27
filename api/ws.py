@@ -686,7 +686,20 @@ class TreatBotWebSocketServer:
                     from orchestrators.coaching_engine import get_coaching_engine
                     engine = get_coaching_engine()
                     if engine and engine.running:
-                        engine.set_forced_trick(trick, dog_id=dog_id, dog_name=dog_name)
+                        # Honest response: surface invalid-trick refusals and
+                        # the staged-for-next-session semantics to the app.
+                        svc = engine.set_forced_trick(trick, dog_id=dog_id, dog_name=dog_name)
+                        if isinstance(svc, dict):
+                            result.update(svc)
+                            result["command"] = command
+                            if "error" in svc:
+                                result["success"] = False
+                    else:
+                        result = {"success": False, "command": command,
+                                  "error": "coaching engine not running (enter coach mode first)"}
+                else:
+                    result = {"success": False, "command": command,
+                              "error": "'trick' required"}
 
             elif command == "treat_counter_set":
                 # {"command": "treat_counter_set", "count": 44}
