@@ -2064,7 +2064,6 @@ class TreatBotMain:
             # Notify app of mode change via relay
             # Send 'mode_changed' event for app sync
             if self.relay_client and self.relay_client.connected:
-                import time
                 # Use contract mode names (must match telemetry mode_map)
                 _mode_map = {
                     "idle": "idle", "silent_guardian": "silent_guardian",
