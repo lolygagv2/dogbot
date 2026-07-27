@@ -688,7 +688,10 @@ class TreatBotWebSocketServer:
                     if engine and engine.running:
                         # Honest response: surface invalid-trick refusals and
                         # the staged-for-next-session semantics to the app.
-                        svc = engine.set_forced_trick(trick, dog_id=dog_id, dog_name=dog_name)
+                        # replace=true cancels any running session first
+                        # (cancel-and-replace, Build 145+).
+                        svc = engine.set_forced_trick(trick, dog_id=dog_id, dog_name=dog_name,
+                                                      replace=bool(data.get("replace")))
                         if isinstance(svc, dict):
                             result.update(svc)
                             result["command"] = command

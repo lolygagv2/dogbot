@@ -1818,10 +1818,12 @@ class TreatBotMain:
                     if trick in BEHAVIOR_TO_TRICK:
                         self.logger.debug(f"force_trick: mapped '{trick}' -> '{BEHAVIOR_TO_TRICK[trick]}'")
                         trick = BEHAVIOR_TO_TRICK[trick]
+                    replace = bool(params.get('replace') or data_blob.get('replace'))
                     from orchestrators.coaching_engine import get_coaching_engine
                     engine = get_coaching_engine()
                     if engine and engine.running and trick:
-                        result = engine.set_forced_trick(trick, dog_id=dog_id, dog_name=dog_name)
+                        result = engine.set_forced_trick(trick, dog_id=dog_id, dog_name=dog_name,
+                                                         replace=replace)
                         if result.get('error'):
                             self.logger.warning(f"force_trick rejected: {result['error']}")
                             if self.relay_client and self.relay_client.connected:
@@ -1829,9 +1831,13 @@ class TreatBotMain:
                         else:
                             # Reset cooldown to allow immediate session
                             engine._last_session_end = 0.0
-                            self.logger.debug(f"force_trick -> {trick}")
-                        if self.relay_client and self.relay_client.connected:
-                            self.relay_client.send_event('trick_forced', {'success': True, 'trick': trick})
+                            self.logger.debug(f"force_trick -> {trick} (replace={replace})")
+                            # success event only on actual success — this used
+                            # to fire even after a rejection above
+                            if self.relay_client and self.relay_client.connected:
+                                self.relay_client.send_event('trick_forced', {
+                                    'success': True, 'trick': trick,
+                                    'replaced': result.get('replaced', False)})
                     else:
                         self.logger.warning(f"force_trick failed: engine={engine is not None}, running={engine.running if engine else False}, trick={trick}")
                         if self.relay_client and self.relay_client.connected:

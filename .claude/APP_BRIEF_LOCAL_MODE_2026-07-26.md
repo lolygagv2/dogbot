@@ -126,10 +126,19 @@ from `initial_status.audio_status`), never a locally-toggled boolean.
      relay's flat `{event: "coach_progress", ...}` shape.
    - Local detection/vision events should also flow now (same wrapper fix);
      they use `category: "vision"`.
-3. **`force_trick` semantics: NO cancel-and-replace.** `set_forced_trick`
-   only stages the trick for the NEXT session (consumed at trick-selection
-   when a new session starts); a currently-running trick always finishes
-   (success/failure/timeout) first. Also fixed today: the `/ws/local`
+3. **`force_trick` semantics: staged-for-next-session by default, and
+   cancel-and-replace is NOW AVAILABLE via a new flag.** Send
+   `{"command":"force_trick", "data":{"trick":"spin", "replace":true, ...}}`
+   (works on /ws/local, relay, and REST `?replace=true`): the robot
+   hard-cancels any in-progress session (FSM → WAITING_FOR_DOG, cooldowns
+   cleared, visible dogs fast-tracked) and the forced trick starts within a
+   beat. Response adds `"replaced": true|false` (whether a session was
+   actually cancelled). Without the flag, behavior is unchanged: the trick
+   waits for the current one to finish (success/failure/timeout). The relay
+   `trick_forced` event now carries `replaced` too — and no longer emits a
+   phantom success event after a rejection (pre-existing bug, fixed).
+   Recommended app UX: tap on a trick chip while a session is running →
+   send with `replace:true`. Also fixed today: the `/ws/local`
    `force_trick` response is now honest — live-verified:
    - staged OK → `{"success":true, "forced_trick":"sit", "message":"Next session will use 'sit'"}`
    - invalid trick → `{"success":false, "error":"Invalid trick: backflip", "valid_tricks":[...]}`

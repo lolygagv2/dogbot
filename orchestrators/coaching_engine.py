@@ -1389,7 +1389,8 @@ class CoachingEngine:
             pass
 
     def set_forced_trick(self, trick: str = None, dog_id: str = None,
-                         dog_name: str = None, audio_pre_played: bool = False) -> Dict[str, Any]:
+                         dog_name: str = None, audio_pre_played: bool = False,
+                         replace: bool = False) -> Dict[str, Any]:
         """Force a specific trick (None to clear).
 
         Args:
@@ -1400,9 +1401,18 @@ class CoachingEngine:
                 trick mp3 as press feedback. When True, the coach engine will skip its
                 own redundant TTS in the next session's COMMAND state. App-initiated
                 force_trick MUST pass False so the engine speaks the trick aloud.
+            replace: cancel-and-replace — hard-cancel any in-progress session
+                (reset_session_cooldown: FSM back to WAITING_FOR_DOG, cooldowns
+                cleared, visible dogs fast-tracked) so the forced trick starts
+                within a beat instead of waiting for the current trick to finish.
         """
         if trick and trick not in self.TRICKS:
             return {'error': f'Invalid trick: {trick}', 'valid_tricks': self.TRICKS}
+
+        replaced = False
+        if replace and trick:
+            replaced = self.current_session is not None
+            self.reset_session_cooldown()
 
         self._forced_trick = trick
         if trick:
@@ -1410,7 +1420,12 @@ class CoachingEngine:
             self._forced_dog_id = dog_id or None
             self._forced_dog_name = dog_name or None
             logger.info(f"Forced trick set: {trick} (dog={dog_name or dog_id or 'unspecified'}, "
-                       f"audio_pre_played={audio_pre_played})")
+                       f"audio_pre_played={audio_pre_played}, replace={replace})")
+            if replace:
+                msg = (f"Current session cancelled — '{trick}' starts next (dogs fast-tracked)"
+                       if replaced else
+                       f"No session in progress — '{trick}' starts next (dogs fast-tracked)")
+                return {'forced_trick': trick, 'replaced': replaced, 'message': msg}
             return {'forced_trick': trick, 'message': f"Next session will use '{trick}'"}
         else:
             self._forced_trick_at = 0.0
