@@ -91,7 +91,19 @@ class RelayClient:
             'audio_request': self._handle_audio_request,
             'user_connected': self._handle_user_connected,
             'user_disconnected': self._handle_user_disconnected,
+            # Cloud voice-command sync (contract 2026-07-30). The cloud path
+            # moved to relay-mediated storage in Build 87 but the robot slice
+            # was never written, so these arrived as "Unknown message type" and
+            # cloud voice sync was silently dead. WS 'upload_voice' remains the
+            # local-AP path — both land in voice_manager.save_voice().
+            'voice_command_updated': self._handle_voice_command_updated,
+            'voice_command_deleted': self._handle_voice_command_deleted,
         }
+
+        # Dedup key for voice syncs: (dog_id, command_id) -> updated_at.
+        # The relay re-pushes on reconnect (and sent the same row twice on
+        # 2026-07-30), so skip a re-download when nothing actually changed.
+        self._voice_sync_seen: Dict[tuple, str] = {}
 
         # Track connected user
         self._connected_user_id: Optional[str] = None
@@ -1127,6 +1139,156 @@ class RelayClient:
                 'device_id': self.config.device_id,
                 'error': str(e)
             })
+
+    def _relay_http_base(self) -> str:
+        """HTTPS origin of the relay, derived from the configured WS URL.
+
+        relay_url is 'wss://api.wimzai.com/ws/device' (overridable via
+        RELAY_URL env / cloud.relay_url yaml), so a hard-coded host here would
+        silently point a staging robot at production.
+        """
+        from urllib.parse import urlsplit
+        parts = urlsplit(self.config.relay_url)
+        scheme = 'https' if parts.scheme in ('wss', 'https') else 'http'
+        return f"{scheme}://{parts.netloc}"
+
+    async def _handle_voice_command_updated(self, data: dict):
+        """Fetch a per-dog voice clip the app synced through the relay.
+
+        {"type": "voice_command_updated", "dog_id": "<uuid>",
+         "command_id": "come", "audio_url": "/api/voice-commands/file/...",
+         "updated_at": "<ISO8601>"}
+
+        command_id is the command NAME (identity mapping) — the same string
+        voice_lookup.resolve_voice_file() turns into a filename. audio_url is
+        RELATIVE and must be prefixed with the relay origin (same trap as the
+        Build 40 MP3 download fix). Bytes are WAV; save_voice() transcodes to
+        MP3 so cloud and local uploads land identically.
+        """
+        dog_id = data.get('dog_id')
+        command_id = data.get('command_id')
+        audio_url = data.get('audio_url')
+        updated_at = data.get('updated_at')
+
+        if not dog_id or not command_id or not audio_url:
+            self.logger.warning(
+                f"[VOICE-SYNC] Ignoring incomplete voice_command_updated: "
+                f"dog_id={dog_id!r} command_id={command_id!r} "
+                f"audio_url={audio_url!r}")
+            return
+
+        # Warn-but-accept on an unrecognised command: save_voice() sanitizes to
+        # an allowlist of filename chars, so an unknown name is safe to store
+        # and rejecting it would break the next command the app adds.
+        try:
+            from services.media.voice_lookup import list_voice_types
+            if command_id not in list_voice_types():
+                self.logger.warning(
+                    f"[VOICE-SYNC] command_id={command_id!r} not in known "
+                    f"vocabulary — storing anyway")
+        except Exception:
+            pass
+
+        seen_key = (dog_id, command_id)
+        if updated_at and self._voice_sync_seen.get(seen_key) == updated_at:
+            self.logger.debug(
+                f"[VOICE-SYNC] Skipping {command_id} for {dog_id} — "
+                f"already synced at {updated_at}")
+            return
+
+        if audio_url.startswith(('http://', 'https://')):
+            url = audio_url
+        else:
+            url = f"{self._relay_http_base()}/{audio_url.lstrip('/')}"
+
+        try:
+            session = self._session
+            if session is None or session.closed:
+                self.logger.warning(
+                    "[VOICE-SYNC] No relay HTTP session; skipping fetch")
+                return
+
+            self.logger.info(
+                f"[VOICE-SYNC] Fetching {command_id} for dog {dog_id} -> {url}")
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    self.logger.error(
+                        f"[VOICE-SYNC] Download failed for {command_id}: "
+                        f"HTTP {resp.status}")
+                    return
+                audio_bytes = await resp.read()
+
+        except asyncio.TimeoutError:
+            self.logger.error(f"[VOICE-SYNC] Timeout downloading {command_id} from {url}")
+            return
+        except Exception as e:
+            self.logger.error(f"[VOICE-SYNC] Download error for {command_id}: {e}")
+            return
+
+        if not audio_bytes:
+            self.logger.error(f"[VOICE-SYNC] Empty download for {command_id} — not saving")
+            return
+
+        # save_voice() shells out to ffmpeg for non-MP3 input, so keep it off
+        # the event loop — this socket also carries motor commands.
+        try:
+            from services.media.voice_manager import get_voice_manager
+            voice_manager = get_voice_manager()
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: voice_manager.save_voice(dog_id, command_id, audio_bytes)
+            )
+        except Exception as e:
+            self.logger.error(f"[VOICE-SYNC] Save error for {command_id}: {e}")
+            return
+
+        if result.get('success'):
+            if updated_at:
+                self._voice_sync_seen[seen_key] = updated_at
+            self.logger.info(
+                f"[VOICE-SYNC] Saved {command_id} for dog {dog_id} "
+                f"({len(audio_bytes)} bytes) -> {result.get('filepath')}")
+        else:
+            self.logger.error(
+                f"[VOICE-SYNC] Save failed for {command_id}: {result.get('error')}")
+
+    async def _handle_voice_command_deleted(self, data: dict):
+        """Remove a per-dog voice clip the app deleted.
+
+        {"type": "voice_command_deleted", "dog_id": "<uuid>", "command_id": "come"}
+
+        Deleting the file is the whole job — voice_lookup falls back to
+        talks/default/ on its own once the custom file is gone.
+        """
+        dog_id = data.get('dog_id')
+        command_id = data.get('command_id')
+
+        if not dog_id or not command_id:
+            self.logger.warning(
+                f"[VOICE-SYNC] Ignoring incomplete voice_command_deleted: "
+                f"dog_id={dog_id!r} command_id={command_id!r}")
+            return
+
+        try:
+            from services.media.voice_manager import get_voice_manager
+            voice_manager = get_voice_manager()
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: voice_manager.delete_voice(dog_id, command_id)
+            )
+        except Exception as e:
+            self.logger.error(f"[VOICE-SYNC] Delete error for {command_id}: {e}")
+            return
+
+        self._voice_sync_seen.pop((dog_id, command_id), None)
+
+        if result.get('success'):
+            self.logger.info(f"[VOICE-SYNC] Deleted {command_id} for dog {dog_id}")
+        else:
+            # Already absent is the normal case when the robot never had it.
+            self.logger.info(
+                f"[VOICE-SYNC] Delete {command_id} for dog {dog_id}: "
+                f"{result.get('error')}")
 
     async def _handle_user_connected(self, data: dict):
         """Handle user_connected event from relay
