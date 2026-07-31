@@ -33,9 +33,10 @@ def create_motor_command(left: int, right: int, source: CommandSource) -> MotorC
     """Create a motor command stamped with both wall-clock and monotonic time.
 
     `mono` (time.monotonic) is what the safety watchdog measures age against, so a
-    system-clock jump (this robot has no RTC battery and steps ~hours when NTP
-    syncs late) can never make a stale movement command look fresh — or trip a
-    spurious stop. `timestamp` (wall-clock) is kept only for status/logging.
+    system-clock step can never make a stale movement command look fresh — or trip
+    a spurious stop. An RTC battery (fitted 2026-07-31) makes the boot-time jump far
+    smaller, but NTP can still step the clock at any time, so the monotonic clock
+    stays authoritative. `timestamp` (wall-clock) is kept only for status/logging.
     """
     return MotorCommand(left, right, source, time.time(), time.monotonic())
 
