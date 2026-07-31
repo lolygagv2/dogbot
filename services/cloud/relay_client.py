@@ -100,6 +100,10 @@ class RelayClient:
             'voice_command_deleted': self._handle_voice_command_deleted,
         }
 
+        # Last reported camera availability, for edge-triggered alerting.
+        # None until the first telemetry tick so boot isn't reported as a change.
+        self._last_camera_ok: Optional[bool] = None
+
         # Dedup key for voice syncs: (dog_id, command_id) -> updated_at.
         # The relay re-pushes on reconnect (and sent the same row twice on
         # 2026-07-30), so skip a re-download when nothing actually changed.
@@ -383,6 +387,11 @@ class RelayClient:
                     except Exception:
                         current_volume = None
 
+                    # Camera health. treatbot2's CSI latch is broken, so the
+                    # ribbon can unseat at any time — without this the app sees
+                    # a perfectly healthy robot that happens to send no video.
+                    camera_ok, camera_error = self._get_camera_health()
+
                     # Send telemetry event
                     await self._send({
                         'event': 'status',
@@ -395,9 +404,28 @@ class RelayClient:
                             'treats_remaining': self._get_treats_remaining(),
                             'connection_type': connection_type,  # "LAN", "WAN", or null
                             'volume': current_volume,  # 0-100, or null if unavailable
+                            'camera_ok': camera_ok,      # False = running blind
+                            'camera_error': camera_error,  # reason string, or null
                         },
                         'timestamp': datetime.utcnow().isoformat() + "Z"
                     })
+
+                    # Telemetry is periodic; an edge also gets its own event so
+                    # the app can alert on the transition instead of diffing.
+                    if camera_ok is not None and camera_ok != self._last_camera_ok:
+                        if self._last_camera_ok is not None:
+                            self.logger.warning(
+                                f"[CAMERA] Availability changed: "
+                                f"{self._last_camera_ok} -> {camera_ok} "
+                                f"(reason={camera_error})")
+                            await self._send({
+                                'event': 'camera_status_changed',
+                                'device_id': self.config.device_id,
+                                'data': {'camera_ok': camera_ok,
+                                         'camera_error': camera_error},
+                                'timestamp': datetime.utcnow().isoformat() + "Z"
+                            })
+                        self._last_camera_ok = camera_ok
                     self.logger.debug(f"Telemetry sent: {battery_pct:.0f}%, {hardware.get('cpu_temp', 0)}C")
             except asyncio.CancelledError:
                 break
@@ -1583,6 +1611,23 @@ class RelayClient:
             return get_dispenser_service().treats_remaining
         except Exception:
             return 0
+
+    def _get_camera_health(self):
+        """(camera_ok, camera_error) for telemetry.
+
+        Read from the detector rather than state.hardware: update_hardware()
+        is only called once at init, so a camera lost at runtime leaves the
+        cached state saying True forever. Returns (None, None) if the detector
+        isn't up yet so a startup race isn't reported as a camera fault.
+        """
+        try:
+            from services.perception.detector import get_detector_service
+            status = get_detector_service().get_camera_status()
+            ok = bool(status.get('initialized'))
+            return ok, (None if ok else (status.get('error_reason') or 'unknown'))
+        except Exception as e:
+            self.logger.debug(f"Camera health unavailable: {e}")
+            return None, None
 
     def _send_network_state(self):
         """Emit a network_state event describing how to reach this robot.

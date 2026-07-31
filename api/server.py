@@ -562,11 +562,25 @@ async def health_check():
     """Health check endpoint"""
     state = get_state()
 
+    # Camera health, so wimz-healthcheck.timer and any operator curl see a
+    # blind robot instead of a cheerful "healthy". Best-effort: a detector that
+    # isn't up yet reports null rather than failing the whole endpoint.
+    camera_ok, camera_error = None, None
+    try:
+        from services.perception.detector import get_detector_service
+        camera = get_detector_service().get_camera_status()
+        camera_ok = bool(camera.get("initialized"))
+        camera_error = None if camera_ok else (camera.get("error_reason") or "unknown")
+    except Exception:
+        pass  # detector not up yet — report null rather than failing /health
+
     return {
         "status": "healthy",
         "mode": state.get_mode().value,
         "emergency": state.is_emergency(),
         "uptime": state.get_mode_duration(),
+        "camera_ok": camera_ok,
+        "camera_error": camera_error,
         "timestamp": state.get_full_state()["timestamp"]
     }
 

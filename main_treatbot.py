@@ -522,6 +522,22 @@ class TreatBotMain:
             # Start camera capture - runs in ALL operational modes for WebRTC
             # Vision is a core perception layer, not mode-specific
             # Camera can run for WebRTC even if AI/Hailo isn't available
+            if not self.detector.camera_initialized:
+                # No else-branch used to exist here: a missing camera skipped
+                # detection startup in silence and the only downstream trace was
+                # WIMZVideoTrack logging "None (no camera feed or stale)" every
+                # 100 frames forever. On treatbot2 the CSI latch is broken, so an
+                # unseated ribbon is expected to recur — make it announce itself.
+                reason = self.detector.get_camera_status().get('error_reason') or 'unknown'
+                self.logger.error("=" * 62)
+                self.logger.error("CAMERA NOT AVAILABLE — robot is running BLIND")
+                self.logger.error(f"  reason: {reason}")
+                self.logger.error("  No detection, no tricks, no video to the app.")
+                self.logger.error("  CSI ribbon is the usual cause; reseat both ends,")
+                self.logger.error("  then reboot (auto-detect only probes at boot).")
+                self.logger.error("=" * 62)
+                publish_system_event('camera_unavailable', {'reason': reason}, 'main')
+
             if self.detector.camera_initialized:
                 self.detector.start_detection()
                 if self.detector.ai_initialized:
