@@ -31,6 +31,12 @@ CHANNELS = 1  # Mono
 SAMPLES_PER_FRAME = 960  # 20ms at 48kHz (standard WebRTC audio frame size)
 FRAME_DURATION_MS = 20
 
+# Software gain for the streaming path only. The C-Media dongle captures very
+# quiet raw audio (ambient ≈ -38 dBFS); the bark detector compensates with its
+# own 30x gain on its separate capture — this constant must never touch that
+# path or its tuned thresholds.
+MIC_GAIN = 10.0
+
 # Modes where mic should be muted (AI modes need quiet for processing)
 MUTED_MODES = {SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION}
 
@@ -66,6 +72,7 @@ class WIMZAudioTrack(MediaStreamTrack):
         self._frame_count = 0
         self._start_time = time.time()
         self._last_frame_pts = 0
+        self._next_frame_time: Optional[float] = None  # monotonic pacing deadline
 
         # USB mic device detection
         self._device_index = self._find_usb_audio_device()
@@ -162,14 +169,25 @@ class WIMZAudioTrack(MediaStreamTrack):
             return
 
         try:
-            # Copy audio data (indata is temporary buffer)
-            audio_data = indata.copy()
+            # Apply streaming gain with clip protection (indata is a temporary
+            # buffer, so this also serves as the required copy)
+            audio_data = np.clip(
+                indata.astype(np.int32) * MIC_GAIN, -32768, 32767
+            ).astype(np.int16)
 
-            # Try to enqueue, drop if full (prevents memory buildup)
+            # Enqueue; on overflow drop the OLDEST frame so the stream stays
+            # fresh instead of latching onto second-old audio
             try:
                 self._audio_queue.put_nowait(audio_data)
             except queue.Full:
-                pass  # Drop oldest frames if queue is full
+                try:
+                    self._audio_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._audio_queue.put_nowait(audio_data)
+                except queue.Full:
+                    pass
 
         except Exception as e:
             self.logger.error(f"Audio callback error: {e}")
@@ -296,8 +314,24 @@ class WIMZAudioTrack(MediaStreamTrack):
         frame.sample_rate = SAMPLE_RATE
         frame.time_base = Fraction(1, SAMPLE_RATE)
 
-        # Yield to event loop periodically to maintain timing
-        await asyncio.sleep(FRAME_DURATION_MS / 1000.0)
+        # Deadline-based pacing: sleep only the remainder of this frame's 20ms
+        # slot. A blind sleep(20ms) here accumulated per-frame overhead and
+        # under-produced (~44fps vs the 50 real-time needs), permanently
+        # jamming the capture queue.
+        frame_period = FRAME_DURATION_MS / 1000.0
+        now = time.monotonic()
+        if self._next_frame_time is None:
+            self._next_frame_time = now
+        self._next_frame_time += frame_period
+        delay = self._next_frame_time - now
+        if delay > 0:
+            await asyncio.sleep(delay)
+        elif delay < -1.0:
+            # Fell badly behind (event-loop stall) — resync instead of bursting
+            self._next_frame_time = now
+            await asyncio.sleep(0)
+        else:
+            await asyncio.sleep(0)  # still yield to the event loop
 
         return frame
 
