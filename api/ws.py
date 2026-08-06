@@ -393,6 +393,35 @@ class TreatBotWebSocketServer:
                 "timestamp": time.time()
             })
 
+    def _execute_emergency_stop(self) -> Dict[str, Any]:
+        """Halt drive motors immediately. Single implementation shared by the
+        contract-format and legacy params-format WS handlers.
+
+        Primary path is the motor command bus (the same path live drive uses —
+        the legacy motor service fails to init on some units, so it is only a
+        secondary attempt, and success is never claimed unless a path ran).
+        """
+        stopped_via = []
+        try:
+            from core.motor_command_bus import get_motor_bus, create_motor_command, CommandSource
+            motor_bus = get_motor_bus()
+            if motor_bus and motor_bus.running:
+                if motor_bus.send_command(create_motor_command(0, 0, CommandSource.EMERGENCY)):
+                    stopped_via.append("motor_bus")
+        except Exception as e:
+            self.logger.error(f"Emergency stop via motor bus failed: {e}")
+        if self.motor:
+            try:
+                self.motor.emergency_stop()
+                stopped_via.append("motor_service")
+            except Exception as e:
+                self.logger.error(f"Emergency stop via motor service failed: {e}")
+        if stopped_via:
+            self.logger.warning(f"EMERGENCY STOP executed via {' + '.join(stopped_via)}")
+            return {"success": True, "message": "Emergency stop executed", "via": stopped_via}
+        self.logger.error("EMERGENCY STOP FAILED - no motor path available")
+        return {"success": False, "error": "No motor path available for emergency stop"}
+
     async def _execute_contract_command(self, websocket: WebSocket, data: Dict[str, Any]):
         """Execute API contract format commands
 
@@ -420,6 +449,13 @@ class TreatBotWebSocketServer:
                         result = {"success": False, "command": command, "error": "Motor bus not running"}
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "emergency_stop":
+                # App sends this automatically on drive-screen exit/connection loss.
+                # Was falling through to "Unknown contract command" — only the
+                # legacy params-format handler implemented it.
+                result = self._execute_emergency_stop()
+                result["command"] = command
 
             elif command == "servo":
                 # {"command": "servo", "pan": 15.0, "tilt": -10.0}
@@ -1582,9 +1618,7 @@ class TreatBotWebSocketServer:
             return {"success": True, "count": count, "reason": reason, "async": True}
 
         elif command == "emergency_stop":
-            if self.motor:
-                self.motor.emergency_stop()
-            return {"success": True, "message": "Emergency stop executed"}
+            return self._execute_emergency_stop()
 
         elif command == "play_sound":
             # {"sound_name": "good_dog"}
