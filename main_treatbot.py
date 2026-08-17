@@ -87,6 +87,7 @@ class TreatBotMain:
         self.dispenser = None
         self.sfx = None
         self.led = None
+        self.bark_detector = None  # assigned in _init_services; cleanup runs even if init aborts first
         self.usb_audio = None  # For voice announcements
         self.bluetooth_controller = None
         self.xbox_controller = None
@@ -573,7 +574,7 @@ class TreatBotMain:
             # MISSION mode only if mission declares requires_bark_detection: true
             bark_start_modes = ['silent_guardian', 'coach']
             initial_mode = self.state.mode.value if hasattr(self.state.mode, 'value') else str(self.state.mode)
-            if self.bark_detector.enabled:
+            if self.bark_detector and self.bark_detector.enabled:
                 # Always subscribe to bark events (for when mode changes)
                 self.bus.subscribe('audio', self._on_bark_for_feedback)
                 if initial_mode in bark_start_modes:
@@ -2752,7 +2753,8 @@ class TreatBotMain:
         try:
             self.state.set_mode(SystemMode.SHUTDOWN, "System shutdown")
 
-            sequence_id = self.sequence_engine.execute_sequence('shutdown')
+            # sequence_engine is None when startup aborted before orchestrator init
+            sequence_id = self.sequence_engine.execute_sequence('shutdown') if self.sequence_engine else None
             if sequence_id:
                 # Wait for shutdown sequence to complete
                 time.sleep(3.0)
