@@ -219,8 +219,11 @@ class AI3StageControllerFixed:
             self.vdevice = hpf.VDevice()
             logger.info("VDevice created successfully")
 
-            # Use pose model for everything (it outputs both detection boxes and keypoints)
-            self.model_path = Path("ai/models") / self.config["hef_path"]  # dogpose_14.hef
+            # Use pose model for everything (it outputs both detection boxes and keypoints).
+            # HEF is arch-selected: the fleet mixes Hailo-8 (26 TOPS) and Hailo-8L
+            # (13 TOPS) boards, and a HEF built for one is rejected by the other.
+            from services.perception.hailo_arch import hef_for_arch
+            self.model_path = Path("ai/models") / hef_for_arch(self.config["hef_path"])
 
             # Verify pose model exists
             if not self.model_path.exists():

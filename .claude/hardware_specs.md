@@ -20,7 +20,7 @@ WIM-Z ships as a small fleet of physically distinct units running one shared cod
 
 **Per-unit notes:**
 - **treatbot1** — Primary demo unit. Matched 1.6Ω/1.7Ω motors, best-calibrated gimbal. IMX500.
-- **treatbot2** — Backup unit; needs motor compensation (L 0.75 / R 1.0). Rebuilt battery divider (100k/20k).
+- **treatbot2** — Backup unit; needs motor compensation (L 0.75 / R 1.0). Rebuilt battery divider (100k/20k). IMX708 Wide (swapped from IMX500). **AI HAT+ 13 TOPS = Hailo-8L** (swapped 2026-08): needs HEFs compiled for `hailo8l`. The fleet's `dogdetector_14.hef` / `dogpose_14.hef` are HAILO8-only and are rejected at load — `Device arch: HAILO8L, HEF arch: HAILO8`. Ship `_8l` variants alongside; don't recompile the fleet's models.
 - **treatbot3** — Production #3. Cytron + 9V brushed, IMX708 Wide. High-ratio (~54:1) battery divider.
 - **treatbot4** — Production #4. IMX708 Wide **NoIR** (IR-cut removed) for night-vision mode; cam1 CSI port damaged → wired to CSI0.
 - **treatbot5** — Production #5. Cytron + 9V brushed, IMX708 Wide. UART/motor wiring issues resolved May 2026.
@@ -31,7 +31,7 @@ WIM-Z ships as a small fleet of physically distinct units running one shared cod
 | Unit | Battery cal factor | Pan/Tilt center | Dispenser steps/slot | Motor L/R mult | Camera |
 |------|------|------|------|------|------|
 | treatbot1 | 3.595 | 120 / 60 | 137 | 1.2 / 0.9 | IMX500 |
-| treatbot2 | 6.0 | 134 / 90 | 137 | 0.75 / 1.0 | IMX500 |
+| treatbot2 | 6.0 | 134 / 90 | 137 | 0.75 / 1.0 | IMX708 Wide |
 | treatbot3 | 54.28 | 67 / −12 | 150 | 1.0 / 1.06 | IMX708 Wide |
 | treatbot4 | 5.638 | 67 / 43 | 147 | 1.0 / 1.0 | IMX708 Wide NoIR |
 | treatbot5 | 51.29 | 46 / 97 | 147 | 1.0 / 1.0 | IMX708 Wide |

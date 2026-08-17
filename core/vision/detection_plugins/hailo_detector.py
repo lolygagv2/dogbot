@@ -32,8 +32,13 @@ class HailoDetector(BaseDetector):
         self.input_vstream_infos = None
         self.output_vstream_infos = None
 
-        # Model configuration
-        self.model_path = config.get('hailo_model_path', '/home/morgan/dogbot/ai/models/dogdetector_14.hef')
+        # Model configuration. The HEF is arch-selected on Hailo-8L units, which
+        # reject HEFs compiled for Hailo-8 (see services/perception/hailo_arch.py).
+        from pathlib import Path
+        from services.perception.hailo_arch import hef_for_arch
+        _configured = Path(config.get('hailo_model_path',
+                                      '/home/morgan/dogbot/ai/models/dogdetector_14.hef'))
+        self.model_path = str(_configured.with_name(hef_for_arch(_configured.name)))
         self.input_shape = (640, 640, 3)
 
         # Initialize if available
