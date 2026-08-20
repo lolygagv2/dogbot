@@ -41,3 +41,4 @@ data/*.db-*
 
 # Runtime state (night_mode.json etc.) — per-unit, not synced
 state/
+data/media/
