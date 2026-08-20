@@ -83,10 +83,6 @@ class DispenserService:
         # stacked treats arrive further apart and count as 2.
         self._beam_breaks = deque(maxlen=256)  # monotonic timestamps
         self.BEAM_DEBOUNCE_S = 0.020
-
-        # CHOPCONF.TOFF value used while driving. 0 switches the bridges off.
-        self.TOFF_RUN = 3
-        self._chopconf_base = None  # set by _configure_tmc
         self.COUNT_WINDOW_S = 6.0     # count window after rotation completes
         self.DISPENSE_CAP = 2         # max treats credited per normal dispense
         self.ANTIJAM_CAP = 6          # max treats credited per anti-jam run
@@ -180,12 +176,8 @@ class DispenserService:
         ihold_irun = (6 << 16) | (self.irun << 8) | self.ihold
         self._tmc_write(0x10, ihold_irun)
 
-        # CHOPCONF: configured microstepping, vsense=0 (high current range).
-        # Low nibble is TOFF; TOFF=0 switches the output bridges off entirely.
-        # Cached so _enable_motor/_disable_motor can gate current over UART
-        # without recomputing (see _set_driver_output).
-        self._chopconf_base = (mres << 24) | 0x00000050  # TOFF cleared
-        chopconf = self._chopconf_base | self.TOFF_RUN
+        # CHOPCONF: configured microstepping, vsense=0 (high current range)
+        chopconf = (mres << 24) | 0x00000053
         self._tmc_write(0x6C, chopconf)
 
         # TPOWERDOWN: time before current drops to IHOLD
@@ -208,38 +200,14 @@ class DispenserService:
     # GPIO MOTOR CONTROL
     # =========================================================================
 
-    def _set_driver_output(self, on):
-        """Gate the TMC2209 output bridges over UART via CHOPCONF.TOFF.
-
-        The EN pin is the normal way to de-energize the motor, but on this unit
-        driving EN high does not actually stop the coils — the motor cooks at
-        IRUN while sitting still. Standstill reduction to IHOLD does not save
-        it either, since TPOWERDOWN only starts counting after a step pulse, so
-        a motor that has never moved never drops out of run current.
-
-        TOFF=0 switches all four bridges off from the driver side, which does
-        stop it. No-ops without UART.
-        """
-        if self.uart is None:
-            return
-        base = getattr(self, '_chopconf_base', None)
-        if base is None:
-            return  # _configure_tmc has not run yet
-        try:
-            self._tmc_write(0x6C, base | (self.TOFF_RUN if on else 0))
-        except Exception as e:
-            self.logger.warning(f"CHOPCONF TOFF gate failed ({'on' if on else 'off'}): {e}")
-
     def _enable_motor(self):
-        """Enable TMC2209 (EN LOW + bridges armed)"""
-        self._set_driver_output(True)
+        """Enable TMC2209 (EN LOW)"""
         lgpio.gpio_write(self.gpio_chip, self.en_pin, 0)
         time.sleep(0.05)
 
     def _disable_motor(self):
-        """Disable TMC2209 (EN HIGH + bridges off) — no holding current"""
+        """Disable TMC2209 (EN HIGH) — motor free-spins"""
         lgpio.gpio_write(self.gpio_chip, self.en_pin, 1)
-        self._set_driver_output(False)
 
     def _step(self, steps, direction, delay=None):
         """
@@ -302,12 +270,10 @@ class DispenserService:
             lgpio.gpio_claim_output(self.gpio_chip, self.dir_pin)
             lgpio.gpio_claim_output(self.gpio_chip, self.en_pin)
 
-            # Start disabled — both via EN and via CHOPCONF.TOFF, since EN
-            # alone does not de-energize the coils on this unit.
+            # Start disabled
             lgpio.gpio_write(self.gpio_chip, self.en_pin, 1)
             lgpio.gpio_write(self.gpio_chip, self.step_pin, 0)
             lgpio.gpio_write(self.gpio_chip, self.dir_pin, self.CW)
-            self._set_driver_output(False)
 
             # Through-beam sensor: persistent edge alert; the callback just
             # timestamps the latest beam break (dispense logic compares it
@@ -1061,11 +1027,6 @@ class DispenserService:
             except Exception:
                 pass
             self._beam_callback = None
-
-        # Gate the bridges off over UART first, while the port is still open —
-        # EN alone leaves the coils energized on this unit.
-        self._set_driver_output(False)
-
         if self.gpio_chip is not None:
             try:
                 lgpio.gpio_write(self.gpio_chip, self.en_pin, 1)  # Disable motor
