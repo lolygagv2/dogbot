@@ -3,8 +3,19 @@
 Description=TreatBot Main System
 # wimz-alive: ordering only — the early LED script must release SPI before
 # our LedService claims it
-After=network.target bluetooth.target wimz-alive.service
-Wants=network.target
+#
+# network-online, NOT network.target: network.target only means "networking is
+# starting" — it does not mean an interface has an IP or that DNS resolves. On
+# a cold boot the app came up ~14s before the wlan0 DHCP lease and logged four
+# RelayClient "Temporary failure in name resolution" ERRORs before its backoff
+# reconnected at +17s. Harmless (the app self-heals) but it makes every boot
+# look broken in the journal and misdirects diagnosis.
+#
+# This is a soft Wants=, and NM_ONLINE_TIMEOUT is capped at 20s (see
+# scripts/systemd/20-nm-online-timeout.conf) so a unit with no WiFi — AP mode,
+# out of range — still boots promptly instead of stalling on the 60s default.
+After=network-online.target bluetooth.target wimz-alive.service
+Wants=network-online.target
 # Allow up to 10 start attempts per 5 min before giving up. Watchdog/timeout
 # restart cycles take >40s each, so only a fast crash loop (bad deploy, human
 # present) can trip this.

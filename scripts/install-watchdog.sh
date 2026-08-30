@@ -15,22 +15,28 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-echo "[1/5] hardware watchdog drop-in -> /etc/systemd/system.conf.d/"
+echo "[1/6] hardware watchdog drop-in -> /etc/systemd/system.conf.d/"
 install -D -m644 "$SD/10-wimz-watchdog.conf" /etc/systemd/system.conf.d/10-wimz-watchdog.conf
 
-echo "[2/5] treatbot stop-timeout drop-in -> /etc/systemd/system/treatbot.service.d/"
+echo "[2/6] treatbot stop-timeout drop-in -> /etc/systemd/system/treatbot.service.d/"
 install -D -m644 "$SD/10-treatbot-timeout.conf" /etc/systemd/system/treatbot.service.d/10-timeout.conf
 
-echo "[3/5] healthcheck service + timer -> /etc/systemd/system/"
+echo "[3/6] healthcheck service + timer -> /etc/systemd/system/"
 install -m644 "$SD/wimz-healthcheck.service" /etc/systemd/system/wimz-healthcheck.service
 install -m644 "$SD/wimz-healthcheck.timer"   /etc/systemd/system/wimz-healthcheck.timer
 chmod +x "$REPO/scripts/wimz-healthcheck.sh"
 
-echo "[4/5] reload units + enable timer"
+echo "[4/6] nm-online timeout cap -> /etc/systemd/system/NetworkManager-wait-online.service.d/"
+# Bounds the network-online.target wait that treatbot.service now orders on,
+# so a unit with no WiFi still boots promptly. See the drop-in for rationale.
+install -D -m644 "$SD/20-nm-online-timeout.conf" \
+    /etc/systemd/system/NetworkManager-wait-online.service.d/20-nm-online-timeout.conf
+
+echo "[5/6] reload units + enable timer"
 systemctl daemon-reload
 systemctl enable --now wimz-healthcheck.timer
 
-echo "[5/5] apply hardware watchdog live (systemd re-exec)"
+echo "[6/6] apply hardware watchdog live (systemd re-exec)"
 systemctl daemon-reexec
 
 echo
