@@ -109,9 +109,18 @@ class DispenserService:
         self.dog_treat_counts = {}
         self.dog_cooldowns = {}
 
-        # Treat counter — persisted to SQLite
-        self.treats_loaded = 0
+        # Treat counter — persisted to SQLite.
+        # Counts UP from zero ("treats given"), measured against carousel
+        # capacity. The old scheme stored "treats remaining" and decremented
+        # it, which drifted negative whenever the user refilled without
+        # re-declaring a count (tb2 was sitting at -7) and then republished
+        # treats_empty on every subsequent dispense. Counting up makes the
+        # negative case structurally impossible instead of merely clamped.
+        self.DEFAULT_CAPACITY = 44  # full carousel, one treat per slot
+        self.treats_given = 0
+        self.treat_capacity = self.DEFAULT_CAPACITY
         self.treats_dispensed_session = 0
+        self._empty_published = False
         self._load_treat_counter()
 
         # Thread safety
@@ -611,7 +620,7 @@ class DispenserService:
                     self.last_dispense_time = now
                     self.last_dispense_mono = time.monotonic()
                     for _ in range(credit):
-                        self._decrement_treat_counter()
+                        self._increment_treat_counter()
                     # A physically-confirmed dispense proves we're not empty
                     if confirmed:
                         self.empty_or_jammed = False
@@ -650,9 +659,10 @@ class DispenserService:
                         'timestamp': now
                     }, 'dispenser_service')
 
-                    # treats_loaded is already decremented per confirmed treat —
-                    # subtracting treats_dispensed_session again double-counted
-                    # (log showed "19 remaining" then "Remaining: 18" for ONE treat).
+                    # treats_remaining is derived from capacity - given, so it
+                    # is already correct here — subtracting treats_dispensed_session
+                    # again double-counted (log showed "19 remaining" then
+                    # "Remaining: 18" for ONE treat).
                     remaining = self.treats_remaining
                     self.logger.info(
                         f"[TREAT] Dispensed {credit} treat(s) "
@@ -706,7 +716,7 @@ class DispenserService:
                     self.empty_or_jammed = False
                     self.treats_dispensed_today += counted
                     for _ in range(counted):
-                        self._decrement_treat_counter()
+                        self._increment_treat_counter()
             return result
         finally:
             self._dispense_lock.release()
@@ -843,11 +853,16 @@ class DispenserService:
         self._refill_active = False
         self.logger.info("Refill stopped")
 
-    def refill_mode(self, total_slots: int = 56) -> int:
+    def refill_mode(self, total_slots: Optional[int] = None) -> int:
         """
         Refill mode: step through slots slowly for loading treats.
         Returns number of slots advanced.
+
+        Defaults to the configured carousel capacity (44 slots, one treat per
+        slot). The old hardcoded 56 stepped 12 slots that do not exist.
         """
+        if total_slots is None:
+            total_slots = self.treat_capacity or self.DEFAULT_CAPACITY
         with self._dispense_lock:
             if not self.initialized:
                 if not self.initialize():
@@ -910,47 +925,114 @@ class DispenserService:
         self.logger.info(f"Daily limit set to {self.daily_limit}")
 
     def _load_treat_counter(self):
-        stored = self.store.get_setting('treats_loaded')
-        self.treats_loaded = int(stored) if stored is not None else 0
-        self.logger.info(f"Treat counter loaded: {self.treats_loaded} treats loaded")
+        """Load treats_given + capacity, migrating the legacy 'remaining' key.
+
+        Pre-2026-08-30 units stored 'treats_loaded' = treats REMAINING and
+        decremented it, so the value could be (and on tb2 was) negative. There
+        is no honest way to recover a real given-count from that, so a negative
+        legacy value migrates to a clean zero; a sane one converts by
+        difference.
+        """
+        cap = self.store.get_setting('treat_capacity')
+        self.treat_capacity = (int(cap) if cap is not None
+                               else self.DEFAULT_CAPACITY)
+
+        stored = self.store.get_setting('treats_given')
+        if stored is not None:
+            self.treats_given = max(0, int(stored))
+        else:
+            legacy = self.store.get_setting('treats_loaded')
+            if legacy is None:
+                self.treats_given = 0
+            else:
+                legacy = int(legacy)
+                if legacy < 0:
+                    self.logger.warning(
+                        f"Migrating corrupt legacy treat counter ({legacy} "
+                        f"remaining) -> 0 given; re-set the count after refill")
+                    self.treats_given = 0
+                else:
+                    self.treats_given = max(0, self.treat_capacity - legacy)
+            self._save_treat_counter()
+
+        self._empty_published = self.treats_remaining <= 0
+        self.logger.info(
+            f"Treat counter loaded: {self.treats_given} given "
+            f"of {self.treat_capacity} capacity "
+            f"({self.treats_remaining} remaining)")
 
     def _save_treat_counter(self):
-        self.store.set_setting('treats_loaded', str(self.treats_loaded))
+        self.store.set_setting('treats_given', str(self.treats_given))
+        self.store.set_setting('treat_capacity', str(self.treat_capacity))
 
-    def _decrement_treat_counter(self):
-        self.treats_loaded -= 1
+    def _increment_treat_counter(self):
+        """Count one beam-confirmed treat out of the carousel."""
+        self.treats_given += 1
         self.treats_dispensed_session += 1
         self._save_treat_counter()
 
         remaining = self.treats_remaining
-        self.logger.info(f"TREAT_COUNTER: {remaining} remaining")
+        self.logger.info(
+            f"TREAT_COUNTER: {self.treats_given} given "
+            f"of {self.treat_capacity} ({remaining} remaining)")
 
+        # Fire on the TRANSITION to empty only. The old code republished this
+        # on every dispense once the value went <= 0, spamming the app and
+        # cloud history. Cleared by set_treat_count/reset (i.e. a refill).
         if remaining <= 0:
-            publish_reward_event('treats_empty', {
-                'treats_loaded': self.treats_loaded,
-                'treats_dispensed': self.treats_dispensed_session,
-                'treats_remaining': remaining,
-                'timestamp': time.time()
-            }, 'dispenser_service')
+            if not self._empty_published:
+                self._empty_published = True
+                publish_reward_event('treats_empty', {
+                    'treats_given': self.treats_given,
+                    'treat_capacity': self.treat_capacity,
+                    'treats_dispensed': self.treats_dispensed_session,
+                    'treats_remaining': remaining,
+                    'timestamp': time.time()
+                }, 'dispenser_service')
         elif remaining < 5:
             publish_reward_event('treats_low', {
+                'treats_given': self.treats_given,
+                'treat_capacity': self.treat_capacity,
                 'treats_remaining': remaining,
                 'timestamp': time.time()
             }, 'dispenser_service')
 
     @property
     def treats_remaining(self) -> int:
-        return self.treats_loaded
+        """Derived, never negative."""
+        return max(0, self.treat_capacity - self.treats_given)
 
-    def set_treat_count(self, count: int) -> None:
-        self.treats_loaded = max(0, count)
+    @property
+    def treats_loaded(self) -> int:
+        """Back-compat alias for the pre-'given' field (= remaining).
+
+        Kept so existing event payloads and the current app build keep working
+        until they move to treats_given/treat_capacity. Read-only on purpose:
+        the writable entry points are set_treat_count/reset_treat_counter.
+        """
+        return self.treats_remaining
+
+    def set_treat_count(self, count: int, capacity: Optional[int] = None) -> None:
+        """Declare a fresh load: `count` treats are now in the carousel.
+
+        Zeroes treats_given (the count is "since last load") and takes `count`
+        as the new capacity unless an explicit capacity is given — a refill of
+        30 into a 44-slot carousel means 30 are available, not 44.
+        """
+        count = max(0, count)
+        self.treat_capacity = max(0, capacity) if capacity is not None else count
+        self.treats_given = 0
         self.treats_dispensed_session = 0
+        self._empty_published = self.treats_remaining <= 0
         self._save_treat_counter()
         # Refill/counter update = human intervention — clear the sticky
         # empty-or-jammed state (DISPENSE-VERIFY reset rule)
         self.empty_or_jammed = False
-        self.logger.info(f"TREAT_COUNTER: set to {self.treats_loaded}")
+        self.logger.info(
+            f"TREAT_COUNTER: loaded {self.treat_capacity}, given reset to 0")
         publish_reward_event('treats_loaded', {
+            'treats_given': self.treats_given,
+            'treat_capacity': self.treat_capacity,
             'treats_loaded': self.treats_loaded,
             'treats_dispensed': self.treats_dispensed_session,
             'treats_remaining': self.treats_remaining,
@@ -958,11 +1040,14 @@ class DispenserService:
         }, 'dispenser_service')
 
     def reset_treat_counter(self) -> None:
-        self.treats_loaded = 0
+        """Reset the given-count to zero, keeping the configured capacity."""
+        self.treats_given = 0
         self.treats_dispensed_session = 0
+        self._empty_published = self.treats_remaining <= 0
         self._save_treat_counter()
         self.empty_or_jammed = False  # DISPENSE-VERIFY reset rule
-        self.logger.info("TREAT_COUNTER: Reset to 0")
+        self.logger.info(
+            f"TREAT_COUNTER: given reset to 0 of {self.treat_capacity}")
 
     def test_dispense(self) -> bool:
         return self.dispense_treat(None, "test", "test")
@@ -979,6 +1064,8 @@ class DispenserService:
             'daily_limit': self.daily_limit,
             'last_dispense_time': self.last_dispense_time,
             'time_since_last_dispense': time.time() - self.last_dispense_time if self.last_dispense_time > 0 else 999,
+            'treats_given': self.treats_given,
+            'treat_capacity': self.treat_capacity,
             'treats_loaded': self.treats_loaded,
             'treats_dispensed': self.treats_dispensed_session,
             'treats_remaining': self.treats_remaining,

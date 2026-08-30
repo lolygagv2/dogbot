@@ -908,15 +908,23 @@ async def treat_refill(request: Request):
     import asyncio
     try:
         body = await request.json()
-        slots = int(body.get('slots', 56))
-        count = body.get('count')  # Optional — set treat counter after refill
         dispenser = get_dispenser_service()
+        # Default to the configured carousel capacity (44), not a hardcoded 56
+        slots = int(body.get('slots', dispenser.treat_capacity or 44))
+        count = body.get('count')  # Optional — explicit override
         advanced = await asyncio.to_thread(dispenser.refill_mode, slots)
+        # The refill walk IS the count: one treat per slot, so slots advanced
+        # is how many were loaded. Users forget to declare a count separately
+        # (that is how the counter drifted to -7), so derive it by default.
         if count is not None:
             dispenser.set_treat_count(int(count))
+        elif advanced > 0:
+            dispenser.set_treat_count(advanced)
         return {
             "success": advanced > 0,
             "slots_advanced": advanced,
+            "treats_given": dispenser.treats_given,
+            "treat_capacity": dispenser.treat_capacity,
             "treats_loaded": dispenser.treats_loaded,
             "treats_remaining": dispenser.treats_remaining
         }
@@ -930,9 +938,14 @@ async def treat_counter_set(request: Request):
     try:
         body = await request.json()
         count = int(body.get('count', 0))
+        capacity = body.get('capacity')  # Optional — user-settable carousel size
         dispenser = get_dispenser_service()
-        dispenser.set_treat_count(count)
-        return {"success": True, "treats_loaded": dispenser.treats_loaded, "treats_remaining": dispenser.treats_remaining}
+        dispenser.set_treat_count(count, int(capacity) if capacity is not None else None)
+        return {"success": True,
+                "treats_given": dispenser.treats_given,
+                "treat_capacity": dispenser.treat_capacity,
+                "treats_loaded": dispenser.treats_loaded,
+                "treats_remaining": dispenser.treats_remaining}
     except Exception as e:
         logger.error(f"Treat counter set error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -943,7 +956,12 @@ async def treat_counter_reset():
     try:
         dispenser = get_dispenser_service()
         dispenser.reset_treat_counter()
-        return {"success": True, "treats_loaded": 0, "treats_remaining": 0}
+        # Reset zeroes treats_given but keeps capacity — report real values.
+        return {"success": True,
+                "treats_given": dispenser.treats_given,
+                "treat_capacity": dispenser.treat_capacity,
+                "treats_loaded": dispenser.treats_loaded,
+                "treats_remaining": dispenser.treats_remaining}
     except Exception as e:
         logger.error(f"Treat counter reset error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -3905,9 +3923,13 @@ async def websocket_control(websocket: WebSocket):
             elif command == "treat_counter_set":
                 dispenser = get_dispenser_service()
                 count = int(data.get("count", 0))
-                dispenser.set_treat_count(count)
+                capacity = data.get("capacity")
+                dispenser.set_treat_count(
+                    count, int(capacity) if capacity is not None else None)
                 await websocket.send_json({
                     "type": "treat_counter_ack",
+                    "treats_given": dispenser.treats_given,
+                    "treat_capacity": dispenser.treat_capacity,
                     "treats_loaded": dispenser.treats_loaded,
                     "treats_remaining": dispenser.treats_remaining
                 })
@@ -3915,10 +3937,14 @@ async def websocket_control(websocket: WebSocket):
             elif command == "treat_counter_reset":
                 dispenser = get_dispenser_service()
                 dispenser.reset_treat_counter()
+                # Report the real post-reset values: reset zeroes treats_given
+                # but KEEPS capacity, so remaining is capacity, not 0.
                 await websocket.send_json({
                     "type": "treat_counter_ack",
-                    "treats_loaded": 0,
-                    "treats_remaining": 0
+                    "treats_given": dispenser.treats_given,
+                    "treat_capacity": dispenser.treat_capacity,
+                    "treats_loaded": dispenser.treats_loaded,
+                    "treats_remaining": dispenser.treats_remaining
                 })
 
             elif command == "ping":
