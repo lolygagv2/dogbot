@@ -222,7 +222,9 @@ def unpack_release(tarball: str, version: str) -> str:
     if not os.path.exists(os.path.join(dest, 'main_treatbot.py')):
         raise RuntimeError("unpacked release has no main_treatbot.py — bad artifact")
     os.remove(tarball)
-    subprocess.run(['chown', '-R', OWNER_UID_GID, dest], check=False)
+    # NOTE: ownership is normalized in main() AFTER link_shared — chowning
+    # here would leave the root-created symlinks root-owned, which makes git
+    # refuse the repo with "dubious ownership" (seen on the first live OTA).
     return dest
 
 
@@ -388,6 +390,9 @@ def main() -> int:
         set_status('installing', version)
         release_dir = unpack_release(tarball, version)
         link_shared(release_dir)
+        # -h: chown the symlinks themselves too (not their shared targets)
+        subprocess.run(['chown', '-R', '-h', OWNER_UID_GID, release_dir],
+                       check=False)
         pip_install(release_dir, version)
     except Exception as e:
         # Nothing was flipped yet — fail clean, current release untouched
