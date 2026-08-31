@@ -370,3 +370,13 @@ curl -X POST http://localhost:8000/audio/play/file \
 - `tests/diagnostics/test_fps_pipeline_isolation.py` — §1A TEST 1-6 benchmarks
 - `treatbot.service` — now Type=notify + watchdog (unit and code deploy TOGETHER)
 - `/data/` (filesystem, not repo) — wimz.db + media tree per spec §3
+
+## OTA update system (added 2026-08-31)
+- `VERSION` — release tag (date-style, e.g. 2026.08.3); read by `core/version.py` → sw_version in telemetry//health
+- `core/version.py` — single source of truth for sw_version (reads VERSION, cached per process)
+- `services/system/ota_manager.py` — start_update gates + update_status forwarding + terminal-event emission
+- `scripts/ota/wimz_updater.py` — stdlib-only updater; INSTALLED COPY at /home/morgan/wimz/updater/ (sync manually after edits)
+- `scripts/ota/bootstrap-ota-layout.sh` — one-time per-unit migration to versioned layout
+- `scripts/ota/make-release.sh` — release cut: --bump --upload
+- `scripts/systemd/wimz-updater.{path,service}` — request-file trigger + root oneshot
+- RUNTIME LAYOUT: /home/morgan/dogbot is a SYMLINK → /home/morgan/wimz/current → releases/<version>/; per-unit data (data, VOICEMP3/talks+songs, env_new, logs, state, captures, photos, recordings, .env, .git→shared/dotgit, .claude session files) lives in /home/morgan/wimz/shared/ and is symlinked into each release. See .claude/OTA_ROBOT_IMPLEMENTATION.md.
