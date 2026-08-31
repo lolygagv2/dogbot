@@ -336,6 +336,7 @@ INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.3');
 | `treat_dispensed` | carousel fired (pairs with dispense_log) | `{"slot":12}` |
 | `pilot_action`    | live operator command                    | `{"action":"drive","vec":[0.4,0.0]}` |
 | `error`           | fault / exception                        | `{"code":"motor_stall","detail":"..."}` |
+| `panic_episode`   | SG panic: intense barking, interventions suppressed | `{"trigger":"burst\|sustained_rate\|futility","bark_type_mix":{"distress":6,"demand":1},"barks_in_window":7,"loud_noise_prior":true,"episode_num":1,"duration_sec":420}` |
 
 Rules:
 - **Always set `confidence` and `model_id`** for machine-produced events. A label with no provenance is near worthless for retraining.
@@ -462,6 +463,13 @@ corpus/       ML-ready datasets: vision (COCO/YOLO) + behavioral (Parquet)
 
 ## Changelog
 
+- **0.5** Additive-only. New event_type `panic_episode` (§5): Silent Guardian
+  panic detection — logged when intense barking (burst / sustained rate /
+  escalation futility) suppresses interventions. Payload carries the trigger
+  signal, per-type bark mix (classifier labels grouped per SG config),
+  loud-noise-prior context, episode number within session, and duration.
+  Bark events already carry emotion label+confidence; no shape change there.
+  No existing tables or columns changed.
 - **0.4** Additive-only. Three columns on `dispense_log` for beam-counted
   dispense verification (`dispensed_count`, `attempts`, `overage`): the IR
   through-beam now counts individual treats (20ms debounce, 6s window after

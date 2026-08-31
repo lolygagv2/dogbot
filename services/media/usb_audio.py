@@ -117,6 +117,12 @@ class USBAudioService:
         self._loading: bool = False  # Track when we're loading a file (prevents false state sync)
         self._last_play_time: float = 0  # Track when playback started
 
+        # Music loop mode: 'off' (song plays once, stops — legacy behavior),
+        # 'one' (repeat current song), 'all' (auto-advance through playlist).
+        # Set via set_loop_mode() (app Loop button -> audio_loop cloud command).
+        self._loop_mode: str = 'off'
+        self._loop_watcher_started: bool = False
+
         # General audio tracking (for any audio file)
         self._current_track: Optional[str] = None  # Any audio currently playing
 
@@ -326,6 +332,7 @@ class USBAudioService:
             # Send audio state event to app (only for music, not voice clips)
             if is_music:
                 self._send_audio_event('playing', self._playlist_track)
+                self._ensure_loop_watcher()
 
             # Suppress bark detection while speaker is active (echo prevention).
             # Music excluded — bark detector is already mode-gated and music
@@ -429,6 +436,7 @@ class USBAudioService:
                 "playing": self._music_playing,
                 "track": self._playlist_track,  # Show selected playlist track
                 "looping": self._is_looping,
+                "loop_mode": self._loop_mode,
                 "playlist_index": self._current_index,
                 "playlist_length": len(self._playlist)
             }
@@ -467,6 +475,7 @@ class USBAudioService:
             'playing': state == 'playing',
             'playlist_index': self._current_index,
             'playlist_length': len(self._playlist),
+            'loop_mode': self._loop_mode,
         }
 
         # Internal EventBus first: api/ws.py subscribes to the 'audio'
@@ -578,6 +587,75 @@ class USBAudioService:
             result["track_name"] = self._playlist_track
             self.logger.info(f"Previous track: {self._playlist_track} (auto-playing)")
             return result
+
+    def set_loop_mode(self, mode: str) -> Dict[str, Any]:
+        """Set music loop mode: 'off' | 'one' | 'all'.
+
+        'off': song plays once and stops (legacy behavior)
+        'one': repeat the current song when it finishes
+        'all': auto-advance to the next playlist track when a song finishes
+        """
+        mode = (mode or '').lower()
+        if mode not in ('off', 'one', 'all'):
+            return {"success": False,
+                    "error": f"Invalid loop mode '{mode}' (use off/one/all)"}
+        self._loop_mode = mode
+        self.logger.info(f"Music loop mode set to '{mode}'")
+        if mode != 'off':
+            self._ensure_loop_watcher()
+        # Let the app reflect the new mode immediately
+        self._send_audio_event(
+            'playing' if self._music_playing else 'stopped', self._playlist_track)
+        return {"success": True, "loop_mode": mode}
+
+    def get_loop_mode(self) -> str:
+        return self._loop_mode
+
+    def _ensure_loop_watcher(self):
+        """Start the loop watcher thread once (lazy, on first music play)."""
+        if self._loop_watcher_started:
+            return
+        self._loop_watcher_started = True
+        threading.Thread(target=self._loop_watcher_loop, daemon=True,
+                         name="MusicLoopWatcher").start()
+        self.logger.info("Music loop watcher started")
+
+    def _loop_watcher_loop(self):
+        """Auto-advance/repeat when a music track ends naturally.
+
+        Only acts when: loop mode is on, the music player (not a voice clip)
+        was playing, playback ended by itself (not stop()), and the system is
+        NOT in Silent Guardian mode — SG chains its own calming playlist and
+        this watcher must not fight it.
+        """
+        while True:
+            time.sleep(1.0)
+            try:
+                if self._loop_mode == 'off' or not self._music_playing:
+                    continue
+                if self._loading or not self.initialized:
+                    continue
+                # Grace period: play() can take a moment to report busy
+                if time.time() - self._last_play_time < 2.0:
+                    continue
+                if pygame.mixer.music.get_busy():
+                    continue
+                # Track ended naturally. Stand down during Silent Guardian.
+                try:
+                    from core.state import get_state, SystemMode
+                    if get_state().get_mode() == SystemMode.SILENT_GUARDIAN:
+                        continue
+                except Exception:
+                    pass
+                if self._loop_mode == 'one':
+                    self.logger.info("Loop 'one': replaying current track")
+                    self._play_current()
+                elif self._loop_mode == 'all':
+                    self.logger.info("Loop 'all': advancing to next track")
+                    self.play_next()
+            except Exception as e:
+                self.logger.debug(f"Loop watcher error: {e}")
+                time.sleep(2.0)
 
     def get_playlist(self) -> Dict[str, Any]:
         """Get current playlist"""

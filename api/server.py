@@ -1169,6 +1169,26 @@ async def update_sg_config(config: Dict[str, Any]):
     return {"success": True, "updated": updated}
 
 
+@app.get("/sg/summary")
+async def get_sg_summary():
+    """Live Silent Guardian session summary (on-demand status pull).
+
+    Same payload shape as the Level-4 escalation sg_summary relay event:
+    duration, bark-type breakdown + percentages + timeline, treats, trend,
+    current action, owner-friendly headline, panic state. Session-scoped
+    numbers only (computed from the in-memory session bark log).
+    Cloud path: 'sg_status_pull' command -> this payload via 'sg_summary'
+    relay event. LAN/AP path: the app calls this endpoint directly.
+    """
+    from modes.silent_guardian import get_silent_guardian_mode
+    sg = get_silent_guardian_mode()
+    if not sg.running:
+        return {"success": False, "running": False,
+                "error": "Silent Guardian is not running"}
+    return {"success": True, "running": True,
+            "summary": sg.build_summary_payload(reason='status_pull')}
+
+
 @app.get("/sg/sessions/recent")
 async def get_sg_sessions_recent(since: float = 0.0, limit: int = 20):
     """Catch-up endpoint for the app after being offline.
@@ -2968,6 +2988,26 @@ async def toggle_audio():
         return result
     except Exception as e:
         logger.error(f"Audio toggle error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/audio/loop")
+async def set_audio_loop(request: Dict[str, Any]):
+    """Set music loop mode: {"mode": "off" | "one" | "all"}.
+
+    'off' = song plays once and stops (legacy), 'one' = repeat current song,
+    'all' = auto-advance through the playlist. App Loop button target.
+    """
+    try:
+        usb_audio = get_usb_audio_service()
+        result = usb_audio.set_loop_mode(request.get('mode', ''))
+        if not result.get('success'):
+            raise HTTPException(status_code=400,
+                                detail=result.get('error', 'Invalid loop mode'))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Audio loop error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/audio/next")

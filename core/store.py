@@ -201,6 +201,15 @@ class TreatBotStore:
                     )
                 ''')
 
+                # Idempotent column additions for pre-existing databases
+                # (CREATE TABLE IF NOT EXISTS never adds columns to old tables).
+                # summary_sent: once-per-session Level-4 summary guard (survives restarts)
+                # panic_episodes: count of SG panic episodes this session
+                self._ensure_column(cursor, 'silent_guardian_sessions',
+                                    'summary_sent', 'INTEGER DEFAULT 0')
+                self._ensure_column(cursor, 'silent_guardian_sessions',
+                                    'panic_episodes', 'INTEGER DEFAULT 0')
+
                 conn.commit()
                 self.logger.info("Database initialized successfully")
 
@@ -649,7 +658,69 @@ class TreatBotStore:
             finally:
                 conn.close()
 
+    @staticmethod
+    def _ensure_column(cursor, table: str, column: str, decl: str):
+        """Add a column to an existing table if it's missing (idempotent)."""
+        cursor.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in cursor.fetchall()}
+        if column not in existing:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
     # ========== Silent Guardian Methods ==========
+
+    def mark_sg_summary_sent(self, session_id: int) -> bool:
+        """Persist the once-per-session Level-4 summary guard."""
+        return self._update_sg_session_field(
+            session_id, "summary_sent = 1")
+
+    def get_sg_summary_sent(self, session_id: int) -> bool:
+        """Whether the Level-4 summary was already sent for this session."""
+        if not self._lock.acquire(timeout=0.5):
+            return False
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT summary_sent FROM silent_guardian_sessions WHERE id = ?',
+                    (session_id,))
+                row = cursor.fetchone()
+                return bool(row and row[0])
+            finally:
+                conn.close()
+        except Exception as e:
+            self.logger.error(f"get_sg_summary_sent failed: {e}")
+            return False
+        finally:
+            self._lock.release()
+
+    def increment_sg_panic_episodes(self, session_id: int) -> bool:
+        """Bump the panic episode counter on the session row."""
+        return self._update_sg_session_field(
+            session_id, "panic_episodes = COALESCE(panic_episodes, 0) + 1")
+
+    def _update_sg_session_field(self, session_id: int, set_clause: str) -> bool:
+        """Apply a fixed SET clause to one SG session row (non-blocking)."""
+        if not self._lock.acquire(timeout=0.5):
+            self.logger.warning(f"SG session update skipped - lock busy ({set_clause})")
+            return False
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'UPDATE silent_guardian_sessions SET {set_clause} WHERE id = ?',
+                    (session_id,))
+                conn.commit()
+                return cursor.rowcount > 0
+            except Exception as e:
+                self.logger.error(f"SG session update failed ({set_clause}): {e}")
+                conn.rollback()
+                return False
+            finally:
+                conn.close()
+        finally:
+            self._lock.release()
 
     def start_silent_guardian_session(self) -> int:
         """Start a new Silent Guardian session (non-blocking)"""

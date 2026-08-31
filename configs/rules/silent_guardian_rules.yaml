@@ -170,6 +170,109 @@ audio_paths:
   bezik: "talks/bezik.mp3"
   calming_music: "songs/default/mozart_piano.mp3"
 
+  # Calming playlist: curated classical tracks (no EDM/rock/trance).
+  # SG Level 4 + panic routine pick RANDOMLY from this list and chain to the
+  # next random track when one finishes (continuous music, no repeats back-to-back).
+  # "Symphony & Movie Themes - Classical Italian Opera Song.mp3" excluded as a
+  # duplicate of ClassicItalianOpera.mp3.
+  calming_music_playlist:
+    - "songs/default/Bach Easter Oratorio, BWV 249_ Sinfonia.mp3"
+    - "songs/default/Bach Minuet in D minor, BWV Anh. 132.mp3"
+    - "songs/default/Bach Overture No.1_ Passepied.mp3"
+    - "songs/default/Bach Overture No.2_ Badinerie.mp3"
+    - "songs/default/Bach Overture No.3_ Air.mp3"
+    - "songs/default/Bach Overture No.4_ Rejouissance.mp3"
+    - "songs/default/Bach Toccata and Fugue in D minor, BWV 565.mp3"
+    - "songs/default/classical - 1812 overture.mp3"
+    - "songs/default/classical - holst-the_planets-mars.mp3"
+    - "songs/default/classical - rhapsody in blue.mp3"
+    - "songs/default/Classical - Vivaldi - Four Seasons - 1.mp3"
+    - "songs/default/ClassicItalianOpera.mp3"
+    - "songs/default/mozart_concerto.mp3"
+    - "songs/default/mozart_piano.mp3"
+    - "songs/default/MozartSymphony No 40, 1st movement.mp3"
+    - "songs/default/Pachelbel - Canon In D.mp3"
+    - "songs/default/Yepes Rodrigo  Concierto De Aranjuez M2.mp3"
+
+# Bark type classification (surfacing the TFLite emotion classifier output).
+# Model label set (ai/models/emotion_mapping.json — do NOT invent classes):
+#   aggressive, alert, anxious, attention, playful, scared  (+ notbark veto)
+bark_classification:
+  # Below this classifier confidence a bark is logged as "unclassified"
+  confidence_threshold: 0.40
+  # Label -> reporting group. THE single place labels are grouped.
+  groups:
+    anxious: distress
+    scared: distress
+    attention: demand
+    alert: alarm
+    aggressive: aggressive
+    playful: play
+  # Owner-facing phrasing per group. THE single place strings live —
+  # notifications/summaries pull from here, never hardcode.
+  owner_phrases:
+    distress: "distress vocalization"
+    demand: "demand barking"
+    alarm: "alarm barking"
+    aggressive: "aggressive barking"
+    play: "playful barking"
+    unclassified: "barking"
+  # Trend phrasing (bark rate last trend_window vs session average)
+  trend_phrases:
+    improving: "tapering off"
+    worsening: "getting more frequent"
+    flat: "holding steady"
+  # If this many aggressive-class barks occur in a session, tag the session
+  # summary/stop event with an 'aggressive' flag ("Your dog was aggressive today").
+  aggressive_session_tag_min: 5
+
+# Level-4 session summary + on-demand status pull
+summary:
+  enabled: true
+  # Bark-rate trend compares the last N minutes against the session average
+  trend_window_minutes: 30
+  # Trend is 'improving'/'worsening' when recent rate differs from session
+  # average by more than this fraction; otherwise 'flat'
+  trend_tolerance: 0.25
+
+# Panic detection — do-not-intervene branch.
+# ANY signal triggers PANIC; interventions are suppressed for the episode.
+panic:
+  enabled: true
+  # Signal 1a: burst — Morgan's rule: lots of barks + bad emotion together.
+  # >= burst_barks within burst_window_seconds where at least burst_bad_emotion_min
+  # of them are distress/aggressive-class = episode.
+  burst_barks: 5
+  burst_window_seconds: 5
+  burst_bad_emotion_min: 2
+  # Signal 1b: sustained rate — barks/min above panic_bark_rate for
+  # panic_duration_seconds with no self-termination. Distress/aggressive-class
+  # barks count extra (weight below); demand/alarm/play count 1.0.
+  panic_bark_rate: 10          # weighted barks per minute
+  panic_duration_seconds: 180
+  distress_weight: 1.5         # applies to groups listed in panic_weighted_groups
+  panic_weighted_groups: [distress, aggressive]
+  # Signal 2: escalation futility — N consecutive intervention cycles where
+  # barking resumed within resume_window_seconds of the intervention ending.
+  futility_cycles: 3
+  futility_resume_window_seconds: 30
+  # PANIC behavior
+  play_calming_routine: true
+  calming_routine_songs: 3     # play 3 random classical songs in a row
+  # Exit via hysteresis: quiet (no passed barks) for calm_exit_seconds,
+  # AND at least min_panic_duration_seconds since panic entry (no flapping).
+  calm_exit_seconds: 300
+  min_panic_duration_seconds: 300
+  # After exiting panic, suppress interventions for this cooldown
+  post_panic_cooldown_seconds: 900
+  # More than this many episodes in one session -> subsequent panic alerts are
+  # sent with severity 'high' and the session summary is flagged.
+  max_episodes_before_high_severity: 2
+  # Loud-noise context: a high-loudness non-bark sound (notbark veto) within
+  # this window before an episode is reported as "after hearing loud noises"
+  loud_noise_lookback_seconds: 120
+  loud_noise_min_db: -15
+
 # Camera settings for Silent Guardian mode
 camera:
   mode: "fixed"                   # Stationary wide shot

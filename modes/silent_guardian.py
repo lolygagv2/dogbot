@@ -24,6 +24,7 @@ Resets:
 import os
 import sys
 import time
+import random
 import threading
 import logging
 import yaml
@@ -55,6 +56,7 @@ class SGState(Enum):
     INTERVENTION = "intervention"     # Running intervention sequence
     COOLDOWN = "cooldown"            # Brief pause after intervention
     GAVE_UP = "gave_up"              # Intervention timed out
+    PANIC = "panic"                  # Distress episode - interventions suppressed
 
 
 class SilentGuardianMode:
@@ -148,6 +150,34 @@ class SilentGuardianMode:
         self.quiet_reset_minutes = escalation_config.get('reset_after_quiet_minutes', 15)
         self.quiet_since = 0.0  # Timestamp of when continuous quiet started (0 = not quiet)
         self.total_escalation_resets = 0  # Resets this session
+
+        # Bark-type session log: every bark passing the loudness threshold,
+        # with classifier label + confidence + reporting group. ALL summary
+        # aggregation reads from this (session-scoped — never the cumulative
+        # counters, which have a known persistence bug).
+        self.session_bark_log: List[Dict[str, Any]] = []
+        # Loud non-bark sounds (notbark veto with high loudness): (ts, db).
+        # Context for panic alerts ("after hearing loud noises").
+        self.loud_noises: List[tuple] = []
+
+        # Level-4 once-per-session summary guard (also persisted in DB row)
+        self.summary_sent = False
+
+        # Panic detection state
+        self.panic_active = False
+        self.panic_start_time = 0.0
+        self.panic_trigger = None            # 'burst' | 'sustained_rate' | 'futility'
+        self.panic_loud_noise_prior = False
+        self.panic_episodes_this_session = 0
+        self.panic_songs_played = 0
+        self.post_panic_cooldown_until = 0.0
+        self.sustained_rate_since = 0.0      # weighted BPM above threshold since
+        self.futility_count = 0              # consecutive futile intervention cycles
+        self.futility_pending_since = 0.0    # intervention-end ts awaiting resume check
+
+        # Calming music chaining (Level 4 + panic): last track for no-repeat
+        self.calming_last_track = None
+        self.calming_track_started_at = 0.0
 
         logger.info("Silent Guardian mode initialized (3-level escalation + anti-farming)")
 
@@ -380,6 +410,7 @@ class SilentGuardianMode:
             self.escalation_events = []
             self.quiet_since = 0.0
             self.total_escalation_resets = 0
+            self._reset_bark_and_panic_state()
 
             # Reset anti-farming state
             self.last_treat_time = 0.0
@@ -422,6 +453,11 @@ class SilentGuardianMode:
         logger.info("Stopping Silent Guardian...")
         self.running = False
 
+        # If a panic episode is in progress, record it before teardown
+        if self.panic_active:
+            self._log_panic_episode_event(time.time())
+            self.panic_active = False
+
         # Stop calming music if playing
         self._stop_calming_music()
 
@@ -447,11 +483,18 @@ class SilentGuardianMode:
         set_agc(True)
         logger.info("AGC re-enabled")
 
-        # Publish stop event
+        # Publish stop event (bark-type breakdown + tags from the session log)
+        stop_counts = self._bark_type_counts()
+        aggressive_min = self.config.get('bark_classification', {}) \
+            .get('aggressive_session_tag_min', 5)
         publish_system_event('silent_guardian_stopped', {
             'session_id': self.session_id,
             'interventions': self.interventions_triggered,
-            'treats': self.treats_dispensed
+            'treats': self.treats_dispensed,
+            'bark_types': stop_counts,
+            'headline': self._headline(),
+            'aggressive_tag': stop_counts.get('aggressive', 0) >= aggressive_min,
+            'panic_episodes': self.panic_episodes_this_session,
         }, 'silent_guardian')
 
         logger.info("Silent Guardian stopped")
@@ -507,6 +550,25 @@ class SilentGuardianMode:
                 pass
             return
 
+        if event.subtype == 'loud_noise':
+            # High-energy sound the classifier vetoed as notbark — remember it
+            # as environmental context for panic alerts ("heard loud noises").
+            try:
+                db = float(event.data.get('loudness_db', -99))
+                min_db = self.config.get('panic', {}).get('loud_noise_min_db', -15)
+                if db >= min_db:
+                    now = time.time()
+                    self.loud_noises.append((now, db))
+                    # Keep a bounded window (2x lookback is plenty)
+                    lookback = self.config.get('panic', {}).get(
+                        'loud_noise_lookback_seconds', 120)
+                    cutoff = now - 2 * lookback
+                    self.loud_noises = [x for x in self.loud_noises if x[0] >= cutoff]
+                    logger.info(f"SG: loud non-bark noise noted ({db:.1f}dB)")
+            except Exception as e:
+                logger.debug(f"loud_noise handling failed: {e}")
+            return
+
         if event.subtype != 'bark_detected':
             return
 
@@ -544,12 +606,55 @@ class SilentGuardianMode:
 
         logger.info(f"Bark detected: {dog_name or dog_id or 'unknown'} (conf: {confidence:.2f}, loud: {loudness_db:.1f}dB)")
         self._log_bark_event(event, gate='passed')
-        self.last_bark_time = time.time()
+        now = time.time()
+        self.last_bark_time = now
         self.total_barks += 1  # confirmed bark (passed loudness threshold)
         self.quiet_since = 0.0  # Any bark resets the continuous quiet timer
 
+        # Bark-type classification: attach classifier label + reporting group
+        # to the session log (below confidence threshold => 'unclassified').
+        emotion = event.data.get('emotion')
+        group, label = self._classify_bark(emotion, confidence)
+        self.session_bark_log.append({
+            'ts': now,
+            'label': label,
+            'confidence': confidence,
+            'group': group,
+            'loudness_db': loudness_db,
+            'dog_id': dog_id,
+            'dog_name': dog_name,
+        })
+
+        # Panic signal 2 (futility): did barking resume within the window
+        # after the last intervention ended?
+        panic_cfg = self.config.get('panic', {})
+        if self.futility_pending_since > 0:
+            resume_window = panic_cfg.get('futility_resume_window_seconds', 30)
+            if now - self.futility_pending_since <= resume_window:
+                self.futility_count += 1
+                logger.info(f"SG_FUTILITY: barking resumed within {resume_window}s "
+                            f"of intervention end ({self.futility_count} consecutive)")
+            else:
+                self.futility_count = 0
+            self.futility_pending_since = 0.0
+
+        # Panic signal 1a (burst): lots of barks + bad emotion together
+        if not self.panic_active and panic_cfg.get('enabled', True):
+            if self._check_panic_burst(now):
+                self._enter_panic('burst', dog_id, dog_name)
+            elif self.futility_count >= panic_cfg.get('futility_cycles', 3):
+                self._enter_panic('futility', dog_id, dog_name)
+
+        # During panic (or post-panic cooldown) interventions are suppressed —
+        # barks are still logged above for the episode record and calm detection.
+        if self.panic_active:
+            return
+
         # Handle based on current state
         if self.fsm_state == SGState.LISTENING:
+            if now < self.post_panic_cooldown_until:
+                logger.debug("SG: post-panic cooldown — not intervening")
+                return
             # Check if threshold exceeded
             threshold = bark_config.get('threshold', 2)
             result = self.bark_tracker.check_threshold(dog_id or 'unknown', threshold)
@@ -628,6 +733,11 @@ class SilentGuardianMode:
 
             logger.info(f"Starting Level {self.current_escalation_level} intervention for {dog_name or dog_id or 'unknown'}")
 
+        # First Level-4 hit this session -> one summary notification (never
+        # repeated on later Level-4 hits; guard persisted in the session row).
+        if self.current_escalation_level >= 4:
+            self._maybe_send_level4_summary()
+
     def _run_loop(self):
         """Main loop"""
         logger.info("Silent Guardian loop started")
@@ -648,6 +758,12 @@ class SilentGuardianMode:
 
                 # Check treat eligibility (10 min cooldown after treats)
                 self._check_treat_eligibility()
+
+                # Panic detection (sustained rate + futility expiry)
+                self._check_panic(time.time())
+
+                # Chain calming music tracks (Level 4 / panic continuous play)
+                self._tick_calming_music(time.time())
 
                 # Process state machine
                 self._process_state()
@@ -691,8 +807,27 @@ class SilentGuardianMode:
         self.escalation_events = []
         self.quiet_since = 0.0
         self.total_escalation_resets = 0
+        self._reset_bark_and_panic_state()
 
         logger.info(f"New session: {self.session_id}")
+
+    def _reset_bark_and_panic_state(self):
+        """Reset the session bark log and panic tracking (new session)."""
+        self.session_bark_log = []
+        self.loud_noises = []
+        self.summary_sent = False
+        self.panic_active = False
+        self.panic_start_time = 0.0
+        self.panic_trigger = None
+        self.panic_loud_noise_prior = False
+        self.panic_episodes_this_session = 0
+        self.panic_songs_played = 0
+        self.post_panic_cooldown_until = 0.0
+        self.sustained_rate_since = 0.0
+        self.futility_count = 0
+        self.futility_pending_since = 0.0
+        self.calming_last_track = None
+        self.calming_track_started_at = 0.0
 
     def _process_state(self):
         """Process current state"""
@@ -709,6 +844,9 @@ class SilentGuardianMode:
         elif self.fsm_state == SGState.GAVE_UP:
             self._process_gave_up()
 
+        elif self.fsm_state == SGState.PANIC:
+            self._process_panic()
+
     def _process_intervention(self):
         """Process the intervention based on escalation level"""
         now = time.time()
@@ -719,6 +857,9 @@ class SilentGuardianMode:
             self._stop_calming_music()
             self.fsm_state = SGState.GAVE_UP
             self._cooldown_start = now
+            # Intervention cycle ended (unsuccessfully) — arm the futility
+            # resume check (panic signal 2)
+            self.futility_pending_since = now
 
             # Log failed intervention
             self.store.log_sg_intervention(
@@ -967,44 +1108,83 @@ class SilentGuardianMode:
                         # Reset for next quiet period
                         self.quiet_start_time = now
 
+    def _get_calming_playlist(self):
+        """Return (playlist, base_path) for calming music.
+
+        Playlist source: audio_paths.calming_music_playlist in the SG rules
+        YAML (curated classical tracks). Falls back to the legacy single-file
+        calming_music key if the playlist is missing.
+        """
+        audio_config = self.config.get('audio_paths', {})
+        playlist = audio_config.get('calming_music_playlist', [])
+        if not playlist:
+            old_file = audio_config.get('calming_music', 'songs/default/mozart_piano.mp3')
+            playlist = [old_file]
+        base = audio_config.get('base', '/home/morgan/dogbot/VOICEMP3')
+        return playlist, base
+
+    def _play_random_calming_track(self) -> bool:
+        """Play one random calming track (never the same track back-to-back)."""
+        playlist, base = self._get_calming_playlist()
+        candidates = [t for t in playlist if t != self.calming_last_track] or list(playlist)
+        random.shuffle(candidates)
+        for track in candidates:
+            full_path = os.path.join(base, track)
+            if not os.path.exists(full_path):
+                logger.warning(f"Calming track missing, skipping: {full_path}")
+                continue
+            if self.audio:
+                self.audio.play_file(full_path, loop=False)
+                self.calming_last_track = track
+                self.calming_track_started_at = time.time()
+                logger.info(f"Calming music: {os.path.basename(track)}")
+                return True
+        logger.warning("No playable calming music track found")
+        return False
+
     def _start_calming_music(self):
-        """Start playing calming music from playlist (memory-efficient: plays one track at a time)"""
+        """Start calming music (random track; chaining handled by _tick_calming_music)"""
         if self.calming_music_playing:
             return
-
         try:
-            import random
-            audio_config = self.config.get('audio_paths', {})
-            playlist = audio_config.get('calming_music_playlist', [])
-
-            # Fallback to old single-file config if playlist not defined
-            if not playlist:
-                old_file = audio_config.get('calming_music', 'songs/default/mozart_piano.mp3')
-                playlist = [old_file]
-
-            if not playlist:
-                logger.warning("No calming music configured")
-                return
-
-            base = audio_config.get('base', '/home/morgan/dogbot/VOICEMP3')
-
-            # Pick a random track from playlist (variety without loading all into memory)
-            self.calming_music_index = random.randint(0, len(playlist) - 1)
-            music_file = playlist[self.calming_music_index]
-            full_path = os.path.join(base, music_file)
-
-            if os.path.exists(full_path):
-                if self.audio:
-                    # Don't loop - intervention timeout is 90s, one track is enough
-                    # This prevents memory issues from looping large files
-                    self.audio.play_file(full_path, loop=False)
-                    self.calming_music_playing = True
-                    logger.info(f"Calming music started: {music_file} (track {self.calming_music_index + 1}/{len(playlist)})")
-            else:
-                logger.warning(f"Calming music file not found: {full_path}")
-
+            if self._play_random_calming_track():
+                self.calming_music_playing = True
         except Exception as e:
             logger.error(f"Failed to start calming music: {e}")
+
+    def _tick_calming_music(self, now: float):
+        """Chain to the next random track when the current one ends.
+
+        Level 4: continuous music for the whole music phase (a single track
+        no longer dies mid-intervention). Panic: play exactly
+        panic.calming_routine_songs tracks in a row, then stop.
+        Called from the mode run loop (~10Hz).
+        """
+        if not self.calming_music_playing or not self.audio:
+            return
+        # Startup grace: play() takes a moment before is_busy() reports True
+        if now - self.calming_track_started_at < 3.0:
+            return
+        try:
+            if self.audio.is_busy():
+                return
+        except Exception:
+            return
+
+        # Current track ended naturally
+        if self.panic_active:
+            max_songs = self.config.get('panic', {}).get('calming_routine_songs', 3)
+            if self.panic_songs_played >= max_songs:
+                self.calming_music_playing = False
+                logger.info(f"Panic calming routine complete ({max_songs} songs)")
+                return
+            if self._play_random_calming_track():
+                self.panic_songs_played += 1
+            else:
+                self.calming_music_playing = False
+        else:
+            if not self._play_random_calming_track():
+                self.calming_music_playing = False
 
     def _stop_calming_music(self):
         """Stop calming music"""
@@ -1016,9 +1196,368 @@ class SilentGuardianMode:
                 self.audio.stop()
             self.calming_music_playing = False
             self.calming_music_index = 0
+            self.calming_track_started_at = 0.0
             logger.info("Calming music stopped")
         except Exception as e:
             logger.error(f"Failed to stop calming music: {e}")
+
+    # ===== Bark type classification & session aggregation =====
+    # Model label set (ai/models/emotion_mapping.json): aggressive, alert,
+    # anxious, attention, playful, scared (+ notbark veto). Grouping and all
+    # owner-facing phrasing live in bark_classification config — never here.
+
+    def _classify_bark(self, emotion: Optional[str], confidence: float) -> tuple:
+        """Map a classifier output to (reporting_group, label).
+        Below the confidence threshold -> ('unclassified', 'unclassified')."""
+        cfg = self.config.get('bark_classification', {})
+        threshold = cfg.get('confidence_threshold', 0.40)
+        if not emotion or emotion in ('unknown', 'notbark') or (confidence or 0.0) < threshold:
+            return 'unclassified', 'unclassified'
+        group = cfg.get('groups', {}).get(emotion, 'unclassified')
+        return group, emotion
+
+    def _owner_phrase(self, group: str) -> str:
+        cfg = self.config.get('bark_classification', {})
+        return cfg.get('owner_phrases', {}).get(group, 'barking')
+
+    def _bark_type_counts(self, since_ts: float = 0.0,
+                          until_ts: Optional[float] = None) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for b in self.session_bark_log:
+            if b['ts'] < since_ts:
+                continue
+            if until_ts is not None and b['ts'] > until_ts:
+                continue
+            counts[b['group']] = counts.get(b['group'], 0) + 1
+        return counts
+
+    def _bark_timeline(self, bucket_minutes: int = 30) -> List[Dict[str, Any]]:
+        """Bark-type mix over time within the session (30-min buckets)."""
+        if not self.session_start_time:
+            return []
+        buckets = []
+        now = time.time()
+        n = int((now - self.session_start_time) // (bucket_minutes * 60)) + 1
+        for i in range(n):
+            b_start = self.session_start_time + i * bucket_minutes * 60
+            b_end = b_start + bucket_minutes * 60
+            buckets.append({
+                'offset_min': i * bucket_minutes,
+                'counts': self._bark_type_counts(since_ts=b_start, until_ts=b_end),
+            })
+        return buckets
+
+    def _bark_trend(self, now: Optional[float] = None) -> tuple:
+        """Bark rate over the last trend window vs session average.
+        Returns (trend_key, recent_rate_per_min, session_rate_per_min, window_min)."""
+        now = now or time.time()
+        sum_cfg = self.config.get('summary', {})
+        window_min = sum_cfg.get('trend_window_minutes', 30)
+        tolerance = sum_cfg.get('trend_tolerance', 0.25)
+        session_min = max((now - self.session_start_time) / 60.0, 1e-6) \
+            if self.session_start_time else 1e-6
+        total = len(self.session_bark_log)
+        session_rate = total / session_min
+        effective_window = min(window_min, session_min)
+        recent = sum(1 for b in self.session_bark_log
+                     if b['ts'] >= now - window_min * 60)
+        recent_rate = recent / max(effective_window, 1e-6)
+        if session_rate <= 0:
+            trend = 'flat'
+        elif recent_rate < session_rate * (1 - tolerance):
+            trend = 'improving'
+        elif recent_rate > session_rate * (1 + tolerance):
+            trend = 'worsening'
+        else:
+            trend = 'flat'
+        return trend, round(recent_rate, 2), round(session_rate, 2), window_min
+
+    def _headline(self, now: Optional[float] = None) -> str:
+        """Owner-friendly one-liner: 'Mostly demand barking, tapering off'."""
+        counts = self._bark_type_counts()
+        if not counts:
+            return "No barking so far"
+        dominant = max(counts, key=lambda g: counts[g])
+        trend, _, _, _ = self._bark_trend(now)
+        trend_phrase = self.config.get('bark_classification', {}) \
+            .get('trend_phrases', {}).get(trend, '')
+        phrase = self._owner_phrase(dominant)
+        return f"Mostly {phrase}, {trend_phrase}" if trend_phrase else f"Mostly {phrase}"
+
+    def _current_action(self) -> str:
+        if self.panic_active:
+            return 'playing calming audio' if self.calming_music_playing \
+                else 'monitoring quietly (interventions paused)'
+        if self.fsm_state == SGState.INTERVENTION:
+            if self.calming_music_playing:
+                return 'playing calming audio'
+            return f'running level {self.current_escalation_level} intervention'
+        if self.fsm_state == SGState.LISTENING:
+            return 'listening'
+        return 'cooling down'
+
+    def build_summary_payload(self, reason: str = 'status_pull') -> Dict[str, Any]:
+        """Session summary — used by BOTH the Level-4 escalation notification
+        and the on-demand app status pull (same payload, computed live).
+        All numbers come from the session bark log (session-scoped) — never
+        the cumulative counters (known persistence bug)."""
+        now = time.time()
+        counts = self._bark_type_counts()
+        total = sum(counts.values())
+        percentages = {g: round(100.0 * c / total, 1) for g, c in counts.items()} \
+            if total else {}
+        trend, recent_rate, session_rate, window_min = self._bark_trend(now)
+        aggressive_min = self.config.get('bark_classification', {}) \
+            .get('aggressive_session_tag_min', 5)
+        return {
+            'action': reason,
+            'session_id': self.session_id,
+            'session_duration_sec': int(now - self.session_start_time)
+            if self.session_start_time else 0,
+            'total_barks': total,
+            'bark_types': counts,
+            'bark_type_percentages': percentages,
+            'bark_timeline': self._bark_timeline(),
+            'treats_dispensed': self.treats_dispensed,
+            'interventions_triggered': self.interventions_triggered,
+            'current_escalation_level': self.current_escalation_level,
+            'fsm_state': self.fsm_state.value if self.fsm_state else None,
+            'trend': trend,
+            'trend_detail': {
+                'recent_rate_per_min': recent_rate,
+                'session_rate_per_min': session_rate,
+                'window_minutes': window_min,
+            },
+            'current_action': self._current_action(),
+            'headline': self._headline(now),
+            'aggressive_tag': counts.get('aggressive', 0) >= aggressive_min,
+            'panic_active': self.panic_active,
+            'panic_episodes': self.panic_episodes_this_session,
+        }
+
+    def _maybe_send_level4_summary(self):
+        """Send ONE summary notification the first time this session hits
+        Level 4. Guard persisted in the session row (summary_sent)."""
+        if not self.config.get('summary', {}).get('enabled', True):
+            return
+        if self.summary_sent:
+            return
+        if self.session_id and self.session_id > 0 and \
+                self.store.get_sg_summary_sent(self.session_id):
+            self.summary_sent = True
+            return
+        self.summary_sent = True
+        if self.session_id and self.session_id > 0:
+            self.store.mark_sg_summary_sent(self.session_id)
+        payload = self.build_summary_payload(reason='level4_escalation')
+        publish_system_event('sg_summary', payload, 'silent_guardian')
+        logger.info(f"SG_SUMMARY sent (first Level-4 hit): {payload['headline']}")
+
+    # ===== Panic detection (do-not-intervene branch) =====
+
+    def _check_panic_burst(self, now: float) -> bool:
+        """Signal 1a: >= burst_barks in burst_window_seconds, with at least
+        burst_bad_emotion_min of them distress/aggressive-class."""
+        cfg = self.config.get('panic', {})
+        window = cfg.get('burst_window_seconds', 5)
+        need = cfg.get('burst_barks', 5)
+        bad_min = cfg.get('burst_bad_emotion_min', 2)
+        weighted_groups = set(cfg.get('panic_weighted_groups',
+                                      ['distress', 'aggressive']))
+        recent = [b for b in self.session_bark_log if b['ts'] >= now - window]
+        if len(recent) < need:
+            return False
+        bad = sum(1 for b in recent if b['group'] in weighted_groups)
+        return bad >= bad_min
+
+    def _weighted_bark_rate(self, window_sec: float = 60.0,
+                            now: Optional[float] = None) -> float:
+        """Barks/min over the trailing window; distress/aggressive-class barks
+        count extra (panic.distress_weight)."""
+        now = now or time.time()
+        cfg = self.config.get('panic', {})
+        weight = cfg.get('distress_weight', 1.5)
+        weighted_groups = set(cfg.get('panic_weighted_groups',
+                                      ['distress', 'aggressive']))
+        total = 0.0
+        for b in self.session_bark_log:
+            if b['ts'] >= now - window_sec:
+                total += weight if b['group'] in weighted_groups else 1.0
+        return total / (window_sec / 60.0)
+
+    def _check_panic(self, now: float):
+        """Run-loop panic checks: sustained-rate signal + futility expiry."""
+        cfg = self.config.get('panic', {})
+
+        # Futility window expiry: dog stayed quiet past the resume window,
+        # so intervention cycles are no longer 'consecutive'
+        if self.futility_pending_since > 0 and \
+                now - self.futility_pending_since > \
+                cfg.get('futility_resume_window_seconds', 30):
+            self.futility_pending_since = 0.0
+            self.futility_count = 0
+
+        if not cfg.get('enabled', True) or self.panic_active:
+            return
+
+        # Signal 1b: sustained weighted rate with no self-termination
+        rate = self._weighted_bark_rate(60.0, now)
+        if rate >= cfg.get('panic_bark_rate', 10):
+            if self.sustained_rate_since == 0.0:
+                self.sustained_rate_since = now
+            elif now - self.sustained_rate_since >= \
+                    cfg.get('panic_duration_seconds', 180):
+                last = self.session_bark_log[-1] if self.session_bark_log else {}
+                self._enter_panic('sustained_rate',
+                                  last.get('dog_id'), last.get('dog_name'))
+        else:
+            self.sustained_rate_since = 0.0
+
+    def _recent_loud_noise(self, now: float) -> bool:
+        lookback = self.config.get('panic', {}).get('loud_noise_lookback_seconds', 120)
+        return any(ts >= now - lookback for ts, _db in self.loud_noises)
+
+    def _panic_message(self, name: Optional[str]) -> str:
+        who = name or 'Your dog'
+        noise = ' after hearing loud noises' if self.panic_loud_noise_prior else ''
+        if self.panic_trigger == 'futility':
+            return (f"Possible distress episode — {who} isn't responding to "
+                    f"interventions{noise}. Playing calming music. Live view available.")
+        return (f"Possible distress episode — {who} had very intense barking{noise}. "
+                f"Interventions paused; playing calming music. Live view available.")
+
+    def _enter_panic(self, trigger: str, dog_id: Optional[str] = None,
+                     dog_name: Optional[str] = None):
+        """Enter the do-not-intervene panic branch."""
+        with self._state_lock:
+            if self.panic_active:
+                return
+            now = time.time()
+            self.panic_active = True
+            self.panic_start_time = now
+            self.panic_trigger = trigger
+            self.panic_loud_noise_prior = self._recent_loud_noise(now)
+            self.panic_episodes_this_session += 1
+            self.panic_songs_played = 0
+            self.sustained_rate_since = 0.0
+            self.futility_count = 0
+            self.futility_pending_since = 0.0
+            self.fsm_state = SGState.PANIC
+            self._cooldown_start = None
+
+        if self.session_id and self.session_id > 0:
+            self.store.increment_sg_panic_episodes(self.session_id)
+
+        cfg = self.config.get('panic', {})
+        severity = 'high' if self.panic_episodes_this_session > \
+            cfg.get('max_episodes_before_high_severity', 2) else 'warning'
+        name = dog_name or self.intervention_dog_name
+
+        # Calming routine: N random classical songs in a row. If Level-4 music
+        # is already playing, the current track counts as song 1.
+        if cfg.get('play_calming_routine', True):
+            if self.calming_music_playing:
+                self.panic_songs_played = 1
+            elif self._play_random_calming_track():
+                self.calming_music_playing = True
+                self.panic_songs_played = 1
+
+        if self.led:
+            self.led.set_pattern('calm', duration=120.0)
+
+        publish_system_event('panic_alert', {
+            'action': 'started',
+            'severity': severity,
+            'trigger': trigger,
+            'dog_id': dog_id or self.intervention_dog_id,
+            'dog_name': name,
+            'message': self._panic_message(name),
+            'episode_num': self.panic_episodes_this_session,
+            'loud_noise_prior': self.panic_loud_noise_prior,
+            'bark_type_mix': self._bark_type_counts(since_ts=time.time() - 300),
+            'session_id': self.session_id,
+        }, 'silent_guardian')
+
+        logger.warning(
+            f"SG_PANIC: entered (trigger={trigger}, episode "
+            f"#{self.panic_episodes_this_session}, severity={severity}, "
+            f"loud_noise_prior={self.panic_loud_noise_prior})")
+
+    def _process_panic(self):
+        """PANIC state: no interventions; exit via hysteresis (quiet for
+        calm_exit_seconds AND at least min_panic_duration_seconds elapsed)."""
+        now = time.time()
+        cfg = self.config.get('panic', {})
+        calm_exit = cfg.get('calm_exit_seconds', 300)
+        min_duration = cfg.get('min_panic_duration_seconds', 300)
+        quiet_for = now - self.last_bark_time if self.last_bark_time > 0 \
+            else now - self.panic_start_time
+        if now - self.panic_start_time >= min_duration and quiet_for >= calm_exit:
+            self._exit_panic(now)
+
+    def _log_panic_episode_event(self, now: float):
+        """Spec §5 `panic_episode` event (schema v0.5) — full episode record."""
+        try:
+            mix = self._bark_type_counts(since_ts=self.panic_start_time - 300)
+            last = next((b for b in reversed(self.session_bark_log)
+                         if b['ts'] >= self.panic_start_time - 300), {})
+            wimz_dog = None
+            dog_id = last.get('dog_id')
+            dog_name = last.get('dog_name')
+            if (dog_id and dog_id != 'unknown') or dog_name:
+                wimz_dog = self.wimz.get_or_create_dog(
+                    legacy_id=dog_id if dog_id and dog_id != 'unknown' else None,
+                    name=dog_name)
+            self.wimz.log_event(
+                self.wimz_session_id, 'panic_episode', {
+                    'trigger': self.panic_trigger,
+                    'bark_type_mix': mix,
+                    'barks_in_window': sum(mix.values()),
+                    'loud_noise_prior': self.panic_loud_noise_prior,
+                    'episode_num': self.panic_episodes_this_session,
+                    'duration_sec': int(now - self.panic_start_time),
+                },
+                dog_id=wimz_dog, label_source='auto_rule')
+        except Exception as e:
+            logger.debug(f"wimz panic_episode log failed: {e}")
+
+    def _exit_panic(self, now: float):
+        """Exit panic: log the episode, notify, start intervention cooldown."""
+        duration = int(now - self.panic_start_time)
+        cfg = self.config.get('panic', {})
+        self.post_panic_cooldown_until = now + \
+            cfg.get('post_panic_cooldown_seconds', 900)
+
+        self._log_panic_episode_event(now)
+        self._stop_calming_music()
+
+        last = next((b for b in reversed(self.session_bark_log)
+                     if b['ts'] >= self.panic_start_time - 300), {})
+        name = last.get('dog_name') or self.intervention_dog_name
+        who = name or 'Your dog'
+        publish_system_event('panic_alert', {
+            'action': 'ended',
+            'severity': 'info',
+            'trigger': self.panic_trigger,
+            'dog_id': last.get('dog_id') or self.intervention_dog_id,
+            'dog_name': name,
+            'message': f"{who} has calmed down. Episode lasted "
+                       f"{max(duration // 60, 1)} min.",
+            'episode_num': self.panic_episodes_this_session,
+            'duration_sec': duration,
+            'session_id': self.session_id,
+        }, 'silent_guardian')
+
+        with self._state_lock:
+            self.panic_active = False
+            self.panic_trigger = None
+            self.panic_start_time = 0.0
+            self.panic_songs_played = 0
+            self.fsm_state = SGState.LISTENING
+            self._cooldown_start = None
+
+        logger.info(f"SG_PANIC: exited after {duration}s — intervention "
+                    f"cooldown {cfg.get('post_panic_cooldown_seconds', 900)}s")
 
     def _give_reward(self):
         """Give reward for successful quiet — with bark-state safety check"""
@@ -1049,6 +1588,9 @@ class SilentGuardianMode:
         # A quiet period was genuinely achieved (we're past the bark-state safety
         # checks). Counts whether the outcome is a treat or praise-only.
         self.successful_quiets += 1
+        # Intervention cycle ended (successfully) — arm the futility resume
+        # check: if barking restarts within the window it counts toward panic.
+        self.futility_pending_since = time.time()
 
         # Check treat limit — after the session cap, KEEP INTERVENING with
         # verbal praise (prevents behavior extinction over a long session) but
@@ -1299,6 +1841,13 @@ class SilentGuardianMode:
             'sg_max': max_level,
             'quiet_timer': round(quiet_timer),
             'total_escalation_resets': self.total_escalation_resets,
+            # Bark-type + panic telemetry
+            'bark_types': self._bark_type_counts(),
+            'panic_active': self.panic_active,
+            'panic_episodes': self.panic_episodes_this_session,
+            'post_panic_cooldown_remaining': max(
+                0, round(self.post_panic_cooldown_until - now)),
+            'summary_sent': self.summary_sent,
         }
 
     def cleanup(self):

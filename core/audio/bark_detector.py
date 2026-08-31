@@ -238,6 +238,20 @@ class BarkDetector:
                     if result['emotion'] == 'notbark':
                         logger.info(f"notbark veto (sync): rejecting false positive "
                                     f"(notbark={result['confidence']:.2f})")
+                        # A vetoed event still means a LOUD sound passed the
+                        # energy gate — publish it so Silent Guardian can note
+                        # "heard loud noises" context before panic episodes.
+                        try:
+                            from core.bus import publish_audio_event
+                            peak = event.peak_energy or 0.0
+                            publish_audio_event('loud_noise', {
+                                'loudness_db': 20 * np.log10(max(peak, 1e-10)),
+                                'duration_ms': event.duration_ms,
+                                'notbark_confidence': result['confidence'],
+                                'distance': event.distance,
+                            })
+                        except Exception as e:
+                            logger.debug(f"loud_noise publish failed: {e}")
                         return None
                     # Real bark — attach emotion immediately (no more conf=0.00)
                     event.emotion = result['emotion']

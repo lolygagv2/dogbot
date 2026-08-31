@@ -952,7 +952,27 @@ class TreatBotMain:
                         'session_id': event.data.get('session_id'),
                         'interventions': event.data.get('interventions'),
                         'treats': event.data.get('treats'),
+                        # Bark-type breakdown + session tags (2026-08 feature)
+                        'bark_types': event.data.get('bark_types'),
+                        'headline': event.data.get('headline'),
+                        'aggressive_tag': event.data.get('aggressive_tag'),
+                        'panic_episodes': event.data.get('panic_episodes'),
                     }
+
+                elif event.subtype == 'sg_summary':
+                    # Level-4 escalation summary (once per session) — the app
+                    # renders it as a summary card / push notification. The
+                    # on-demand status pull returns the SAME payload shape via
+                    # command response ('action' discriminates: level4_escalation
+                    # vs status_pull). Full payload passes through verbatim.
+                    event_type = 'sg_summary'
+                    event_data = dict(event.data)
+
+                elif event.subtype == 'panic_alert':
+                    # SG panic episode start/end — app shows "Panic alert" push.
+                    # Never throttled: safety-relevant, low-frequency.
+                    event_type = 'panic_alert'
+                    event_data = dict(event.data)
 
                 elif event.subtype == 'sentry_detection':
                     # Night Sentry spotted a dog/animal. Push the snapshot to the
@@ -1322,6 +1342,35 @@ class TreatBotMain:
                     # Stop audio playback
                     resp = client.post(f'{api_base}/audio/stop')
                     self.logger.debug(f"Audio stop -> {resp.status_code}")
+
+                elif command == 'audio_loop':
+                    # Set music loop mode: {"mode": "off"|"one"|"all"}
+                    # (app Loop button; state echoed back in audio_state events)
+                    mode = params.get('mode', 'off')
+                    resp = client.post(f'{api_base}/audio/loop', json={'mode': mode})
+                    self.logger.debug(f"Audio loop mode={mode} -> {resp.status_code}")
+
+                elif command == 'sg_status_pull':
+                    # On-demand SG status pull: compute the live session summary
+                    # (same payload as the Level-4 sg_summary event, with
+                    # action='status_pull') and send it back as an sg_summary
+                    # relay event for the app to render as a status card.
+                    resp = client.get(f'{api_base}/sg/summary')
+                    if resp.status_code == 200:
+                        body = resp.json()
+                        if body.get('success') and self.relay_client:
+                            self.relay_client.send_event('sg_summary',
+                                                         body['summary'])
+                            self.logger.info("sg_status_pull -> summary sent")
+                        elif self.relay_client:
+                            self.relay_client.send_event('sg_summary', {
+                                'action': 'status_pull',
+                                'error': body.get('error', 'unavailable'),
+                                'running': False,
+                            })
+                            self.logger.info("sg_status_pull -> SG not running")
+                    else:
+                        self.logger.error(f"sg_status_pull failed -> {resp.status_code}")
 
                 elif command == 'set_volume':
                     # Set audio volume: {"level": 0.5} (0.0-1.0)
