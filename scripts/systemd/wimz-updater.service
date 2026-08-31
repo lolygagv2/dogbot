@@ -1,0 +1,18 @@
+# WIM-Z OTA updater — downloads, verifies, installs a release and flips the
+# `current` symlink; rolls back on failed health check. Root because it
+# restarts treatbot.service. Runs the copy at /home/morgan/wimz/updater/ —
+# NOT the one inside the release tree — so a broken release can never break
+# updatability. Triggered by wimz-updater.path.
+# Installed by scripts/ota/bootstrap-ota-layout.sh.
+[Unit]
+Description=WIM-Z OTA updater
+# Never let the updater fight a shutdown
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/morgan/wimz/updater/wimz_updater.py
+# Download (600s) + pip (up to 1800s) + restart/health/rollback margins
+TimeoutStartSec=3000
+StandardOutput=journal
+StandardError=journal

@@ -465,6 +465,16 @@ class TreatBotMain:
         else:
             self.logger.info("Cloud relay disabled in config")
 
+        # OTA manager: forwards wimz-updater progress as update_status events
+        # and, right after an update restart, emits the terminal
+        # success/rolled_back event the app's spinner is waiting on.
+        try:
+            from services.system.ota_manager import get_ota_manager
+            get_ota_manager().start(relay_client=self.relay_client,
+                                    webrtc_service=self.webrtc_service)
+        except Exception as e:
+            self.logger.error(f"OTA manager failed to start: {e}")
+
     def _initialize_orchestrators(self) -> bool:
         """Initialize orchestration layer"""
         try:
@@ -1349,6 +1359,15 @@ class TreatBotMain:
                     mode = params.get('mode', 'off')
                     resp = client.post(f'{api_base}/audio/loop', json={'mode': mode})
                     self.logger.debug(f"Audio loop mode={mode} -> {resp.status_code}")
+
+                elif command == 'start_update':
+                    # OTA contract 2026-08-07: app-initiated firmware update.
+                    # Gates (idle, battery, no WebRTC) + hand-off to the
+                    # wimz-updater systemd service live in the OTA manager.
+                    # Refusals surface as update_status{state:failed,error}.
+                    from services.system.ota_manager import get_ota_manager
+                    get_ota_manager().handle_start_update(
+                        {**event.data, **params})
 
                 elif command == 'sg_status_pull':
                     # On-demand SG status pull: compute the live session summary

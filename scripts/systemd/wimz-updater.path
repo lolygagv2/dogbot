@@ -1,0 +1,12 @@
+# Watches for an OTA update request written by the main app's start_update
+# handler and fires wimz-updater.service. The updater consumes (deletes) the
+# request file first thing, so the path unit re-arms for the next update.
+# Installed by scripts/ota/bootstrap-ota-layout.sh.
+[Unit]
+Description=WIM-Z OTA update trigger
+
+[Path]
+PathExists=/home/morgan/wimz/update-request.json
+
+[Install]
+WantedBy=multi-user.target

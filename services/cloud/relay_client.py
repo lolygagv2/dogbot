@@ -147,6 +147,15 @@ class RelayClient:
         self._webrtc_service = webrtc_service
         self.logger.info("WebRTC service connected to relay client")
 
+    @staticmethod
+    def _get_sw_version() -> str:
+        """Robot software version for telemetry (OTA contract)."""
+        try:
+            from core.version import get_version
+            return get_version()
+        except Exception:
+            return 'unknown'
+
     def _generate_auth_signature(self, timestamp: int) -> str:
         """Generate HMAC signature for authentication"""
         message = f"{self.config.device_id}:{timestamp}"
@@ -406,6 +415,10 @@ class RelayClient:
                             'volume': current_volume,  # 0-100, or null if unavailable
                             'camera_ok': camera_ok,      # False = running blind
                             'camera_error': camera_error,  # reason string, or null
+                            # OTA contract 2026-08-07: app compares this against
+                            # the relay's latest.version (plain string equality)
+                            # to decide whether to offer an update.
+                            'sw_version': self._get_sw_version(),
                         },
                         'timestamp': datetime.utcnow().isoformat() + "Z"
                     })

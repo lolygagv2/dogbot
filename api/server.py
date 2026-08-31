@@ -574,6 +574,7 @@ async def health_check():
     except Exception:
         pass  # detector not up yet — report null rather than failing /health
 
+    from core.version import get_version
     return {
         "status": "healthy",
         "mode": state.get_mode().value,
@@ -581,6 +582,7 @@ async def health_check():
         "uptime": state.get_mode_duration(),
         "camera_ok": camera_ok,
         "camera_error": camera_error,
+        "sw_version": get_version(),
         "timestamp": state.get_full_state()["timestamp"]
     }
 
@@ -1251,11 +1253,13 @@ async def get_telemetry():
     except:
         audio_telemetry = {"playing": False, "track": None}
 
+    from core.version import get_version
     return {
         "system": state.get_status_summary(),
         "hardware": state.hardware.to_dict(),
         "detection": state.detection.to_dict(),
         "audio": audio_telemetry,
+        "sw_version": get_version(),
         "recent_events": store.get_recent_events(10),
         "database_stats": store.get_database_stats()
     }
