@@ -215,14 +215,18 @@ def unpack_release(tarball: str, version: str) -> str:
 
 
 # Per-unit data symlinked into every release. Must match the bootstrap script.
-SHARED_LINKS = ['data', 'VOICEMP3', 'env_new', 'logs', 'state',
-                'captures', 'photos', 'recordings', '.env']
+# VOICEMP3 itself stays a REAL directory in the release (VOICEMP3/wimz/ system
+# prompts are git-tracked and ship with every release); only the per-unit
+# talks/ and songs/ subdirs are shared.
+SHARED_LINKS = ['data', 'VOICEMP3/talks', 'VOICEMP3/songs', 'env_new',
+                'logs', 'state', 'captures', 'photos', 'recordings', '.env']
 
 
 def link_shared(release_dir: str):
     for name in SHARED_LINKS:
         target = os.path.join(SHARED, name)  # shared keeps the literal names
         link = os.path.join(release_dir, name)
+        os.makedirs(os.path.dirname(link), exist_ok=True)
         if os.path.islink(link):
             os.remove(link)
         elif os.path.isdir(link):

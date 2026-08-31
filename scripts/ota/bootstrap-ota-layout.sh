@@ -40,8 +40,11 @@ if [ -e "$RELEASE" ]; then
 fi
 
 # Per-unit data moved to shared/ and symlinked back into the release.
-# MUST match SHARED_LINKS in wimz_updater.py.
-SHARED_ITEMS=(data VOICEMP3 env_new logs state captures photos recordings .env)
+# MUST match SHARED_LINKS in wimz_updater.py. VOICEMP3 itself stays a real
+# dir (git-tracked wimz/ prompts ship in releases); only talks/ and songs/
+# are per-unit.
+SHARED_ITEMS=(data VOICEMP3/talks VOICEMP3/songs env_new logs state
+              captures photos recordings .env)
 
 echo "== WIM-Z OTA bootstrap: $VERSION on $(hostname) =="
 
@@ -58,6 +61,7 @@ echo "[4/8] relocating per-unit data -> $WIMZ/shared/"
 for item in "${SHARED_ITEMS[@]}"; do
     src="$RELEASE/$item"
     dst="$WIMZ/shared/$item"
+    mkdir -p "$(dirname "$dst")" "$(dirname "$src")"
     if [ -e "$src" ] && [ ! -L "$src" ]; then
         mv "$src" "$dst"
     elif [ ! -e "$dst" ]; then

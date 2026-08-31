@@ -42,3 +42,16 @@ data/*.db-*
 # Runtime state (night_mode.json etc.) — per-unit, not synced
 state/
 data/media/
+
+# OTA versioned layout (2026-08-31): per-unit data lives in
+# /home/morgan/wimz/shared/ and appears in the release dir as SYMLINKS.
+# Dir patterns like `data/` don't match symlinks, so ignore the names
+# explicitly (root-anchored). VOICEMP3 itself stays a real dir (wimz/ is
+# tracked); its talks/ and songs/ symlinks are covered by VOICEMP3/*.
+/data
+/env_new
+/logs
+/state
+/captures
+/photos
+/recordings
