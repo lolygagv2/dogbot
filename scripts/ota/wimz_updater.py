@@ -96,7 +96,19 @@ def _chown_morgan(path: str):
         pass
 
 
+_last_status = None
+
+
 def set_status(state: str, version: str, progress_pct=None, error=None):
+    # Dedupe: the download callback fires per chunk (~700x per artifact) —
+    # only write/log on an actual (state, pct, error) change, or the status
+    # file churns, the journal floods, and a chown subprocess spawns per chunk.
+    global _last_status
+    key = (state, None if progress_pct is None else int(progress_pct),
+           str(error) if error else None)
+    if key == _last_status:
+        return
+    _last_status = key
     payload = {'state': state, 'version': version, 'ts': time.time()}
     if progress_pct is not None:
         payload['progress_pct'] = int(progress_pct)
@@ -234,6 +246,14 @@ def link_shared(release_dir: str):
         elif os.path.exists(link):
             os.remove(link)       # to the shared per-unit data
         os.symlink(target, link)
+    # Dev/fallback git clone: release artifacts carry no .git (git archive).
+    # If the unit keeps its clone in shared/dotgit (bootstrap moves it there),
+    # link it into the release so /home/morgan/dogbot stays a working git repo
+    # across updates — otherwise pruning old releases would delete the clone.
+    dotgit = os.path.join(SHARED, 'dotgit')
+    git_link = os.path.join(release_dir, '.git')
+    if os.path.isdir(dotgit) and not os.path.exists(git_link):
+        os.symlink(dotgit, git_link)
     # Per-unit Claude session files live in shared/claude-local
     for cname in ('resume_chat.md', 'settings.local.json'):
         src = os.path.join(SHARED, 'claude-local', cname)
@@ -255,8 +275,16 @@ def pip_install(release_dir: str, version: str):
         log("requirements unchanged — skipping pip")
         return
     pip = os.path.join(SHARED, 'env_new', 'bin', 'pip')
-    log("pip install -r requirements.txt (shared venv)...")
-    proc = subprocess.run([pip, 'install', '--no-input', '-r', reqs],
+    # --no-deps: install EXACTLY the pinned versions, no dependency
+    # resolution. The fleet venv deliberately violates package metadata
+    # (protobuf 7.x with mediapipe which declares <5, tf+mediapipe coexist)
+    # and works — a strict resolver run over requirements.txt is
+    # ResolutionImpossible BY DESIGN (proven live on the first OTA,
+    # 2026-08-31). requirements.txt is therefore a manifest of intent that
+    # must mirror the tested env; new packages must be added WITH their
+    # transitive deps pinned explicitly.
+    log("pip install --no-deps -r requirements.txt (shared venv)...")
+    proc = subprocess.run([pip, 'install', '--no-input', '--no-deps', '-r', reqs],
                           capture_output=True, text=True, timeout=PIP_TIMEOUT)
     if proc.returncode != 0:
         raise RuntimeError(f"pip install failed: {proc.stderr[-400:]}")

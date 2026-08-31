@@ -84,6 +84,25 @@ for cfile in resume_chat.md settings.local.json; do
     fi
 done
 
+# Keep the git clone across release swaps: releases are pruned (keep 2), so
+# a .git living inside a release dir would eventually be deleted. It moves
+# to shared/dotgit and is symlinked into every release (updater does the
+# same for OTA-installed releases). Keeps `git pull` working as the
+# emergency/dev deploy path on every unit.
+if [ -d "$RELEASE/.git" ]; then
+    mv "$RELEASE/.git" "$WIMZ/shared/dotgit"
+    ln -s "$WIMZ/shared/dotgit" "$RELEASE/.git"
+fi
+
+# Seed the requirements marker: this unit's venv IS the working state for
+# the requirements shipped with it, so the updater must skip pip until the
+# file actually changes. (First OTA without this ran a full pip resolve —
+# ResolutionImpossible on this fleet's deliberately-forced env.)
+if [ -f "$RELEASE/requirements.txt" ]; then
+    sha256sum "$RELEASE/requirements.txt" | awk '{print $1}' \
+        > "$WIMZ/shared/.requirements.sha256"
+fi
+
 echo "[5/8] current + dogbot symlinks"
 ln -sfn "$RELEASE" "$WIMZ/current"
 ln -sfn "$WIMZ/current" "$DOGBOT"

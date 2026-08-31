@@ -1,7 +1,7 @@
 # TreatBot Dependencies - EXISTING WORKING VERSIONS
 # Core packages already installed and working
 absl-py==2.3.1
-Adafruit-Blinka==8.62.0
+Adafruit-Blinka==8.69.0
 adafruit-circuitpython-busdevice==5.2.13
 adafruit-circuitpython-connectionmanager==3.1.5
 adafruit-circuitpython-ina219==3.4.29
@@ -14,12 +14,12 @@ adafruit-circuitpython-typing==1.12.1
 Adafruit-PlatformDetect==3.81.0
 Adafruit-PureIO==1.1.11
 annotated-types==0.7.0
-anyio==4.9.0
+anyio==3.7.1
 attrs==25.3.0
 binho-host-adapter==0.1.6
 blinker==1.9.0
 certifi==2025.7.14
-cffi==1.17.1
+cffi==2.0.0
 charset-normalizer==3.4.2
 click==8.2.1
 colorzero==2.0
@@ -45,14 +45,14 @@ MarkupSafe==3.0.2
 matplotlib==3.10.5
 mediapipe==0.10.14
 ml_dtypes==0.5.3
-numpy==2.2.6
+numpy==1.26.4
 openai==1.98.0
 opencv-contrib-python==4.12.0.88
 opencv-python==4.12.0.88
 opt_einsum==3.4.0
 packaging==25.0
 pillow==11.3.0
-protobuf==4.25.8
+protobuf==7.34.1
 pycparser==2.22
 pydantic==2.11.7
 pydantic_core==2.33.2
@@ -87,4 +87,4 @@ tensorflow==2.20.0
 librosa==0.11.0
 
 # Pi 5 GPIO compatibility (provides RPi.GPIO API via lgpio)
-rpi-lgpio==0.6
+# rpi-lgpio==0.6  # NOT in the live venv (RPi.GPIO 0.7.1 is); installing it would shadow the RPi namespace — do not re-enable without testing GPIO
