@@ -1,4 +1,0 @@
-normalization1 = normalization([0.0, 0.0, 0.0], [255.0, 255.0, 255.0])
-change_output_activation(conv61, sigmoid)
-change_output_activation(conv79, sigmoid)
-change_output_activation(conv94, sigmoid)

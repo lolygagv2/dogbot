@@ -1,2 +1,0 @@
-[console_scripts]
-hailomz = hailo_model_zoo.main:main

@@ -1,1 +1,0 @@
-hailo_model_zoo

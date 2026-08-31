@@ -55,3 +55,10 @@ data/media/
 /captures
 /photos
 /recordings
+
+# Dead weight purged from OTA artifacts 2026-08-31 (files kept on disk,
+# untracked): unpacked wheels/SDKs, one-off test outputs, model-zoo zips.
+hailov2/temp_extract/
+hailov2/*.zip
+hailov2/*.onnx
+simple_test_results_*/
