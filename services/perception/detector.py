@@ -917,9 +917,22 @@ class DetectorService:
                 elif run_full_ai:
                     # Full AI modes: ~20 FPS cap, leaves headroom for Hailo DMA
                     time.sleep(0.050)
+                elif current_mode == SystemMode.MANUAL:
+                    # MANUAL is teleop, not preview — the operator steers on this
+                    # feed, so source FPS is closed-loop control latency. At the
+                    # old 5 FPS the WebRTC track (15 FPS target, robot_config
+                    # webrtc.video.fps) pulled the same frame 3x: 5 unique
+                    # images/sec dressed as a 15 FPS stream, plus 200ms of
+                    # throttle latency before encode. ~20 FPS gives the track a
+                    # fresh frame every pull with margin.
+                    # Cost is capture only (~6ms/frame, no inference here) — the
+                    # VP8 encode already ran at the track's 15 FPS regardless of
+                    # how many of those frames were duplicates.
+                    time.sleep(0.050)
                 else:
-                    # IDLE / MANUAL: no inference, frame loop only feeds WebRTC preview.
-                    # ~5 FPS is smooth enough for app preview and cuts capture CPU ~75%.
+                    # IDLE: no inference, frame loop only feeds WebRTC preview.
+                    # ~5 FPS is smooth enough for a preview tile and cuts capture
+                    # CPU ~75%.
                     time.sleep(0.200)
 
                 # Process results
