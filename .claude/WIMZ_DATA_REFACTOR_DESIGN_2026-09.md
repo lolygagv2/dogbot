@@ -302,8 +302,32 @@ run-once semantics, resumable. Runs offline/idle only. Spec bump v0.7
 (origin column + coverage field definition) lands with the amendment
 approval, before the script.
 
-*Amendment drafted 2026-09-01 evening; awaiting App Claude review +
-Morgan's go before any code.*
+**APPROVED by App Claude 2026-09-01 evening, with four binding flags
+(all implemented):**
+
+1. **Coverage gates comparisons AND phrasing** — `change_percent`/`trend`
+   go null and the headline drops its comparison clause whenever
+   `previous_week` predates that metric's coverage (the app renders "—"
+   for null change_percent).
+2. **No invented per-dog bark splits** — legacy SG bark totals are
+   household-level (`dog_bark_counts_json` was always `'{}'`); backfill
+   never fabricates per-dog bark rows. Per-dog bark coverage is computed
+   from the data actually present. (Correction found while implementing:
+   the August STORE-A backfill had already migrated 1,434 per-bark rows
+   before the prune destroyed the source, most with single-dog
+   attribution — so some honest per-bark history predates 2026-09-01;
+   bark-TYPE labels still start 2026-09-01.)
+3. **Storage-only** — the backfill writes SQL rows only. It never
+   publishes bus events, never touches the relay, never triggers pushes.
+   `scripts/backfill_wimz.py` imports no bus/relay modules by design.
+4. **`coverage` ships in the dog_weekly_summary payload** (not just
+   exports): `{per_bark_since, bark_type_since, treats_since,
+   coaching_since}` — absent/null fields mean no caption, per the app's
+   lenient rendering.
+
+*Implemented 2026-09-01 evening: spec v0.7 (origin column), backfill
+sources rewards/coaching_sessions/sg_sessions/sg_interventions + STORE-A
+retro-tagging, coverage + gating in the per-dog summary.*
 
 ---
 

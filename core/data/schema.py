@@ -4,7 +4,7 @@ Do not edit the DDL here. The spec is the source of truth: change it there
 first (version bump + changelog), then mirror it here. See spec §10.
 """
 
-SCHEMA_VERSION = "0.6"
+SCHEMA_VERSION = "0.7"
 
 # Spec §10 — explicit stepwise migrations, additive-only. Key = the version a
 # live DB is at; value = statements that bring it to the NEXT version. Applied
@@ -34,6 +34,15 @@ MIGRATIONS = {
         "ALTER TABLE dog ADD COLUMN app_dog_id TEXT;",
         "CREATE UNIQUE INDEX idx_dog_app_id ON dog(app_dog_id) WHERE app_dog_id IS NOT NULL;",
         "UPDATE schema_meta SET value='0.6' WHERE key='schema_version';",
+    ],
+    # 0.7 (backfill amendment): row provenance — NULL = native,
+    # 'backfill:<source>' = retrofit.
+    "0.6": [
+        "ALTER TABLE event ADD COLUMN origin TEXT;",
+        "ALTER TABLE training_attempt ADD COLUMN origin TEXT;",
+        "ALTER TABLE dispense_log ADD COLUMN origin TEXT;",
+        "ALTER TABLE session ADD COLUMN origin TEXT;",
+        "UPDATE schema_meta SET value='0.7' WHERE key='schema_version';",
     ],
 }
 
@@ -112,6 +121,7 @@ CREATE TABLE session (
   started_at       INTEGER NOT NULL,
   ended_at         INTEGER,
   outcome_json     TEXT,                    -- v0.6: end-of-session summary written by the owning mode (SG: the sg_summary numbers) so the summary is a queryable row
+  origin           TEXT,                    -- v0.7: NULL = native; 'backfill:<source>' = retrofit row
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
@@ -133,6 +143,7 @@ CREATE TABLE event (
   label_source     TEXT NOT NULL DEFAULT 'machine', -- 'machine' | 'human' | 'auto_rule'
   media_id         TEXT REFERENCES media_asset(media_id),     -- NULL if none
   synced           INTEGER NOT NULL DEFAULT 0,
+  origin           TEXT,                    -- v0.7: NULL = native; 'backfill:<source>' = retrofit row
   created_at       INTEGER NOT NULL
 );
 CREATE INDEX idx_event_session ON event(session_id, ts);
@@ -163,6 +174,7 @@ CREATE TABLE training_attempt (
   label_source     TEXT NOT NULL DEFAULT 'machine',
   media_id         TEXT REFERENCES media_asset(media_id),
   synced           INTEGER NOT NULL DEFAULT 0,
+  origin           TEXT,                    -- v0.7: NULL = native; 'backfill:<source>' = retrofit row
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
@@ -183,6 +195,7 @@ CREATE TABLE dispense_log (
   attempts         INTEGER NOT NULL DEFAULT 1,    -- v0.4: rotations used (1..3 normal, 4 = anti-jam round ran)
   overage          INTEGER NOT NULL DEFAULT 0,    -- v0.4: 1 = more beam breaks than cap (treat counter likely stale)
   synced           INTEGER NOT NULL DEFAULT 0,
+  origin           TEXT,                    -- v0.7: NULL = native; 'backfill:<source>' = retrofit row
   created_at       INTEGER NOT NULL
 );
 

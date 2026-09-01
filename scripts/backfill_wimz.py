@@ -82,6 +82,49 @@ class Backfill:
                 (f'backfill:{key}', str(value)))
             self.conn.commit()
 
+    def _resolve_dog_strict(self, key=None, name=None):
+        """Amendment A identity ladder — SELECT-only, NEVER creates a row:
+        canonical app UUID -> aruco tag -> case-insensitive name. Junk
+        (dog_N, 'unknown', test ids) falls through to None, never a guess."""
+        with self.lock:
+            for k in (key, name):
+                if not k or str(k).lower() in NON_DOG_NAMES:
+                    continue
+                row = self.conn.execute(
+                    "SELECT dog_id FROM dog WHERE dog_id=? OR app_dog_id=? "
+                    "OR qr_code_id=? OR lower(name)=lower(?) LIMIT 1",
+                    (k, k, k, k)).fetchone()
+                if row:
+                    return row[0]
+        return None
+
+    def retro_tag_store_a(self):
+        """One-time: stamp origin on the August STORE-A rows, written before
+        the origin column existed. Fingerprints: backfilled event rows never
+        carry seq (native log_event always does); synthetic sessions span
+        exactly one day (ended_at - started_at = 86399999ms)."""
+        if self._watermark('retro_tag_store_a'):
+            self.stats['retro_tag'] = 'already done'
+            return
+        if self.dry:
+            self.stats['retro_tag'] = 'dry run'
+            return
+        with self.lock:
+            c = self.conn.execute(
+                "UPDATE session SET origin='backfill:store_a' WHERE origin IS NULL "
+                "AND initiated_by='autonomous' AND ended_at - started_at = 86399999")
+            sessions = c.rowcount
+            events = self.conn.execute(
+                "UPDATE event SET origin='backfill:store_a' "
+                "WHERE origin IS NULL AND seq IS NULL").rowcount
+            attempts = self.conn.execute(
+                "UPDATE training_attempt SET origin='backfill:store_a' "
+                "WHERE origin IS NULL AND session_id IN "
+                "(SELECT session_id FROM session WHERE origin='backfill:store_a')").rowcount
+            self.conn.commit()
+        self._set_watermark('retro_tag_store_a', 1)
+        self.stats['retro_tag'] = f'{sessions} sessions, {events} events, {attempts} attempts'
+
     def _session(self, seed: str, mode: str, row_ts_ms: int) -> str:
         """Deterministic synthetic per-day session for legacy rows.
 
@@ -97,25 +140,27 @@ class Backfill:
             with self.lock:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO session (session_id, device_id, mode, "
-                    "initiated_by, started_at, ended_at, created_at, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "initiated_by, started_at, ended_at, origin, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (sid, self.device_id, mode, 'autonomous', day_start, day_end,
-                     day_start, day_start))
+                     f'backfill:{seed.split(":")[0]}', day_start, day_start))
                 self.conn.commit()
         return sid
 
     def _insert_event(self, event_id: str, session_id: str, dog_id, ts: int,
-                      event_type: str, payload: dict, confidence, model_name: str):
+                      event_type: str, payload: dict, confidence, model_name: str = None,
+                      origin: str = 'backfill:store_a', label_source: str = 'machine'):
         if self.dry:
             return
         with self.lock:
             self.conn.execute(
                 "INSERT OR IGNORE INTO event (event_id, session_id, device_id, dog_id, "
                 "ts, seq, event_type, payload, confidence, model_id, label_source, "
-                "synced, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)",
+                "synced, origin, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
                 (event_id, session_id, self.device_id, dog_id, ts, None, event_type,
                  json.dumps(payload), confidence,
-                 self.wimz.model_id_for(model_name), 'machine', ts))
+                 self.wimz.model_id_for(model_name) if model_name else None,
+                 label_source, origin, ts))
 
     def _dog_for_name(self, name: str):
         """Filename/legacy names -> manual dog rows; obvious non-dogs -> None."""
@@ -235,7 +280,8 @@ class Backfill:
             sid = self._session('dogbot', 'training', t)
             eid = uuid7_at(t, seed=f'backfill:dogbot.behavior_events:{rid}'.encode())
             self._insert_event(eid, sid, dog_id, t, 'pose', {'pose': behavior},
-                               conf, 'dogpose_14')
+                               conf, 'dogpose_14',
+                               origin='backfill:dogbot.behavior_events')
             self._set_watermark('dogbot.behavior_events', rid)
             n += 1
         if not self.dry:
@@ -265,7 +311,8 @@ class Backfill:
                 except Exception:
                     pass
             eid = uuid7_at(t, seed=f'backfill:missions.detections:{rid}'.encode())
-            self._insert_event(eid, sid, None, t, 'pose', payload, conf, 'dogpose_14')
+            self._insert_event(eid, sid, None, t, 'pose', payload, conf, 'dogpose_14',
+                               origin='backfill:missions.detections')
             self._set_watermark('missions.detections', rid)
             n += 1
         if not self.dry:
@@ -295,7 +342,7 @@ class Backfill:
             sid = self._session('barks', 'monitor', t)
             eid = uuid7_at(t, seed=f'backfill:treatbot.barks:{rid}'.encode())
             self._insert_event(eid, sid, dog_id, t, 'bark', payload, conf,
-                               'dog_bark_classifier')
+                               'dog_bark_classifier', origin='backfill:treatbot.barks')
             self._set_watermark('treatbot.barks', rid)
             n += 1
         if not self.dry:
@@ -304,14 +351,176 @@ class Backfill:
         src.close()
         self.stats['barks'] = n
 
+    # ---------- Amendment A sources (2026-09-01, R5 reversed) ----------
+    # STORAGE-ONLY by design: this script writes SQL rows and nothing else.
+    # It imports no bus/relay modules — migrated history must never re-emit
+    # as live events, flood the Activity feed, or fire push notifications.
+
+    def rewards(self):
+        """treatbot.rewards (unix-float REAL ts) -> event('treat_dispensed').
+        Rows from the removed bark-reward lottery (behavior LIKE 'bark_%')
+        get origin 'backfill:rewards:bark_reward' so owner-facing treat
+        totals can exclude them."""
+        src = sqlite3.connect(REPO / 'data' / 'treatbot.db')
+        wm = self._watermark('treatbot.rewards')
+        rows = src.execute(
+            "SELECT id, timestamp, dog_id, behavior, confidence, success, "
+            "treats_dispensed, mission_name FROM rewards WHERE id > ? ORDER BY id",
+            (wm,)).fetchall()
+        n = 0
+        for rid, ts, legacy_dog, behavior, conf, success, treats, mission in rows:
+            t = int(float(ts) * 1000)
+            dog_id = self._resolve_dog_strict(legacy_dog)
+            origin = ('backfill:rewards:bark_reward'
+                      if (behavior or '').startswith('bark_') else 'backfill:rewards')
+            sid = self._session('rewards', 'monitor', t)
+            payload = {'behavior': behavior, 'success': bool(success),
+                       'treats_dispensed': treats or 0}
+            if mission and mission not in ('unknown', ''):
+                payload['mission'] = mission
+            eid = uuid7_at(t, seed=f'backfill:treatbot.rewards:{rid}'.encode())
+            self._insert_event(eid, sid, dog_id, t, 'treat_dispensed', payload,
+                               conf, origin=origin, label_source='auto_rule')
+            self._set_watermark('treatbot.rewards', rid)
+            n += 1
+        if not self.dry:
+            with self.lock:
+                self.conn.commit()
+        src.close()
+        self.stats['rewards'] = n
+
+    def coaching(self):
+        """treatbot.coaching_sessions (per-attempt rows, unix-float ts)
+        -> training_attempt in per-day synthetic coach sessions."""
+        src = sqlite3.connect(REPO / 'data' / 'treatbot.db')
+        wm = self._watermark('treatbot.coaching_sessions')
+        rows = src.execute(
+            "SELECT id, timestamp, dog_id, dog_name, trick_requested, "
+            "trick_completed, attention_duration, response_time, treat_dispensed "
+            "FROM coaching_sessions WHERE id > ? ORDER BY id", (wm,)).fetchall()
+        n = 0
+        for (rid, ts, legacy_dog, dog_name, trick, completed,
+             attention, response_time, treat) in rows:
+            t = int(float(ts) * 1000)
+            dog_id = self._resolve_dog_strict(legacy_dog, dog_name)
+            sid = self._session('coach', 'coach', t)
+            latency = int(float(response_time) * 1000) if response_time else None
+            aid = uuid7_at(t, seed=f'backfill:treatbot.coaching_sessions:{rid}'.encode())
+            if not self.dry:
+                with self.lock:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO training_attempt (attempt_id, session_id, "
+                        "dog_id, trick_label, cue_type, cue_ts, detected_response, "
+                        "response_ts, latency_ms, success, reward_dispensed, "
+                        "label_source, synced, origin, created_at, updated_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)",
+                        (aid, sid, dog_id, trick, 'voice', t,
+                         trick if completed else None,
+                         t + latency if (completed and latency) else None,
+                         latency, 1 if completed else 0, 1 if treat else 0,
+                         'machine', 'backfill:coaching_sessions', t, t))
+            self._set_watermark('treatbot.coaching_sessions', rid)
+            n += 1
+        if not self.dry:
+            with self.lock:
+                self.conn.commit()
+        src.close()
+        self.stats['coaching'] = n
+
+    def sg_sessions(self):
+        """treatbot.silent_guardian_sessions -> real session rows (mode='sg')
+        with outcome_json rebuilt from the legacy columns. Bark totals are
+        HOUSEHOLD-LEVEL (dog_bark_counts_json was always '{}') — bark_types
+        stays empty, no per-dog invention (Amendment A flag 2)."""
+        src = sqlite3.connect(REPO / 'data' / 'treatbot.db')
+        wm = self._watermark('treatbot.silent_guardian_sessions')
+        rows = src.execute(
+            "SELECT id, session_start, session_end, total_barks, interventions, "
+            "successful_quiets, treats_dispensed, max_escalation_level, "
+            "COALESCE(panic_episodes, 0) FROM silent_guardian_sessions "
+            "WHERE id > ? ORDER BY id", (wm,)).fetchall()
+        n = 0
+        for rid, start, end, barks, ivs, quiets, treats, max_esc, panics in rows:
+            t0 = int(float(start) * 1000)
+            t1 = int(float(end) * 1000) if end else None
+            sid = uuid7_at(t0, seed=f'backfill:sg_session:{rid}'.encode())
+            outcome = {'total_barks': barks or 0, 'bark_types': {},
+                       'interventions_triggered': ivs or 0,
+                       'successful_quiets': quiets or 0,
+                       'treats_dispensed': treats or 0,
+                       'max_escalation_level': max_esc or 0,
+                       'panic_episodes': panics or 0}
+            if not self.dry:
+                with self.lock:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO session (session_id, device_id, mode, "
+                        "initiated_by, started_at, ended_at, outcome_json, origin, "
+                        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (sid, self.device_id, 'sg', 'autonomous', t0, t1,
+                         json.dumps(outcome), 'backfill:silent_guardian_sessions',
+                         t0, t0))
+            self._set_watermark('treatbot.silent_guardian_sessions', rid)
+            n += 1
+        if not self.dry:
+            with self.lock:
+                self.conn.commit()
+        src.close()
+        self.stats['sg_sessions'] = n
+
+    def sg_interventions(self):
+        """treatbot.sg_interventions -> event('sg_intervention', phase
+        'outcome') linked to the backfilled parent sg session."""
+        src = sqlite3.connect(REPO / 'data' / 'treatbot.db')
+        wm = self._watermark('treatbot.sg_interventions')
+        rows = src.execute(
+            "SELECT i.id, i.session_id, i.timestamp, i.escalation_level, i.dog_id, "
+            "i.dog_name, i.barks_triggering, i.quiet_achieved, i.quiet_duration, "
+            "i.treat_given, i.music_played, s.session_start "
+            "FROM sg_interventions i "
+            "LEFT JOIN silent_guardian_sessions s ON i.session_id = s.id "
+            "WHERE i.id > ? ORDER BY i.id", (wm,)).fetchall()
+        n = 0
+        for (rid, legacy_sid, ts, level, legacy_dog, dog_name, barks_trig,
+             quiet, quiet_dur, treat, music, parent_start) in rows:
+            t = int(float(ts) * 1000)
+            if legacy_sid and parent_start:
+                sid = uuid7_at(int(float(parent_start) * 1000),
+                               seed=f'backfill:sg_session:{legacy_sid}'.encode())
+            else:
+                sid = self._session('sg', 'sg', t)  # orphan rows
+            dog_id = self._resolve_dog_strict(legacy_dog, dog_name)
+            payload = {'phase': 'outcome', 'escalation_level': level,
+                       'quiet_achieved': bool(quiet), 'treat_given': bool(treat),
+                       'music_played': bool(music),
+                       'barks_triggering': barks_trig or 0}
+            if quiet_dur:
+                payload['quiet_duration_sec'] = quiet_dur
+            eid = uuid7_at(t, seed=f'backfill:treatbot.sg_interventions:{rid}'.encode())
+            self._insert_event(eid, sid, dog_id, t, 'sg_intervention', payload,
+                               None, origin='backfill:sg_interventions',
+                               label_source='auto_rule')
+            self._set_watermark('treatbot.sg_interventions', rid)
+            n += 1
+        if not self.dry:
+            with self.lock:
+                self.conn.commit()
+        src.close()
+        self.stats['sg_interventions'] = n
+
     def run(self):
         # Seed the two tag-verified dogs
         for tag, name in (('aruco_315', 'Elsa'), ('aruco_832', 'Bezik')):
             self.wimz.get_or_create_dog(legacy_id=tag, name=name)
+        self.retro_tag_store_a()
         self.recordings()
         self.behavior_events()
         self.mission_detections()
         self.barks()
+        # Amendment A sources (2026-09-01)
+        self.rewards()
+        self.coaching()
+        self.sg_sessions()
+        self.sg_interventions()
         print(f"\n{'DRY RUN — no writes' if self.dry else 'BACKFILL COMPLETE'}")
         for k, v in self.stats.items():
             print(f"  {k}: {v}")

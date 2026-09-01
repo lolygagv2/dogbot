@@ -849,17 +849,56 @@ class WeeklySummary:
                 GROUP BY btype ORDER BY count DESC
             ''', (*ms, dog['dog_id'])).fetchall()}
 
-            if barks_prev > 0:
+            # Coverage (Amendment A flag 1+4): computed from this dog's actual
+            # rows; comparisons are only honest when the previous week is
+            # fully covered.
+            def _ms_to_iso(v):
+                from datetime import timezone
+                return (datetime.fromtimestamp(v / 1000, tz=timezone.utc)
+                        .isoformat().replace('+00:00', 'Z')) if v else None
+
+            bark_cov = wimz.execute(f'''
+                SELECT MIN(ts) FROM event e
+                WHERE event_type='bark'
+                  AND COALESCE(json_extract(payload,'$.class'),'bark') != 'notbark'
+                  AND e.dog_id = ?''', (dog['dog_id'],)).fetchone()[0]
+            type_cov = wimz.execute('''
+                SELECT MIN(ts) FROM event e
+                WHERE event_type='bark'
+                  AND json_extract(payload,'$.bark_type') IS NOT NULL
+                  AND e.dog_id = ?''', (dog['dog_id'],)).fetchone()[0]
+            coach_cov = wimz.execute('''
+                SELECT MIN(ta.cue_ts) FROM training_attempt ta
+                JOIN session s ON ta.session_id = s.session_id
+                WHERE s.mode IN ('coach','training') AND ta.dog_id = ?''',
+                (dog['dog_id'],)).fetchone()[0]
+            treat_cov_row = legacy.execute('''
+                SELECT MIN(timestamp) FROM rewards
+                WHERE (dog_id = ? OR dog_id = ?)
+                  AND behavior NOT LIKE 'bark_%' ''',
+                (dog['app_dog_id'], dog['name'])).fetchone()[0]
+            treat_cov = int(float(treat_cov_row) * 1000) if treat_cov_row else None
+
+            prev_covered = bark_cov is not None and bark_cov <= self._ms(prev_start)
+            if not prev_covered:
+                # Previous week predates this dog's bark coverage — no honest
+                # delta exists (the app renders "—" for null change_percent).
+                change_pct = None
+                bark_trend = None
+            elif barks_prev > 0:
                 change_pct = round((barks - barks_prev) / barks_prev * 100, 1)
                 bark_trend = 'up' if change_pct > 10 else 'down' if change_pct < -10 else 'stable'
             else:
                 change_pct = 0.0
                 bark_trend = 'stable' if barks == 0 else 'up'
 
-            # Treats/rewards (legacy table keys on the app canonical id or name)
+            # Treats/rewards (legacy table keys on the app canonical id or
+            # name). Amendment A flag: rows from the removed bark-reward
+            # lottery (behavior LIKE 'bark_%') are excluded from owner totals.
             rewards = dict(legacy.execute('''
                 SELECT COUNT(*) as count, SUM(treats_dispensed) as treats FROM rewards
                 WHERE (dog_id = ? OR dog_id = ?) AND timestamp BETWEEN ? AND ?
+                  AND behavior NOT LIKE 'bark_%'
             ''', (dog['app_dog_id'], dog['name'],
                   week_start.timestamp(), week_end.timestamp())).fetchone() or {})
 
@@ -896,16 +935,18 @@ class WeeklySummary:
                 WHERE mode='sg' AND started_at BETWEEN ? AND ?
             ''', ms).fetchone()['c'] or 0
 
-            # Headline, owner-phrased
+            # Headline, owner-phrased. Comparison clause only when coverage
+            # makes the delta honest (Amendment A flag 1).
             parts = []
             if barks > 0:
                 top_type = max(by_type.items(), key=lambda kv: kv[1])[0] if by_type else 'unclassified'
                 phrase = self._owner_phrase_for_group(top_type)
-                trend_txt = {'up': 'more than last week',
-                             'down': 'less than last week',
-                             'stable': 'about the same as last week'}[bark_trend]
-                parts.append(f"{display_name} barked {barks} times this week"
-                             f" — mostly {phrase}, {trend_txt}")
+                line = f"{display_name} barked {barks} times this week — mostly {phrase}"
+                if bark_trend is not None:
+                    line += ', ' + {'up': 'more than last week',
+                                    'down': 'less than last week',
+                                    'stable': 'about the same as last week'}[bark_trend]
+                parts.append(line)
             else:
                 parts.append(f"{display_name} had a quiet week — no barks recorded")
             treats = rewards.get('treats', 0) or 0
@@ -943,6 +984,14 @@ class WeeklySummary:
                     'interventions': sg.get('interventions', 0) or 0,
                     'successful_quiets': sg.get('quiets', 0) or 0,
                     'household_sessions': sg_sessions,
+                },
+                # Amendment A flag 4: how far back each number honestly goes.
+                # Absent/null = the app renders no caption.
+                'coverage': {
+                    'per_bark_since': _ms_to_iso(bark_cov),
+                    'bark_type_since': _ms_to_iso(type_cov),
+                    'treats_since': _ms_to_iso(treat_cov),
+                    'coaching_since': _ms_to_iso(coach_cov),
                 },
             }
         finally:

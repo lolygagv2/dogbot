@@ -2,7 +2,7 @@
 
 **Shared data contract for the Edge (robot), App, and Relay components.**
 
-Version: 0.6
+Version: 0.7
 Owner: Morgan Hill (morgan@wimzai.com)
 Status: Authoritative source of truth for the data schema and data flow. All three component instances build against this file. Do not diverge from it without bumping the version and updating the changelog at the bottom.
 
@@ -173,6 +173,7 @@ CREATE TABLE session (
   started_at       INTEGER NOT NULL,
   ended_at         INTEGER,
   outcome_json     TEXT,                    -- v0.6: end-of-session summary written by the owning mode (SG: the sg_summary numbers) so the summary is a queryable row
+  origin           TEXT,                    -- v0.7: NULL = native; 'backfill:<source>' = retrofit row
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
@@ -194,6 +195,7 @@ CREATE TABLE event (
   label_source     TEXT NOT NULL DEFAULT 'machine', -- 'machine' | 'human' | 'auto_rule'
   media_id         TEXT REFERENCES media_asset(media_id),     -- NULL if none
   synced           INTEGER NOT NULL DEFAULT 0,
+  origin           TEXT,                    -- v0.7: NULL = native; 'backfill:<source>' = retrofit row
   created_at       INTEGER NOT NULL
 );
 CREATE INDEX idx_event_session ON event(session_id, ts);
@@ -224,6 +226,7 @@ CREATE TABLE training_attempt (
   label_source     TEXT NOT NULL DEFAULT 'machine',
   media_id         TEXT REFERENCES media_asset(media_id),
   synced           INTEGER NOT NULL DEFAULT 0,
+  origin           TEXT,                    -- v0.7: NULL = native; 'backfill:<source>' = retrofit row
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
@@ -244,6 +247,7 @@ CREATE TABLE dispense_log (
   attempts         INTEGER NOT NULL DEFAULT 1,    -- v0.4: rotations used (1..3 normal, 4 = anti-jam round ran)
   overage          INTEGER NOT NULL DEFAULT 0,    -- v0.4: 1 = more beam breaks than cap (treat counter likely stale)
   synced           INTEGER NOT NULL DEFAULT 0,
+  origin           TEXT,                    -- v0.7: NULL = native; 'backfill:<source>' = retrofit row
   created_at       INTEGER NOT NULL
 );
 
@@ -317,7 +321,7 @@ CREATE TABLE schema_meta (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.6');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.7');
 ```
 
 ---
@@ -476,6 +480,20 @@ corpus/       ML-ready datasets: vision (COCO/YOLO) + behavioral (Parquet)
 
 ## Changelog
 
+- **0.7** Additive (backfill amendment, R5 reversed by Morgan 2026-09-01).
+  New nullable `origin TEXT` on `event`, `training_attempt`, `dispense_log`,
+  `session`: NULL = natively-written; `'backfill:<source>'` = retrofit row
+  (e.g. `backfill:rewards`, `backfill:rewards:bark_reward` for the removed
+  bark-lottery treats — excluded from owner-facing treat totals;
+  `backfill:store_a` retro-tags the August STORE-A migration). Rules:
+  backfill is STORAGE-ONLY (never re-emitted as bus/relay events, never
+  pushes); legacy SG bark totals are household-level — per-dog bark rows
+  are never fabricated; timestamps are normalized to epoch-ms UTC at
+  migration, never copied raw. Summaries gain a `coverage` object
+  (`per_bark_since`, `bark_type_since`, `treats_since`, `coaching_since`,
+  ISO8601 Z) computed from the data, and `change_percent`/`trend`/headline
+  comparison phrasing go null/omitted when the comparison window predates
+  coverage.
 - **0.6** Additive (refactor Phase 2). Sessions first-class: `session.outcome_json`
   (end-of-session summary written by the owning mode — SG writes the sg_summary
   numbers, making the summary a queryable row; coach sessions need no
