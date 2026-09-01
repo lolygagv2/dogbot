@@ -353,56 +353,121 @@ class Fleet:
         src.close()
 
     # -------------------------------------------------------------- logs
-    LOG_TS = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})')
-    BARK1 = re.compile(r'Bark detected: (?P<name>[\w ]+?) barked - (?P<dist>\w+) '
-                       r'(?P<emo>\w+) \(conf: (?P<conf>[\d.]+), loudness: '
-                       r'(?P<db>-?[\d.]+)dB\)')
-    BARK2 = re.compile(r'Bark detected: (?P<dist>\w+) (?P<emo>\w+) '
-                       r'\(conf: (?P<conf>[\d.]+), loudness: (?P<db>-?[\d.]+)dB\)')
-    TREAT = re.compile(r'Dispensed (?P<n>\d+) treat\(s\).*?'
-                       r'(?:Dog: (?P<dog>[\w-]+))?.*?(?:Reason: (?P<reason>\w+))?$')
+    # Line families discovered by template-mining the actual fleet logs
+    # (2026-09-01). Seeds use the timestamp SECOND so (a) the two log lines
+    # emitted per bark (bark_detector + silent_guardian) collapse to one
+    # event — the richer detector line logs first and wins — and (b)
+    # duplicate log file copies dedupe for free. BarkGate's 1s cooldown
+    # guarantees max one real bark per second.
+    LOG_TS = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - ([\w.]+) - \w+ - (.*)')
+    BARK_DET = re.compile(r'Bark detected: (?P<name>.+?) barked - (?P<dist>\w+) '
+                          r'(?P<emo>\w+) \(conf: (?P<conf>[\d.]+), loudness: '
+                          r'(?P<db>-?[\d.]+)dB\)')
+    BARK_DET2 = re.compile(r'Bark detected: (?P<dist>\w+) (?P<emo>\w+) '
+                           r'\(conf: (?P<conf>[\d.]+), loudness: (?P<db>-?[\d.]+)dB\)')
+    BARK_SG = re.compile(r'Bark detected: (?P<name>[^(]+?) \(conf: (?P<conf>[\d.]+), '
+                         r'loud: (?P<db>-?[\d.]+)dB\)')
+    SG_START = re.compile(r'Starting Level (?P<lvl>\d) intervention for (?P<name>.+)$')
+    SG_OK = re.compile(r'Level (?P<lvl>\d)[^-]*- SUCCESS')
+    SG_FAIL = re.compile(r'Intervention timed out after (?P<sec>[\d.]+)s - giving up')
+    COACH_S = re.compile(r'\[COACH\] Session started: dog=(?P<name>[^,]+), trick=(?P<trick>\w+)')
+    COACH_C = re.compile(r'\[COACH\] Command issued: (?P<trick>\w+)')
+    MODE = re.compile(r'MODE[_ ]CHANGE: (?P<frm>\w+) -> (?P<to>\w+)')
+    DOGDET = re.compile(r'Dog detected: (?P<slot>dog_\d+)')
+    TREAT = re.compile(r'Dispensed (?P<n>\d+) treat\(s\)')
+    TREAT_DOG = re.compile(r'Dog: (?P<dog>[\w-]+)')
+    TREAT_WHY = re.compile(r'Reason: (?P<reason>\w+)')
+    PANIC = re.compile(r'(?i)enter(ing|ed)? panic|panic episode|PANIC state')
 
     def ingest_log(self, robot, device_id, path: Path):
         n = 0
+        origin = f'backfill:{robot}:log'
+
+        def emit(kind, sec_key, t, etype, payload, dog=None, conf=None):
+            nonlocal n
+            sid = self.session(robot, device_id, 'log', t, 'monitor')
+            self.event(robot, device_id, f'fleet:{robot}:log:{kind}:{sec_key}',
+                       sid, dog, t, etype, payload, conf, origin)
+            self.bump(f'{robot}:log.{kind}')
+            n += 1
+
         with open(path, errors='replace') as f:
             for line in f:
                 m = self.LOG_TS.match(line)
                 if not m:
                     continue
+                ts_str, logger_name, msg = m.groups()
                 try:
-                    t = ms_local_text(m.group(1))
+                    t = ms_local_text(ts_str)
                 except ValueError:
                     continue
-                h = hashlib.sha1(line.strip().encode()).hexdigest()[:12]
-                b = self.BARK1.search(line) or self.BARK2.search(line)
-                if b and 'bark_detector' in line:
+                sec = t // 1000
+                pl = {'source': 'log'}
+
+                if 'Bark detected:' in msg:
+                    b = self.BARK_DET.search(msg) or self.BARK_DET2.search(msg)                         or self.BARK_SG.search(msg)
+                    if not b:
+                        continue
                     g = b.groupdict()
-                    pl = {'db': float(g['db']), 'class': 'bark',
-                          'emotion': g['emo'], 'source': 'log'}
+                    pl.update({'db': float(g['db']), 'class': 'bark'})
+                    if g.get('emo'):
+                        pl['emotion'] = g['emo']
                     dog = self.resolve(None, g.get('name'))
                     if dog is None and g.get('name'):
-                        pl['claimed_dog'] = g['name']
-                    sid = self.session(robot, device_id, 'log', t, 'monitor')
-                    self.event(robot, device_id, f'fleet:{robot}:log:bark:{h}',
-                               sid, dog, t, 'bark', pl, float(g['conf']),
-                               f'backfill:{robot}:log')
-                    self.bump(f'{robot}:log.barks')
-                    n += 1
-                elif 'Dispensed' in line and 'treat(s)' in line:
-                    tm = self.TREAT.search(line)
+                        pl['claimed_dog'] = g['name'].strip()
+                    emit('bark', sec, t, 'bark', pl, dog, float(g['conf']))
+
+                elif 'Starting Level' in msg and (b := self.SG_START.search(msg)):
+                    g = b.groupdict()
+                    pl.update({'phase': 'triggered',
+                               'escalation_level': int(g['lvl'])})
+                    emit('sg_start', sec, t, 'sg_intervention', pl,
+                         self.resolve(None, g['name']))
+
+                elif (b := self.SG_OK.search(msg)):
+                    pl.update({'phase': 'outcome', 'quiet_achieved': True,
+                               'escalation_level': int(b.group('lvl'))})
+                    emit('sg_ok', sec, t, 'sg_intervention', pl)
+
+                elif (b := self.SG_FAIL.search(msg)):
+                    pl.update({'phase': 'outcome', 'quiet_achieved': False,
+                               'timeout_sec': float(b.group('sec'))})
+                    emit('sg_fail', sec, t, 'sg_intervention', pl)
+
+                elif '[COACH]' in msg:
+                    if (b := self.COACH_S.search(msg)):
+                        pl.update({'trick': b.group('trick'),
+                                   'stage': 'session_start', 'cue_type': 'voice'})
+                        emit('coach', sec, t, 'cue_issued', pl,
+                             self.resolve(None, b.group('name')))
+                    elif (b := self.COACH_C.search(msg)):
+                        pl.update({'trick': b.group('trick'),
+                                   'stage': 'command', 'cue_type': 'voice'})
+                        emit('coach', sec, t, 'cue_issued', pl)
+
+                elif (b := self.MODE.search(msg)):
+                    pl.update({'from': b.group('frm'), 'to': b.group('to')})
+                    emit('mode', sec, t, 'mode_change', pl)
+
+                elif 'Dog detected:' in msg and (b := self.DOGDET.search(msg)):
+                    pl.update({'class': 'dog', 'slot': b.group('slot')})
+                    emit('detect', sec, t, 'detection', pl)
+
+                elif 'Dispensed' in msg and 'treat(s)' in msg:
+                    tm = self.TREAT.search(msg)
                     if not tm:
                         continue
-                    g = tm.groupdict()
-                    pl = {'treats_dispensed': int(g['n']), 'source': 'log'}
-                    if g.get('reason'):
-                        pl['behavior'] = g['reason']
-                    sid = self.session(robot, device_id, 'log', t, 'monitor')
-                    self.event(robot, device_id, f'fleet:{robot}:log:treat:{h}',
-                               sid, self.resolve(g.get('dog')), t,
-                               'treat_dispensed', pl, None,
-                               f'backfill:{robot}:log')
-                    self.bump(f'{robot}:log.treats')
-                    n += 1
+                    pl['treats_dispensed'] = int(tm.group('n'))
+                    dm = self.TREAT_DOG.search(msg)
+                    wm = self.TREAT_WHY.search(msg)
+                    if wm:
+                        pl['behavior'] = wm.group('reason')
+                    emit('treat', sec, t, 'treat_dispensed', pl,
+                         self.resolve(dm.group('dog') if dm else None))
+
+                elif self.PANIC.search(msg):
+                    pl['detail'] = msg[:160]
+                    emit('panic', sec, t, 'panic_episode', pl)
         return n
 
     # --------------------------------------------------------------- run
