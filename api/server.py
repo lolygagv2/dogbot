@@ -911,17 +911,14 @@ async def treat_refill(request: Request):
     try:
         body = await request.json()
         dispenser = get_dispenser_service()
-        # Default to the configured carousel capacity (44), not a hardcoded 56
-        slots = int(body.get('slots', dispenser.treat_capacity or 44))
-        count = body.get('count')  # Optional — explicit override
+        slots = int(body.get('slots', 56))
+        count = body.get('count')  # Optional — set treat counter after refill
         advanced = await asyncio.to_thread(dispenser.refill_mode, slots)
-        # The refill walk IS the count: one treat per slot, so slots advanced
-        # is how many were loaded. Users forget to declare a count separately
-        # (that is how the counter drifted to -7), so derive it by default.
+        # Only an explicit count sets the counter. Deriving it from the walk
+        # (2026-08-30) made every refill rewrite treat_capacity, which then
+        # shortened the next refill walk.
         if count is not None:
             dispenser.set_treat_count(int(count))
-        elif advanced > 0:
-            dispenser.set_treat_count(advanced)
         return {
             "success": advanced > 0,
             "slots_advanced": advanced,

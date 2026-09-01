@@ -853,16 +853,17 @@ class DispenserService:
         self._refill_active = False
         self.logger.info("Refill stopped")
 
-    def refill_mode(self, total_slots: Optional[int] = None) -> int:
+    def refill_mode(self, total_slots: int = 56) -> int:
         """
         Refill mode: step through slots slowly for loading treats.
         Returns number of slots advanced.
 
-        Defaults to the configured carousel capacity (44 slots, one treat per
-        slot). The old hardcoded 56 stepped 12 slots that do not exist.
+        total_slots is a fixed refill walk length, NOT the treat capacity.
+        Deriving it from treat_capacity (2026-08-30) fed capacity back into
+        the next refill: a short/stopped refill wrote a smaller capacity via
+        set_treat_count(advanced), which shortened the following refill, and
+        so on -- the carousel walk got progressively shorter each cycle.
         """
-        if total_slots is None:
-            total_slots = self.treat_capacity or self.DEFAULT_CAPACITY
         with self._dispense_lock:
             if not self.initialized:
                 if not self.initialize():
