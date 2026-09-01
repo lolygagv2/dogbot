@@ -804,18 +804,35 @@ async def get_available_missions():
 @app.post("/treat/dispense")
 async def dispense_treat(request: TreatRequest):
     """Dispense treats"""
+    import asyncio
     try:
         dispenser = get_dispenser_service()
 
+        # Double-tap to cancel: a second press while a dispense is still
+        # running aborts the retry ladder and skips the anti-jam procedure,
+        # for when the operator already knows the carousel is empty.
+        if dispenser.is_dispensing:
+            cancelled = dispenser.cancel_dispense()
+            return {
+                "success": False,
+                "cancelled": cancelled,
+                "message": "Dispense cancelled — retry ladder and anti-jam skipped",
+            }
+
         count = max(1, min(10, int(request.count)))
+        # Run off the event loop: a dispense blocks for up to ~35s through the
+        # retry ladder, and calling it inline froze the whole API — no second
+        # tap (or any other request) could even be received until it finished.
         if count == 1:
-            success = dispenser.dispense_treat(
+            success = await asyncio.to_thread(
+                dispenser.dispense_treat,
                 dog_id=request.dog_id,
                 reason=request.reason
             )
             dispensed = 1 if success else 0
         else:
-            dispensed = dispenser.dispense_multiple(
+            dispensed = await asyncio.to_thread(
+                dispenser.dispense_multiple,
                 count=count,
                 dog_id=request.dog_id,
                 reason=request.reason
@@ -3942,14 +3959,21 @@ async def websocket_control(websocket: WebSocket):
                 })
 
             elif command == "treat":
-                # Dispense treat
+                # Dispense treat. A second press while one is still running
+                # cancels the retry ladder / anti-jam instead of queueing.
                 dispenser = get_dispenser_service()
-                dispenser.dispense_treat(reason="websocket_command")
-
-                await websocket.send_json({
-                    "type": "treat_ack",
-                    "message": "Treat dispensed"
-                })
+                if dispenser.is_dispensing:
+                    dispenser.cancel_dispense()
+                    await websocket.send_json({
+                        "type": "treat_ack",
+                        "message": "Dispense cancelled"
+                    })
+                else:
+                    dispenser.dispense_treat(reason="websocket_command")
+                    await websocket.send_json({
+                        "type": "treat_ack",
+                        "message": "Treat dispensed"
+                    })
 
             elif command == "treat_unjam":
                 # Anti-jam wiggle sequence

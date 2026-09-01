@@ -471,11 +471,27 @@ class TreatBotWebSocketServer:
             elif command in ("treat", "dispense_treat"):
                 # {"command": "treat", "count": N, "reason": "...", "dog_id": "..."}
                 if self.dispenser:
+                    # Double-tap to cancel: a second treat command while one is
+                    # still running aborts the retry ladder and skips anti-jam,
+                    # for when the operator knows the carousel is empty.
+                    if self.dispenser.is_dispensing:
+                        cancelled = self.dispenser.cancel_dispense()
+                        result = {"success": False, "command": command,
+                                  "cancelled": cancelled,
+                                  "message": "Dispense cancelled"}
+                        return result
                     count = max(1, min(10, int(data.get("count", 1))))
                     reason = data.get("reason", "manual")
                     dog_id = data.get("dog_id")
                     if count == 1:
-                        self.dispenser.dispense_treat(dog_id=dog_id, reason=reason)
+                        # Off-thread like the multi path: a dispense blocks for
+                        # up to ~35s and would otherwise freeze the WS loop,
+                        # making the double-tap cancel impossible to deliver.
+                        threading.Thread(
+                            target=self.dispenser.dispense_treat,
+                            kwargs={"dog_id": dog_id, "reason": reason},
+                            daemon=True, name="TreatDispense",
+                        ).start()
                     else:
                         # Multi-dispense blocks ~1.5s per treat — run off the WS thread
                         threading.Thread(
