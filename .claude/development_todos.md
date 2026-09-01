@@ -1,31 +1,34 @@
 # WIM-Z Development TODO List
-*Last Updated: June 2026 · Build 106*
+*Last Updated: September 2026 · Release 2026.08.3 (OTA era — "Build N" retired)*
 
-## Current Status: Build 106 — Fleet Reliability Hardening
+## Current Status: Release 2026.08.3 — OTA-managed fleet, SG intelligence shipped
 
 **Build Phase:** CORE COMPLETE — hardening + manufacturing prep
-**Fleet:** 5 units (treatbot1–5) built & operational, one codebase + per-unit profiles
-**Current Focus:** Reliability (power/freeze, timing), cloud-history correctness, per-unit calibration, validation of scheduler + summaries
+**Fleet:** 4 active units (tb1, tb2, tb4, tb5) on one codebase + per-unit profiles, **all on the OTA layout**. tb3 (China) assumed permanently offline — excluded from fleet counts.
+**Current Focus:** Freeze RCA, validation of scheduler + summaries, SG live E2E test, data-layer refactor (design phase)
 
 ---
 
-## 🔥 CURRENT OPEN ITEMS (June 2026)
+## 🔥 CURRENT OPEN ITEMS (September 2026)
 
 ### Reliability / Safety (highest priority)
-- [ ] **Silent hard-freeze RCA** — recurring lockups with no kernel/software trace (corrupt journal). Confirm power-delivery/brownout vs hang. **Evidence collector now live**: `wimz-power-watch.service` samples throttled/EXT5V/temp/core-V to `logs/power_watch.csv` every 30s, fsync'd, so the last pre-freeze sample survives the power cycle. Next step: read that CSV after the next freeze — EXT5V sag/throttled≠0 before the gap = brownout; rails healthy up to the gap = true hang. (Currently deployed on treatbot2 only.)
-- [ ] **Power-button SPOF redesign** — GPIO21 relay gates the only power-off path behind a software watcher; a hang makes the button useless (must pull wire). Restore a hardware-direct OFF path.
+- [ ] **Silent hard-freeze RCA** — recurring lockups with no kernel/software trace (corrupt journal). Confirm power-delivery/brownout vs hang. **Evidence collector armed on treatbot2**: `wimz-power-watch.service` samples throttled/EXT5V/temp/core-V to `logs/power_watch.csv` every 30s, fsync'd, so the last pre-freeze sample survives the power cycle. Next step: read that CSV after the next freeze — EXT5V sag/throttled≠0 before the gap = brownout; rails healthy up to the gap = true hang. Note: units stable since returning from beta (2026-09-01).
+- [x] **Power-button SPOF redesign** — SOLVED (Aug 2026): every robot now has a hardware-direct OFF switch, no software in the kill path.
+- [x] **RTC batteries installed fleet-wide** (Aug 2026) — cross-boot timestamps are now trustworthy; retire the old "never trust cross-boot timestamps" caveat.
+- [x] **treatbot2 dispenser** — root cause was a bad crimp on a stepper coil wire (repaired); the TMC2209 chip was fine.
 
 ### Validation (blocking "done" claims)
 - [ ] **Mission Scheduler** — validate auto-start, time-window enforcement, once/daily/weekly logic (implemented, never tested)
 - [ ] **Weekly Summary** accuracy — verify before it becomes an owner/investor metric
-- [ ] End-to-end cloud history after service restart — SG run → bark/guardian/treat all appear in app history (fixes committed 3250698 / f18adb2, dormant until restart)
+- [ ] **SG live end-to-end test** — summary pull, Loop echo, `sg_status_pull` / `audio_loop` over /ws/local in AP mode, with a real dog
+- [ ] **bark_type stamp live verify** — live `bark` events now carry `bark_type`/`bark_label` (stamped in `bark_detector.py`, forwarded in `main_treatbot.py`, 2026-09-01); confirm app renders per-bark labels in live + history feeds
 
 ### Silent Guardian design decisions (user's call)
 - [x] Expose `treat_eligibility_cooldown` (was hardcoded in `silent_guardian.py`) to profile yaml — now reads `session_limits.treat_eligibility_cooldown`, default 600s
 - [x] **Post-cap behavior** (decided: keep intervening, no treats) — after the treat cap, SG now continues with verbal praise + LED and logs each quiet as `treat_given=False` (praise mitigates extinction; post-cap quiets now appear in history). `silent_guardian.py` treat-limit branch.
 
 ### Data / ML
-- [ ] **Data refactor** — reshape all data into human/ML-friendly tables for analytics + continual learning. Design MD to be written first; do **not** start coding or backfill old rows yet (see memory: project_data_refactor).
+- [ ] **Data refactor — KICKED OFF (2026-09-01, design phase)** — reshape all data into human/ML-friendly tables for analytics + continual learning. Robot side owns the design MD; App Claude reviews it against their consumer requirements (per-bark rows, sessions as first-class table, stable IDs + ISO8601 UTC, live event contract untouched, **no backfill of legacy rows in v1** — Morgan's standing decision). Do **not** start coding until the MD is approved.
 
 ---
 
@@ -150,49 +153,11 @@
 - [ ] Quality scoring
 - [ ] Best photo selection
 
-### Push Notifications (BUILD 41)
-- [x] AWS SNS notification service created (`services/cloud/notification_service.py`)
-- [x] API endpoints added (`/notifications/*`)
-- [ ] Install boto3: `pip install boto3`
-- [ ] Configure AWS credentials (see setup below)
-- [ ] Test SMS sending
-- [ ] Integrate with mission_complete events
-- [ ] Integrate with bark_alert events
-- [ ] Integrate with low_battery events
-
----
-
-## AWS SNS Setup (Push Notifications)
-```bash
-# 1. Install boto3
-pip install boto3
-
-# 2. Configure AWS credentials (choose one method)
-# Method A: AWS CLI
-aws configure
-# Enter: Access Key ID, Secret Key, Region (us-east-1 recommended for SMS)
-
-# Method B: Environment variables
-export AWS_ACCESS_KEY_ID="your-access-key"
-export AWS_SECRET_ACCESS_KEY="your-secret-key"
-export AWS_DEFAULT_REGION="us-east-1"
-
-# 3. Test the service
-curl http://localhost:8000/notifications/health
-
-# 4. Add a subscriber
-curl -X POST http://localhost:8000/notifications/subscribers \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "morgan", "phone_number": "+15551234567"}'
-
-# 5. Send test notification
-curl -X POST "http://localhost:8000/notifications/test?user_id=morgan"
-```
-
-**AWS SMS Sandbox Note:**
-New AWS accounts are in SMS sandbox mode. To send SMS:
-- Option A: Verify destination phone numbers in AWS Console → SNS → Text messaging
-- Option B: Request production access (takes 1-2 days approval)
+### Push Notifications — ✅ LIVE via Firebase (FCM/APNs)
+- [x] **Shipped and verified 2026-08-30**: Firebase project `wimzpushy`; app slice 2026-07-30, relay slice deployed (relay 409f381, contract `PUSH_NOTIFICATIONS_CONTRACT_2026-07-30.md`); lock-screen banners confirmed with the app closed.
+- The old AWS SNS plan in this file was never real — do NOT set up boto3/SNS.
+- Panic/SG pushes reuse the generic push pipeline with PANIC text (no per-type FCM mapping; per-type app preference toggles don't gate generic pushes — accepted for v1).
+- [ ] v2 (parked until Morgan prioritizes): bark-type-filtered pushes ("Distress barking detected"; mute demand/play) — unblocked by the 2026-09-01 per-bark `bark_type` stamp.
 
 ---
 
@@ -241,4 +206,4 @@ curl -X POST http://localhost:8000/mode/set -H "Content-Type: application/json" 
 
 ---
 
-*Updated: June 2026 — Build 106. Added current open-items (reliability, validation, SG design, data refactor); fleet now 5 units.*
+*Updated: September 2026 — Release 2026.08.3. Cleared solved hardware items (power switch, RTC, tb2 crimp), corrected push notifications to Firebase (live), fleet counts to 4 active units (tb3 offline), data refactor moved to design phase, added bark_type stamp + SG E2E validation items.*
