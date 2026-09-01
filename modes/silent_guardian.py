@@ -401,7 +401,7 @@ class SilentGuardianMode:
             # Spec store session (dual-write; WIMZ_Data_Architecture_Spec §4)
             self.wimz = get_wimz_store()
             self.wimz_session_id = self.wimz.start_session(
-                'monitor', 'autonomous',
+                'sg', 'autonomous',
                 model_versions={'audio': self.wimz.model_id_for('dog_bark_classifier')})
             self._last_cue_event_id = None
             self.session_start_time = time.time()
@@ -477,7 +477,10 @@ class SilentGuardianMode:
                 dog_bark_counts=self._dog_bark_counts(),
             )
         if getattr(self, 'wimz_session_id', None):
-            self.wimz.end_session(self.wimz_session_id)
+            # v0.6: the sg_summary numbers become a queryable session row
+            # (computed while session_bark_log is still intact).
+            self.wimz.end_session(self.wimz_session_id,
+                                  outcome=self.build_summary_payload('session_end'))
             self.wimz_session_id = None
 
         # Wait for thread
@@ -546,6 +549,45 @@ class SilentGuardianMode:
                 model_id=self.wimz.model_id_for('dog_bark_classifier'))
         except Exception as e:
             logger.debug(f"wimz bark event log failed: {e}")
+
+    def _record_intervention(self, phase: str, dog_id: str = None,
+                             dog_name: str = None, quiet_achieved: bool = False,
+                             treat_given: bool = False, music_played: bool = False,
+                             dispense_id: str = None,
+                             barks_triggering: int = 0) -> None:
+        """One call = legacy sg_interventions row + spec `sg_intervention`
+        event (v0.6), so both stores always agree.
+
+        phase: 'triggered' when the intervention starts (the followed_by join
+        target per spec §5) | 'outcome' when it resolves.
+        """
+        self.store.log_sg_intervention(
+            session_id=self.session_id,
+            dog_id=dog_id,
+            dog_name=dog_name,
+            escalation_level=self.current_escalation_level,
+            barks_triggering=barks_triggering,
+            quiet_achieved=quiet_achieved,
+            treat_given=treat_given,
+            music_played=music_played)
+        try:
+            wimz_dog = None
+            if (dog_id and dog_id != 'unknown') or dog_name:
+                wimz_dog = self.wimz.get_or_create_dog(
+                    legacy_id=dog_id if dog_id and dog_id != 'unknown' else None,
+                    name=dog_name)
+            self.wimz.log_event(
+                self.wimz_session_id, 'sg_intervention', {
+                    'phase': phase,
+                    'escalation_level': self.current_escalation_level,
+                    'quiet_achieved': quiet_achieved,
+                    'treat_given': treat_given,
+                    'music_played': music_played,
+                    'dispense_id': dispense_id,
+                    'barks_triggering': barks_triggering,
+                }, dog_id=wimz_dog, label_source='auto_rule')
+        except Exception as e:
+            logger.debug(f"wimz sg_intervention log failed: {e}")
 
     def _on_audio_event(self, event):
         """Handle bark events"""
@@ -716,12 +758,12 @@ class SilentGuardianMode:
 
             self.interventions_triggered += 1
 
-            # Log to database with actual escalation level
-            self.store.log_sg_intervention(
-                session_id=self.session_id,
+            # Log to both stores with actual escalation level. This is the
+            # intervention START — the followed_by join target (spec §5).
+            self._record_intervention(
+                'triggered',
                 dog_id=dog_id,
                 dog_name=dog_name,
-                escalation_level=self.current_escalation_level
             )
 
             # Spec cue_issued event — the intervention IS the 'quiet' cue.
@@ -817,6 +859,15 @@ class SilentGuardianMode:
                 dog_bark_counts=self._dog_bark_counts(),
             )
 
+        # Roll the spec-store session over too, so wimz sessions stay 1:1 with
+        # legacy SG sessions (v0.6: sessions first-class).
+        if getattr(self, 'wimz_session_id', None):
+            self.wimz.end_session(self.wimz_session_id,
+                                  outcome=self.build_summary_payload('session_end'))
+        self.wimz_session_id = self.wimz.start_session(
+            'sg', 'autonomous',
+            model_versions={'audio': self.wimz.model_id_for('dog_bark_classifier')})
+
         self.session_id = self.store.start_silent_guardian_session()
         self.session_start_time = time.time()
         self.treats_dispensed = 0
@@ -883,13 +934,12 @@ class SilentGuardianMode:
             self.futility_pending_since = now
 
             # Log failed intervention
-            self.store.log_sg_intervention(
-                session_id=self.session_id,
+            self._record_intervention(
+                'outcome',
                 dog_id=self.intervention_dog_id,
                 dog_name=self.intervention_dog_name,
-                escalation_level=self.current_escalation_level,
                 quiet_achieved=False,
-                treat_given=False
+                treat_given=False,
             )
             return
 
@@ -1647,14 +1697,13 @@ class SilentGuardianMode:
                 self.led.set_pattern('success', duration=2.0)
             self._play_audio('good.mp3')
 
-            self.store.log_sg_intervention(
-                session_id=self.session_id,
+            self._record_intervention(
+                'outcome',
                 dog_id=self.intervention_dog_id,
                 dog_name=self.intervention_dog_name,
-                escalation_level=self.current_escalation_level,
                 quiet_achieved=True,
                 treat_given=False,  # Session treat cap reached
-                music_played=(self.current_escalation_level == 4)
+                music_played=(self.current_escalation_level == 4),
             )
             self._log_quiet_attempt(success=True, reward_dispensed=0, dispense_id=None)
             return
@@ -1673,14 +1722,13 @@ class SilentGuardianMode:
             self._play_audio('good.mp3')
 
             # Log intervention without treat
-            self.store.log_sg_intervention(
-                session_id=self.session_id,
+            self._record_intervention(
+                'outcome',
                 dog_id=self.intervention_dog_id,
                 dog_name=self.intervention_dog_name,
-                escalation_level=self.current_escalation_level,
                 quiet_achieved=True,
                 treat_given=False,  # No treat during cooldown
-                music_played=(self.current_escalation_level == 4)
+                music_played=(self.current_escalation_level == 4),
             )
             self._log_quiet_attempt(success=True, reward_dispensed=0, dispense_id=None)
             return
@@ -1718,14 +1766,15 @@ class SilentGuardianMode:
             )
 
         # Log successful intervention with actual escalation level
-        self.store.log_sg_intervention(
-            session_id=self.session_id,
+        self._record_intervention(
+            'outcome',
             dog_id=self.intervention_dog_id,
             dog_name=self.intervention_dog_name,
-            escalation_level=self.current_escalation_level,
             quiet_achieved=True,
             treat_given=True,
-            music_played=(self.current_escalation_level == 4)
+            music_played=(self.current_escalation_level == 4),
+            dispense_id=getattr(self.dispenser, 'last_wimz_dispense_id', None)
+            if self.dispenser else None,
         )
         self._log_quiet_attempt(
             success=True,

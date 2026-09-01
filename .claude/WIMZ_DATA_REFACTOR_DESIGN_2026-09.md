@@ -2,7 +2,15 @@
 
 **Status:** APPROVED by App Claude 2026-09-01 ("approved with notes", all
 five requirements met; see Review Outcome at bottom). Phase 1 implemented
-2026-09-01. Phases 2–4 as sequenced.
+2026-09-01. **Phase 2 implemented 2026-09-01** (spec v0.6, live-verified on
+tb5: DB migrated, `outcome_json` + `app_dog_id` writes confirmed, Elsa's
+dual-UUID reconciled via profile sync). Phases 3–4 remain; Phase 4 needs
+explicit approval.
+Phase 2 notes: coach sessions write no `outcome_json` — their
+`training_attempt` rows are already first-class, so a coach summary is a
+query, not a stored blob. SG's wimz session now also rolls over at the 8-hour
+reset (previously it silently spanned resets), each closing with its
+`sg_summary` outcome.
 **Owner:** Robot side. **Reviewer:** App Claude (against their consumer
 requirements, received 2026-09-01). **Parent doc:** `.claude/WIMZ_Data_Architecture_Spec.md`
 (the spec stays authoritative; everything here lands as additive spec bumps).

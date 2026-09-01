@@ -144,6 +144,7 @@ class DogProfileManager:
                 self.logger.info(f"Loaded {len(self._profiles)} dog profiles from SQLite: {dict(self._aruco_map)}")
                 # Sync to dog tracker on startup
                 self._sync_to_dog_tracker()
+                self._sync_wimz_app_ids()
             else:
                 self.logger.info("No persisted dog profiles found — waiting for app to send profiles")
         except Exception as e:
@@ -169,6 +170,22 @@ class DogProfileManager:
             self.logger.debug(f"Persisted {len(profiles_data)} dog profiles to SQLite")
         except Exception as e:
             self.logger.warning(f"Could not persist profiles: {e}")
+        self._sync_wimz_app_ids()
+
+    def _sync_wimz_app_ids(self):
+        """v0.6: bind each profile's app/cloud canonical dog_id to the wimz.db
+        dog row for its ArUco tag (dog.app_dog_id — the analytics/export key).
+        Profiles are human-vouched, so this may create the wimz dog row."""
+        try:
+            from core.data import get_wimz_store
+            wimz = get_wimz_store()
+            for profile in list(self._profiles.values()):
+                if profile.dog_id and profile.aruco_id is not None:
+                    wimz.upsert_app_dog_mapping(
+                        f"aruco_{profile.aruco_id}", profile.dog_id,
+                        name=profile.name)
+        except Exception as e:
+            self.logger.debug(f"wimz app_dog_id sync failed: {e}")
 
     def add_profile(self, profile: DogProfile):
         """Add or update a dog profile"""

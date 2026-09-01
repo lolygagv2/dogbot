@@ -2,7 +2,7 @@
 
 **Shared data contract for the Edge (robot), App, and Relay components.**
 
-Version: 0.5.1
+Version: 0.6
 Owner: Morgan Hill (morgan@wimzai.com)
 Status: Authoritative source of truth for the data schema and data flow. All three component instances build against this file. Do not diverge from it without bumping the version and updating the changelog at the bottom.
 
@@ -166,12 +166,13 @@ CREATE TABLE model_registry (
 CREATE TABLE session (
   session_id       TEXT PRIMARY KEY,        -- UUIDv7
   device_id        TEXT NOT NULL REFERENCES device(device_id),
-  mode             TEXT NOT NULL,           -- 'training' | 'monitor' | 'play' | 'daycare' | 'pilot'
+  mode             TEXT NOT NULL,           -- 'training' | 'monitor' | 'play' | 'daycare' | 'pilot' | 'sg' | 'coach' (v0.6)
   initiated_by     TEXT NOT NULL,           -- 'autonomous' | 'user_pilot' | 'scheduled'
   app_version      TEXT,
   model_versions   TEXT,                    -- JSON snapshot of active model_ids
   started_at       INTEGER NOT NULL,
   ended_at         INTEGER,
+  outcome_json     TEXT,                    -- v0.6: end-of-session summary written by the owning mode (SG: the sg_summary numbers) so the summary is a queryable row
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
@@ -316,7 +317,7 @@ CREATE TABLE schema_meta (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.5.1');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.6');
 ```
 
 ---
@@ -337,6 +338,7 @@ INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.5.1');
 | `pilot_action`    | live operator command                    | `{"action":"drive","vec":[0.4,0.0]}` |
 | `error`           | fault / exception                        | `{"code":"motor_stall","detail":"..."}` |
 | `panic_episode`   | SG panic: intense barking, interventions suppressed | `{"trigger":"burst\|sustained_rate\|futility","bark_type_mix":{"distress":6,"demand":1},"barks_in_window":7,"loud_noise_prior":true,"episode_num":1,"duration_sec":420}` |
+| `sg_intervention` | v0.6: SG intervention lifecycle (`phase:'triggered'` when it starts — the `followed_by` join target — and `phase:'outcome'` when it resolves) | `{"phase":"outcome","escalation_level":2,"quiet_achieved":true,"treat_given":true,"music_played":false,"dispense_id":null,"barks_triggering":3}` |
 
 **Derived fields (export layer, not stored — agreed with App Claude 2026-09-01):**
 `followed_by` on an exported bark row = the next `sg_intervention` event or
@@ -345,8 +347,9 @@ after the bark, else null. This is THE single definition — app charts, Weekly
 Summary, and any export all use these numbers; change them here first. Event
 rows stay immutable (a bark cannot know its future at write time); the export
 layer computes and emits the field so no consumer re-implements the join.
-(The `sg_intervention` event type itself lands in v0.6 — see the refactor
-design doc; until then the join target is `dispense_log` only.)
+The `sg_intervention` join target is specifically a `phase:'triggered'` row
+(v0.6); `phase:'outcome'` rows resolve minutes later and are not "followed by"
+candidates.
 
 Rules:
 - **Always set `confidence` and `model_id`** for machine-produced events. A label with no provenance is near worthless for retraining.
@@ -473,6 +476,16 @@ corpus/       ML-ready datasets: vision (COCO/YOLO) + behavioral (Parquet)
 
 ## Changelog
 
+- **0.6** Additive (refactor Phase 2). Sessions first-class: `session.outcome_json`
+  (end-of-session summary written by the owning mode — SG writes the sg_summary
+  numbers, making the summary a queryable row; coach sessions need no
+  outcome_json since `training_attempt` rows are already first-class) and
+  `mode` vocabulary gains `'sg'` / `'coach'` (previously mapped onto
+  'monitor'/'training'). Canonical dog identity: `dog.app_dog_id` (the
+  app/cloud UUID the relay accepts) + partial unique index — the analytics and
+  export key; the local `dog_id` PK remains for FK integrity. New event_type
+  `sg_intervention` (§5) with `phase:'triggered'|'outcome'`; 'triggered' is the
+  `followed_by` join target. Migration walks 0.5.1 → 0.6.
 - **0.5.1** Additive, payload/taxonomy only — no DDL. Bark payload gains
   `bark_type` (SG reporting group), `bark_label` (raw classifier label),
   `escalation_level`, `sg_state` (§5); `emotion` kept alongside during

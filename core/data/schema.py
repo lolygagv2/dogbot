@@ -4,7 +4,7 @@ Do not edit the DDL here. The spec is the source of truth: change it there
 first (version bump + changelog), then mirror it here. See spec §10.
 """
 
-SCHEMA_VERSION = "0.5.1"
+SCHEMA_VERSION = "0.6"
 
 # Spec §10 — explicit stepwise migrations, additive-only. Key = the version a
 # live DB is at; value = statements that bring it to the NEXT version. Applied
@@ -25,6 +25,15 @@ MIGRATIONS = {
     # sg_state) + followed_by derivation rule — payload/taxonomy only, no DDL.
     "0.5": [
         "UPDATE schema_meta SET value='0.5.1' WHERE key='schema_version';",
+    ],
+    # 0.6 (refactor Phase 2): sessions first-class (outcome_json; mode vocab
+    # gains 'sg'/'coach'), canonical app dog identity (dog.app_dog_id), and the
+    # sg_intervention event type (taxonomy).
+    "0.5.1": [
+        "ALTER TABLE session ADD COLUMN outcome_json TEXT;",
+        "ALTER TABLE dog ADD COLUMN app_dog_id TEXT;",
+        "CREATE UNIQUE INDEX idx_dog_app_id ON dog(app_dog_id) WHERE app_dog_id IS NOT NULL;",
+        "UPDATE schema_meta SET value='0.6' WHERE key='schema_version';",
     ],
 }
 
@@ -73,10 +82,12 @@ CREATE TABLE dog (
   color            TEXT,                    -- v0.3: app-authoritative, human-entered; robot-consumed
   treats_per_reward INTEGER,                -- v0.3: app-authoritative reward config; robot-consumed (null -> robot defaults to 1)
   signature        TEXT,                    -- optional visual embedding ref/hash
+  app_dog_id       TEXT,                    -- v0.6: app/cloud canonical UUID (the relay-accepted id); analytics/export key
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
 CREATE INDEX idx_dog_qr ON dog(qr_code_id);
+CREATE UNIQUE INDEX idx_dog_app_id ON dog(app_dog_id) WHERE app_dog_id IS NOT NULL;
 
 -- Every model that ever produces a label is registered here, so every
 -- machine label is attributable. This is label provenance.
@@ -94,12 +105,13 @@ CREATE TABLE model_registry (
 CREATE TABLE session (
   session_id       TEXT PRIMARY KEY,        -- UUIDv7
   device_id        TEXT NOT NULL REFERENCES device(device_id),
-  mode             TEXT NOT NULL,           -- 'training' | 'monitor' | 'play' | 'daycare' | 'pilot'
+  mode             TEXT NOT NULL,           -- 'training' | 'monitor' | 'play' | 'daycare' | 'pilot' | 'sg' | 'coach' (v0.6)
   initiated_by     TEXT NOT NULL,           -- 'autonomous' | 'user_pilot' | 'scheduled'
   app_version      TEXT,
   model_versions   TEXT,                    -- JSON snapshot of active model_ids
   started_at       INTEGER NOT NULL,
   ended_at         INTEGER,
+  outcome_json     TEXT,                    -- v0.6: end-of-session summary written by the owning mode (SG: the sg_summary numbers) so the summary is a queryable row
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );

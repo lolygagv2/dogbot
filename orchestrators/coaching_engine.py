@@ -268,7 +268,7 @@ class CoachingEngine:
             # Spec store session (dual-write; one session per coach activation)
             self.wimz = get_wimz_store()
             self.wimz_session_id = self.wimz.start_session(
-                'training', 'autonomous',
+                'coach', 'autonomous',
                 model_versions={'detection': self.wimz.model_id_for('dogdetector_14'),
                                 'pose': self.wimz.model_id_for('dogpose_14')})
             self._last_attempt_id = None

@@ -309,19 +309,48 @@ class WimzStore:
         return session_id
 
     @_safe
-    def end_session(self, session_id: str, ended_at_ms: int = None) -> None:
+    def end_session(self, session_id: str, ended_at_ms: int = None,
+                    outcome: Dict[str, Any] = None) -> None:
+        """outcome (v0.6): end-of-session summary from the owning mode,
+        stored in session.outcome_json so the summary is a queryable row."""
         if not session_id:
             return
         self.flush(timeout=2.0)  # events for this session land before it closes
         now = _now_ms()
         with self._lock:
             self._conn.execute(
-                "UPDATE session SET ended_at=?, updated_at=? "
+                "UPDATE session SET ended_at=?, updated_at=?, "
+                "outcome_json=COALESCE(?, outcome_json) "
                 "WHERE session_id=? AND ended_at IS NULL",
-                (ended_at_ms or now, now, session_id))
+                (ended_at_ms or now, now,
+                 json.dumps(outcome) if outcome else None, session_id))
             self._conn.commit()
         if self._ambient_session_id == session_id:
             self._ambient_session_id = None
+
+    @_safe
+    def upsert_app_dog_mapping(self, qr_code_id: str, app_dog_id: str,
+                               name: str = None) -> None:
+        """v0.6: bind the app/cloud canonical UUID (the relay-accepted id) to
+        the local dog row for this physical tag. Called from the profile sync
+        path — a profile is human-vouched, so creating the row is safe. The
+        partial unique index on app_dog_id means a remapped tag must release
+        the id from any other row first."""
+        if not qr_code_id or not app_dog_id:
+            return
+        local_id = self.get_or_create_dog(legacy_id=qr_code_id, name=name)
+        if not local_id:
+            return
+        now = _now_ms()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE dog SET app_dog_id=NULL, updated_at=? "
+                "WHERE app_dog_id=? AND dog_id != ?",
+                (now, app_dog_id, local_id))
+            self._conn.execute(
+                "UPDATE dog SET app_dog_id=?, updated_at=? WHERE dog_id=?",
+                (app_dog_id, now, local_id))
+            self._conn.commit()
 
     def ensure_ambient_session(self) -> Optional[str]:
         """Lazily-opened monitor session for writes outside an explicit mode."""
