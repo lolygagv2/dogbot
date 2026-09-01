@@ -493,7 +493,18 @@ class LedService:
             LEDMode.MANUAL_RC: 'manual_rc'
         }
 
-        pattern = mode_patterns.get(mode, 'idle')
+        pattern = mode_patterns.get(mode)
+        if pattern is None:
+            # Modes added after this map was written (gradient_flow, chase,
+            # fire, ...) carry their pattern name directly. Falling straight
+            # through to 'idle' silently swallowed them.
+            candidate = getattr(mode, 'value', str(mode))
+            if candidate in self.patterns:
+                pattern = candidate
+            else:
+                self.logger.warning(
+                    f"LED mode {candidate!r} has no matching pattern — using idle")
+                pattern = 'idle'
         return self.set_pattern(pattern, manual_override=manual_override)
 
     def celebration_sequence(self, duration: float = 5.0) -> bool:
