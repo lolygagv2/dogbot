@@ -24,7 +24,7 @@ controller:
   max_speed: 80
   min_pwm_threshold: 0
   motor_calibration:
-    left_multiplier: 0.75
+    left_multiplier: 1.5
     right_multiplier: 1.0
   pid:
     kd: 0.0
