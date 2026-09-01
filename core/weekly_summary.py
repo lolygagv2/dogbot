@@ -33,13 +33,10 @@ class WeeklySummary:
     """
     Generate weekly behavioral analysis reports
 
-    Aggregates data from:
-    - barks table (bark detection)
-    - rewards table (treat dispensing)
-    - silent_guardian_sessions (SG mode)
-    - sg_interventions (bark interventions)
-    - coaching_sessions (trick training)
-    - dogs table (dog profiles)
+    Aggregates data from (refactor Phase 3):
+    - wimz.db: bark events, SG sessions (session.outcome_json),
+      sg_intervention events, training_attempt (coaching), dog identity
+    - treatbot.db (legacy, until their writers cut over): rewards, missions
     """
 
     def __init__(self, db_path: str = None):
@@ -56,6 +53,64 @@ class WeeklySummary:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    # ---- wimz.db (spec store) access — refactor Phase 3 ----
+    # Barks, SG sessions, and coaching now read the spec store (single
+    # source, epoch-ms UTC, survives the legacy 24h prune). Rewards and
+    # missions still read treatbot.db until their writers cut over.
+
+    def _wimz_connection(self) -> sqlite3.Connection:
+        from core.data import DATA_ROOT
+        conn = sqlite3.connect(os.path.join(DATA_ROOT, 'wimz.db'))
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    @staticmethod
+    def _ms(dt: datetime) -> int:
+        return int(dt.timestamp() * 1000)
+
+    # Real barks only: exclude 'notbark' veto rows kept as hard negatives.
+    _BARK_WHERE = ("event_type='bark' "
+                   "AND COALESCE(json_extract(payload,'$.class'),'bark') != 'notbark' "
+                   "AND ts BETWEEN ? AND ?")
+
+    def _wimz_bark_count(self, start: datetime, end: datetime,
+                         dog_key: str = None, dog_name: str = None) -> int:
+        """Bark count; dog filter matches local id, app id, or name."""
+        conn = self._wimz_connection()
+        try:
+            q = f"SELECT COUNT(*) AS c FROM event e WHERE {self._BARK_WHERE}"
+            params = [self._ms(start), self._ms(end)]
+            if dog_key or dog_name:
+                q += (" AND e.dog_id IN (SELECT dog_id FROM dog WHERE dog_id=? "
+                      "OR app_dog_id=? OR lower(name)=lower(?))")
+                params += [dog_key, dog_key, dog_name or dog_key]
+            return conn.execute(q, params).fetchone()['c'] or 0
+        finally:
+            conn.close()
+
+    def _wimz_coaching_agg(self, start: datetime, end: datetime,
+                           dog_key: str = None, dog_name: str = None) -> Dict[str, Any]:
+        """Coach attempts/completions from training_attempt (coach sessions
+        only — SG quiet-attempts live in sg/monitor sessions)."""
+        conn = self._wimz_connection()
+        try:
+            q = ('''SELECT COUNT(*) AS sessions,
+                           SUM(CASE WHEN ta.success >= 1 THEN 1 ELSE 0 END) AS completed,
+                           SUM(ta.reward_dispensed) AS treats,
+                           AVG(ta.latency_ms) AS avg_latency_ms
+                    FROM training_attempt ta
+                    JOIN session s ON ta.session_id = s.session_id
+                    WHERE s.mode IN ('coach','training')
+                      AND ta.cue_ts BETWEEN ? AND ?''')
+            params = [self._ms(start), self._ms(end)]
+            if dog_key or dog_name:
+                q += (" AND ta.dog_id IN (SELECT dog_id FROM dog WHERE dog_id=? "
+                      "OR app_dog_id=? OR lower(name)=lower(?))")
+                params += [dog_key, dog_key, dog_name or dog_key]
+            return dict(conn.execute(q, params).fetchone() or {})
+        finally:
+            conn.close()
 
     def _get_week_bounds(self, end_date: datetime = None) -> Tuple[datetime, datetime]:
         """
@@ -117,52 +172,53 @@ class WeeklySummary:
         return report
 
     def _get_bark_stats(self, start: datetime, end: datetime) -> Dict[str, Any]:
-        """Get bark statistics for the week"""
-        conn = self._get_connection()
+        """Get bark statistics for the week (wimz.db — Phase 3 cutover;
+        also fixes the legacy UTC-text-vs-local-cutoff skew)"""
+        conn = self._wimz_connection()
         try:
             cursor = conn.cursor()
+            ms = (self._ms(start), self._ms(end))
 
-            # Total barks
-            cursor.execute('''
+            cursor.execute(f'''
                 SELECT COUNT(*) as total,
-                       AVG(loudness_db) as avg_loudness,
-                       MAX(loudness_db) as max_loudness,
+                       AVG(json_extract(payload,'$.db')) as avg_loudness,
+                       MAX(json_extract(payload,'$.db')) as max_loudness,
                        AVG(confidence) as avg_confidence
-                FROM barks
-                WHERE timestamp BETWEEN ? AND ?
-            ''', (start.isoformat(), end.isoformat()))
+                FROM event e WHERE {self._BARK_WHERE}
+            ''', ms)
             totals = dict(cursor.fetchone() or {})
 
-            # By emotion
-            cursor.execute('''
-                SELECT emotion, COUNT(*) as count
-                FROM barks
-                WHERE timestamp BETWEEN ? AND ?
-                GROUP BY emotion
-                ORDER BY count DESC
-            ''', (start.isoformat(), end.isoformat()))
+            cursor.execute(f'''
+                SELECT COALESCE(json_extract(payload,'$.emotion'),'unknown') as emotion,
+                       COUNT(*) as count
+                FROM event e WHERE {self._BARK_WHERE}
+                GROUP BY emotion ORDER BY count DESC
+            ''', ms)
             by_emotion = {row['emotion']: row['count'] for row in cursor.fetchall()}
 
-            # By dog
-            cursor.execute('''
-                SELECT COALESCE(dog_name, dog_id, 'unknown') as dog, COUNT(*) as count
-                FROM barks
-                WHERE timestamp BETWEEN ? AND ?
-                GROUP BY COALESCE(dog_name, dog_id, 'unknown')
-                ORDER BY count DESC
-            ''', (start.isoformat(), end.isoformat()))
+            cursor.execute(f'''
+                SELECT COALESCE(json_extract(payload,'$.bark_type'),'unclassified') as btype,
+                       COUNT(*) as count
+                FROM event e WHERE {self._BARK_WHERE}
+                GROUP BY btype ORDER BY count DESC
+            ''', ms)
+            by_bark_type = {row['btype']: row['count'] for row in cursor.fetchall()}
+
+            cursor.execute(f'''
+                SELECT COALESCE(d.name, d.app_dog_id, 'unknown') as dog, COUNT(*) as count
+                FROM event e LEFT JOIN dog d ON e.dog_id = d.dog_id
+                WHERE {self._BARK_WHERE}
+                GROUP BY dog ORDER BY count DESC
+            ''', ms)
             by_dog = {row['dog']: row['count'] for row in cursor.fetchall()}
 
-            # By day of week
-            cursor.execute('''
-                SELECT strftime('%w', timestamp) as day_num, COUNT(*) as count
-                FROM barks
-                WHERE timestamp BETWEEN ? AND ?
+            cursor.execute(f'''
+                SELECT strftime('%w', datetime(ts/1000.0,'unixepoch','localtime')) as day_num,
+                       COUNT(*) as count
+                FROM event e WHERE {self._BARK_WHERE}
                 GROUP BY day_num
-            ''', (start.isoformat(), end.isoformat()))
+            ''', ms)
             by_day_raw = {int(row['day_num']): row['count'] for row in cursor.fetchall()}
-
-            # Convert to day names
             day_names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
             by_day = {day_names[i]: by_day_raw.get(i, 0) for i in range(7)}
 
@@ -172,6 +228,7 @@ class WeeklySummary:
                 'max_loudness_db': round(totals.get('max_loudness', 0) or 0, 1),
                 'avg_confidence': round(totals.get('avg_confidence', 0) or 0, 2),
                 'by_emotion': by_emotion,
+                'by_bark_type': by_bark_type,
                 'by_dog': by_dog,
                 'by_day': by_day
             }
@@ -242,23 +299,28 @@ class WeeklySummary:
             conn.close()
 
     def _get_sg_stats(self, start: datetime, end: datetime) -> Dict[str, Any]:
-        """Get Silent Guardian statistics for the week"""
-        conn = self._get_connection()
+        """Get Silent Guardian statistics for the week (wimz.db — Phase 3:
+        sessions from session.outcome_json, interventions from
+        sg_intervention events)"""
+        conn = self._wimz_connection()
         try:
             cursor = conn.cursor()
+            ms = (self._ms(start), self._ms(end))
 
-            # Session totals
+            # Session totals from outcome_json (written at every SG session
+            # close, including the 8h rollover). Open sessions count toward
+            # `sessions` and duration; their outcome sums land at close.
             cursor.execute('''
                 SELECT COUNT(*) as sessions,
-                       SUM(total_barks) as total_barks,
-                       SUM(interventions) as total_interventions,
-                       SUM(successful_quiets) as total_quiets,
-                       SUM(treats_dispensed) as total_treats,
-                       MAX(max_escalation_level) as max_escalation,
-                       SUM(COALESCE(session_end, ?) - session_start) as total_duration
-                FROM silent_guardian_sessions
-                WHERE session_start BETWEEN ? AND ?
-            ''', (end.timestamp(), start.timestamp(), end.timestamp()))
+                       SUM(json_extract(outcome_json,'$.total_barks')) as total_barks,
+                       SUM(json_extract(outcome_json,'$.interventions_triggered')) as total_interventions,
+                       SUM(json_extract(outcome_json,'$.successful_quiets')) as total_quiets,
+                       SUM(json_extract(outcome_json,'$.treats_dispensed')) as total_treats,
+                       MAX(json_extract(outcome_json,'$.max_escalation_level')) as max_escalation,
+                       SUM(COALESCE(ended_at, ?) - started_at) / 1000.0 as total_duration
+                FROM session
+                WHERE mode = 'sg' AND started_at BETWEEN ? AND ?
+            ''', (self._ms(end), *ms))
             totals = dict(cursor.fetchone() or {})
 
             # Calculate effectiveness
@@ -266,21 +328,23 @@ class WeeklySummary:
             quiets = totals.get('total_quiets', 0) or 0
             effectiveness = (quiets / interventions * 100) if interventions > 0 else 0
 
-            # Intervention details
+            # Intervention outcomes by escalation level
             cursor.execute('''
-                SELECT escalation_level, COUNT(*) as count,
-                       AVG(quiet_duration) as avg_quiet,
-                       SUM(CASE WHEN quiet_achieved = 1 THEN 1 ELSE 0 END) as successful
-                FROM sg_interventions
-                WHERE timestamp BETWEEN ? AND ?
+                SELECT json_extract(payload,'$.escalation_level') as escalation_level,
+                       COUNT(*) as count,
+                       SUM(CASE WHEN json_extract(payload,'$.quiet_achieved') THEN 1 ELSE 0 END) as successful
+                FROM event
+                WHERE event_type = 'sg_intervention'
+                  AND json_extract(payload,'$.phase') = 'outcome'
+                  AND ts BETWEEN ? AND ?
                 GROUP BY escalation_level
-            ''', (start.timestamp(), end.timestamp()))
+            ''', ms)
             by_escalation = {}
             for row in cursor.fetchall():
                 level = row['escalation_level']
                 by_escalation[f'level_{level}'] = {
                     'count': row['count'],
-                    'avg_quiet_duration': round(row['avg_quiet'] or 0, 1),
+                    'avg_quiet_duration': 0,  # not tracked per-intervention in the spec store
                     'success_rate': round((row['successful'] / row['count'] * 100) if row['count'] > 0 else 0, 1)
                 }
 
@@ -299,21 +363,25 @@ class WeeklySummary:
             conn.close()
 
     def _get_coaching_stats(self, start: datetime, end: datetime) -> Dict[str, Any]:
-        """Get coaching session statistics for the week"""
-        conn = self._get_connection()
+        """Get coaching statistics for the week (wimz.db training_attempt —
+        Phase 3 cutover; coach/training sessions only, so SG quiet-attempts
+        are excluded)"""
+        conn = self._wimz_connection()
         try:
             cursor = conn.cursor()
+            ms = (self._ms(start), self._ms(end))
+            base = ('''FROM training_attempt ta
+                       JOIN session s ON ta.session_id = s.session_id
+                       WHERE s.mode IN ('coach','training')
+                         AND ta.cue_ts BETWEEN ? AND ?''')
 
-            # Session totals
-            cursor.execute('''
+            cursor.execute(f'''
                 SELECT COUNT(*) as total_sessions,
-                       SUM(CASE WHEN trick_completed = 1 THEN 1 ELSE 0 END) as completed,
-                       SUM(CASE WHEN treat_dispensed = 1 THEN 1 ELSE 0 END) as treats,
-                       AVG(response_time) as avg_response_time,
-                       AVG(attention_duration) as avg_attention
-                FROM coaching_sessions
-                WHERE timestamp BETWEEN ? AND ?
-            ''', (start.timestamp(), end.timestamp()))
+                       SUM(CASE WHEN ta.success >= 1 THEN 1 ELSE 0 END) as completed,
+                       SUM(CASE WHEN ta.reward_dispensed >= 1 THEN 1 ELSE 0 END) as treats,
+                       AVG(ta.latency_ms) / 1000.0 as avg_response_time
+                {base}
+            ''', ms)
             totals = dict(cursor.fetchone() or {})
 
             total = totals.get('total_sessions', 0) or 0
@@ -321,15 +389,14 @@ class WeeklySummary:
             success_rate = (completed / total * 100) if total > 0 else 0
 
             # By trick
-            cursor.execute('''
-                SELECT trick_requested as trick,
+            cursor.execute(f'''
+                SELECT ta.trick_label as trick,
                        COUNT(*) as attempts,
-                       SUM(CASE WHEN trick_completed = 1 THEN 1 ELSE 0 END) as completed
-                FROM coaching_sessions
-                WHERE timestamp BETWEEN ? AND ?
-                GROUP BY trick_requested
+                       SUM(CASE WHEN ta.success >= 1 THEN 1 ELSE 0 END) as completed
+                {base}
+                GROUP BY ta.trick_label
                 ORDER BY attempts DESC
-            ''', (start.timestamp(), end.timestamp()))
+            ''', ms)
             by_trick = {}
             for row in cursor.fetchall():
                 attempts = row['attempts']
@@ -341,14 +408,14 @@ class WeeklySummary:
                 }
 
             # By dog
-            cursor.execute('''
-                SELECT COALESCE(dog_name, dog_id, 'unknown') as dog,
+            cursor.execute(f'''
+                SELECT COALESCE(d.name, d.app_dog_id, 'unknown') as dog,
                        COUNT(*) as sessions,
-                       SUM(CASE WHEN trick_completed = 1 THEN 1 ELSE 0 END) as completed
-                FROM coaching_sessions
-                WHERE timestamp BETWEEN ? AND ?
-                GROUP BY COALESCE(dog_name, dog_id, 'unknown')
-            ''', (start.timestamp(), end.timestamp()))
+                       SUM(CASE WHEN ta.success >= 1 THEN 1 ELSE 0 END) as completed
+                {base.replace('FROM training_attempt ta',
+                              'FROM training_attempt ta LEFT JOIN dog d ON ta.dog_id = d.dog_id')}
+                GROUP BY dog
+            ''', ms)
             by_dog = {}
             for row in cursor.fetchall():
                 sessions = row['sessions']
@@ -365,7 +432,7 @@ class WeeklySummary:
                 'success_rate': round(success_rate, 1),
                 'treats_given': totals.get('treats', 0) or 0,
                 'avg_response_time': round(totals.get('avg_response_time', 0) or 0, 1),
-                'avg_attention_duration': round(totals.get('avg_attention', 0) or 0, 1),
+                'avg_attention_duration': 0,  # not tracked in the spec store
                 'by_trick': by_trick,
                 'by_dog': by_dog
             }
@@ -445,45 +512,44 @@ class WeeklySummary:
         finally:
             conn.close()
 
-    def _get_dog_summary(self, start: datetime, end: datetime) -> Dict[str, Any]:
-        """Get per-dog summary combining all metrics"""
-        conn = self._get_connection()
+    def _wimz_dogs(self) -> List[Dict[str, Any]]:
+        """Known dogs from the spec store (the legacy `dogs` table holds only
+        test fixtures — real identity lives in wimz.db, Phase 3)."""
+        conn = self._wimz_connection()
         try:
-            cursor = conn.cursor()
+            return [dict(r) for r in conn.execute(
+                "SELECT dog_id, name, app_dog_id FROM dog "
+                "WHERE name IS NOT NULL OR app_dog_id IS NOT NULL")]
+        finally:
+            conn.close()
 
-            # Get all dogs
-            cursor.execute('SELECT id, name FROM dogs')
-            dogs = {row['id']: row['name'] for row in cursor.fetchall()}
+    def _get_dog_summary(self, start: datetime, end: datetime) -> Dict[str, Any]:
+        """Get per-dog summary combining all metrics (wimz.db for identity,
+        barks, coaching; legacy rewards until its writer cuts over)"""
+        summaries = {}
+        legacy = self._get_connection()
+        try:
+            for dog in self._wimz_dogs():
+                display_name = dog['name'] or dog['app_dog_id']
 
-            summaries = {}
-            for dog_id, dog_name in dogs.items():
-                display_name = dog_name or dog_id
+                barks = self._wimz_bark_count(start, end,
+                                              dog_key=dog['dog_id'],
+                                              dog_name=dog['name'])
 
-                # Barks
-                cursor.execute('''
-                    SELECT COUNT(*) as count FROM barks
-                    WHERE (dog_id = ? OR dog_name = ?) AND timestamp BETWEEN ? AND ?
-                ''', (dog_id, dog_name, start.isoformat(), end.isoformat()))
-                barks = cursor.fetchone()['count'] or 0
-
-                # Rewards
-                cursor.execute('''
+                # Rewards (legacy table keys on the app canonical id or name)
+                row = legacy.execute('''
                     SELECT COUNT(*) as count, SUM(treats_dispensed) as treats FROM rewards
-                    WHERE dog_id = ? AND timestamp BETWEEN ? AND ?
-                ''', (dog_id, start.timestamp(), end.timestamp()))
-                rewards = dict(cursor.fetchone() or {})
+                    WHERE (dog_id = ? OR dog_id = ?) AND timestamp BETWEEN ? AND ?
+                ''', (dog['app_dog_id'], dog['name'],
+                      start.timestamp(), end.timestamp())).fetchone()
+                rewards = dict(row or {})
 
-                # Coaching
-                cursor.execute('''
-                    SELECT COUNT(*) as sessions,
-                           SUM(CASE WHEN trick_completed = 1 THEN 1 ELSE 0 END) as completed
-                    FROM coaching_sessions
-                    WHERE (dog_id = ? OR dog_name = ?) AND timestamp BETWEEN ? AND ?
-                ''', (dog_id, dog_name, start.timestamp(), end.timestamp()))
-                coaching = dict(cursor.fetchone() or {})
+                coaching = self._wimz_coaching_agg(start, end,
+                                                   dog_key=dog['dog_id'],
+                                                   dog_name=dog['name'])
 
                 summaries[display_name] = {
-                    'dog_id': dog_id,
+                    'dog_id': dog['app_dog_id'] or dog['dog_id'],
                     'barks': barks,
                     'rewards': rewards.get('count', 0) or 0,
                     'treats': rewards.get('treats', 0) or 0,
@@ -493,7 +559,7 @@ class WeeklySummary:
 
             return summaries
         finally:
-            conn.close()
+            legacy.close()
 
     def _get_daily_breakdown(self, start: datetime, end: datetime) -> Dict[str, Any]:
         """Get day-by-day breakdown for the week"""
@@ -509,12 +575,8 @@ class WeeklySummary:
             try:
                 cursor = conn.cursor()
 
-                # Barks for this day
-                cursor.execute('''
-                    SELECT COUNT(*) as count FROM barks
-                    WHERE timestamp BETWEEN ? AND ?
-                ''', (day_start.isoformat(), day_end.isoformat()))
-                barks = cursor.fetchone()['count'] or 0
+                # Barks for this day (wimz.db)
+                barks = self._wimz_bark_count(day_start, day_end)
 
                 # Rewards for this day
                 cursor.execute('''
@@ -602,28 +664,18 @@ class WeeklySummary:
             try:
                 cursor = conn.cursor()
 
-                # Barks
-                cursor.execute('''
-                    SELECT COUNT(*) as count FROM barks
-                    WHERE timestamp BETWEEN ? AND ?
-                ''', (week_start.isoformat(), week_end_bound.isoformat()))
-                barks = cursor.fetchone()['count'] or 0
+                # Barks (wimz.db)
+                barks = self._wimz_bark_count(week_start, week_end_bound)
 
-                # Rewards
+                # Rewards (legacy until its writer cuts over)
                 cursor.execute('''
                     SELECT COUNT(*) as count, SUM(treats_dispensed) as treats FROM rewards
                     WHERE timestamp BETWEEN ? AND ?
                 ''', (week_start.timestamp(), week_end_bound.timestamp()))
                 rewards = dict(cursor.fetchone() or {})
 
-                # Coaching
-                cursor.execute('''
-                    SELECT COUNT(*) as sessions,
-                           SUM(CASE WHEN trick_completed = 1 THEN 1 ELSE 0 END) as completed
-                    FROM coaching_sessions
-                    WHERE timestamp BETWEEN ? AND ?
-                ''', (week_start.timestamp(), week_end_bound.timestamp()))
-                coaching = dict(cursor.fetchone() or {})
+                # Coaching (wimz.db)
+                coaching = self._wimz_coaching_agg(week_start, week_end_bound)
 
                 week_data = {
                     'week_start': week_start.isoformat(),
@@ -694,28 +746,20 @@ class WeeklySummary:
             try:
                 cursor = conn.cursor()
 
-                # Barks for this dog
-                cursor.execute('''
-                    SELECT COUNT(*) as count FROM barks
-                    WHERE (dog_id = ? OR dog_name = ?) AND timestamp BETWEEN ? AND ?
-                ''', (dog_id, dog_id, week_start.isoformat(), week_end_bound.isoformat()))
-                barks = cursor.fetchone()['count'] or 0
+                # Barks for this dog (wimz.db; dog_id may be app UUID or name)
+                barks = self._wimz_bark_count(week_start, week_end_bound,
+                                              dog_key=dog_id, dog_name=dog_id)
 
-                # Rewards for this dog
+                # Rewards for this dog (legacy until its writer cuts over)
                 cursor.execute('''
                     SELECT COUNT(*) as count, SUM(treats_dispensed) as treats FROM rewards
                     WHERE dog_id = ? AND timestamp BETWEEN ? AND ?
                 ''', (dog_id, week_start.timestamp(), week_end_bound.timestamp()))
                 rewards = dict(cursor.fetchone() or {})
 
-                # Coaching for this dog
-                cursor.execute('''
-                    SELECT COUNT(*) as sessions,
-                           SUM(CASE WHEN trick_completed = 1 THEN 1 ELSE 0 END) as completed
-                    FROM coaching_sessions
-                    WHERE (dog_id = ? OR dog_name = ?) AND timestamp BETWEEN ? AND ?
-                ''', (dog_id, dog_id, week_start.timestamp(), week_end_bound.timestamp()))
-                coaching = dict(cursor.fetchone() or {})
+                # Coaching for this dog (wimz.db)
+                coaching = self._wimz_coaching_agg(week_start, week_end_bound,
+                                                   dog_key=dog_id, dog_name=dog_id)
 
                 sessions = coaching.get('sessions', 0) or 0
                 completed = coaching.get('completed', 0) or 0
@@ -751,52 +795,43 @@ class WeeklySummary:
         end_date = datetime.now()
         start_date = end_date - timedelta(weeks=4)
 
-        conn = self._get_connection()
+        comparison = {
+            'period': '4 weeks',
+            'generated_at': datetime.now().isoformat(),
+            'dogs': {}
+        }
+
+        legacy = self._get_connection()
+        wimz = self._wimz_connection()
         try:
-            cursor = conn.cursor()
+            for dog in self._wimz_dogs():
+                display_name = dog['name'] or dog['app_dog_id']
 
-            # Get all dogs
-            cursor.execute('SELECT id, name FROM dogs')
-            dogs = {row['id']: row['name'] for row in cursor.fetchall()}
+                # Barks (wimz.db)
+                barks = dict(wimz.execute(f'''
+                    SELECT COUNT(*) as count,
+                           AVG(json_extract(payload,'$.db')) as avg_loud
+                    FROM event e WHERE {self._BARK_WHERE} AND e.dog_id = ?
+                ''', (self._ms(start_date), self._ms(end_date),
+                      dog['dog_id'])).fetchone() or {})
 
-            comparison = {
-                'period': '4 weeks',
-                'generated_at': datetime.now().isoformat(),
-                'dogs': {}
-            }
-
-            for dog_id, dog_name in dogs.items():
-                display_name = dog_name or dog_id
-
-                # Barks
-                cursor.execute('''
-                    SELECT COUNT(*) as count, AVG(loudness_db) as avg_loud FROM barks
-                    WHERE (dog_id = ? OR dog_name = ?) AND timestamp BETWEEN ? AND ?
-                ''', (dog_id, dog_name, start_date.isoformat(), end_date.isoformat()))
-                barks = dict(cursor.fetchone() or {})
-
-                # Rewards
-                cursor.execute('''
+                # Rewards (legacy table keys on the app canonical id or name)
+                rewards = dict(legacy.execute('''
                     SELECT COUNT(*) as count, SUM(treats_dispensed) as treats FROM rewards
-                    WHERE dog_id = ? AND timestamp BETWEEN ? AND ?
-                ''', (dog_id, start_date.timestamp(), end_date.timestamp()))
-                rewards = dict(cursor.fetchone() or {})
+                    WHERE (dog_id = ? OR dog_id = ?) AND timestamp BETWEEN ? AND ?
+                ''', (dog['app_dog_id'], dog['name'],
+                      start_date.timestamp(), end_date.timestamp())).fetchone() or {})
 
-                # Coaching
-                cursor.execute('''
-                    SELECT COUNT(*) as sessions,
-                           SUM(CASE WHEN trick_completed = 1 THEN 1 ELSE 0 END) as completed,
-                           AVG(response_time) as avg_response
-                    FROM coaching_sessions
-                    WHERE (dog_id = ? OR dog_name = ?) AND timestamp BETWEEN ? AND ?
-                ''', (dog_id, dog_name, start_date.timestamp(), end_date.timestamp()))
-                coaching = dict(cursor.fetchone() or {})
+                # Coaching (wimz.db)
+                coaching = self._wimz_coaching_agg(start_date, end_date,
+                                                   dog_key=dog['dog_id'],
+                                                   dog_name=dog['name'])
 
                 sessions = coaching.get('sessions', 0) or 0
                 completed = coaching.get('completed', 0) or 0
 
                 comparison['dogs'][display_name] = {
-                    'dog_id': dog_id,
+                    'dog_id': dog['app_dog_id'] or dog['dog_id'],
                     'total_barks': barks.get('count', 0) or 0,
                     'avg_bark_loudness': round(barks.get('avg_loud', 0) or 0, 1),
                     'total_rewards': rewards.get('count', 0) or 0,
@@ -804,12 +839,13 @@ class WeeklySummary:
                     'coaching_sessions': sessions,
                     'tricks_completed': completed,
                     'coaching_success_rate': round((completed / sessions * 100) if sessions > 0 else 0, 1),
-                    'avg_response_time': round(coaching.get('avg_response', 0) or 0, 1)
+                    'avg_response_time': round((coaching.get('avg_latency_ms', 0) or 0) / 1000.0, 1)
                 }
 
             return comparison
         finally:
-            conn.close()
+            legacy.close()
+            wimz.close()
 
     def export_report(self, report: Dict, format: str = 'markdown') -> str:
         """

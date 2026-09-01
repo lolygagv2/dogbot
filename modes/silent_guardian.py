@@ -1419,6 +1419,10 @@ class SilentGuardianMode:
             'aggressive_tag': counts.get('aggressive', 0) >= aggressive_min,
             'panic_active': self.panic_active,
             'panic_episodes': self.panic_episodes_this_session,
+            # v0.6 additive: session.outcome_json consumers (Weekly Summary)
+            # need these; apps ignore unknown keys.
+            'successful_quiets': self.successful_quiets,
+            'max_escalation_level': self.max_escalation_level,
         }
 
     def _maybe_send_level4_summary(self):

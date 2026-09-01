@@ -478,17 +478,37 @@ class BarkDetectorService:
         visible_dogs = self._get_visible_dogs()
         visible_ids = list(visible_dogs.keys())
 
-        # Store bark in database
+        # Refactor Phase 3: the legacy `barks` table (24h-pruned, UTC/local
+        # skew) is retired — wimz.db `event` rows are the single bark record.
+        # In SILENT_GUARDIAN mode SG writes the row itself with FSM context
+        # (gate/escalation/sg_state); every other mode logs here, into the
+        # ambient session, so barks outside SG stop vanishing.
         try:
-            from core.bark_store import get_bark_store
-            bark_store = get_bark_store()
-            bark_store.log_bark(
-                emotion=emotion,
-                confidence=confidence,
-                loudness_db=loudness_db,
-                dog_id=dog_id,
-                dog_name=dog_name
-            )
+            from core.state import get_state, SystemMode
+            if get_state().get_mode() != SystemMode.SILENT_GUARDIAN:
+                from modes.silent_guardian import get_silent_guardian_mode  # lazy: SG imports this module
+                bark_type, bark_label = get_silent_guardian_mode() \
+                    .classify_bark_type(emotion, confidence)
+                from core.data import get_wimz_store
+                wimz = get_wimz_store()
+                wimz_dog = None
+                if (dog_id and dog_id != 'unknown') or dog_name:
+                    wimz_dog = wimz.get_or_create_dog(
+                        legacy_id=dog_id if dog_id and dog_id != 'unknown' else None,
+                        name=dog_name)
+                wimz.log_event(
+                    None, 'bark', {
+                        'db': loudness_db,
+                        'duration_ms': result.get('duration_ms', 0),
+                        'class': 'bark',
+                        'emotion': emotion,
+                        'gate': 'detector',
+                        'bark_type': bark_type,
+                        'bark_label': bark_label,
+                    },
+                    dog_id=wimz_dog,
+                    confidence=confidence,
+                    model_id=wimz.model_id_for('dog_bark_classifier'))
         except Exception as e:
             logger.warning(f"Failed to store bark: {e}")
 

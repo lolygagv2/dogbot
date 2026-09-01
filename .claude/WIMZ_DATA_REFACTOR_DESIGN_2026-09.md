@@ -4,8 +4,23 @@
 five requirements met; see Review Outcome at bottom). Phase 1 implemented
 2026-09-01. **Phase 2 implemented 2026-09-01** (spec v0.6, live-verified on
 tb5: DB migrated, `outcome_json` + `app_dog_id` writes confirmed, Elsa's
-dual-UUID reconciled via profile sync). Phases 3–4 remain; Phase 4 needs
-explicit approval.
+dual-UUID reconciled via profile sync). **Phase 3 implemented 2026-09-01**
+(see Phase 3 notes below). Phase 4 remains; needs explicit approval.
+Phase 3 notes — scope adjusted from the original sketch after mapping REST
+readers: Weekly Summary (all report/trends/progress/compare paths) now reads
+wimz.db for barks, SG sessions (outcome_json), interventions, coaching, and
+dog identity — live-verified via GET /reports/weekly and /reports/trends;
+adds by_bark_type; fixes the UTC/local skew. The bark pipeline is
+single-writer: bark_detector now writes wimz bark rows in every non-SG mode
+(ambient session, gate:'detector'), SG keeps writing its FSM-context rows,
+and `bark_store.log_bark` is retired (the legacy `barks` table has zero
+writers and zero readers). SG's outcome payload gained
+successful_quiets/max_escalation_level (additive). KEPT for Phase 4:
+`rewards` + `missions` reads/writes (still consistent, no skew), and the
+`coaching_sessions` / `dog_events` / `silent_guardian_sessions` writers —
+live REST endpoints (/dog_events*, dog stats) and the L4 summary_sent guard
+still read them, so they retire in Phase 4 together with those endpoint
+migrations.
 Phase 2 notes: coach sessions write no `outcome_json` — their
 `training_attempt` rows are already first-class, so a coach summary is a
 query, not a stored blob. SG's wimz session now also rolls over at the 8-hour
