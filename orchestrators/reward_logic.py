@@ -112,9 +112,13 @@ class RewardLogic:
         # Thread safety
         self._lock = threading.RLock()
 
-        # Subscribe to vision and audio events
+        # Subscribe to vision events only. Audio is deliberately NOT
+        # subscribed: bark-triggered treats are exclusively the coach 'speak'
+        # trick's job (coaching_engine gates on an active speak session).
+        # The old ambient bark-reward lottery here paid Elsa for barking
+        # DURING a Silent Guardian anti-barking session (2026-09-01) —
+        # never reintroduce a bark reward outside an explicit speak cue.
         self.bus.subscribe('vision', self._on_vision_event)
-        self.bus.subscribe('audio', self._on_audio_event)
 
         # Behavior detection state
         self.detection_start_times = {}  # dog_id -> {behavior -> start_time}
@@ -127,18 +131,6 @@ class RewardLogic:
         # (e.g., from mission engine or external trigger)
         # This prevents unwanted rewards for random behaviors
         pass
-
-    def _on_audio_event(self, event) -> None:
-        """Handle audio events for bark-based rewards"""
-        # CRITICAL: Skip bark processing in IDLE or MANUAL mode
-        # Bark rewards should only happen in COACH, SILENT_GUARDIAN, MISSION modes
-        from core.state import SystemMode
-        current_mode = self.state.get_mode()
-        if current_mode in [SystemMode.IDLE, SystemMode.MANUAL]:
-            return
-
-        if event.subtype == 'bark_detected':
-            self._process_bark_detection(event.data)
 
     def _process_behavior_detection(self, data: Dict[str, Any]) -> None:
         """Process behavior detection and evaluate for rewards"""
@@ -191,71 +183,6 @@ class RewardLogic:
                     del dog_start_times[behavior]
                 if behavior in dog_stable:
                     del dog_stable[behavior]
-
-    def _process_bark_detection(self, data: Dict[str, Any]) -> None:
-        """Process bark detection and evaluate for bark-based rewards"""
-        emotion = data.get('emotion', '')
-        confidence = data.get('confidence', 0.0)
-        timestamp = data.get('timestamp', time.time())
-
-        # Get dog from bark event (vision-audio fusion)
-        dog_id = data.get('dog_id') or 'unknown'
-        dog_name = data.get('dog_name') or 'unknown'
-
-        # Get current mode for logging
-        from core.state import SystemMode
-        current_mode = self.state.get_mode()
-        self.logger.debug(f"Bark event: {dog_name} ({dog_id}) - {emotion} (conf: {confidence:.2f}), mode={current_mode.value}")
-
-        # Define bark reward policy
-        bark_policy = RewardPolicy(
-            behavior=f'bark_{emotion}',
-            min_duration=0.0,  # Immediate bark reward
-            require_quiet=False,  # Bark rewards don't require quiet!
-            cooldown=5.0,  # 5-second cooldown between bark rewards
-            treat_probability=0.4,  # Lower probability than behavior rewards
-            max_daily_rewards=3,  # Limit bark-only rewards
-            sounds=['good_dog'],
-            led_pattern='pulse_blue',
-            sequence_name='celebrate'
-        )
-
-        # Check if this emotion should trigger reward
-        reward_emotions = ['alert', 'attention']  # From config
-        if emotion in reward_emotions and confidence >= 0.55:
-            self.logger.debug(f"Bark qualifies for reward eval: {emotion} >= 0.55 conf, mode={current_mode.value}")
-            self._evaluate_bark_reward(dog_id, emotion, confidence, bark_policy)
-        else:
-            self.logger.debug(f"Bark skipped: emotion={emotion} (need {reward_emotions}), conf={confidence:.2f} (need >=0.55)")
-
-    def _evaluate_bark_reward(self, dog_id: str, emotion: str, confidence: float,
-                             policy: RewardPolicy) -> None:
-        """Evaluate whether to give a bark-based reward"""
-        behavior_name = f'bark_{emotion}'
-        self.logger.debug(f"Evaluating bark reward: {dog_id} {behavior_name} (conf={confidence:.2f})")
-
-        # Use same cooldown/limit checking but for bark rewards
-        if not self._check_cooldown(dog_id, policy.cooldown):
-            self.logger.info(f"Bark reward BLOCKED by cooldown: {dog_id} (cooldown={policy.cooldown}s)")
-            return
-
-        # Check daily limit for bark rewards specifically
-        if not self._check_daily_limit(dog_id, behavior_name, policy.max_daily_rewards):
-            current_count = self.daily_reward_counts.get(dog_id, {}).get(behavior_name, 0)
-            self.logger.info(f"Bark reward BLOCKED by daily limit: {dog_id} {behavior_name} ({current_count}/{policy.max_daily_rewards})")
-            return
-
-        # Bark rewards don't check mission quiet requirement - they're independent
-
-        # Variable ratio reward
-        roll = random.random()
-        if roll > policy.treat_probability:
-            self.logger.info(f"Bark reward DENIED by probability: {dog_id} {behavior_name} (roll={roll:.2f} > p={policy.treat_probability})")
-            return
-
-        # Grant bark reward!
-        self.logger.info(f"GRANTING bark reward: {dog_id} {behavior_name} (roll={roll:.2f} <= p={policy.treat_probability})")
-        self._grant_reward(dog_id, behavior_name, confidence, 0.0, policy)
 
     def _evaluate_reward(self, dog_id: str, behavior: str, confidence: float,
                         duration: float, policy: RewardPolicy) -> None:
