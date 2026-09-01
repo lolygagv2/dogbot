@@ -244,5 +244,68 @@ version drift squared (spec 0.5.1 = schema.py = DB stamp via stepwise
 migrations); telemetry/events 30-day prune wired into the hourly
 maintenance loop.
 
+---
+
+## Amendment A — Backfill (R5 REVERSED by Morgan, 2026-09-01 evening)
+
+**Status: DESIGN FOR REVIEW — no code until App Claude + Morgan approve
+this amendment.** Morgan overturned the no-backfill rule: legacy rows ARE
+retrofitted into wimz.db so per-dog stats and weekly summaries cover real
+history.
+
+**What is actually recoverable (counted 2026-09-01):**
+
+| Source | Rows | Lands as |
+|---|---|---|
+| treatbot `rewards` | 1,176 (5 are bark_reward-contaminated) | `event` treat rows + `dispense_log` |
+| treatbot `coaching_sessions` | 91 | `training_attempt` (+ synthetic per-day coach `session` rows) |
+| treatbot `silent_guardian_sessions` | 11 | `session` (mode='sg') with `outcome_json` built from the row |
+| treatbot `sg_interventions` | 203 | `sg_intervention` events (phase='outcome') |
+| dogbot `behavior_events` | 2,540 | `pose` events (partially done by the old STORE-A backfill — ledger says 380; resume from ledger) |
+| missions.db `detections` | 341 | `pose` events (STORE-A ledger says done — verify, skip) |
+| treatbot `barks` | **0 — nothing to recover** | — |
+
+**Hard truth to set expectations:** per-bark history is GONE — the 24h
+prune already deleted every legacy bark row. Bark history exists only as
+session-level totals inside `silent_guardian_sessions` (11 sessions), which
+backfill preserves via `outcome_json`. Per-bark rows exist from 2026-09-01
+(Phase 1) forward only. The app's per-bark charts will honestly start there.
+
+**Design answers to the five app requirements:**
+
+1. **Provenance** — spec v0.7 (additive): new nullable `origin TEXT` column
+   on `event`, `training_attempt`, `dispense_log`, `session`. NULL = native;
+   backfilled rows carry `'backfill:<source_table>'`
+   (e.g. `backfill:rewards`). Queryable, indexable, survives export.
+2. **Timestamp normalization** — per-source conversion at migration time,
+   never copied raw: unix-float REAL → epoch-ms; SQLite `CURRENT_TIMESTAMP`
+   UTC text → epoch-ms; local-naive ISO (`dog_events`-style) → interpreted
+   in the robot's local tz → epoch-ms UTC. Unit test per source format.
+3. **Identity mapping** — resolution ladder per row: canonical app UUID
+   (matches `dog.app_dog_id`, incl. the get_or_create_dog resolution shipped
+   2026-09-01) → `aruco_*` tag via `qr_code_id` → case-insensitive
+   name-match against profiles → else `dog_id = NULL`, never a guess.
+   `dog_N` slot ids always resolve to NULL.
+4. **bark_reward contamination — fully identifiable, better than feared:**
+   the removed lottery logged `rewards.behavior = 'bark_<emotion>'`.
+   Exactly 5 rows / 5 treats. They migrate with
+   `origin='backfill:rewards:bark_reward'` and are EXCLUDED from treat
+   totals in owner-facing summaries. No "counts are inflated" caveat needed.
+5. **Coverage honesty** — weekly/dog summaries gain a `coverage` field:
+   `{"treats_since": <iso>, "coaching_since": <iso>, "per_bark_since":
+   "2026-09-01T00:00:00Z"}` so the app can caption how far back each
+   number really goes.
+
+**Mechanics:** extend `scripts/backfill_wimz.py` (STORE-A) — same
+idempotency ledger in `schema_meta` (`backfill:<table>` keys), same
+run-once semantics, resumable. Runs offline/idle only. Spec bump v0.7
+(origin column + coverage field definition) lands with the amendment
+approval, before the script.
+
+*Amendment drafted 2026-09-01 evening; awaiting App Claude review +
+Morgan's go before any code.*
+
+---
+
 *Drafted by robot-side Claude, 2026-09-01, from a full storage audit
 (4 DBs, all writers/readers, retention paths).*

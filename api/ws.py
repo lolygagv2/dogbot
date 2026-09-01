@@ -902,6 +902,66 @@ class TreatBotWebSocketServer:
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
 
+            elif command == "sg_status_pull":
+                # Local-mode SG summary pull. Cloud path: relay command ->
+                # sg_summary relay event; here the same payload goes out as
+                # a system bus event (api/ws broadcasts those to /ws/local,
+                # same fanout coach_progress uses) AND in this
+                # command_response, so either app parser works.
+                try:
+                    from core.bus import publish_system_event
+                    from modes.silent_guardian import get_silent_guardian_mode
+                    sg = get_silent_guardian_mode()
+                    if sg.running:
+                        payload = sg.build_summary_payload(reason='status_pull')
+                        publish_system_event('sg_summary', payload, 'ws_local')
+                        result = {"success": True, "command": command,
+                                  "summary": payload}
+                    else:
+                        result = {"success": False, "command": command,
+                                  "running": False,
+                                  "error": "Silent Guardian is not running"}
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "dog_weekly_summary_pull":
+                # "Show me <dog>'s weekly summary" over /ws/local. Same reply
+                # payload as the dog_weekly_summary relay event; emitted as a
+                # system bus event plus this command_response.
+                try:
+                    from core.bus import publish_system_event
+                    from core.weekly_summary import get_weekly_summary
+                    p = data.get("params") or {}
+                    dog_key = (data.get("dog_id") or data.get("dog_name")
+                               or p.get("dog_id") or p.get("dog_name"))
+                    summary = get_weekly_summary().generate_dog_weekly_summary(
+                        dog_key) if dog_key else None
+                    if summary:
+                        publish_system_event('dog_weekly_summary', summary, 'ws_local')
+                        result = {"success": True, "command": command,
+                                  "summary": summary}
+                    else:
+                        err = {'error': 'unknown_dog' if dog_key else 'missing dog_id',
+                               'dog_id': dog_key}
+                        publish_system_event('dog_weekly_summary', err, 'ws_local')
+                        result = {"success": False, "command": command, **err}
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
+            elif command == "audio_loop":
+                # {"command": "audio_loop", "mode": "off"|"one"|"all"} —
+                # app Loop button in local mode; state echoes back via
+                # audio_state events as usual.
+                try:
+                    p = data.get("params") or {}
+                    mode_val = data.get("mode") or p.get("mode") or "off"
+                    svc_result = get_usb_audio_service().set_loop_mode(mode_val)
+                    result = {**(svc_result if isinstance(svc_result, dict)
+                                 else {"success": bool(svc_result)}),
+                              "command": command}
+                except Exception as e:
+                    result = {"success": False, "command": command, "error": str(e)}
+
             elif command == "cancel_mission":
                 try:
                     from orchestrators.mission_engine import get_mission_engine
