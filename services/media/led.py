@@ -476,8 +476,12 @@ class LedService:
             pos -= 170
             return (0, pos * 3, 255 - pos * 3)
 
-    def set_mode(self, mode: LEDMode) -> bool:
-        """Set LED mode (compatibility with existing code)"""
+    def set_mode(self, mode: LEDMode, manual_override: bool = False) -> bool:
+        """Set LED mode (compatibility with existing code).
+
+        manual_override=True holds the pattern against automatic mode changes
+        for 30s — use it for operator-driven changes (Xbox, app).
+        """
         mode_patterns = {
             LEDMode.OFF: 'off',
             LEDMode.IDLE: 'idle',
@@ -490,7 +494,7 @@ class LedService:
         }
 
         pattern = mode_patterns.get(mode, 'idle')
-        return self.set_pattern(pattern)
+        return self.set_pattern(pattern, manual_override=manual_override)
 
     def celebration_sequence(self, duration: float = 5.0) -> bool:
         """Run celebration sequence"""

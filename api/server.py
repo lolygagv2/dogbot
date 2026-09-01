@@ -3612,10 +3612,17 @@ async def set_led_mode(request: LEDModeRequest):
         if request.mode not in valid_modes:
             raise HTTPException(status_code=400, detail=f"Invalid mode. Valid modes: {valid_modes}")
 
-        # Use direct LED controller ONLY (old service is broken)
-        leds = get_led_controller()
+        # Drive the LED *service*, not the raw controller. The service runs a
+        # pattern thread that re-sends its frame every 0.3s (a backstop against
+        # motor-PWM glitching the strip), so writing pixels directly here was a
+        # second writer that the running pattern overwrote within a second —
+        # operator LED changes from the Xbox/app never stuck.
+        from services.media.led import get_led_service
+        led_service = get_led_service()
         led_mode = LEDMode(request.mode)
-        leds.set_mode(led_mode)
+        # manual_override: hold the operator's choice against automatic mode
+        # transitions for 30s.
+        led_service.set_mode(led_mode, manual_override=True)
 
         return {
             "success": True,
