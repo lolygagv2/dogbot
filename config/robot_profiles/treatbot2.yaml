@@ -46,6 +46,7 @@ dispenser:
   beam_pin: 7
   beam_active_low: true
   beam_timeout_s: 4.0
+  chopper_mode: spreadcycle   # full rated torque; stealthchop ~50-70%
   ihold: 5
   irun: 31
   max_retries: 3
