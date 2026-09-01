@@ -511,10 +511,24 @@ class BarkDetectorService:
             logger.info(f"Bark detected: {distance} {emotion} "
                        f"(conf: {confidence:.2f}, loudness: {loudness_db:.1f}dB)")
 
+        # Bark-type stamp (app contract 2026-09-01): the SG reporting group
+        # (distress/demand/alarm/aggressive/play/unclassified) rides on every
+        # live bark event so the app can label bark rows in live + history
+        # feeds. Lazy import — silent_guardian imports this module at top.
+        try:
+            from modes.silent_guardian import get_silent_guardian_mode
+            bark_type, bark_label = get_silent_guardian_mode() \
+                .classify_bark_type(emotion, confidence)
+        except Exception as e:
+            logger.debug(f"Bark-type stamp unavailable: {e}")
+            bark_type, bark_label = 'unclassified', 'unclassified'
+
         # Publish bark detected event with dog attribution and distance
         publish_audio_event('bark_detected', {
             'emotion': emotion,
             'confidence': confidence,
+            'bark_type': bark_type,
+            'bark_label': bark_label,
             'distance': distance,  # 'close', 'mid', 'far' from BarkGate
             'loudness_db': loudness_db,
             'peak_energy': result.get('peak_energy', 0.0),

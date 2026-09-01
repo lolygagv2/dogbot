@@ -859,6 +859,12 @@ class TreatBotMain:
                     event_data = {
                         'emotion': emotion,
                         'confidence': confidence,
+                        # SG reporting group, stamped at the source from the RAW
+                        # emotion (bark_detector.py) — never from the 'attention'
+                        # substitution above, or unclassified barks would all
+                        # read as 'demand'.
+                        'bark_type': event.data.get('bark_type', 'unclassified'),
+                        'bark_label': event.data.get('bark_label', 'unclassified'),
                         'loudness_db': loudness_db,
                         # Dog attribution (resolved from ArUco→profile match) so a
                         # backlogged bark in cloud history can name the dog. Source

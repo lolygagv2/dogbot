@@ -1216,6 +1216,12 @@ class SilentGuardianMode:
         group = cfg.get('groups', {}).get(emotion, 'unclassified')
         return group, emotion
 
+    def classify_bark_type(self, emotion: Optional[str], confidence: float) -> tuple:
+        """Public boundary: same (reporting_group, label) mapping the session
+        log uses. bark_detector calls this to stamp live bark events so the
+        app can label every bark row (app contract 2026-09-01)."""
+        return self._classify_bark(emotion, confidence)
+
     def _owner_phrase(self, group: str) -> str:
         cfg = self.config.get('bark_classification', {})
         return cfg.get('owner_phrases', {}).get(group, 'barking')
