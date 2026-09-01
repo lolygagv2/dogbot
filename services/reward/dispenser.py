@@ -127,6 +127,11 @@ class DispenserService:
         self._dispense_lock = threading.Lock()
         self._refill_active = False
         self._refill_stop_requested = False
+        # Double-tap cancel: a second dispense request while one is in
+        # flight aborts the retry ladder and skips the anti-jam procedure.
+        # For when the operator already knows the carousel is empty.
+        self._dispense_active = False
+        self._cancel_dispense = False
 
     # =========================================================================
     # TMC2209 UART
@@ -381,6 +386,55 @@ class DispenserService:
                 f"stale or treats crumbling; crediting {cap}")
         return min(raw, cap), latency_ms, overage
 
+    # TMC2209 DRV_STATUS (0x6F) bit map, per datasheet section 5.5. The
+    # previous mapping was wrong in three places: bit 31 is stst (STANDSTILL),
+    # not a stall; bits 26/25 are s2gb/s2ga (short to ground), not the overtemp
+    # pair. Because _check_tmc_diagnostics() runs *after* a rotation finishes,
+    # the motor is stopped by definition and bit 31 was always set — so the
+    # anti-jam wiggle fired on every dispense the beam did not confirm.
+    DRV_STATUS_BITS = {
+        'standstill':        31,  # stst  — normal when idle, NOT a fault
+        'open_b':            30,  # olb
+        'open_a':            29,  # ola
+        'short_supply_b':    28,  # s2vsb
+        'short_supply_a':    27,  # s2vsa
+        'short_ground_b':    26,  # s2gb
+        'short_ground_a':    25,  # s2ga
+        'overtemp_shutdown': 24,  # ot
+        'overtemp_warning':  23,  # otpw
+    }
+
+    # Real faults worth reporting. Excludes standstill (not a fault) and the
+    # open-load bits: the datasheet only qualifies ola/olb while the motor is
+    # driving at speed, and this read happens once the rotation has stopped.
+    DRV_STATUS_FAULTS = ('short_supply_a', 'short_supply_b',
+                         'short_ground_a', 'short_ground_b',
+                         'overtemp_shutdown', 'overtemp_warning')
+
+    @property
+    def is_dispensing(self) -> bool:
+        """True while a dispense (including its retry ladder) is running."""
+        return self._dispense_active
+
+    def cancel_dispense(self) -> bool:
+        """Abort an in-flight dispense's retry ladder and anti-jam procedure.
+
+        The current rotation is allowed to finish so the carousel stays on a
+        slot boundary; only the remaining retries and the anti-jam sequence are
+        skipped. No-op (returns False) if nothing is dispensing.
+        """
+        if not self._dispense_active:
+            return False
+        self._cancel_dispense = True
+        self.logger.info("Dispense cancel requested — will stop after this rotation")
+        return True
+
+    @classmethod
+    def _decode_drv_status(cls, drv_status: int) -> dict:
+        """Decode DRV_STATUS into named flags."""
+        return {name: bool(drv_status & (1 << bit))
+                for name, bit in cls.DRV_STATUS_BITS.items()}
+
     def _check_tmc_diagnostics(self, context: str,
                                beam_confirmed: bool = False) -> None:
         """StallGuard/driver flags — DIAGNOSTIC ONLY, never gates success.
@@ -399,35 +453,24 @@ class DispenserService:
             drv_status = self._tmc_read(0x6F)
             if drv_status is None:
                 return
-            flags = {
-                'stall': bool(drv_status & (1 << 31)),
-                'overtemp_warning': bool(drv_status & (1 << 26)),
-                'overtemp_shutdown': bool(drv_status & (1 << 25)),
-                'short_a': bool(drv_status & (1 << 27)),
-                'short_b': bool(drv_status & (1 << 28)),
-            }
-            raised = [k for k, v in flags.items() if v]
+            flags = self._decode_drv_status(drv_status)
+            raised = [k for k in self.DRV_STATUS_FAULTS if flags[k]]
             if not raised:
                 return
-            self.logger.warning(f"TMC2209 diagnostic flags after {context}: {raised}")
+            self.logger.warning(f"TMC2209 driver fault after {context}: {raised}")
             try:
                 wimz = get_wimz_store()
                 wimz.log_event(
                     None, 'error',
-                    {'code': 'dispenser_stall',
+                    {'code': 'dispenser_stall',   # event code kept for downstream consumers
                      'detail': f"DRV_STATUS flags {raised} after {context}"},
                     label_source='auto_rule')
             except Exception:
                 pass
-            if 'stall' in raised:
-                if beam_confirmed:
-                    self.logger.info(
-                        "Stall flag set but beam confirmed the dispense — "
-                        "skipping anti-jam wiggle")
-                else:
-                    # Lock is already held by the dispense path — use the inner wiggle
-                    self.logger.info("Stall flag set — running anti-jam wiggle")
-                    self._anti_jam_wiggle_inner()
+            # No anti-jam wiggle here. Shorts and overtemp are not jams, and
+            # there is no stall signal to act on: StallGuard is disabled
+            # fleet-wide (sgthrs=0). Real jams are caught by the beam-verified
+            # retry ladder in dispense_treat().
         except Exception as e:
             self.logger.debug(f"TMC diagnostic read failed: {e}")
 
@@ -504,6 +547,8 @@ class DispenserService:
             self.logger.error("Dispense lock timeout — previous operation stuck, forcing motor disable")
             self._disable_motor()
             return False
+        self._dispense_active = True
+        self._cancel_dispense = False
         try:
             # Auto-initialize if not already done
             if not self.initialized:
@@ -548,13 +593,19 @@ class DispenserService:
                         confirm_latency_ms = latency + int((attempt_mono - fire_mono) * 1000)
                     if not self.beam_enabled or counted >= 1:
                         break
+                    if self._cancel_dispense:
+                        self.logger.info(
+                            f"Dispense cancelled after attempt {attempt} — "
+                            f"skipping remaining retries")
+                        break
                     if attempt < 3:
                         self.logger.warning(
                             f"Dispense attempt {attempt}: motor OK but no treat "
                             f"crossed beam — auto re-dispensing")
 
                 # Rung 4: three empty rotations -> full anti-jam, still counting
-                if self.beam_enabled and success and counted == 0:
+                if (self.beam_enabled and success and counted == 0
+                        and not self._cancel_dispense):
                     self.logger.warning(
                         "3 dispenses, zero treats counted — running anti-jam procedure")
                     attempts = 4
@@ -679,6 +730,8 @@ class DispenserService:
                 self.logger.error(f"Dispense error: {e}")
                 return False
         finally:
+            self._dispense_active = False
+            self._cancel_dispense = False
             self._dispense_lock.release()
 
     def anti_jam_wiggle(self) -> bool:
@@ -783,8 +836,9 @@ class DispenserService:
         Checks _refill_stop_requested for instant stop.
         No treat counter decrement (refill, not dispensing).
         """
-        # Check stop/abort FIRST — never restart after a stop
-        if self._abort or self._refill_stop_requested:
+        # A stop *during* a refill must stay stopped — honour the flags only
+        # while a session is still active.
+        if self._refill_active and (self._abort or self._refill_stop_requested):
             self._disable_motor()
             self._refill_active = False
             return False
@@ -794,6 +848,12 @@ class DispenserService:
                 return False
 
         if not self._refill_active:
+            # New refill session: clear the latch left by the previous stop,
+            # exactly as refill_continuous() does. Without this, refill_step()
+            # returned False forever after any stop — the motor never moved and
+            # the endpoint silently did nothing.
+            self._abort = False
+            self._refill_stop_requested = False
             self._enable_motor()
             time.sleep(0.05)
             self._refill_active = True
@@ -1093,15 +1153,7 @@ class DispenserService:
             try:
                 drv_status = self._tmc_read(0x6F)  # DRV_STATUS register
                 if drv_status is not None:
-                    status['tmc2209'] = {
-                        'stall': bool(drv_status & (1 << 31)),
-                        'overtemp_warning': bool(drv_status & (1 << 26)),
-                        'overtemp_shutdown': bool(drv_status & (1 << 25)),
-                        'short_a': bool(drv_status & (1 << 27)),
-                        'short_b': bool(drv_status & (1 << 28)),
-                        'open_a': bool(drv_status & (1 << 29)),
-                        'open_b': bool(drv_status & (1 << 30)),
-                    }
+                    status['tmc2209'] = self._decode_drv_status(drv_status)
             except Exception:
                 pass
 
