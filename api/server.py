@@ -4748,6 +4748,22 @@ async def get_weekly_report_for_date(date: str):
         logger.error(f"Weekly report error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/reports/dog/{dog_id}/weekly")
+async def get_dog_weekly_summary(dog_id: str):
+    """Per-dog weekly summary — "Show me <dog>'s weekly summary".
+    dog_id accepts the app canonical UUID or the dog's name."""
+    try:
+        summary = get_weekly_summary()
+        report = summary.generate_dog_weekly_summary(dog_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail=f"Unknown dog: {dog_id}")
+        return {"success": True, "summary": report}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dog weekly summary error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/reports/trends")
 async def get_behavior_trends(weeks: int = 8):
     """Get multi-week behavior trends"""

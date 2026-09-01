@@ -784,6 +784,171 @@ class WeeklySummary:
 
         return progress
 
+    # ---- Per-dog weekly summary ("Show me <dog>'s weekly summary") ----
+
+    def _resolve_dog(self, dog_key: str) -> Optional[Dict[str, Any]]:
+        """Resolve an app canonical UUID, local wimz id, or name to a dog row."""
+        if not dog_key:
+            return None
+        conn = self._wimz_connection()
+        try:
+            row = conn.execute(
+                "SELECT dog_id, name, app_dog_id FROM dog "
+                "WHERE dog_id=? OR app_dog_id=? OR lower(name)=lower(?) LIMIT 1",
+                (dog_key, dog_key, dog_key)).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _iso_z(dt: datetime) -> str:
+        """Boundary rule (spec 0.5.1): ISO8601 UTC with explicit Z."""
+        from datetime import timezone
+        return dt.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    def _owner_phrase_for_group(self, group: str) -> str:
+        """Owner-facing bark phrasing — single source is the SG rules YAML."""
+        if not hasattr(self, '_owner_phrases'):
+            self._owner_phrases = {}
+            try:
+                import yaml
+                with open('/home/morgan/dogbot/configs/rules/silent_guardian_rules.yaml') as f:
+                    cfg = yaml.safe_load(f) or {}
+                self._owner_phrases = cfg.get('bark_classification', {}) \
+                                         .get('owner_phrases', {})
+            except Exception:
+                pass
+        return self._owner_phrases.get(group, 'barking')
+
+    def generate_dog_weekly_summary(self, dog_key: str,
+                                    end_date: datetime = None) -> Optional[Dict[str, Any]]:
+        """One dog's week, owner-phrased and app-renderable, with a
+        week-over-week comparison. dog_key: app canonical UUID, wimz id,
+        or name. Returns None if the dog is unknown."""
+        dog = self._resolve_dog(dog_key)
+        if not dog:
+            return None
+        display_name = dog['name'] or dog['app_dog_id'] or dog['dog_id']
+
+        week_start, week_end = self._get_week_bounds(end_date)
+        prev_start, prev_end = self._get_week_bounds(week_start - timedelta(days=1))
+        ms = (self._ms(week_start), self._ms(week_end))
+
+        wimz = self._wimz_connection()
+        legacy = self._get_connection()
+        try:
+            # Barks: total + by type, this week and last
+            barks = self._wimz_bark_count(week_start, week_end,
+                                          dog_key=dog['dog_id'], dog_name=dog['name'])
+            barks_prev = self._wimz_bark_count(prev_start, prev_end,
+                                               dog_key=dog['dog_id'], dog_name=dog['name'])
+            by_type = {r['btype']: r['count'] for r in wimz.execute(f'''
+                SELECT COALESCE(json_extract(payload,'$.bark_type'),'unclassified') as btype,
+                       COUNT(*) as count
+                FROM event e WHERE {self._BARK_WHERE} AND e.dog_id = ?
+                GROUP BY btype ORDER BY count DESC
+            ''', (*ms, dog['dog_id'])).fetchall()}
+
+            if barks_prev > 0:
+                change_pct = round((barks - barks_prev) / barks_prev * 100, 1)
+                bark_trend = 'up' if change_pct > 10 else 'down' if change_pct < -10 else 'stable'
+            else:
+                change_pct = 0.0
+                bark_trend = 'stable' if barks == 0 else 'up'
+
+            # Treats/rewards (legacy table keys on the app canonical id or name)
+            rewards = dict(legacy.execute('''
+                SELECT COUNT(*) as count, SUM(treats_dispensed) as treats FROM rewards
+                WHERE (dog_id = ? OR dog_id = ?) AND timestamp BETWEEN ? AND ?
+            ''', (dog['app_dog_id'], dog['name'],
+                  week_start.timestamp(), week_end.timestamp())).fetchone() or {})
+
+            # Coaching: totals + per-trick for this dog
+            coaching = self._wimz_coaching_agg(week_start, week_end,
+                                               dog_key=dog['dog_id'], dog_name=dog['name'])
+            attempts = coaching.get('sessions', 0) or 0
+            completed = coaching.get('completed', 0) or 0
+            by_trick = {}
+            for r in wimz.execute('''
+                SELECT ta.trick_label as trick, COUNT(*) as attempts,
+                       SUM(CASE WHEN ta.success >= 1 THEN 1 ELSE 0 END) as completed
+                FROM training_attempt ta
+                JOIN session s ON ta.session_id = s.session_id
+                WHERE s.mode IN ('coach','training') AND ta.cue_ts BETWEEN ? AND ?
+                  AND ta.dog_id = ?
+                GROUP BY ta.trick_label ORDER BY attempts DESC
+            ''', (*ms, dog['dog_id'])).fetchall():
+                by_trick[r['trick']] = {
+                    'attempts': r['attempts'],
+                    'completed': r['completed'] or 0,
+                }
+
+            # Guardian: this dog's intervention outcomes + household sessions
+            sg = dict(wimz.execute('''
+                SELECT SUM(CASE WHEN json_extract(payload,'$.phase')='outcome' THEN 1 ELSE 0 END) as interventions,
+                       SUM(CASE WHEN json_extract(payload,'$.phase')='outcome'
+                                 AND json_extract(payload,'$.quiet_achieved') THEN 1 ELSE 0 END) as quiets
+                FROM event
+                WHERE event_type='sg_intervention' AND ts BETWEEN ? AND ? AND dog_id = ?
+            ''', (*ms, dog['dog_id'])).fetchone() or {})
+            sg_sessions = wimz.execute('''
+                SELECT COUNT(*) as c FROM session
+                WHERE mode='sg' AND started_at BETWEEN ? AND ?
+            ''', ms).fetchone()['c'] or 0
+
+            # Headline, owner-phrased
+            parts = []
+            if barks > 0:
+                top_type = max(by_type.items(), key=lambda kv: kv[1])[0] if by_type else 'unclassified'
+                phrase = self._owner_phrase_for_group(top_type)
+                trend_txt = {'up': 'more than last week',
+                             'down': 'less than last week',
+                             'stable': 'about the same as last week'}[bark_trend]
+                parts.append(f"{display_name} barked {barks} times this week"
+                             f" — mostly {phrase}, {trend_txt}")
+            else:
+                parts.append(f"{display_name} had a quiet week — no barks recorded")
+            treats = rewards.get('treats', 0) or 0
+            if treats:
+                parts.append(f"earned {treats} treat{'s' if treats != 1 else ''}")
+            if attempts:
+                parts.append(f"completed {completed} of {attempts} tricks")
+            headline = ', '.join(parts) + '.'
+
+            return {
+                'dog_id': dog['app_dog_id'] or dog['dog_id'],
+                'dog_name': display_name,
+                'week_start': self._iso_z(week_start),
+                'week_end': self._iso_z(week_end),
+                'generated_at': self._iso_z(datetime.now().astimezone()),
+                'headline': headline,
+                'barks': {
+                    'total': barks,
+                    'previous_week': barks_prev,
+                    'change_percent': change_pct,
+                    'trend': bark_trend,
+                    'by_type': by_type,
+                },
+                'treats': {
+                    'total': treats,
+                    'rewards': rewards.get('count', 0) or 0,
+                },
+                'coaching': {
+                    'attempts': attempts,
+                    'completed': completed,
+                    'success_rate': round((completed / attempts * 100) if attempts else 0, 1),
+                    'by_trick': by_trick,
+                },
+                'guardian': {
+                    'interventions': sg.get('interventions', 0) or 0,
+                    'successful_quiets': sg.get('quiets', 0) or 0,
+                    'household_sessions': sg_sessions,
+                },
+            }
+        finally:
+            wimz.close()
+            legacy.close()
+
     def compare_dogs(self) -> Dict[str, Any]:
         """
         Cross-dog comparison analysis

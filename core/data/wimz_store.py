@@ -233,6 +233,16 @@ class WimzStore:
         id_method='qr' ("QR" covers ArUco throughout the fleet).
         """
         if legacy_id and not self._TAG_RE.match(str(legacy_id)):
+            # v0.6: producers often carry the app canonical UUID (resolved
+            # upstream from a profile-matched ArUco read) — verified identity,
+            # resolvable now that dog.app_dog_id exists. Without this, every
+            # UUID-attributed bark/event row landed dog_id=NULL.
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT dog_id FROM dog WHERE app_dog_id=?",
+                    (str(legacy_id),)).fetchone()
+            if row:
+                return row[0]
             legacy_id = None  # tracker index / guess — not a physical tag
         if not legacy_id and not allow_unverified:
             return None

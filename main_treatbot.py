@@ -1407,6 +1407,30 @@ class TreatBotMain:
                     else:
                         self.logger.error(f"sg_status_pull failed -> {resp.status_code}")
 
+                elif command == 'dog_weekly_summary_pull':
+                    # "Show me <dog>'s weekly summary" — on-demand per-dog
+                    # report, answered as a dog_weekly_summary relay event
+                    # (same pull->event pattern as sg_status_pull). Accepts
+                    # dog_id (app canonical UUID) or dog_name.
+                    dog_key = (params.get('dog_id') or event.data.get('dog_id')
+                               or params.get('dog_name') or event.data.get('dog_name'))
+                    resp = client.get(
+                        f'{api_base}/reports/dog/{dog_key}/weekly') if dog_key else None
+                    if resp is not None and resp.status_code == 200:
+                        body = resp.json()
+                        if body.get('success') and self.relay_client:
+                            self.relay_client.send_event('dog_weekly_summary',
+                                                         body['summary'])
+                            self.logger.info(
+                                f"dog_weekly_summary_pull -> summary sent ({dog_key})")
+                    elif self.relay_client:
+                        self.relay_client.send_event('dog_weekly_summary', {
+                            'error': 'unknown_dog' if dog_key else 'missing dog_id',
+                            'dog_id': dog_key,
+                        })
+                        self.logger.info(
+                            f"dog_weekly_summary_pull -> failed ({dog_key})")
+
                 elif command == 'set_volume':
                     # Set audio volume: {"level": 0.5} (0.0-1.0)
                     level = event.data.get('level', params.get('level', 0.5))
