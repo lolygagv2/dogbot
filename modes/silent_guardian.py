@@ -121,6 +121,9 @@ class SilentGuardianMode:
         self.total_barks = 0          # barks passing the loudness threshold
         self.successful_quiets = 0    # quiet periods achieved (treat OR praise)
         self.max_escalation_level = 0 # highest escalation level reached
+        # Per-quiet-period records for silent_guardian_sessions.quiet_periods_json
+        # (was always persisted as '[]' — the call sites never passed the data).
+        self.session_quiet_periods: List[Dict[str, Any]] = []
 
         # Bark tracking
         self.last_bark_time = 0.0
@@ -470,6 +473,8 @@ class SilentGuardianMode:
                 successful_quiets=self.successful_quiets,
                 treats_dispensed=self.treats_dispensed,
                 max_escalation=self.max_escalation_level,
+                quiet_periods=self.session_quiet_periods,
+                dog_bark_counts=self._dog_bark_counts(),
             )
         if getattr(self, 'wimz_session_id', None):
             self.wimz.end_session(self.wimz_session_id)
@@ -514,12 +519,25 @@ class SilentGuardianMode:
                 wimz_dog = self.wimz.get_or_create_dog(
                     legacy_id=dog_id if dog_id and dog_id != 'unknown' else None,
                     name=dog_name)
+            # Refactor design R1 (approved 2026-09-01): the stored row carries
+            # the SG reporting group + FSM context so per-bark analytics survive
+            # the process. Prefer the source stamp from bark_detector; barks
+            # arriving unstamped (older/veto paths) get classified here.
+            bark_type = data.get('bark_type')
+            bark_label = data.get('bark_label')
+            if bark_type is None:
+                bark_type, bark_label = self._classify_bark(
+                    data.get('emotion'), data.get('confidence') or 0.0)
             payload = {
                 'db': data.get('loudness_db'),
                 'duration_ms': data.get('duration_ms'),
                 'class': 'notbark' if gate == 'veto_rejected' else 'bark',
                 'emotion': data.get('emotion'),
                 'gate': gate,
+                'bark_type': bark_type,
+                'bark_label': bark_label,
+                'escalation_level': self.current_escalation_level,
+                'sg_state': self.fsm_state.value,
             }
             self.wimz.log_event(
                 self.wimz_session_id, 'bark', payload,
@@ -795,6 +813,8 @@ class SilentGuardianMode:
                 successful_quiets=self.successful_quiets,
                 treats_dispensed=self.treats_dispensed,
                 max_escalation=self.max_escalation_level,
+                quiet_periods=self.session_quiet_periods,
+                dog_bark_counts=self._dog_bark_counts(),
             )
 
         self.session_id = self.store.start_silent_guardian_session()
@@ -814,6 +834,7 @@ class SilentGuardianMode:
     def _reset_bark_and_panic_state(self):
         """Reset the session bark log and panic tracking (new session)."""
         self.session_bark_log = []
+        self.session_quiet_periods = []
         self.loud_noises = []
         self.summary_sent = False
         self.panic_active = False
@@ -1237,6 +1258,15 @@ class SilentGuardianMode:
             counts[b['group']] = counts.get(b['group'], 0) + 1
         return counts
 
+    def _dog_bark_counts(self) -> Dict[str, int]:
+        """Per-dog bark counts for silent_guardian_sessions.dog_bark_counts_json
+        (was always persisted as '{}'). Keyed by dog_id, else name, else 'unknown'."""
+        counts: Dict[str, int] = {}
+        for b in self.session_bark_log:
+            key = b.get('dog_id') or b.get('dog_name') or 'unknown'
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
     def _bark_timeline(self, bucket_minutes: int = 30) -> List[Dict[str, Any]]:
         """Bark-type mix over time within the session (30-min buckets)."""
         if not self.session_start_time:
@@ -1594,6 +1624,14 @@ class SilentGuardianMode:
         # A quiet period was genuinely achieved (we're past the bark-state safety
         # checks). Counts whether the outcome is a treat or praise-only.
         self.successful_quiets += 1
+        # Treat-vs-praise for this quiet lives in the paired sg_interventions
+        # row; this record makes quiet_periods_json honest instead of '[]'.
+        self.session_quiet_periods.append({
+            'ts': time.time(),
+            'escalation_level': self.current_escalation_level,
+            'dog_id': self.intervention_dog_id,
+            'dog_name': self.intervention_dog_name,
+        })
         # Intervention cycle ended (successfully) — arm the futility resume
         # check: if barking restarts within the window it counts toward panic.
         self.futility_pending_since = time.time()

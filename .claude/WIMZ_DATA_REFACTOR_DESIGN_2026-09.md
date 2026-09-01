@@ -1,6 +1,8 @@
 # WIM-Z Data Refactor — Design (v1 draft, 2026-09-01)
 
-**Status:** DESIGN ONLY — no code until Morgan + App Claude approve.
+**Status:** APPROVED by App Claude 2026-09-01 ("approved with notes", all
+five requirements met; see Review Outcome at bottom). Phase 1 implemented
+2026-09-01. Phases 2–4 as sequenced.
 **Owner:** Robot side. **Reviewer:** App Claude (against their consumer
 requirements, received 2026-09-01). **Parent doc:** `.claude/WIMZ_Data_Architecture_Spec.md`
 (the spec stays authoritative; everything here lands as additive spec bumps).
@@ -189,5 +191,35 @@ legacy source it replaced.
 
 ---
 
+---
+
+## Review outcome (App Claude, 2026-09-01) — and dispositions
+
+- **Q1 ACCEPTED** with two conditions, both met: the `followed_by` join window
+  is now DEFINED IN SPEC §5 (same session_id, 120 s, else null), and the export
+  layer will emit `followed_by` as a field on exported bark rows — no consumer
+  re-implements the join.
+- **Q2 ACCEPTED** with one hard condition, recorded in spec changelog 0.5.1:
+  every serialized timestamp carries `Z`/explicit offset, never naive-local.
+  The serializer unit test ships with the export layer (Phase 2/3).
+- **Q5 DEFERRED** per review: no canned bark_timeline storage query in v1;
+  ship it with the historical-charts app slice, bucket size as a query
+  parameter (not sg_summary's hardcoded offset_min).
+- **Keep `emotion` alongside `bark_label`** during transition (app history
+  renderer keys on it) — done; noted in spec §5.
+- Q3 input on record: telemetry ≥ freeze-RCA window on tb2 until RCA closes,
+  30 days elsewhere. Phase 1 shipped a 30-day prune fleet-wide (power_watch.csv
+  untouched; 30 d comfortably covers post-freeze look-back). Morgan can widen
+  it if the RCA wants deeper history.
+- App-side follow-up (theirs): label live/history bark rows with `bark_type` —
+  queued app slice, no robot action.
+
+**Phase 1 shipped (2026-09-01):** per-bark wimz rows now carry
+bark_type/bark_label/escalation_level/sg_state; quiet_periods_json /
+dog_bark_counts_json call-site bug fixed (SG now tracks and passes both);
+version drift squared (spec 0.5.1 = schema.py = DB stamp via stepwise
+migrations); telemetry/events 30-day prune wired into the hourly
+maintenance loop.
+
 *Drafted by robot-side Claude, 2026-09-01, from a full storage audit
-(4 DBs, all writers/readers, retention paths). Review → approve → Phase 1.*
+(4 DBs, all writers/readers, retention paths).*

@@ -2,7 +2,7 @@
 
 **Shared data contract for the Edge (robot), App, and Relay components.**
 
-Version: 0.3 (draft)
+Version: 0.5.1
 Owner: Morgan Hill (morgan@wimzai.com)
 Status: Authoritative source of truth for the data schema and data flow. All three component instances build against this file. Do not diverge from it without bumping the version and updating the changelog at the bottom.
 
@@ -316,7 +316,7 @@ CREATE TABLE schema_meta (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.3');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.5.1');
 ```
 
 ---
@@ -330,13 +330,23 @@ INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.3');
 | `detection`       | object/dog detected in frame             | `{"bbox":[x,y,w,h],"class":"dog","track_id":7}` |
 | `pose`            | pose/behavior classified                 | `{"pose":"sit","bbox":[...],"keypoints":[...]}` |
 | `pose_rejected`   | pose detected but NOT selected/acted on  | `{"pose":"down","reason":"low_conf"}` |
-| `bark`            | audio bark/vocalization detected         | `{"db":62,"duration_ms":900,"class":"bark"}` |
+| `bark`            | audio bark/vocalization detected         | `{"db":-12.4,"duration_ms":900,"class":"bark","emotion":"anxious","gate":"passed","bark_type":"distress","bark_label":"anxious","escalation_level":2,"sg_state":"intervention"}` — v0.5.1: `bark_type` is the SG reporting group (config-mapped), `bark_label` the raw classifier label, `escalation_level`/`sg_state` the SG context at the bark (null/absent outside SG). Keep `emotion` alongside `bark_label` during transition (app history renderer keys on it). |
 | `dog_identified`  | QR or signature resolved to a dog_id     | `{"method":"qr","qr_code_id":"..."}` |
 | `cue_issued`      | robot issued a training cue              | `{"trick":"sit","cue_type":"llm_audio","text":"..."}` |
 | `treat_dispensed` | carousel fired (pairs with dispense_log) | `{"slot":12}` |
 | `pilot_action`    | live operator command                    | `{"action":"drive","vec":[0.4,0.0]}` |
 | `error`           | fault / exception                        | `{"code":"motor_stall","detail":"..."}` |
 | `panic_episode`   | SG panic: intense barking, interventions suppressed | `{"trigger":"burst\|sustained_rate\|futility","bark_type_mix":{"distress":6,"demand":1},"barks_in_window":7,"loud_noise_prior":true,"episode_num":1,"duration_sec":420}` |
+
+**Derived fields (export layer, not stored — agreed with App Claude 2026-09-01):**
+`followed_by` on an exported bark row = the next `sg_intervention` event or
+`dispense_log` row in the **same `session_id`** with `ts` within **120 seconds**
+after the bark, else null. This is THE single definition — app charts, Weekly
+Summary, and any export all use these numbers; change them here first. Event
+rows stay immutable (a bark cannot know its future at write time); the export
+layer computes and emits the field so no consumer re-implements the join.
+(The `sg_intervention` event type itself lands in v0.6 — see the refactor
+design doc; until then the join target is `dispense_log` only.)
 
 Rules:
 - **Always set `confidence` and `model_id`** for machine-produced events. A label with no provenance is near worthless for retraining.
@@ -463,6 +473,16 @@ corpus/       ML-ready datasets: vision (COCO/YOLO) + behavioral (Parquet)
 
 ## Changelog
 
+- **0.5.1** Additive, payload/taxonomy only — no DDL. Bark payload gains
+  `bark_type` (SG reporting group), `bark_label` (raw classifier label),
+  `escalation_level`, `sg_state` (§5); `emotion` kept alongside during
+  transition. Defined the `followed_by` derivation rule (§5): same-session
+  join, 120 s window, export-layer field, never a stored column. Squared the
+  version drift: §4 DDL insert corrected from the stale '0.3' to the current
+  version; `core/data/schema.py` and the live DB stamp now match this
+  changelog. Timestamps: storage stays epoch-ms UTC; every serialized
+  boundary (events, REST, exports) MUST emit ISO8601 with explicit `Z`/offset,
+  never naive-local (App review condition, 2026-09-01).
 - **0.5** Additive-only. New event_type `panic_episode` (§5): Silent Guardian
   panic detection — logged when intense barking (burst / sustained rate /
   escalation futility) suppresses interventions. Payload carries the trigger

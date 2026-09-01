@@ -4,7 +4,7 @@ Do not edit the DDL here. The spec is the source of truth: change it there
 first (version bump + changelog), then mirror it here. See spec §10.
 """
 
-SCHEMA_VERSION = "0.4"
+SCHEMA_VERSION = "0.5.1"
 
 # Spec §10 — explicit stepwise migrations, additive-only. Key = the version a
 # live DB is at; value = statements that bring it to the NEXT version. Applied
@@ -15,6 +15,16 @@ MIGRATIONS = {
         "ALTER TABLE dispense_log ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1;",
         "ALTER TABLE dispense_log ADD COLUMN overage INTEGER NOT NULL DEFAULT 0;",
         "UPDATE schema_meta SET value='0.4' WHERE key='schema_version';",
+    ],
+    # 0.5 added only the panic_episode event type (taxonomy, no DDL) — the code
+    # shipped without this stamp, hence the version-drift fix here.
+    "0.4": [
+        "UPDATE schema_meta SET value='0.5' WHERE key='schema_version';",
+    ],
+    # 0.5.1: bark payload contract fields (bark_type/bark_label/escalation_level/
+    # sg_state) + followed_by derivation rule — payload/taxonomy only, no DDL.
+    "0.5": [
+        "UPDATE schema_meta SET value='0.5.1' WHERE key='schema_version';",
     ],
 }
 
@@ -234,5 +244,5 @@ CREATE TABLE schema_meta (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.4');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.5.1');
 """

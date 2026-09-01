@@ -1,6 +1,7 @@
 """WimzStore — the spec data store (/data/wimz.db).
 
-Implements WIMZ_Data_Architecture_Spec.md v0.3 exactly: verbatim DDL from
+Implements WIMZ_Data_Architecture_Spec.md exactly (see SCHEMA_VERSION in
+core/data/schema.py for the current version): verbatim DDL from
 core/data/schema.py, WAL + batched writes for SD wear (spec §3/§7), UUIDv7
 keys, label provenance on every machine event.
 

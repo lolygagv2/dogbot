@@ -673,6 +673,16 @@ class TreatBotMain:
                 self.store.cleanup_old_events(raw_retention_hours=24, sg_retention_days=30)
             except Exception as e:
                 self.logger.warning(f"DB cleanup tick failed: {e}")
+            try:
+                # Telemetry/events retention (refactor Phase 1): this call had
+                # zero callers, which is how telemetry grew to 815k rows / most
+                # of an 80MB DB. 30 days comfortably covers the freeze-RCA
+                # look-back (power_watch.csv is separate and untouched). The
+                # first sweep deletes months of rows; freed pages are reused,
+                # the file only shrinks on a manual VACUUM.
+                self.store.cleanup_old_data(days_to_keep=30)
+            except Exception as e:
+                self.logger.warning(f"Telemetry cleanup tick failed: {e}")
             time.sleep(3600)  # once an hour
 
     def _on_detection_for_feedback(self, event) -> None:
