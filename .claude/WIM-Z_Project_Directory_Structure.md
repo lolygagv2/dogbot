@@ -380,3 +380,12 @@ curl -X POST http://localhost:8000/audio/play/file \
 - `scripts/ota/make-release.sh` — release cut: --bump --upload
 - `scripts/systemd/wimz-updater.{path,service}` — request-file trigger + root oneshot
 - RUNTIME LAYOUT: /home/morgan/dogbot is a SYMLINK → /home/morgan/wimz/current → releases/<version>/; per-unit data (data, VOICEMP3/talks+songs, env_new, logs, state, captures, photos, recordings, .env, .git→shared/dotgit, .claude session files) lives in /home/morgan/wimz/shared/ and is symlinked into each release. See .claude/OTA_ROBOT_IMPLEMENTATION.md.
+
+## 2026-09-01 additions (data refactor complete)
+- core/data/legacy_views.py — wimz-backed REST views for /events/dog* + /sg/sessions/recent (Phase 4)
+- scripts/ingest_fleet_history.py — fleet history consolidation → /home/morgan/wimz/fleet_archive/wimz_fleet.db (clone-dedupe, log mining)
+- scripts/fleet_evidence_pack.py — canned analysis CSV exports from the fleet archive
+- .claude/WIMZ_DATA_REFACTOR_DESIGN_2026-09.md — refactor design + review + phase log (COMPLETE)
+- data/archive/ — decommissioned dogbot.db + missions.db (Phase 4)
+- /home/morgan/wimz/fleet_archive/ — OUTSIDE releases: wimz_fleet.db + fleet_sources tarball + evidence_pack/
+- DEPRECATED (dormant, no importers): core/dog_database.py, core/bark_store.py, missions/ DB layer
