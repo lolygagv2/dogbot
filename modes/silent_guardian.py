@@ -396,13 +396,14 @@ class SilentGuardianMode:
             set_agc(False)
             logger.info("AGC disabled for bark detection")
 
-            # Start database session
-            self.session_id = self.store.start_silent_guardian_session()
-            # Spec store session (dual-write; WIMZ_Data_Architecture_Spec §4)
+            # Spec store session — THE session record (Phase 4 complete:
+            # legacy silent_guardian_sessions writer retired; app confirmed
+            # string session ids are welcome everywhere, 2026-09-01).
             self.wimz = get_wimz_store()
             self.wimz_session_id = self.wimz.start_session(
                 'sg', 'autonomous',
                 model_versions={'audio': self.wimz.model_id_for('dog_bark_classifier')})
+            self.session_id = self.wimz_session_id
             self._last_cue_event_id = None
             self.session_start_time = time.time()
             self.treats_dispensed = 0
@@ -464,18 +465,6 @@ class SilentGuardianMode:
         # Stop calming music if playing
         self._stop_calming_music()
 
-        # End database session
-        if self.session_id:
-            self.store.end_silent_guardian_session(
-                self.session_id,
-                total_barks=self.total_barks,
-                interventions=self.interventions_triggered,
-                successful_quiets=self.successful_quiets,
-                treats_dispensed=self.treats_dispensed,
-                max_escalation=self.max_escalation_level,
-                quiet_periods=self.session_quiet_periods,
-                dog_bark_counts=self._dog_bark_counts(),
-            )
         if getattr(self, 'wimz_session_id', None):
             # v0.6: the sg_summary numbers become a queryable session row
             # (computed while session_bark_log is still intact).
@@ -843,20 +832,8 @@ class SilentGuardianMode:
         """Reset session after 8 hours"""
         logger.info("8-hour session expired - resetting")
 
-        if self.session_id:
-            self.store.end_silent_guardian_session(
-                self.session_id,
-                total_barks=self.total_barks,
-                interventions=self.interventions_triggered,
-                successful_quiets=self.successful_quiets,
-                treats_dispensed=self.treats_dispensed,
-                max_escalation=self.max_escalation_level,
-                quiet_periods=self.session_quiet_periods,
-                dog_bark_counts=self._dog_bark_counts(),
-            )
-
-        # Roll the spec-store session over too, so wimz sessions stay 1:1 with
-        # legacy SG sessions (v0.6: sessions first-class).
+        # Roll the spec-store session over (THE session record; legacy
+        # silent_guardian_sessions writer retired, Phase 4 complete).
         if getattr(self, 'wimz_session_id', None):
             self.wimz.end_session(self.wimz_session_id,
                                   outcome=self.build_summary_payload('session_end'))
@@ -864,7 +841,7 @@ class SilentGuardianMode:
             'sg', 'autonomous',
             model_versions={'audio': self.wimz.model_id_for('dog_bark_classifier')})
 
-        self.session_id = self.store.start_silent_guardian_session()
+        self.session_id = self.wimz_session_id
         self.session_start_time = time.time()
         self.treats_dispensed = 0
         self.interventions_triggered = 0
@@ -1428,13 +1405,7 @@ class SilentGuardianMode:
             return
         if self.summary_sent:
             return
-        if self.session_id and self.session_id > 0 and \
-                self.store.get_sg_summary_sent(self.session_id):
-            self.summary_sent = True
-            return
         self.summary_sent = True
-        if self.session_id and self.session_id > 0:
-            self.store.mark_sg_summary_sent(self.session_id)
         payload = self.build_summary_payload(reason='level4_escalation')
         publish_system_event('sg_summary', payload, 'silent_guardian')
         logger.info(f"SG_SUMMARY sent (first Level-4 hit): {payload['headline']}")
@@ -1531,8 +1502,8 @@ class SilentGuardianMode:
             self.fsm_state = SGState.PANIC
             self._cooldown_start = None
 
-        if self.session_id and self.session_id > 0:
-            self.store.increment_sg_panic_episodes(self.session_id)
+        # (legacy panic_episodes column retired — the count lives in
+        # session.outcome_json and the panic_episode event)
 
         cfg = self.config.get('panic', {})
         severity = 'high' if self.panic_episodes_this_session > \
