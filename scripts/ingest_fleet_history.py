@@ -71,6 +71,12 @@ def ms_local_text(s):      # naive local ISO / log prefix -> epoch ms
     raise ValueError(f'unparseable ts: {s!r}')
 
 
+CLONE_TABLES = {'barks': 'timestamp', 'rewards': 'timestamp',
+                'coaching_sessions': 'timestamp',
+                'silent_guardian_sessions': 'session_start',
+                'sg_interventions': 'timestamp', 'dog_events': 'timestamp'}
+
+
 class Fleet:
     def __init__(self, archive: Path):
         fresh = not archive.exists()
@@ -81,6 +87,35 @@ class Fleet:
             self.db.executescript(SPEC_DDL)
             self.db.commit()
         self.stats = {}
+        # Fleet SD cards were cloned from one image, so every robot's
+        # treatbot.db shares the canonical unit's historical prefix
+        # (verified 2026-09-01: identical id+timestamp fingerprints on
+        # tb1/tb2/tb3/tb5). The shared rows belong to the canonical robot;
+        # other robots contribute only their post-divergence rows.
+        self.canonical = None
+        self.clone_ref = {}
+
+    def load_clone_ref(self, robot: str, path: Path):
+        self.canonical = robot
+        src = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+        tabs = {r[0] for r in src.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        for tab, col in CLONE_TABLES.items():
+            if tab in tabs:
+                self.clone_ref[tab] = {
+                    (r[0], str(r[1])) for r in
+                    src.execute(f"SELECT id, {col} FROM {tab}")}
+        src.close()
+        print(f'clone-dedupe ref: canonical={robot}, '
+              + ', '.join(f'{t}={len(v)}' for t, v in self.clone_ref.items()))
+
+    def _cloned(self, robot, tab, rid, ts) -> bool:
+        if robot == self.canonical:
+            return False
+        hit = (rid, str(ts)) in self.clone_ref.get(tab, ())
+        if hit:
+            self.bump(f'{robot}:cloned_rows_skipped')
+        return hit
 
     def bump(self, key, n=1):
         self.stats[key] = self.stats.get(key, 0) + n
@@ -179,6 +214,8 @@ class Fleet:
             for (rid, ts, d, dn, emo, conf, db_, dur, *_x) in src.execute(
                     "SELECT id, timestamp, dog_id, dog_name, emotion, confidence, "
                     "loudness_db, duration_ms, NULL FROM barks"):
+                if self._cloned(robot, 'barks', rid, ts):
+                    continue
                 t = ms_utc_text(str(ts))
                 pl = {'db': db_, 'duration_ms': dur, 'class': 'bark',
                       'emotion': emo}
@@ -194,6 +231,8 @@ class Fleet:
             for (rid, ts, d, beh, conf, succ, treats, mission) in src.execute(
                     "SELECT id, timestamp, dog_id, behavior, confidence, success, "
                     "treats_dispensed, mission_name FROM rewards"):
+                if self._cloned(robot, 'rewards', rid, ts):
+                    continue
                 t = ms_unix(ts)
                 origin = (f'backfill:{robot}:rewards:bark_reward'
                           if (beh or '').startswith('bark_')
@@ -212,6 +251,8 @@ class Fleet:
                     "SELECT id, timestamp, dog_id, dog_name, trick_requested, "
                     "trick_completed, attention_duration, response_time, "
                     "treat_dispensed FROM coaching_sessions"):
+                if self._cloned(robot, 'coaching_sessions', rid, ts):
+                    continue
                 t = ms_unix(ts)
                 sid = self.session(robot, device_id, 'coach', t, 'coach')
                 lat = int(float(rt) * 1000) if rt else None
@@ -235,6 +276,8 @@ class Fleet:
                     f"SELECT id, session_start, session_end, total_barks, "
                     f"interventions, successful_quiets, treats_dispensed, "
                     f"max_escalation_level, {panic} FROM silent_guardian_sessions"):
+                if self._cloned(robot, 'silent_guardian_sessions', rid, t0):
+                    continue
                 s0 = ms_unix(t0)
                 sid = uuid7_at(s0, seed=f'fleet:{robot}:sg_session:{rid}'.encode())
                 outcome = {'total_barks': barks or 0, 'bark_types': {},
@@ -257,6 +300,8 @@ class Fleet:
                     "i.quiet_duration, i.treat_given, i.music_played, "
                     "s.session_start FROM sg_interventions i LEFT JOIN "
                     "silent_guardian_sessions s ON i.session_id = s.id"):
+                if self._cloned(robot, 'sg_interventions', rid, ts):
+                    continue
                 t = ms_unix(ts)
                 sid = (uuid7_at(ms_unix(ps), seed=f'fleet:{robot}:sg_session:{lsid}'.encode())
                        if lsid and ps else
@@ -275,6 +320,8 @@ class Fleet:
             for (rid, ts, et, d, dn, det, mode, _s) in src.execute(
                     "SELECT id, timestamp, event_type, dog_id, dog_name, details, "
                     "mode, session_id FROM dog_events"):
+                if self._cloned(robot, 'dog_events', rid, ts):
+                    continue
                 try:
                     t = ms_local_text(str(ts))
                 except ValueError:
@@ -531,8 +578,13 @@ def main():
     ap.add_argument('--archive', default=str(ROOT / 'wimz_fleet.db'))
     ap.add_argument('--incoming', default=str(ROOT / 'incoming'))
     ap.add_argument('--logs', action='store_true', help='also parse treatbot.log*')
+    ap.add_argument('--canonical', default='tb5',
+                    help='robot whose treatbot.db owns the cloned shared prefix')
     args = ap.parse_args()
     fleet = Fleet(Path(args.archive))
+    canon = Path(args.incoming) / args.canonical / 'treatbot.db'
+    if canon.exists():
+        fleet.load_clone_ref(args.canonical, canon)
     for folder in sorted(Path(args.incoming).iterdir()):
         if folder.is_dir() and any(folder.iterdir()):
             print(f'== {folder.name} ==')
