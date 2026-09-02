@@ -28,7 +28,7 @@
 - [x] **Post-cap behavior** (decided: keep intervening, no treats) — after the treat cap, SG now continues with verbal praise + LED and logs each quiet as `treat_given=False` (praise mitigates extinction; post-cap quiets now appear in history). `silent_guardian.py` treat-limit branch.
 
 ### Data / ML
-- [ ] **Data refactor — KICKED OFF (2026-09-01, design phase)** — reshape all data into human/ML-friendly tables for analytics + continual learning. Robot side owns the design MD; App Claude reviews it against their consumer requirements (per-bark rows, sessions as first-class table, stable IDs + ISO8601 UTC, live event contract untouched, **no backfill of legacy rows in v1** — Morgan's standing decision). Do **not** start coding until the MD is approved.
+- [x] **Data refactor — COMPLETE (2026-09-01, Phases 1-4 all shipped same day)** — spec v0.7, wimz.db is the single behavioral store (per-bark rows w/ types, sessions first-class w/ outcome_json, canonical dog ids, origin provenance); legacy backfilled (R5 reversed) + fleet history consolidated into wimz_fleet.db (4 robots, clone-deduped) + evidence pack. Retained as operational: rewards/missions/telemetry tables + the silent_guardian_sessions wire-compat shim (int session_id + summary_sent guard — retire when app drops int session ids). dogbot.db/missions.db archived to data/archive/.
 
 ---
 

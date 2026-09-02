@@ -5,7 +5,27 @@ five requirements met; see Review Outcome at bottom). Phase 1 implemented
 2026-09-01. **Phase 2 implemented 2026-09-01** (spec v0.6, live-verified on
 tb5: DB migrated, `outcome_json` + `app_dog_id` writes confirmed, Elsa's
 dual-UUID reconciled via profile sync). **Phase 3 implemented 2026-09-01**
-(see Phase 3 notes below). Phase 4 remains; needs explicit approval.
+(see Phase 3 notes below). **Phase 4 implemented 2026-09-01 (Morgan's
+go: "finish phase 4 and call all open work closed") — THE REFACTOR IS
+COMPLETE.** Phase 4 notes:
+- Endpoint migration: /events/dog, /events/dog/summary, /events/dog/latest,
+  and /sg/sessions/recent now read wimz.db (core/data/legacy_views.py),
+  wire shapes preserved except: dog_events timestamps are ISO8601 Z (were
+  local-naive), dog ids are canonical app UUIDs, and the SG catch-up 'id'
+  is the session UUID string (was a legacy int) with 'interventions_count'
+  carrying the count. Live-verified.
+- Writers retired: coaching_sessions, dog_events, sg_interventions. The
+  spec store rows are the single record for each.
+- RETAINED by decision (operational, not analytical): rewards + missions
+  tables and their writers (7 live reward-path call sites; wimz carries
+  the same data natively + backfilled), telemetry (30d-pruned), and the
+  silent_guardian_sessions writer — a wire-compat shim carrying the int
+  session_id in the sg_summary payload and the L4 summary_sent guard;
+  retire it when the app drops int session ids.
+- Archived: data/dogbot.db + data/missions.db -> data/archive/ (sources
+  also in the fleet tarball); backfill script guards against the moved
+  files. core/dog_database.py and missions/ stay in-tree, dormant, no
+  importers.
 Phase 3 notes — scope adjusted from the original sketch after mapping REST
 readers: Weekly Summary (all report/trends/progress/compare paths) now reads
 wimz.db for barks, SG sessions (outcome_json), interventions, coaching, and

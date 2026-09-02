@@ -1237,21 +1237,8 @@ class CoachingEngine:
         if success:
             history.successful_sessions += 1
 
-        # Log to database
-        try:
-            response_time = None
-            if self.current_session.command_time:
-                response_time = time.time() - self.current_session.command_time
-
-            self.store.log_coaching_session(
-                dog_id=dog_id,
-                dog_name=self.current_session.dog_name,
-                trick_requested=self.current_session.trick_requested,
-                trick_completed=success,
-                response_time=response_time
-            )
-        except Exception as e:
-            logger.error(f"Failed to log coaching session: {e}")
+        # Phase 4: legacy coaching_sessions writer retired — the
+        # training_attempt row below is the single record of an attempt.
 
         # Spec training_attempt — THE closed-loop row (spec §6). media_id is
         # attached in _state_cooldown when the clip finishes writing.

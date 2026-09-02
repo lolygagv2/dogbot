@@ -561,15 +561,11 @@ class SilentGuardianMode:
         phase: 'triggered' when the intervention starts (the followed_by join
         target per spec §5) | 'outcome' when it resolves.
         """
-        self.store.log_sg_intervention(
-            session_id=self.session_id,
-            dog_id=dog_id,
-            dog_name=dog_name,
-            escalation_level=self.current_escalation_level,
-            barks_triggering=barks_triggering,
-            quiet_achieved=quiet_achieved,
-            treat_given=treat_given,
-            music_played=music_played)
+        # Phase 4: legacy sg_interventions writer retired — the spec
+        # sg_intervention event below is the single record. (The legacy
+        # silent_guardian_sessions row is still written: it carries the int
+        # session_id in the sg_summary wire payload and the L4 summary_sent
+        # guard; retire it when the app drops int session ids.)
         try:
             wimz_dog = None
             if (dog_id and dog_id != 'unknown') or dog_name:

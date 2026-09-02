@@ -56,17 +56,9 @@ class DogEventLogger:
     def _log(self, event_type: str, dog_id: str = "unknown",
              dog_name: str = "", details: Dict[str, Any] = None):
         """Write event to store (fire-and-forget)."""
-        try:
-            get_store().log_dog_event(
-                event_type=event_type,
-                dog_id=dog_id,
-                dog_name=dog_name,
-                details=details or {},
-                mode=self._current_mode(),
-                session_id=self._session_id
-            )
-        except Exception as e:
-            self.logger.error(f"Failed to log dog event: {e}")
+        # Phase 4: legacy dog_events writer retired — the /dog_events REST
+        # endpoints now read wimz.db events directly (core/data/legacy_views).
+        pass
 
     # ---- Event handlers ----
 

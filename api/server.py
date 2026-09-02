@@ -1218,7 +1218,10 @@ async def get_sg_sessions_recent(since: float = 0.0, limit: int = 20):
         limit: Max sessions to return (default 20)
     """
     store = get_store()
-    sessions = store.get_sg_sessions_since(since_ts=since, limit=limit)
+    # Phase 4: served from wimz.db (legacy silent_guardian_sessions retired
+    # for this read; 'id' is now the session UUID string, was an int)
+    from core.data.legacy_views import get_sg_sessions_since
+    sessions = get_sg_sessions_since(since_ts=since, limit=limit)
     return {
         "sessions": sessions,
         "count": len(sessions),
@@ -1317,7 +1320,8 @@ async def get_dog_events(limit: int = 100, event_type: Optional[str] = None,
                          dog_id: Optional[str] = None, since: Optional[str] = None):
     """Query dog behavior events with optional filters"""
     store = get_store()
-    events = store.get_dog_events(limit=limit, event_type=event_type,
+    from core.data.legacy_views import get_dog_events as _wimz_dog_events
+    events = _wimz_dog_events(limit=limit, event_type=event_type,
                                   dog_id=dog_id, since=since)
     return {"events": events, "count": len(events)}
 
@@ -1326,14 +1330,16 @@ async def get_dog_events(limit: int = 100, event_type: Optional[str] = None,
 async def get_dog_events_summary(hours: int = 24):
     """Get summary of dog events over a time period"""
     store = get_store()
-    return store.get_dog_events_summary(hours=hours)
+    from core.data.legacy_views import get_dog_events_summary
+    return get_dog_events_summary(hours=hours)
 
 
 @app.get("/events/dog/latest")
 async def get_dog_events_latest(dog_id: Optional[str] = None):
     """Get latest event of each type"""
     store = get_store()
-    return store.get_dog_events_latest(dog_id=dog_id)
+    from core.data.legacy_views import get_dog_events_latest
+    return get_dog_events_latest(dog_id=dog_id)
 
 
 # Dog endpoints

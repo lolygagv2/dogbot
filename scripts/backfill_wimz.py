@@ -267,6 +267,8 @@ class Backfill:
     # -------------------------------------------------------- behavior_events
 
     def behavior_events(self):
+        if not (REPO / 'data' / 'dogbot.db').exists():
+            return  # source archived (Phase 4) — fleet tarball has it
         src = sqlite3.connect(REPO / 'data' / 'dogbot.db')
         wm = self._watermark('dogbot.behavior_events')
         rows = src.execute(
@@ -293,6 +295,8 @@ class Backfill:
     # ------------------------------------------------------------- detections
 
     def mission_detections(self):
+        if not (REPO / 'data' / 'missions.db').exists():
+            return  # source archived (Phase 4) — fleet tarball has it
         src = sqlite3.connect(REPO / 'data' / 'missions.db')
         wm = self._watermark('missions.detections')
         rows = src.execute(
