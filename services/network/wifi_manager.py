@@ -172,22 +172,37 @@ class WiFiManager:
                  "ifname", self.interface], timeout=45)
         return success
 
+    def _hostapd_running(self) -> bool:
+        """True if hostapd is live on our config.
+
+        pgrep exits 1 when nothing matches — that's the NORMAL WiFi-mode
+        answer, not a command failure, so don't route it through _run_cmd's
+        warning (it was flooding the journal every 30s from the WiFi monitor).
+        """
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", f"hostapd.*{HOSTAPD_CONF}"],
+                capture_output=True, text=True, timeout=10)
+            return result.returncode == 0
+        except Exception:
+            return False
+
     def is_ap_mode(self) -> bool:
-        """Detect if the interface is currently in AP mode by checking for hostapd process."""
+        """True if the interface is really serving an AP right now.
+
+        Answers from the live hostapd process, never from the bookkeeping flag
+        alone. A failed AP rebuild used to leave _in_ap_mode True with hostapd
+        dead, and every consumer (relay reconnect guard, WiFi monitor, scan
+        cache) then believed the robot was hosting an AP until reboot — the
+        robot silently dropped off the cloud with nothing in the journal.
+        Reconcile the flag here so a stale one can never outlive its AP.
+        """
         with self._op_lock:
-            if self._in_ap_mode:
-                return True
-            # Check if hostapd is running with our config. pgrep exits 1 when
-            # nothing matches — that's the NORMAL WiFi-mode answer, not a
-            # command failure, so don't route it through _run_cmd's warning
-            # (it was flooding the journal every 30s from the WiFi monitor).
-            try:
-                result = subprocess.run(
-                    ["pgrep", "-f", f"hostapd.*{HOSTAPD_CONF}"],
-                    capture_output=True, text=True, timeout=10)
-                return result.returncode == 0
-            except Exception:
-                return False
+            running = self._hostapd_running()
+            if self._in_ap_mode and not running:
+                logger.warning("AP flag stale — hostapd not running, clearing")
+                self._in_ap_mode = False
+            return running
 
     def has_associated_stations(self) -> bool:
         """True if any STA is associated to our AP, via `iw station dump` (L2).
@@ -756,7 +771,21 @@ dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,24h
                 self._cleanup_ap()
                 return False
 
-            # Start dnsmasq for DHCP only
+            # Start dnsmasq for DHCP only. dnsmasq binds the interface
+            # exclusively and exits with "unknown interface wlan0" if it races
+            # a netdev that hostapd is still re-creating — seen on an AP
+            # rebuild. Confirm the interface is there before binding it.
+            if not self._interface_present():
+                logger.info(f"Waiting for {self.interface} before dnsmasq...")
+                deadline = time.time() + 5
+                while time.time() < deadline and not self._interface_present():
+                    time.sleep(0.25)
+                if not self._interface_present():
+                    logger.warning(
+                        f"{self.interface} still missing — dnsmasq may fail")
+                else:
+                    time.sleep(0.5)  # let the netdev settle
+
             self._run_cmd(["sudo", "pkill", "-f", f"dnsmasq.*{DNSMASQ_CONF}"])
             time.sleep(0.3)
 
@@ -858,7 +887,16 @@ address=/#/{self.HOTSPOT_IP}
             return True
 
     def _cleanup_ap(self):
-        """Kill hostapd and dnsmasq, clean up config files"""
+        """Kill hostapd and dnsmasq, clean up config files.
+
+        Clears _in_ap_mode first: this runs from every failure return in
+        start_hotspot()/start_demo_hotspot() as well as from stop_hotspot(),
+        and after it the AP is definitively down. Leaving the flag set here is
+        what poisoned is_ap_mode() for the rest of the boot.
+        """
+        self._in_ap_mode = False
+        self.ap_deliberate = False
+
         # Stop hostapd and dnsmasq via their PID files
         for pidfile in [HOSTAPD_PID, DNSMASQ_PID]:
             try:

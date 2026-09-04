@@ -65,6 +65,10 @@ class RelayClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self._connected = False
         self._running = False
+        # True while _reconnect_loop is deferring on a local AP, so the
+        # deferral logs once per episode instead of never (silent) or every
+        # 15s (spam).
+        self._ap_defer_logged = False
         self._reconnect_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._telemetry_task: Optional[asyncio.Task] = None
@@ -979,6 +983,27 @@ class RelayClient:
 
             self.logger.info(f"Switching to Local Mode (AP: {ssid})")
 
+            # Idempotent: two local_mode commands can land seconds apart (a
+            # double tap, or relay redelivery — the handler blocks the loop
+            # ~8s, so #2 queues behind #1). Rebuilding a live AP is what
+            # produced 'Match already configured', a failed rebuild, and a
+            # poisoned AP state that stranded the robot off the cloud. If the
+            # AP is genuinely up already, just re-ack it.
+            if await self._ap_mode_now():
+                self.logger.info(
+                    f"Local Mode already active (AP: {ssid}) — re-acking, "
+                    "no teardown")
+                await self._send({
+                    'type': 'local_mode_starting',
+                    'ssid': ssid,
+                    'password': password,
+                    'ip': wifi.HOTSPOT_IP,
+                    'api': f'http://{wifi.HOTSPOT_IP}:8000',
+                    'ws': f'ws://{wifi.HOTSPOT_IP}:8000/ws/local'
+                })
+                wifi.ap_deliberate = True
+                return
+
             # Send response BEFORE switching (we'll lose relay connection)
             await self._send({
                 'type': 'local_mode_starting',
@@ -1004,7 +1029,12 @@ class RelayClient:
                 wifi.ap_deliberate = True
                 self.logger.info(f"Local Mode active - AP: {ssid}")
             else:
-                self.logger.error("Failed to start AP mode")
+                # Bring-up failed and _cleanup_ap() has already put the manager
+                # back to "not in AP mode" — clear stickiness too so the WiFi
+                # monitor treats this as ordinary station mode.
+                wifi.ap_deliberate = False
+                self.logger.error(
+                    "Failed to start AP mode — staying on current network")
 
         except Exception as e:
             self.logger.error(f"Local mode switch error: {e}")
@@ -1450,8 +1480,8 @@ class RelayClient:
 
         # Note: Silent Guardian continues running - it's autonomous
 
-    async def _is_serving_local_ap(self) -> bool:
-        """True if the robot is currently hosting its local AP (no cloud route).
+    async def _ap_mode_now(self) -> bool:
+        """True if hostapd is really serving our AP right now.
 
         is_ap_mode() runs a blocking pgrep and may grab the wifi manager's lock
         during an AP transition, so run it in the default executor rather than
@@ -1461,6 +1491,32 @@ class RelayClient:
             from services.network.wifi_manager import get_wifi_manager
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, get_wifi_manager().is_ap_mode)
+        except Exception:
+            return False
+
+    async def _is_serving_local_ap(self) -> bool:
+        """True if the robot is hosting its local AP AND has no cloud route.
+
+        Station-mode association with an IP is stronger evidence of a usable
+        cloud route than any AP bookkeeping, so if we are on a real network we
+        dial the relay regardless of what the AP state claims. That keeps a
+        wrong AP answer from silently stranding the robot off the cloud.
+        """
+        def _check() -> bool:
+            from services.network.wifi_manager import get_wifi_manager
+            wifi = get_wifi_manager()
+            if not wifi.is_ap_mode():
+                return False
+            try:
+                if wifi.is_connected():
+                    return False
+            except Exception:
+                pass
+            return True
+
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, _check)
         except Exception:
             return False
 
@@ -1476,8 +1532,17 @@ class RelayClient:
                 # Wait out AP mode instead. (Checked off-loop so the blocking
                 # pgrep in is_ap_mode() doesn't stall this event loop.)
                 if await self._is_serving_local_ap():
+                    if not self._ap_defer_logged:
+                        self.logger.info(
+                            "Relay reconnect deferred — local AP active")
+                        self._ap_defer_logged = True
                     await asyncio.sleep(15)
                     continue
+
+                if self._ap_defer_logged:
+                    self.logger.info(
+                        "Relay reconnect resuming — local AP no longer active")
+                    self._ap_defer_logged = False
 
                 self.logger.info(f"Attempting reconnection in {backoff:.1f}s...")
                 await asyncio.sleep(backoff)
