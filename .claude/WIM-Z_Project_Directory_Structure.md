@@ -233,6 +233,8 @@
       hardware/
          leds_v3.py
          beam_watch.sh              # Live GPIO7 through-beam transition monitor (chute sensor alignment)
+      network/
+         test_wifi_ap_flag_recovery.py  # AP-state regression (stale _in_ap_mode stranded relay, 2026-09-04). No hardware; pytest absent in env_new so runs standalone.
       vision/
          test_camera_*.py
       test_behavior_fusion.py
