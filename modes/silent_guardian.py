@@ -146,6 +146,14 @@ class SilentGuardianMode:
             self.config.get('session_limits', {}).get('treat_eligibility_cooldown', 600.0)
         )
         self.consecutive_interventions = 0  # For progressive quiet requirements
+
+        # Unprompted-quiet reward: marks spontaneous calm that no intervention
+        # produced. The intervention->quiet->reward path is unreachable when SG
+        # never started an intervention (a quiet dog never trips the bark
+        # threshold), and is suppressed outright during panic + post-panic
+        # cooldown, so calm earned there went unrewarded.
+        self.unprompted_quiet_rewards = 0
+        self.last_unprompted_reward_time = 0.0
         self.treat_eligible = True  # Whether treats can be given
 
         # Quiet reset tracking (continuous quiet → reset escalation)
@@ -224,6 +232,13 @@ class SilentGuardianMode:
             'session_limits': {
                 'max_treats': 11,
                 'min_time_between_treats': 120
+            },
+            'unprompted_quiet': {
+                'enabled': True,
+                'quiet_minutes': 10,
+                'repeat_minutes': 20,
+                'max_per_session': 4,
+                'during_panic': True,
             },
             'audio_paths': {
                 'talks': '/home/morgan/dogbot/VOICEMP3/talks',
@@ -413,6 +428,8 @@ class SilentGuardianMode:
             self.max_escalation_level = 0
             self.escalation_events = []
             self.quiet_since = 0.0
+            self.unprompted_quiet_rewards = 0
+            self.last_unprompted_reward_time = 0.0
             self.total_escalation_resets = 0
             self._reset_bark_and_panic_state()
 
@@ -804,6 +821,9 @@ class SilentGuardianMode:
                 # Check treat eligibility (10 min cooldown after treats)
                 self._check_treat_eligibility()
 
+                # Reward spontaneous calm (runs during panic too — generous)
+                self._check_unprompted_quiet(time.time())
+
                 # Panic detection (sustained rate + futility expiry)
                 self._check_panic(time.time())
 
@@ -850,6 +870,8 @@ class SilentGuardianMode:
         self.max_escalation_level = 0
         self.escalation_events = []
         self.quiet_since = 0.0
+        self.unprompted_quiet_rewards = 0
+        self.last_unprompted_reward_time = 0.0
         self.total_escalation_resets = 0
         self._reset_bark_and_panic_state()
 
@@ -1615,6 +1637,136 @@ class SilentGuardianMode:
 
         logger.info(f"SG_PANIC: exited after {duration}s — intervention "
                     f"cooldown {cfg.get('post_panic_cooldown_seconds', 900)}s")
+
+    def _check_unprompted_quiet(self, now: float):
+        """Reward calm that no intervention produced.
+
+        The intervention -> quiet -> reward path can only fire for a dog that
+        was barking (an intervention starts on the bark threshold). A dog that
+        settles on its own — including the calm a panic calming routine earns —
+        never reaches it, and during panic + post-panic cooldown interventions
+        are suppressed entirely. This marks that calm the moment it appears.
+        """
+        cfg = self.config.get('unprompted_quiet', {})
+        if not cfg.get('enabled', True):
+            return
+
+        # Need a bark to measure quiet *from*; a session that never had one has
+        # nothing to reinforce.
+        if self.last_bark_time == 0.0:
+            return
+
+        # Only when SG isn't mid-intervention — the intervention path owns its
+        # own reward and must not be double-paid. PANIC is deliberately allowed
+        # (generous variant): that is where the unrewarded calm actually lives.
+        if self.fsm_state == SGState.PANIC:
+            if not cfg.get('during_panic', True):
+                return
+        elif self.fsm_state != SGState.LISTENING:
+            return
+
+        required = float(cfg.get('quiet_minutes', 10)) * 60.0
+        if now - self.last_bark_time < required:
+            return
+
+        if self.unprompted_quiet_rewards >= int(cfg.get('max_per_session', 4)):
+            return
+
+        repeat = float(cfg.get('repeat_minutes', 20)) * 60.0
+        if self.last_unprompted_reward_time and \
+                now - self.last_unprompted_reward_time < repeat:
+            return
+
+        self._reward_unprompted_quiet(now, (now - self.last_bark_time) / 60.0)
+
+    def _reward_unprompted_quiet(self, now: float, quiet_minutes: float):
+        """Praise (+ treat when eligible) for spontaneous calm.
+
+        Deliberately does NOT stop calming music: during a panic episode the
+        routine is what produced the calm, so it plays on underneath.
+        """
+        dog_id = self.intervention_dog_id
+        dog_name = self.intervention_dog_name
+        during_panic = self.panic_active
+
+        # Claim the slot before any blocking audio so a slow playback can't let
+        # the loop re-enter and pay twice.
+        self.unprompted_quiet_rewards += 1
+        self.last_unprompted_reward_time = now
+
+        max_treats = self.config.get('session_limits', {}).get('max_treats', 11)
+        min_time = self.config.get('session_limits', {}).get(
+            'min_time_between_treats', 120)
+        time_since_treat = (now - self.last_treat_time
+                            if self.last_treat_time > 0 else float('inf'))
+
+        treat_ok = (self.treats_dispensed < max_treats
+                    and self.treat_eligible
+                    and time_since_treat >= min_time)
+
+        if self.led:
+            self.led.set_pattern('success', duration=2.0)
+        self._play_audio('good.mp3')
+
+        dispense_id = None
+        if treat_ok and self.dispenser:
+            self.dispenser.dispense_treat(
+                dog_id=dog_id,
+                dog_name=dog_name,
+                reason='silent_guardian_unprompted_quiet',
+                wimz_session_id=getattr(self, 'wimz_session_id', None)
+            )
+            self.treats_dispensed += 1
+            self.last_treat_time = time.time()
+            self.treat_eligible = False
+            dispense_id = getattr(self.dispenser, 'last_wimz_dispense_id', None)
+            try:
+                self.store.log_reward(
+                    dog_id=dog_id or 'unknown',
+                    behavior='quiet_unprompted',
+                    confidence=1.0,
+                    success=True,
+                    treats_dispensed=1,
+                    mission_name='silent_guardian'
+                )
+            except Exception as e:
+                logger.debug(f"unprompted quiet log_reward failed: {e}")
+        elif treat_ok:
+            logger.debug("No dispenser service — unprompted quiet is praise-only")
+
+        logger.info(
+            f"SG_UNPROMPTED_QUIET: {quiet_minutes:.1f} min of unprompted calm "
+            f"({'during panic' if during_panic else 'listening'}) — "
+            f"{'treat dispensed' if dispense_id else 'praise only'} "
+            f"({self.unprompted_quiet_rewards} this session)")
+
+        # Own event type — keeps these out of intervention success stats.
+        try:
+            wimz_dog = None
+            if (dog_id and dog_id != 'unknown') or dog_name:
+                wimz_dog = self.wimz.get_or_create_dog(
+                    legacy_id=dog_id if dog_id and dog_id != 'unknown' else None,
+                    name=dog_name)
+            self.wimz.log_event(
+                self.wimz_session_id, 'sg_unprompted_quiet', {
+                    'quiet_minutes': round(quiet_minutes, 1),
+                    'treat_given': bool(dispense_id),
+                    'dispense_id': dispense_id,
+                    'during_panic': during_panic,
+                    'escalation_level': self.current_escalation_level,
+                    'reward_num': self.unprompted_quiet_rewards,
+                }, dog_id=wimz_dog, label_source='auto_rule')
+        except Exception as e:
+            logger.debug(f"wimz sg_unprompted_quiet log failed: {e}")
+
+        publish_system_event('sg_unprompted_quiet', {
+            'dog_id': dog_id,
+            'dog_name': dog_name,
+            'quiet_minutes': round(quiet_minutes, 1),
+            'treat_given': bool(dispense_id),
+            'during_panic': during_panic,
+            'session_id': self.session_id,
+        }, 'silent_guardian')
 
     def _give_reward(self):
         """Give reward for successful quiet — with bark-state safety check"""

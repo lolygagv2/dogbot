@@ -136,6 +136,22 @@ session_limits:
   max_interventions_per_hour: 6  # Safety limit
   min_time_between_treats: 120     # Minimum seconds between treats
 
+# Unprompted (spontaneous) quiet reward.
+# The intervention -> quiet -> reward path only fires for a dog that WAS
+# barking, because an intervention starts on the bark threshold. Calm the dog
+# reaches on its own is invisible to it, and during a panic episode + the
+# post-panic cooldown interventions are suppressed entirely — so the calm a
+# calming routine earns was never marked. This closes that gap.
+# "Generous" variant: marks the calm the moment it appears, including
+# mid-episode (during_panic: true). Set during_panic: false to only start
+# counting once panic has exited.
+unprompted_quiet:
+  enabled: true
+  quiet_minutes: 10        # continuous quiet (no passed barks) before marking
+  repeat_minutes: 20       # minimum gap between two unprompted rewards
+  max_per_session: 4       # session cap on unprompted rewards
+  during_panic: true       # generous: mark calm even mid-episode
+
 # Logging configuration
 logging:
   log_barks: true
