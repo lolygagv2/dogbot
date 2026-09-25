@@ -307,8 +307,19 @@ class WiFiManager:
             return False, str(e)
 
     def _run_nmcli(self, args: List[str], timeout: int = 30) -> Tuple[bool, str]:
-        """Run nmcli command and return (success, output)"""
-        return self._run_cmd(["nmcli"] + args, timeout=timeout)
+        """Run nmcli (via sudo) and return (success, output).
+
+        treatbot.service runs as `morgan` with NO login session, and polkit
+        then answers `auth` (interactive) for every NetworkManager write —
+        device disconnect, managed no/yes, wifi rescan, connection up/modify —
+        and `no` for settings.modify.system. Every AP bring-up from the
+        service was silently half-failing on this (2026-09-25 power-button
+        cancel RCA: hostapd came up while NM kept wlan0 associated, so the
+        phone got no DHCP lease and the relay reconnected over home WiFi).
+        sudo is NOPASSWD for morgan and a no-op for wifi-provision (root);
+        reads work either way.
+        """
+        return self._run_cmd(["sudo", "-n", "nmcli"] + args, timeout=timeout)
 
     def get_device_serial(self) -> str:
         """Get last 4 characters of device serial from /proc/cpuinfo"""
