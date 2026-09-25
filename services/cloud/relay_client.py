@@ -1060,6 +1060,7 @@ class RelayClient:
             # Clear stickiness BEFORE teardown so the WiFi monitor can't race
             # back into the deliberate-AP hold while we reconnect.
             wifi.ap_deliberate = False
+            wifi.clear_cancel_breadcrumb()
 
             # Stop hotspot
             wifi.stop_hotspot()
@@ -1722,6 +1723,10 @@ class RelayClient:
                 'ssid': status.get('ssid'),
                 'ip': status.get('ip_address'),
                 'signal': wifi.get_signal_dbm(),
+                # Set when the AP was raised by a "network cancel" (power
+                # button long press): the WiFi we walked away from.
+                'cancelled_ssid': wifi.cancelled_ssid,
+                'cancel_reason': wifi.cancel_reason,
                 'local_ap': {
                     'ssid': wifi.get_ap_ssid(),
                     'password': wifi.AP_PASSWORD,

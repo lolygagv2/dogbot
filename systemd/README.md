@@ -37,8 +37,27 @@ journalctl -u wimz-power-button.service -n 20
 
 ### Expected Behavior
 1. On boot: Relay clicks, button isolated from Pololu latch
-2. Press button: Pi runs graceful shutdown (~15-20s), then power cuts
-3. Press button again: Pololu cold-starts Pi, ~20s later relay clicks, ready
+2. Press and release (under 5 s): Pi runs graceful shutdown (~15-20s), then power cuts.
+   Shutdown fires when you let go, not at the instant of the press.
+3. **Hold 5 s: NETWORK CANCEL** — the robot leaves whatever WiFi it is on and
+   raises the `WIMZ-xxxx` AP (sticky, like the app's Local Mode) and plays the
+   AP audio cue. Use it when the robot joined a WiFi that "connected" but is
+   unusable (captive portal / sign-in page, dead uplink) and the app can't
+   reach it. From the AP the app can pair a controller, pick another WiFi, or
+   send cloud-mode to rejoin the same one. The saved WiFi is NOT modified.
+   Path: `POST http://127.0.0.1:8000/system/network-cancel`; if treatbot isn't
+   answering, the watcher writes `/run/wimz/net-cancel`, which treatbot's WiFi
+   monitor consumes on its next 15 s tick or next start. No shutdown.
+4. Hold 15 s+: treated as a stuck button, ignored.
+5. Press button again after shutdown: Pololu cold-starts Pi, ~20s later relay clicks, ready
+
+The watcher is NOT OTA-managed (it lives in /usr/local/bin, like the updater).
+After changing `services/power/wimz_power_button.py`, on each unit:
+```bash
+sudo install -m755 services/power/wimz_power_button.py /usr/local/bin/wimz_power_button.py
+sudo systemctl restart wimz-power-button.service
+```
+(check `RELAY_ACTIVE_HIGH` for robot 1 first).
 
 ### Logs
 ```bash
@@ -49,7 +68,7 @@ Expected output:
 ```
 WIMZ: Relay engaged on GPIO21 — button isolated from Pololu
 WIMZ: Waiting for GPIO20 to settle LOW...
-WIMZ: GPIO20 settled LOW. Arming press detection (100ms debounce).
+WIMZ: GPIO20 settled LOW. Armed: release <5s = shutdown, hold 5s = network cancel (AP mode).
 ```
 
 ## Main Service (treatbot.service)

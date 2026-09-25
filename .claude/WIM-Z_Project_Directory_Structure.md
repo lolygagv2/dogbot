@@ -139,6 +139,7 @@
          gui.py                     # GUI monitoring service
       power/
          battery_monitor.py         # Battery + charging detection
+         wimz_power_button.py       # Soft power button watcher (root, installed to /usr/local/bin — NOT OTA). Release <5s = shutdown; hold 5s = NETWORK CANCEL → POST /system/network-cancel (fallback flag /run/wimz/net-cancel) raises the sticky AP.
       input/
          gamepad.py                 # Input handling
       ui/
@@ -233,8 +234,10 @@
       hardware/
          leds_v3.py
          beam_watch.sh              # Live GPIO7 through-beam transition monitor (chute sensor alignment)
+         test_power_button_hold.py  # Power-button hold classification: release<5s shutdown, hold 5s network cancel, 15s stuck (2026-09-25). No GPIO; standalone.
       network/
          test_wifi_ap_flag_recovery.py  # AP-state regression (stale _in_ap_mode stranded relay, 2026-09-04). No hardware; pytest absent in env_new so runs standalone.
+         test_wifi_network_cancel.py    # Network cancel: raise_local_ap sticky + breadcrumb, /run/wimz/net-cancel flag consumption (2026-09-25). Standalone.
       vision/
          test_camera_*.py
       test_behavior_fusion.py

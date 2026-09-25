@@ -67,6 +67,56 @@ class WiFiManager:
         # True while the current AP was raised on explicit app/user command
         # (local mode) — the WiFi monitor must not auto-rejoin away from it.
         self.ap_deliberate = False
+        # Breadcrumb for the last "network cancel" (power-button long press or
+        # the /system/network-cancel endpoint): which WiFi we walked away
+        # from and when. Informational only — nothing about the saved
+        # profile is changed; cloud_mode / app connect clears it.
+        self.cancelled_ssid: Optional[str] = None
+        self.cancelled_at: Optional[float] = None
+        self.cancel_reason: Optional[str] = None
+
+    def raise_local_ap(self, reason: str = "local_mode") -> bool:
+        """Raise the ONE AP sticky (app Local Mode semantics) — shared by
+        /system/local-mode, /system/network-cancel and the power-button flag.
+
+        Idempotent: if the AP is already up, just (re)assert stickiness.
+        Records the WiFi we left as a breadcrumb for status/network_state.
+        The saved profile is NOT modified — this is an escape hatch, not a
+        judgement about the network (we often don't know why it failed).
+        """
+        if self.is_ap_mode():
+            self.ap_deliberate = True
+            logger.info(f"[LOCAL] AP already up — reasserting sticky ({reason})")
+            return True
+
+        try:
+            status = self.get_connection_status()
+            left_ssid = status.get('ssid') if status.get('connected') else None
+        except Exception:
+            left_ssid = None
+
+        ssid = self.get_ap_ssid()
+        logger.info(f"[LOCAL] Raising AP {ssid} ({reason}); leaving WiFi "
+                    f"{left_ssid or '(none)'}")
+        ok = self.start_demo_hotspot(ssid=ssid, password=self.AP_PASSWORD)
+        if ok:
+            # Sticky: user asked for this AP — the WiFi monitor won't
+            # auto-rejoin away from it (cleared by cloud-mode, reboot, or
+            # 10 min with no phone associated).
+            self.ap_deliberate = True
+            self.cancelled_ssid = left_ssid
+            self.cancelled_at = time.time()
+            self.cancel_reason = reason
+        else:
+            # Bring-up failed; _cleanup_ap() already cleared AP bookkeeping.
+            self.ap_deliberate = False
+            logger.error(f"[LOCAL] AP bring-up failed ({reason})")
+        return ok
+
+    def clear_cancel_breadcrumb(self) -> None:
+        self.cancelled_ssid = None
+        self.cancelled_at = None
+        self.cancel_reason = None
 
     def get_ap_ssid(self) -> str:
         """The ONE AP SSID used for every hotspot scenario."""

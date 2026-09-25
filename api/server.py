@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import uvicorn
@@ -4112,35 +4112,74 @@ async def enter_local_mode():
         from services.network.wifi_manager import get_wifi_manager
 
         wifi = get_wifi_manager()
-        hotspot_ip = wifi.HOTSPOT_IP
-        ssid = wifi.get_ap_ssid()
-        password = wifi.AP_PASSWORD
-
-        logger.info(f"Switching to Local Mode (AP: {ssid})")
+        logger.info(f"Switching to Local Mode (AP: {wifi.get_ap_ssid()})")
 
         # Clean AP (no captive-portal DNS hijack), 5GHz-first — the single
-        # fleet SSID, same as every other AP scenario.
-        success = wifi.start_demo_hotspot(ssid=ssid, password=password)
-
-        if success:
-            # Sticky: user asked for this AP — WiFi monitor won't auto-rejoin
-            # away from it (cleared by cloud-mode, reboot, or 10 min empty).
-            wifi.ap_deliberate = True
+        # fleet SSID, same as every other AP scenario. Sticky (see
+        # WiFiManager.raise_local_ap).
+        if wifi.raise_local_ap(reason="local_mode"):
             return {
                 "status": "switching",
-                "ssid": ssid,
-                "password": password,
-                "ip": hotspot_ip,
-                "api": f"http://{hotspot_ip}:8000",
-                "ws": f"ws://{hotspot_ip}:8000/ws/local",
-                "message": f"Connect to {ssid} hotspot, then use app in Local Mode"
+                "message": f"Connect to {wifi.get_ap_ssid()} hotspot, then use app in Local Mode",
+                **_local_ap_info(wifi),
             }
-        else:
-            return {"status": "error", "message": "Failed to start AP mode"}
+        return {"status": "error", "message": "Failed to start AP mode"}
 
     except Exception as e:
         logger.error(f"Local mode error: {e}")
         return {"status": "error", "message": str(e)}
+
+
+def _local_ap_info(wifi) -> dict:
+    return {
+        "ssid": wifi.get_ap_ssid(),
+        "password": wifi.AP_PASSWORD,
+        "ip": wifi.HOTSPOT_IP,
+        "api": f"http://{wifi.HOTSPOT_IP}:8000",
+        "ws": f"ws://{wifi.HOTSPOT_IP}:8000/ws/local",
+    }
+
+
+@app.post("/system/network-cancel")
+async def network_cancel():
+    """Escape hatch: leave whatever WiFi we're on and raise the local AP.
+
+    Triggered by the power-button long press (root watcher on localhost) when
+    the robot is stuck on a network that "connected" but is unusable (captive
+    portal, dead uplink, ...). Same result as Local Mode: sticky AP, app
+    reaches the robot at the hotspot IP, can pair a controller or pick
+    another WiFi from there. The saved profile is NOT touched.
+
+    Responds immediately (202) and does the ~10-20 s bring-up in the
+    background so the caller's short timeout can't turn into a re-trigger.
+    """
+    import threading
+    from services.network.wifi_manager import get_wifi_manager
+
+    wifi = get_wifi_manager()
+    info = _local_ap_info(wifi)
+    already = wifi.is_ap_mode()
+
+    def _work():
+        try:
+            ok = wifi.raise_local_ap(reason="network_cancel")
+            logger.warning(
+                f"[LOCAL] Network cancel — AP {info['ssid']} "
+                f"{'up' if ok else 'FAILED'}; left WiFi {wifi.cancelled_ssid or '(none)'}")
+            if ok:
+                try:
+                    get_usb_audio_service().play_file("/wimz/ap_mode.mp3")
+                except Exception as e:
+                    logger.debug(f"AP announce audio failed: {e}")
+        except Exception as e:
+            logger.error(f"Network cancel error: {e}")
+
+    threading.Thread(target=_work, name="NetworkCancel", daemon=True).start()
+    return JSONResponse(status_code=202, content={
+        "status": "already_ap" if already else "switching",
+        "message": f"Connect to {info['ssid']} hotspot, then use app in Local Mode",
+        **info,
+    })
 
 
 @app.post("/system/cloud-mode")
@@ -4159,6 +4198,7 @@ async def enter_cloud_mode():
         # Clear stickiness before teardown so the WiFi monitor can't race
         # back into the deliberate-AP hold while we reconnect.
         wifi.ap_deliberate = False
+        wifi.clear_cancel_breadcrumb()
 
         # Stop hotspot (returns to client mode)
         wifi.stop_hotspot()
@@ -4199,7 +4239,9 @@ async def get_network_status():
                 "mode": "ap",
                 "ssid": ap_ssid,
                 "ip": wifi.HOTSPOT_IP,
-                "internet": False
+                "internet": False,
+                "cancelled_ssid": wifi.cancelled_ssid,
+                "cancel_reason": wifi.cancel_reason,
             }
 
         status = wifi.get_connection_status()

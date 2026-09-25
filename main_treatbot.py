@@ -2508,6 +2508,10 @@ class TreatBotMain:
           ~2s video stall per roam) by pinning the strongest BSSID after
           >=4 roams in 10 min; unpin on weak signal or disconnect.
         - Xbox controller always works (Bluetooth independent of WiFi).
+        - Power-button long press (root watcher) normally hits
+          POST /system/network-cancel; if the API wasn't answering it leaves
+          /run/wimz/net-cancel instead, which this loop consumes: raise the
+          AP sticky (Local Mode semantics). The saved WiFi is never modified.
         """
         from collections import deque
         from services.network.wifi_manager import get_wifi_manager
@@ -2540,6 +2544,11 @@ class TreatBotMain:
                 # owns the interface and any portal AP — do nothing at all.
                 if self._wifi_provisioning_active():
                     self._wifi_disconnected_since = None
+                    continue
+
+                # Power-button "network cancel" left as a flag (API was down
+                # when the button was held). Consume it: raise the AP sticky.
+                if self._consume_net_cancel_flag(wifi):
                     continue
 
                 if wifi.is_ap_mode() or self._wifi_ap_active:
@@ -2711,6 +2720,48 @@ class TreatBotMain:
                 time.sleep(30)
 
         self.logger.info("WiFi monitor stopped")
+
+    NET_CANCEL_FLAG = "/run/wimz/net-cancel"
+    NET_CANCEL_MAX_AGE = 600  # older than this = stale, ignore
+
+    def _consume_net_cancel_flag(self, wifi) -> bool:
+        """Honor /run/wimz/net-cancel written by the power-button watcher.
+
+        Returns True when the flag was acted on this tick (caller should
+        `continue` — the AP branch takes over next tick). The flag is
+        root-owned (0644) so we may not be able to unlink it; we remember
+        its mtime so each flag is consumed exactly once per process, and
+        ignore flags older than NET_CANCEL_MAX_AGE (/run is tmpfs, so a
+        reboot clears them anyway).
+        """
+        try:
+            mtime = os.path.getmtime(self.NET_CANCEL_FLAG)
+        except OSError:
+            return False
+        if mtime == getattr(self, '_net_cancel_seen_mtime', None):
+            return False
+        self._net_cancel_seen_mtime = mtime
+        age = time.time() - mtime
+        try:
+            os.unlink(self.NET_CANCEL_FLAG)
+        except OSError:
+            pass  # root-owned; mtime memory above prevents re-consumption
+        if age > self.NET_CANCEL_MAX_AGE:
+            self.logger.info(f"WiFi monitor: stale net-cancel flag ({age:.0f}s old) ignored")
+            return False
+
+        self.logger.warning("WiFi monitor: power-button NETWORK CANCEL flag — raising AP (sticky)")
+        if wifi.raise_local_ap(reason="network_cancel_button"):
+            self._wifi_ap_active = True
+            self._wifi_disconnected_since = time.time()
+            try:
+                self.usb_audio.play_file("/wimz/ap_mode.mp3")
+            except Exception as e:
+                self.logger.warning(f"WiFi announce audio failed: {e}")
+            self._send_network_state_event(wifi)
+        else:
+            self.logger.error("WiFi monitor: network cancel AP bring-up failed")
+        return True
 
     def _send_network_state_event(self, wifi) -> None:
         """Emit a network_state relay event (best-effort, never raises).

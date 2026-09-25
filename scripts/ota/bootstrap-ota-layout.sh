@@ -114,6 +114,18 @@ install -m644 "$RELEASE/scripts/systemd/wimz-updater.path" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now wimz-updater.path
 
+# Power-button watcher is also outside the release tree (/usr/local/bin) and
+# not OTA-updated. Refresh it here so the long-press "network cancel" ships
+# with the layout. Preserve the per-unit relay polarity line.
+if [ -f /usr/local/bin/wimz_power_button.py ] && grep -q "RELAY_ACTIVE_HIGH = True" /usr/local/bin/wimz_power_button.py; then
+    sed 's/^RELAY_ACTIVE_HIGH = False/RELAY_ACTIVE_HIGH = True/' "$RELEASE/services/power/wimz_power_button.py" > /usr/local/bin/wimz_power_button.py.new
+    install -m755 /usr/local/bin/wimz_power_button.py.new /usr/local/bin/wimz_power_button.py
+    rm -f /usr/local/bin/wimz_power_button.py.new
+else
+    install -m755 "$RELEASE/services/power/wimz_power_button.py" /usr/local/bin/wimz_power_button.py
+fi
+systemctl try-restart wimz-power-button.service 2>/dev/null || true
+
 echo "[7/8] ownership"
 chown -h "$OWNER" "$DOGBOT" "$WIMZ/current"
 chown -R "$OWNER" "$WIMZ"

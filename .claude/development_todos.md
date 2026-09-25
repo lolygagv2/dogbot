@@ -21,6 +21,8 @@
 - [ ] **Mission Scheduler** — validate auto-start, time-window enforcement, once/daily/weekly logic (implemented, never tested)
 - [ ] **Weekly Summary** accuracy — verify before it becomes an owner/investor metric
 - [ ] **SG live end-to-end test** — summary pull, Loop echo, `sg_status_pull` / `audio_loop` over /ws/local in AP mode, with a real dog
+- [ ] **Power-button NETWORK CANCEL live verify** (shipped 2026-09-25) — hold the soft power button 5 s on a robot stuck on a captive-portal WiFi → `WIMZ-xxxx` AP up (sticky), `ap_mode.mp3`, app local mode + controller pairing works; short press still shuts down (now on release). Watcher is in /usr/local/bin (not OTA): reinstall per unit via `bootstrap-ota-layout.sh` or `sudo install -m755 services/power/wimz_power_button.py /usr/local/bin/`.
+- [ ] **Captive-portal auto-detect (deferred, Morgan's call 2026-09-25: button only for now)** — WiFi monitor/boot provisioner treat "associated but HTTP 204 probe fails/redirects" as no-WiFi and raise the AP on their own. Deliberately NOT done yet: we don't always know why WiFi fails, so don't let the robot "fix" it — the manual cancel avoids getting stuck without touching the saved profile.
 - [ ] **bark_type stamp live verify** — live `bark` events now carry `bark_type`/`bark_label` (stamped in `bark_detector.py`, forwarded in `main_treatbot.py`, 2026-09-01); confirm app renders per-bark labels in live + history feeds
 
 ### Silent Guardian design decisions (user's call)
