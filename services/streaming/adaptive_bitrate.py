@@ -39,8 +39,11 @@ class Tier:
 
 
 # Ordered low -> high. High bitrate == aiortc's VP8 MAX_BITRATE (1.5 Mbps).
+# All tiers are 16:9 — the camera stream is 1280x720 and video_track.py does a
+# plain resize, so a 4:3 tier (the old 640x480 Low) squashed the picture and
+# made the app view change shape on every tier flip (2026-10-03).
 TIERS: List[Tier] = [
-    Tier("low",     640, 480,  400_000),
+    Tier("low",     640, 360,  400_000),
     Tier("medium",  960, 540,  900_000),
     Tier("high",   1280, 720, 1_500_000),
 ]
@@ -52,7 +55,14 @@ class AdaptiveBitrateController:
 
     LOOP_INTERVAL = 2.5          # seconds between stats checks
     STEP_UP_HOLD = 10.0          # seconds of sustained "good" before stepping up
+    STEP_UP_HOLD_AFTER_DOWN = 30.0  # ...after a recent step-down (anti-flap)
     CHANGE_COOLDOWN = 5.0        # min seconds between any two tier changes
+    # Step-down debounce: a single bad tick is usually an RTCP artefact right
+    # after a tier change (loss=100% one-sample spikes in the journal). Only an
+    # outright collapse (loss > LOSS_SEVERE) steps down on one tick.
+    BAD_TICKS_TO_STEP_DOWN = 2
+    REMB_BAD_TICKS_TO_STEP_DOWN = 3  # REMB-only "constrained" with clean loss/rtt
+    LOSS_SEVERE = 0.20
 
     # Network thresholds
     LOSS_BAD = 0.05              # >5% packet loss -> step down
@@ -66,6 +76,11 @@ class AdaptiveBitrateController:
     # current send rate, so an estimate latched at this floor can never rise
     # on its own — the stream pins at 250kbps forever on a perfect link.
     REMB_FLOOR = 250_000
+    # The latched estimate doesn't sit exactly at the floor — the journal shows
+    # 256k–308k on a clean LAN. Anything up to this multiple of the floor on a
+    # clean link is treated as "floored/unreliable", not as a real constraint.
+    # (Before: 256k read as constrained -> step-down 5 s after every step-up.)
+    REMB_FLOOR_TOLERANCE = 1.6
 
     def __init__(self, session_id: str, pc, video_track, logger=None,
                  on_change: Optional[Callable] = None):
@@ -81,6 +96,9 @@ class AdaptiveBitrateController:
         self._manual_tier: Optional[str] = None   # None = auto/adaptive
         self._good_since: Optional[float] = None
         self._last_change = 0.0
+        self._last_step_down = 0.0
+        self._bad_ticks = 0          # consecutive "bad" evaluations
+        self._remb_bad_ticks = 0     # consecutive REMB-only "constrained" evaluations
         self._task: Optional[asyncio.Task] = None
         self._running = False
 
@@ -260,6 +278,13 @@ class AdaptiveBitrateController:
         except Exception as e:
             self.logger.error(f"[ABR] {self.session_id}: control loop error: {e}")
 
+    def _step_up_hold(self, now: float) -> float:
+        """Sustained-good time required before stepping up. Longer right after
+        a step-down so a marginal link settles instead of flapping."""
+        if now - self._last_step_down < 60.0:
+            return self.STEP_UP_HOLD_AFTER_DOWN
+        return self.STEP_UP_HOLD
+
     def _evaluate(self, loss: float, rtt: float, observed) -> None:
         now = time.monotonic()
         cap = self.current_tier.bitrate
@@ -270,7 +295,8 @@ class AdaptiveBitrateController:
         # the receiver sees real throughput and its estimate can unlatch; if
         # the link genuinely can't take it, loss appears and `bad` steps down.
         clean_link = loss < self.LOSS_GOOD and rtt < self.RTT_GOOD
-        remb_floored = (observed is not None and observed <= self.REMB_FLOOR
+        remb_floored = (observed is not None
+                        and observed <= self.REMB_FLOOR * self.REMB_FLOOR_TOLERANCE
                         and self._media_confirmed and clean_link)
         if remb_floored:
             self._set_encoder_bitrate(cap)
@@ -282,30 +308,46 @@ class AdaptiveBitrateController:
         remb_headroom = (observed is None or remb_floored
                          or observed >= cap * self.BITRATE_HEADROOM)
 
-        bad = (loss > self.LOSS_BAD) or (rtt > self.RTT_BAD) or remb_constrained
+        net_bad = (loss > self.LOSS_BAD) or (rtt > self.RTT_BAD)
+        bad = net_bad or remb_constrained
         good = (self._media_confirmed and loss < self.LOSS_GOOD
                 and rtt < self.RTT_GOOD and remb_headroom)
+
+        # Debounce counters (consecutive ticks).
+        self._bad_ticks = self._bad_ticks + 1 if bad else 0
+        self._remb_bad_ticks = (self._remb_bad_ticks + 1
+                                if (remb_constrained and not net_bad) else 0)
 
         # If aiortc's REMB pushed target_bitrate ABOVE our tier cap (good network
         # but our tier wants a lower ceiling), re-assert the cap.
         if observed is not None and observed > cap:
             self._set_encoder_bitrate(cap)
 
-        # Step down immediately on bad network.
+        # Step down on sustained bad network (or an outright collapse).
         if bad and self._tier_idx > 0:
-            if now - self._last_change >= self.CHANGE_COOLDOWN:
+            if net_bad:
+                confirmed = (loss > self.LOSS_SEVERE
+                             or self._bad_ticks >= self.BAD_TICKS_TO_STEP_DOWN)
+            else:
+                confirmed = self._remb_bad_ticks >= self.REMB_BAD_TICKS_TO_STEP_DOWN
+            if confirmed and now - self._last_change >= self.CHANGE_COOLDOWN:
                 self._tier_idx -= 1
                 self._good_since = None
+                self._bad_ticks = 0
+                self._remb_bad_ticks = 0
+                self._last_step_down = now
+                obs_k = f"{observed // 1000}k" if observed else "none"
                 self._apply_tier(
                     self.current_tier,
-                    reason=f"step-down (loss={loss:.1%} rtt={rtt * 1000:.0f}ms)")
+                    reason=(f"step-down (loss={loss:.1%} rtt={rtt * 1000:.0f}ms "
+                            f"remb={obs_k})"))
             return
 
         # Step up only after sustained good conditions.
         if good and self._tier_idx < len(TIERS) - 1:
             if self._good_since is None:
                 self._good_since = now
-            elif (now - self._good_since >= self.STEP_UP_HOLD
+            elif (now - self._good_since >= self._step_up_hold(now)
                   and now - self._last_change >= self.CHANGE_COOLDOWN):
                 self._tier_idx += 1
                 self._good_since = None
