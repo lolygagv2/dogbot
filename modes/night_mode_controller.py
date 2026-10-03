@@ -37,10 +37,16 @@ LOW_THRESHOLD_LUX = 5.0           # Below this -> dark (day->night entry, sensit
 # decides it's dark; the NoIR camera sees that IR and libcamera computes Lux from
 # total photon counts INCLUDING IR contribution. Without a high exit threshold the
 # illuminator turning on would push measured lux to ~30-60 and bounce us back to day
-# mode, causing oscillation. Real daylight delivers 500-10000+ lux, so 100 is a safe
-# margin that filters out illuminator-driven IR contamination but trips on sunrise.
-HIGH_THRESHOLD_LUX = 100.0
+# mode, causing oscillation. Real daylight delivers 500-10000+ lux... but an
+# ordinary lit room through this wide lens reads only 85-120 (tb5, 2026-10-03,
+# daytime, lights on). At 100 the robot sat in night mode all morning with the
+# feed black-and-white. 70 still clears the illuminator's 30-60 contamination.
+HIGH_THRESHOLD_LUX = 70.0
 CONFIRM_COUNT = 3                 # Consecutive readings before switching (60s at 20s poll)
+# No day->night entry this soon after start: the 2026-10-03 false night entry
+# fired 42 s after boot on lux=1.5 (AE still converging / lens not yet
+# exposed), then stuck. Night->day and overrides are unaffected.
+STARTUP_GRACE_SEC = 120
 HEARTBEAT_INTERVAL_SEC = 60       # State push to app even with no transition
 AE_SETTLE_SEC = 3.0               # Wait for AE to settle on IR-lit scene before locking
 
@@ -80,6 +86,7 @@ class NightModeController:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._started_at: float = 0.0
         self._lock = threading.RLock()  # reentrant: _transition can re-acquire under set_override
         self._callbacks: List[Callable[[str, Dict[str, Any]], None]] = []
         self._below_count = 0
@@ -218,6 +225,7 @@ class NightModeController:
         return None
 
     def _monitor_loop(self) -> None:
+        self._started_at = time.time()
         # Small initial delay so detector has time to initialize
         self._stop_event.wait(2.0)
 
@@ -253,6 +261,10 @@ class NightModeController:
             pass
 
         if self.current_mode == 'day' and self._below_count >= CONFIRM_COUNT:
+            if time.time() - self._started_at < STARTUP_GRACE_SEC:
+                logger.info(f"NightMode: dark readings during startup grace ignored (lux={lux:.1f})")
+                self._below_count = 0
+                return
             self._transition('night', reason=f'lux={lux:.1f} below {LOW_THRESHOLD_LUX} x{CONFIRM_COUNT}')
             self._below_count = 0
         elif self.current_mode == 'night' and self._above_count >= CONFIRM_COUNT:
