@@ -17,6 +17,13 @@
 - [x] **RTC batteries installed fleet-wide** (Aug 2026) — cross-boot timestamps are now trustworthy; retire the old "never trust cross-boot timestamps" caveat.
 - [x] **treatbot2 dispenser** — root cause was a bad crimp on a stepper coil wire (repaired); the TMC2209 chip was fine.
 
+### Live verification needed (fixed in code 2026-10-03, service NOT yet restarted — Morgan: `sudo systemctl restart treatbot.service`)
+- [ ] **Video aspect flapping** — ABR Low tier was 640x480 (4:3) + REMB-floor misread flipped tiers every 5-15 s (751fe5b). Verify: live video on LAN, `journalctl -f | grep ABR` settles at high and stays; view keeps one shape. If the app still resizes, ask app Claude whether the video container follows track dimensions (should be a fixed 16:9 letterbox).
+- [ ] **"Dog"+"Elsa" double box** — tracker dedupe self-defeat + tag-0 falsy bugs (d3d2dc6). Verify in COACH with tag hidden half the time.
+- [ ] **Gimbal oscillation / legs cut off** — new framing controller in `pan_tilt.py` (8510ad9). Verify: Elsa walks toward camera, `journalctl -f | grep -i reframe` shows ≤1 reversal per approach. Kill switch: `POST /camera/manual_control {"active": true}`.
+- [ ] **Coach SIT recall** — behavior routing by dog_index, no cached re-publish, relaxed clip skip, geometric SIT override, spin gate 4 frames (a9277f9). Verify ×10 sits at 1.5–3 m, expect ≥8 rewarded and "sit" label on her box. Retrain LSTM ONLY if still poor after this.
+- [ ] **Battery %** — Li-ion SoC curve + single formula + tb5 factor 58.21 (DMM 15.60 V vs adc 0.268) (cc2963a). HARDWARE: third upward recal in 5 months on tb5 → inspect/replace divider resistors + sense connector. Verify `/battery/status` ≈ DMM; app % == robot %.
+
 ### Validation (blocking "done" claims)
 - [ ] **Mission Scheduler** — validate auto-start, time-window enforcement, once/daily/weekly logic (implemented, never tested)
 - [ ] **Weekly Summary** accuracy — verify before it becomes an owner/investor metric

@@ -240,6 +240,14 @@
          test_wifi_network_cancel.py    # Network cancel: raise_local_ap sticky + breadcrumb, /run/wimz/net-cancel flag consumption (2026-09-25). Standalone.
       vision/
          test_camera_*.py
+      streaming/
+         test_abr_hysteresis.py     # ABR anti-flap: 16:9 tiers, REMB floor band, step-down debounce, post-down hold (2026-10-03). Standalone.
+      core/
+         test_dog_tracker_dedupe.py # One box per dog: persistence re-match keeps id_method, generic-twin cleanup, ArUco tag 0 (2026-10-03). Standalone.
+      motion/
+         test_pan_tilt_framing.py   # Coach framing: no top/bottom limit cycle, fit check, one step per new bbox, target selection (2026-10-03). Fake servo; standalone.
+      power/
+         test_battery_soc_curve.py  # 4S Li-ion SoC table endpoints/midpoints/monotonic (2026-10-03). Standalone.
       test_behavior_fusion.py
       test_bark_quiet_training.py
       test_bark_classifier.py
