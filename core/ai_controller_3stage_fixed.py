@@ -70,6 +70,11 @@ class BehaviorResult:
     behavior: str
     confidence: float
     timestamp: float
+    # Index into the detections list this result belongs to. Stage 3 skips
+    # dogs (invalid pose, clipped box, cooldown), so the position in the
+    # behaviors list is NOT the detection index — routing by list position
+    # put Elsa's behavior on the other box (2026-10-03).
+    dog_index: int = -1
 
 class AI3StageControllerFixed:
     """3-Stage AI controller using working HEF direct API"""
@@ -422,7 +427,13 @@ class AI3StageControllerFixed:
                 # Log periodically to show rate limiting is working
                 if self._inference_skip_count % 100 == 0:
                     logger.debug(f"Hailo rate limit: skipped {self._inference_skip_count} inference calls, using cache")
-                return self._cached_result
+                # Detections/poses are fine to repeat (overlay, tracking); the
+                # behaviors are NOT: the detector loop runs ~20 Hz and every
+                # cached tick re-published the same BehaviorResult as a fresh
+                # event, so a single inference satisfied the interpreter's
+                # 2-event debounce and flicker reset the hold timer (2026-10-03).
+                cached_dets, cached_poses, _ = self._cached_result
+                return (cached_dets, cached_poses, [])
 
             # Run inference (rate limit passed)
             self._last_inference_time = current_time
@@ -831,7 +842,7 @@ class AI3StageControllerFixed:
                 for i, pose in enumerate(poses):
                     behavior = self._classify_pose_heuristic(pose.keypoints)
                     if behavior and self._check_cooldown(behavior, i):
-                        behaviors.append(BehaviorResult(behavior, 0.8, current_time))
+                        behaviors.append(BehaviorResult(behavior, 0.8, current_time, dog_index=dog_idx))
                         self._update_cooldown(behavior, i)
 
             return behaviors
@@ -951,8 +962,15 @@ class AI3StageControllerFixed:
                 if dog_idx < len(current_poses) and current_poses[dog_idx] is not None:
                     _det = current_poses[dog_idx].detection
                     _clip = 8  # px, same margin as the pan_tilt clip-reframe
-                    if _det.y1 <= _clip or _det.y2 >= self.input_size[1] - _clip:
-                        logger.debug(f"Skipping dog {dog_idx}: bbox clipped at frame edge")
+                    _clipped = _det.y1 <= _clip or _det.y2 >= self.input_size[1] - _clip
+                    _box_h = _det.y2 - _det.y1
+                    # Only skip when the VISIBLE part is small (< half the
+                    # frame): a tall sitting dog that merely touches an edge is
+                    # still classifiable. The blanket skip starved stage 3 —
+                    # 467 clipped skips vs ~100 classifications in the Sep 20-22
+                    # coach sessions (2026-10-03).
+                    if _clipped and _box_h < 0.5 * self.input_size[1]:
+                        logger.debug(f"Skipping dog {dog_idx}: bbox clipped at frame edge (h={_box_h:.0f})")
                         continue
 
                 if not self._force_geometric:
@@ -1044,6 +1062,27 @@ class AI3StageControllerFixed:
                         classification_method = "lstm"
                         # Cross behavior removed from system - no post-processing needed
 
+                # SIT override: the LSTM on this camera is biased toward 'stand'
+                # — Sep 20-22 logs: "stand lstm" 58x vs "sit lstm" 3x, with
+                # stand@0.98 at aspect 1.16-1.26, squarely in the geometric sit
+                # band — and the geometric classifier was never consulted while
+                # the LSTM was confident. Sit is the static, easy class: when the
+                # box is sit-shaped and geometry says sit, geometry wins.
+                if (classification_method == "lstm" and behavior_name in ("stand", "sit")
+                        and dog_idx < len(current_poses) and current_poses[dog_idx] is not None):
+                    _p = current_poses[dog_idx]
+                    _d = _p.detection
+                    _aspect = (_d.y2 - _d.y1) / max(_d.x2 - _d.x1, 1)
+                    if _aspect >= 1.15:
+                        _geo_b, _geo_c, _geo_m = self.geometric_classifier.classify(
+                            _p.keypoints, (_d.x1, _d.y1, _d.x2, _d.y2), f"dog_{dog_idx}")
+                        if _geo_b == "sit" and _geo_c >= 0.6:
+                            logger.debug(f"Dog {dog_idx}: SIT override (lstm={behavior_name}@{max_prob:.2f}, "
+                                         f"aspect={_aspect:.2f}, geo sit@{_geo_c:.2f})")
+                            behavior_name = "sit"
+                            max_prob = max(_geo_c, max_prob if behavior_name == "sit" else 0.0)
+                            classification_method = f"geometric_sit_override_{_geo_m}"
+
                 # Process the behavior if we have one
                 if behavior_name is not None:
                     if behavior_name != "spin":
@@ -1061,8 +1100,8 @@ class AI3StageControllerFixed:
                         if classification_method == "lstm":
                             streak = self._lstm_spin_streak.get(dog_idx, 0) + 1
                             self._lstm_spin_streak[dog_idx] = streak
-                            if streak < 2:
-                                logger.debug(f"Dog {dog_idx}: single-frame LSTM spin — awaiting confirmation")
+                            if streak < 4:  # was 2: still latched false spins on a stationary dog (Sep 22)
+                                logger.debug(f"Dog {dog_idx}: LSTM spin streak {streak}/4 — awaiting confirmation")
                                 continue
                         logger.debug("Spin bypasses temporal voting")
                     elif self._temporal_voting_enabled:
@@ -1082,7 +1121,7 @@ class AI3StageControllerFixed:
 
                     # Check cooldown
                     if self._check_cooldown(behavior_name, dog_idx):
-                        behaviors.append(BehaviorResult(behavior_name, max_prob, current_time))
+                        behaviors.append(BehaviorResult(behavior_name, max_prob, current_time, dog_index=dog_idx))
                         self._update_cooldown(behavior_name, dog_idx)
                         logger.debug(f"Behavior: {behavior_name} (conf={max_prob:.2f}, method={classification_method})")
 

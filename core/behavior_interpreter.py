@@ -59,6 +59,7 @@ class BehaviorInterpreter:
         self._last_confidence: float = 0.0
         self._behavior_start_time: float = 0.0
         self._last_update_time: float = 0.0
+        self._last_dog_name: Optional[str] = None  # who the current behavior belongs to
         self._reset_timestamp: float = 0.0  # Track when reset was called (for stale event filtering)
 
         # Behavior debouncing: require consecutive different-behavior detections
@@ -150,9 +151,11 @@ class BehaviorInterpreter:
 
             if behavior:
                 # Pass event timestamp to filter out stale threaded callbacks
-                self._update_detection(behavior, confidence, event.timestamp)
+                self._update_detection(behavior, confidence, event.timestamp,
+                                       dog_name=event.data.get('dog_name'))
 
-    def _update_detection(self, behavior: str, confidence: float, event_timestamp: float = None):
+    def _update_detection(self, behavior: str, confidence: float, event_timestamp: float = None,
+                          dog_name: Optional[str] = None):
         """Update current detection state
 
         Args:
@@ -173,11 +176,14 @@ class BehaviorInterpreter:
             threshold = self.confidence_thresholds.get(behavior, 0.7)
 
             if confidence >= threshold:
+                if dog_name:
+                    self._last_dog_name = str(dog_name).lower()
                 # SPIN LATCH: Once spin is detected, don't let sit/stand/lie overwrite it
-                # for a short window (spin is instant, dog often lands in sit afterward)
+                # for a short window (spin is instant, dog often lands in sit afterward).
+                # 2.0 -> 1.0 s (2026-10-03): a false spin cost two seconds of sit.
                 if self._last_behavior == 'spin':
                     spin_age = now - self._behavior_start_time
-                    if spin_age < 2.0 and behavior in ['sit', 'stand', 'lie']:
+                    if spin_age < 1.0 and behavior in ['sit', 'stand', 'lie']:
                         # Keep the spin, ignore the follow-up pose
                         logger.debug(f"Spin latch: ignoring {behavior} after spin ({spin_age:.1f}s ago)")
                         return
@@ -267,6 +273,7 @@ class BehaviorInterpreter:
             old_behavior = self._last_behavior
             old_hold = time.time() - self._behavior_start_time if self._behavior_start_time > 0 else 0
             self._last_behavior = None
+            self._last_dog_name = None
             self._behavior_start_time = 0.0
             self._last_confidence = 0.0
             self._last_update_time = 0.0
@@ -283,7 +290,9 @@ class BehaviorInterpreter:
 
         Args:
             trick_name: Name of trick ('sit', 'laydown', 'come', etc.)
-            dog_id: Ignored (kept for API compatibility)
+            dog_id: Dog name the session is coaching. When both the session
+                    and the detection carry a name and they differ, the
+                    behavior is another dog's and does not count.
 
         Returns:
             TrickCheckResult with completion status
@@ -304,6 +313,15 @@ class BehaviorInterpreter:
 
             if not self._last_behavior:
                 return TrickCheckResult(completed=False, reason="No behavior detected")
+
+            # Identity gate (only when both sides know who they're talking about)
+            if dog_id and self._last_dog_name and str(dog_id).lower() != self._last_dog_name:
+                return TrickCheckResult(
+                    completed=False,
+                    behavior_detected=self._last_behavior,
+                    confidence=self._last_confidence,
+                    reason=f"Behavior belongs to {self._last_dog_name}, coaching {dog_id}"
+                )
 
             # Check behavior matches
             valid = [required] + alternatives

@@ -1066,7 +1066,13 @@ class DetectorService:
 
         # Process behaviors if available (BehaviorResult dataclass)
         if behaviors:
-            for i, behavior in enumerate(behaviors):
+            for pos, behavior in enumerate(behaviors):
+                # Route by the detection index stage 3 stamped on the result —
+                # NOT the list position (stage 3 skips dogs, so positions
+                # shift and the label landed on the wrong box; 2026-10-03).
+                i = getattr(behavior, 'dog_index', -1)
+                if i < 0:
+                    i = pos
                 # Use stable identity (already cached from dog detection loop above)
                 dog_id = f"dog_{i}"
                 dog_name = self._dog_identity_cache.get(i)
