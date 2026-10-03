@@ -65,8 +65,12 @@ servo:
 # Re-calibrated 2026-07-25: DMM 16.23V, A0 read 0.292V → factor = 55.58.
 # NOTE: +8.4% drift since May on the same unit — if the next calibration drifts
 # again, suspect the divider resistors or a corroding sense connection, not the math.
+# Re-calibrated 2026-10-03: DMM 15.60V, A0 read 0.268V → factor = 58.21 (+4.7% since July).
+# THIRD recal in 5 months, always upward: the divider/sense path IS drifting —
+# inspect/replace the resistors + sense connector on this unit. Raw adc now
+# logged every minute (journal "adc=") so the next check needs no DMM.
 battery:
-  calibration_factor: 55.58
+  calibration_factor: 58.21
 
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:

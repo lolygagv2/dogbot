@@ -1849,8 +1849,8 @@ class TreatBotWebSocketServer:
 
             # Get battery percentage
             battery_voltage = state.get("hardware", {}).get("battery_voltage", 0)
-            battery_pct = ((battery_voltage - 12.0) / 4.8 * 100) if battery_voltage else 0
-            battery_pct = min(100, max(0, battery_pct))
+            from services.power.battery_monitor import BatteryMonitorService
+            battery_pct = BatteryMonitorService.voltage_to_percentage(battery_voltage)
 
             # Map internal mode to contract mode
             mode_map = {
@@ -2042,8 +2042,11 @@ class TreatBotWebSocketServer:
         # Contract format: battery_status
         elif event.subtype == "battery_status":
             voltage = event.data.get("voltage", 0)
-            pct = ((voltage - 12.0) / 4.8 * 100) if voltage else 0
-            pct = min(100, max(0, pct))
+            # Prefer the monitor's own number; it is the same curve anyway.
+            pct = event.data.get("percentage")
+            if pct is None:
+                from services.power.battery_monitor import BatteryMonitorService
+                pct = BatteryMonitorService.voltage_to_percentage(voltage)
             await self._broadcast_contract_event("battery", {
                 "level": round(pct, 1),
                 "voltage": round(voltage, 2),

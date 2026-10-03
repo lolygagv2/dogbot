@@ -5913,8 +5913,8 @@ async def telemetry_contract():
     dispenser = get_dispenser_service()
 
     # Get battery info
-    battery_pct = (state.hardware.battery_voltage - 12.0) / 4.8 * 100 if state.hardware.battery_voltage else 0
-    battery_pct = min(100, max(0, battery_pct))
+    from services.power.battery_monitor import BatteryMonitorService
+    battery_pct = BatteryMonitorService.voltage_to_percentage(state.hardware.battery_voltage)
 
     # Get treat count from dispenser
     treats_remaining = 0

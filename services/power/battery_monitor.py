@@ -34,12 +34,21 @@ class BatteryMonitorService:
     # Updated 2026-01-05: Recalibrated voltage divider factor
     CALIBRATION_FACTOR = 4.308
 
-    # 4S LiPo voltage thresholds
-    VOLTAGE_MIN = 12.0      # Empty (3.0V per cell)
+    # 4S Li-ion voltage thresholds
+    VOLTAGE_MIN = 13.2      # Empty (3.3V per cell) — was 12.0 (3.0V/cell is below any sane cutoff)
     VOLTAGE_NOMINAL = 14.8  # Nominal (3.7V per cell)
     VOLTAGE_MAX = 16.8      # Full (4.2V per cell)
     VOLTAGE_CRITICAL = 12.8 # Critical low (3.2V per cell)
     VOLTAGE_LOW = 13.6      # Low warning (3.4V per cell)
+
+    # Resting-voltage -> state-of-charge for a 4S Li-ion pack. The old straight
+    # line from 12.0 V to 16.8 V put 14.98 V at 62% and 15.6 V at 75%; the real
+    # curve is flat through the middle, so those are ~45% and ~68%. Pairs are
+    # (volts, percent), ascending; linear interpolation between points.
+    SOC_CURVE = (
+        (13.2, 0), (13.6, 5), (14.0, 10), (14.4, 20), (14.8, 35),
+        (15.2, 50), (15.6, 68), (16.0, 80), (16.4, 90), (16.8, 100),
+    )
 
     # I2C address for ADS1115
     I2C_ADDRESS = 0x48
@@ -176,15 +185,30 @@ class BatteryMonitorService:
             self.logger.error(f"Battery read error: {e}")
             return self.voltage  # Return last known value
 
+    @classmethod
+    def voltage_to_percentage(cls, voltage: float) -> int:
+        """Pack voltage -> state of charge (0-100) on the 4S Li-ion curve.
+
+        THE single formula. Telemetry publishers (relay status, local WS,
+        /telemetry/contract) call this instead of re-deriving their own line
+        from the voltage, so the app can never disagree with /battery/status.
+        """
+        if not voltage:
+            return 0
+        curve = cls.SOC_CURVE
+        if voltage <= curve[0][0]:
+            return 0
+        if voltage >= curve[-1][0]:
+            return 100
+        for (v0, p0), (v1, p1) in zip(curve, curve[1:]):
+            if v0 <= voltage <= v1:
+                pct = p0 + (voltage - v0) / (v1 - v0) * (p1 - p0)
+                return int(max(0, min(100, round(pct))))
+        return 0
+
     def _calculate_percentage(self, voltage: float) -> int:
         """Calculate battery percentage from voltage"""
-        if voltage <= self.VOLTAGE_MIN:
-            return 0
-        elif voltage >= self.VOLTAGE_MAX:
-            return 100
-        else:
-            pct = (voltage - self.VOLTAGE_MIN) / (self.VOLTAGE_MAX - self.VOLTAGE_MIN) * 100
-            return int(max(0, min(100, pct)))
+        return self.voltage_to_percentage(voltage)
 
     def _check_warnings(self) -> None:
         """Check for low battery warnings"""
@@ -325,9 +349,13 @@ class BatteryMonitorService:
                 self._check_warnings()
                 self._check_charging()
 
-                # Log periodically
+                # Log periodically — WITH the raw ADC reading, so the next
+                # divider drift is visible in the journal without a DMM
+                # (factor needed = DMM volts / adc). Drifted +8.4% May->Jul
+                # and +4.7% Jul->Oct on tb5 (2026-10-03).
                 if int(time.time()) % 60 == 0:  # Every minute
-                    self.logger.debug(f"Battery: {self.voltage:.2f}V ({self.percentage}%)")
+                    self.logger.debug(f"Battery: {self.voltage:.2f}V ({self.percentage}%) "
+                                      f"adc={self.adc_voltage:.4f}V factor={self.calibration_factor:.2f}")
 
                 # Send battery telemetry every 30 seconds for app display
                 now = time.time()
@@ -337,6 +365,7 @@ class BatteryMonitorService:
                     publish_system_event('battery_status', {
                         'percentage': self.percentage,
                         'voltage': self.voltage,
+                        'adc_voltage': self.adc_voltage,
                         'charging': self.charging_detected,
                         'mode': current_mode,
                     }, 'battery_monitor')
