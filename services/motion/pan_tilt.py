@@ -38,6 +38,11 @@ class PanTiltService:
         self.last_detection_time = 0.0
         self.lost_target_time = 3.0  # seconds before starting scan
         self._edge_stable_since = None  # Track when dog first reached frame edge (for nudge tracking)
+        self._active_reframe = None     # 'top' | 'bottom' | None — hysteresis state
+        self._last_track_move_time = 0.0
+        self._last_tilt_dir = 0.0       # +1 view down, -1 view up
+        self._last_tilt_move_time = 0.0
+        self.target_identified = False  # current target carries a dog identity
 
         # PID parameters
         self.pid_params = {
@@ -246,125 +251,158 @@ class PanTiltService:
             except Exception as e:
                 self.logger.error(f"Control loop error: {e}")
 
+    # --- Coach/Mission framing controller (rewritten 2026-10-03) -------------
+    # The 2026-07-25 nudge loop tilted toward whichever frame edge the box
+    # touched, at a fixed 6 deg/s, at 20 Hz, on a bbox that only updates at
+    # <=5 Hz and was kept for 3 s. With no fit check, no hysteresis and no
+    # stop condition, a dog taller than ~90% of the frame drove a limit cycle
+    # (journal 2026-09-22 10:37: bottom-clipped -> tilt 90->59, top-clipped ->
+    # 60->72, bottom -> 61->33 ...). Rules now:
+    #   * one step per NEW bbox, never on a stale one;
+    #   * a framing TARGET (bottom edge at 90% of the frame when the legs are
+    #     cut off, box centre otherwise) with a proportional, rate-capped step;
+    #   * hysteresis: a reframe starts at the 8 px margin and stops once the
+    #     edge is >= 40 px clear; 1 s lockout after a direction reversal;
+    #   * paws beat head: when the dog is too tall to fit, hold still rather
+    #     than chase the head (stage 3 needs the legs for sit/down).
+    CLIP_START_PX = 8          # edge margin that starts a reframe
+    CLIP_CLEAR_PX = 40         # edge margin that ends it (hysteresis)
+    FIT_FRACTION = 0.85        # box taller than this * frame -> can't be framed, hold
+    BOTTOM_TARGET_FRACTION = 0.90   # where we want the bottom edge when legs were clipped
+    REFRAME_STALE_S = 0.5      # don't act on a bbox older than this
+    EDGE_DWELL_S = 0.5         # dog must be at the edge this long before we move
+    REVERSAL_LOCKOUT_S = 1.0   # no move in the opposite tilt direction sooner than this
+    MAX_REFRAME_DEG_S = 6.0    # rate cap while fixing a clipped edge
+    MAX_NUDGE_DEG_S = 3.0      # rate cap for ordinary re-centring
+    DEG_PER_PX = 0.08          # ~50 deg vertical FOV over the 640 px AI frame
+    PROPORTIONAL_GAIN = 0.5    # fraction of the remaining error to take per step
+
     def _handle_coach_mode(self, dt: float) -> None:
-        """Handle tracking in coaching mode - gentle nudge tracking only
-
-        Uses gentle "nudge" mode instead of aggressive PID tracking.
-        Only adjusts camera if dog is near frame edge AND has been there for 500ms+.
-        Max movement speed: 2 degrees/second to prevent jerky motion.
-
-        This allows the camera to gently re-center a sitting/lying dog without
-        the oscillation and jerkiness of full PID tracking.
-
-        Auto-enables tracking in COACH mode (user can still disable via settings).
-        """
-        # Respect app tracking toggle — if user turned it off, don't nudge
+        """Keep the whole dog in frame in COACH/MISSION (gentle, non-oscillating)."""
         if not self.tracking_enabled:
             return
 
         now = time.time()
 
-        # No target or stale target - hold position (don't scan)
-        if not self.target_position or (now - self.last_detection_time) > self.lost_target_time:
-            self._edge_stable_since = None  # Reset edge tracking
+        # No target, or target too old: hold position (never scan).
+        if not self.target_position or (now - self.last_detection_time) > self.REFRAME_STALE_S:
+            self._edge_stable_since = None
+            self._active_reframe = None
+            return
+
+        # One step per new detection — the bbox the last move was based on is
+        # already stale (the camera moved), acting on it again is overshoot.
+        if self.last_detection_time <= self._last_track_move_time:
             return
 
         target_x, target_y = self.target_position
         center_x, center_y = self.frame_center
-
-        # Calculate how far from center the dog is (as fraction of frame)
+        H, W = self.frame_height, self.frame_width
         error_x = target_x - center_x
         error_y = target_y - center_y
+        edge_threshold_x = W * 0.25
+        edge_threshold_y = H * 0.25
 
-        # Edge zone = outer 25% of frame on each side
-        # Dog must be in this zone before we consider nudging
-        edge_threshold_x = self.frame_width * 0.25
-        edge_threshold_y = self.frame_height * 0.25
+        # --- vertical: decide how many pixels the VIEW should move down (+) ---
+        tilt_px = 0.0
+        reframing = False
+        bbox = self.target_bbox
+        if bbox:
+            x1, y1, x2, y2 = bbox
+            box_h = y2 - y1
+            top_clear = y1
+            bottom_clear = H - y2
+            fits = box_h < self.FIT_FRACTION * H
 
-        # Bbox clipped at the top/bottom frame edge = dog partially out of
-        # view. A close dog can be bottom-clipped (legs cut off) while its
-        # CENTER still sits inside the edge zone, so the center-based check
-        # alone never fires — exactly the case where the behavior classifier
-        # produces nothing and coach sessions time out (diagnosed 2026-07-25).
-        clipped_bottom = clipped_top = False
-        if self.target_bbox:
-            clip_margin = 8  # px
-            clipped_top = self.target_bbox[1] <= clip_margin
-            clipped_bottom = self.target_bbox[3] >= self.frame_height - clip_margin
-            if clipped_top and clipped_bottom:
-                # Dog overflows both edges — tilting can't help either way
-                clipped_top = clipped_bottom = False
+            # Hysteresis: continue an active reframe until its edge is clear.
+            active = self._active_reframe
+            if active == 'bottom' and bottom_clear >= self.CLIP_CLEAR_PX:
+                active = None
+            elif active == 'top' and top_clear >= self.CLIP_CLEAR_PX:
+                active = None
 
-        dog_at_edge = (abs(error_x) > edge_threshold_x) or (abs(error_y) > edge_threshold_y
-                       ) or clipped_bottom or clipped_top
+            if not fits:
+                # Too tall to frame: hold. Chasing the head is what oscillated.
+                active = None
+            elif active is None:
+                if bottom_clear <= self.CLIP_START_PX:
+                    active = 'bottom'
+                elif top_clear <= self.CLIP_START_PX and box_h < 0.7 * H:
+                    # Only fix a clipped head when there is clear room to do
+                    # so without pushing the paws out (paws have priority).
+                    active = 'top'
+            self._active_reframe = active
 
-        if not dog_at_edge:
-            # Dog is comfortably centered - reset edge tracking, no nudge needed
+            if active == 'bottom':
+                # Want the bottom edge at 90% of the frame: move view down.
+                tilt_px = y2 - self.BOTTOM_TARGET_FRACTION * H
+                reframing = True
+            elif active == 'top':
+                # Want the top edge at 10% of the frame: move view up.
+                tilt_px = -(0.1 * H - y1)
+                reframing = True
+            elif fits and abs(error_y) > edge_threshold_y:
+                tilt_px = error_y
+        elif abs(error_y) > edge_threshold_y:
+            tilt_px = error_y
+
+        pan_needed = abs(error_x) > edge_threshold_x
+        if not pan_needed and abs(tilt_px) < 1.0:
             self._edge_stable_since = None
             return
 
-        # Dog is at edge - track how long it's been there
-        if not hasattr(self, '_edge_stable_since') or self._edge_stable_since is None:
+        # Dwell: the dog must sit at the edge for a moment, not just pass through.
+        if self._edge_stable_since is None:
             self._edge_stable_since = now
-            return  # Just started being at edge - wait
-
-        time_at_edge = now - self._edge_stable_since
-
-        # Only nudge if dog has been at edge for 500ms+ (not just passing through)
-        if time_at_edge < 0.5:
+            return
+        if now - self._edge_stable_since < self.EDGE_DWELL_S:
             return
 
-        # Calculate nudge direction and amount
-        # Max 2 degrees per second, scaled by dt
-        max_nudge = 2.0 * dt  # degrees this frame
-        # Clip-reframe is faster (6 deg/s): the coach watch window is only
-        # ~10s and a bottom-clipped dog is typically 8-15 degrees out of view
-        max_reframe = 6.0 * dt
+        elapsed = max(0.05, min(1.0, now - self._last_track_move_time))
 
+        # --- pan: proportional toward the dog, rate-capped ---
         nudge_pan = 0.0
+        if pan_needed:
+            step = min(abs(error_x) * self.DEG_PER_PX * self.PROPORTIONAL_GAIN,
+                       self.MAX_NUDGE_DEG_S * elapsed)
+            # Dog right of centre -> pan right = decrease pan (existing convention)
+            nudge_pan = -step if error_x > 0 else step
+
+        # --- tilt: proportional toward the framing target, rate-capped ---
         nudge_tilt = 0.0
+        if abs(tilt_px) >= 1.0:
+            rate = self.MAX_REFRAME_DEG_S if reframing else self.MAX_NUDGE_DEG_S
+            step = min(abs(tilt_px) * self.DEG_PER_PX * self.PROPORTIONAL_GAIN,
+                       rate * elapsed)
+            direction = 1.0 if tilt_px > 0 else -1.0   # +1 = view down
+            # Reversal lockout: don't flip tilt direction within 1 s.
+            if (self._last_tilt_dir and direction != self._last_tilt_dir
+                    and now - self._last_tilt_move_time < self.REVERSAL_LOCKOUT_S):
+                step = 0.0
+            if step > 0:
+                nudge_tilt = direction * self._tilt_down_sign * step
+                self._last_tilt_dir = direction
+                self._last_tilt_move_time = now
 
-        # Pan nudge (horizontal)
-        if abs(error_x) > edge_threshold_x:
-            # Nudge toward the dog (reduce error)
-            if error_x > 0:
-                nudge_pan = -min(max_nudge, 0.5)  # Dog is right, pan right (decrease pan)
-            else:
-                nudge_pan = min(max_nudge, 0.5)   # Dog is left, pan left (increase pan)
+        if abs(nudge_pan) < 0.01 and abs(nudge_tilt) < 0.01:
+            return
 
-        # Tilt nudge (vertical). _tilt_down_sign maps "camera down" to this
-        # unit's servo direction (tb5: larger tilt = UP, so down = negative).
-        if clipped_bottom:
-            nudge_tilt = self._tilt_down_sign * min(max_reframe, 1.0)   # Legs cut off, tilt down
-        elif clipped_top:
-            nudge_tilt = -self._tilt_down_sign * min(max_reframe, 1.0)  # Head cut off, tilt up
-        elif abs(error_y) > edge_threshold_y:
-            if error_y > 0:
-                nudge_tilt = self._tilt_down_sign * min(max_nudge, 0.3)   # Dog is low, tilt down
-            else:
-                nudge_tilt = -self._tilt_down_sign * min(max_nudge, 0.3)  # Dog is high, tilt up
+        new_pan = max(self.COACH_PAN_LIMITS[0],
+                      min(self.COACH_PAN_LIMITS[1], self.current_pan + nudge_pan))
+        new_tilt = max(self.COACH_TILT_LIMITS[0],
+                       min(self.COACH_TILT_LIMITS[1], self.current_tilt + nudge_tilt))
+        self._move_to_position(new_pan, new_tilt, force=True)
+        self._last_track_move_time = now
 
-        # Apply nudge with COACH mode limits
-        new_pan = self.current_pan + nudge_pan
-        new_tilt = self.current_tilt + nudge_tilt
-
-        # Clamp to coach-safe limits
-        new_pan = max(self.COACH_PAN_LIMITS[0], min(self.COACH_PAN_LIMITS[1], new_pan))
-        new_tilt = max(self.COACH_TILT_LIMITS[0], min(self.COACH_TILT_LIMITS[1], new_tilt))
-
-        # Only send command if actually moving
-        if abs(nudge_pan) > 0.01 or abs(nudge_tilt) > 0.01:
-            self._move_to_position(new_pan, new_tilt, force=True)
-            if clipped_bottom or clipped_top:
-                # INFO (throttled) so clip-reframes are visible in the journal
-                if now - getattr(self, '_last_reframe_log', 0) >= 2.0:
-                    self._last_reframe_log = now
-                    edge = 'bottom' if clipped_bottom else 'top'
-                    self.logger.info(
-                        f"Coach reframe: dog clipped at {edge} edge, tilting "
-                        f"{'down' if clipped_bottom else 'up'} (tilt={self.current_tilt:.0f})")
-            else:
-                self.logger.debug(f"Nudge: pan={nudge_pan:+.2f} tilt={nudge_tilt:+.2f} (edge time: {time_at_edge:.1f}s)")
+        if reframing:
+            if now - getattr(self, '_last_reframe_log', 0) >= 2.0:
+                self._last_reframe_log = now
+                self.logger.info(
+                    f"Coach reframe: {self._active_reframe} edge clipped, tilting "
+                    f"{'down' if tilt_px > 0 else 'up'} {abs(nudge_tilt):.2f} deg "
+                    f"(tilt={self.current_tilt:.0f}, box_h={box_h:.0f}px)")
+        else:
+            self.logger.debug(f"Nudge: pan={nudge_pan:+.2f} tilt={nudge_tilt:+.2f}")
 
     def _handle_silent_guardian_mode(self, dt: float) -> None:
         """Handle camera in Silent Guardian mode - stationary wide shot, no scanning"""
@@ -595,11 +633,24 @@ class PanTiltService:
     def _on_vision_event(self, event) -> None:
         """Handle vision events"""
         if event.subtype == 'dog_detected':
-            # Update target position
             center = event.data.get('center', self.frame_center)
+            identified = bool(event.data.get('dog_name'))
+            now = time.time()
+            # Target selection: one dog, not "whichever event came last". Two
+            # boxes on the same animal (or a second dog) used to alternate the
+            # target and drive the tilt back and forth (2026-10-03).
+            if self.target_position and (now - self.last_detection_time) < 1.0:
+                if self.target_identified and not identified:
+                    return  # keep following the identified dog
+                if not identified:
+                    dx = center[0] - self.target_position[0]
+                    dy = center[1] - self.target_position[1]
+                    if (dx * dx + dy * dy) ** 0.5 > 200:
+                        return  # a different, anonymous box — ignore
             self.target_position = (center[0], center[1])
             self.target_bbox = event.data.get('bbox')  # [x1, y1, x2, y2] or None
-            self.last_detection_time = time.time()
+            self.target_identified = identified
+            self.last_detection_time = now
 
             self.logger.debug(f"Target updated: {self.target_position}")
 
@@ -607,6 +658,7 @@ class PanTiltService:
             # Clear target
             self.target_position = None
             self.target_bbox = None
+            self.target_identified = False
 
     def move_camera(self, pan: Optional[float] = None, tilt: Optional[float] = None,
                     smooth: bool = True) -> bool:
