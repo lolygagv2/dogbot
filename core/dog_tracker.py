@@ -33,6 +33,9 @@ except ImportError:
 class DogTracker:
     """Smart dog tracking with ArUco persistence rules"""
 
+    # id_methods that mean "we positively know who this is"
+    CONFIRMED_METHODS = ('aruco', 'color')
+
     def __init__(self, config: dict):
         """Initialize dog tracker with config"""
         # Rule 1: Confined list of valid dog IDs
@@ -125,7 +128,7 @@ class DogTracker:
 
         # Rule 1: Filter out invalid ArUco IDs — notify app about unknown markers
         valid_markers = [(id, x, y) for id, x, y in aruco_markers if id in self.valid_dog_ids]
-        unknown_markers = [(id, x, y) for id, x, y in aruco_markers if id not in self.valid_dog_ids and id > 0]
+        unknown_markers = [(id, x, y) for id, x, y in aruco_markers if id not in self.valid_dog_ids and id >= 0]
         if unknown_markers:
             self._notify_unknown_markers(unknown_markers, current_time)
 
@@ -149,7 +152,7 @@ class DogTracker:
             # Try to find ArUco marker in this bbox
             dog_id = self._find_marker_in_bbox(bbox, valid_markers)
 
-            if dog_id:
+            if dog_id is not None:  # tag id 0 is a valid marker
                 # Direct ArUco detection - highest confidence
                 dog_name = self.valid_dog_ids[dog_id]
                 assignments[idx] = dog_name
@@ -159,11 +162,7 @@ class DogTracker:
                 # Clear from unidentified tracking (ArUco found!)
                 if idx in self.unidentified_dogs:
                     del self.unidentified_dogs[idx]
-                # Clean up any generic entry for this detection index (prevents duplicate boxes)
-                generic_marker_id = -(idx + 1000)
-                if generic_marker_id in self.last_known_positions:
-                    del self.last_known_positions[generic_marker_id]
-                    self.valid_dog_ids.pop(generic_marker_id, None)
+                self._drop_generic_entries_for(bbox, idx)
 
             else:
                 # No marker found - try color-based identification first
@@ -188,6 +187,7 @@ class DogTracker:
                         )
                         if idx in self.unidentified_dogs:
                             del self.unidentified_dogs[idx]
+                        self._drop_generic_entries_for(bbox, idx)
                         continue  # Skip fallback rules
 
                 # Fallback to persistence rules
@@ -215,11 +215,12 @@ class DogTracker:
                         # Clear from unidentified
                         if idx in self.unidentified_dogs:
                             del self.unidentified_dogs[idx]
+                        self._drop_generic_entries_for(bbox, idx)
                 else:
                     # Before creating a generic entry, check if there's an existing
                     # tracked dog with overlapping bbox (prevents duplicate boxes)
                     existing_dog = self._find_overlapping_tracked_dog(bbox, current_time)
-                    if existing_dog:
+                    if existing_dog is not None:
                         # Reuse existing identity (ArUco-identified dog still in persistence window)
                         dog_name = self.valid_dog_ids.get(existing_dog)
                         if dog_name and not dog_name.startswith("dog_"):
@@ -229,6 +230,7 @@ class DogTracker:
                                 existing_dog, bbox, current_time,
                                 confidence=0.7, id_method="persistence"
                             )
+                            self._drop_generic_entries_for(bbox, idx)
                             continue  # Skip generic fallback
 
                     # No existing identity - store as generic
@@ -283,7 +285,7 @@ class DogTracker:
         # Rule 3: Proximity matching - ONLY if very close to recent ArUco detection
         # Reduced threshold from 200px to 80px to prevent false matches
         closest_dog = self._find_closest_tracked_dog(bbox, current_time, max_distance=80)
-        if closest_dog:
+        if closest_dog is not None:
             # Additional check: only if last ID was ArUco (not persistence)
             tracking = self.last_known_positions.get(closest_dog)
             if tracking and tracking.get('id_method') == 'aruco':
@@ -336,14 +338,11 @@ class DogTracker:
         best_iou = 0.3  # Minimum IoU threshold to consider a match
 
         for dog_id, tracking in self.last_known_positions.items():
-            # Skip generic entries (negative IDs)
-            if dog_id < 0:
+            # Only real identities (generic 'Dog' entries are what we're deduping)
+            if not self._is_named_entry(dog_id):
                 continue
             # Check if tracking is still valid
             if current_time - tracking['time'] > self.persistence_time:
-                continue
-            # Only consider ArUco-identified dogs
-            if tracking.get('id_method') not in ('aruco', 'color'):
                 continue
 
             old_bbox = tracking['bbox']
@@ -376,17 +375,53 @@ class DogTracker:
         """Update persistence tracking for a dog (Rule 2).
         Preserves behavior data set by update_dog_behavior()."""
         existing = self.last_known_positions.get(dog_id, {})
+        # A persistence/IoU re-match refreshes WHERE a confirmed dog is; it must
+        # not demote HOW we know who it is. The April dedupe (0bd343f) rewrote
+        # 'aruco' -> 'persistence' here, after which every "is this box a known
+        # dog?" check skipped the entry and a second "Dog" box was created next
+        # to Elsa (2026-10-03). Keep the confirmed method; record the last match.
+        requested_method = id_method
+        if id_method == "persistence" and existing.get('id_method') in self.CONFIRMED_METHODS:
+            id_method = existing['id_method']
         self.last_known_positions[dog_id] = {
             'time': timestamp,
             'bbox': bbox,
             'confidence': confidence,
             'id_method': id_method,
+            'last_match': requested_method,   # how THIS frame matched (debug/telemetry)
             # Preserve behavior data from update_dog_behavior()
             'behavior': existing.get('behavior', ''),
             'behavior_confidence': existing.get('behavior_confidence', 0.0),
             'keypoints': existing.get('keypoints', []),
         }
         self.active_dogs.add(dog_id)
+
+    def _drop_generic_entries_for(self, bbox: List[float], idx: int):
+        """A box just got a real identity: remove the anonymous 'Dog' entries that
+        describe the same animal (same detection index, or overlapping box).
+        Previously only the direct-ArUco branch did this, so a dog identified by
+        colour, the single-dog rule or IoU reuse kept its 'Dog' twin on screen."""
+        doomed = []
+        for gid, tracking in self.last_known_positions.items():
+            if gid >= 0:
+                continue
+            if gid == -(idx + 1000):
+                doomed.append(gid)
+                continue
+            gb = tracking.get('bbox')
+            if gb and bbox and self._bbox_iou(bbox, gb) > 0.3:
+                doomed.append(gid)
+        for gid in doomed:
+            self.last_known_positions.pop(gid, None)
+            self.valid_dog_ids.pop(gid, None)
+            self.active_dogs.discard(gid)
+
+    def _is_named_entry(self, dog_id: int) -> bool:
+        """True for a tracked entry that carries a real dog identity."""
+        if dog_id < 0:
+            return False
+        name = self.valid_dog_ids.get(dog_id)
+        return bool(name) and not name.startswith("dog_")
 
     def _cleanup_old_tracking(self, current_time: float):
         """Remove expired tracking data"""
@@ -412,7 +447,7 @@ class DogTracker:
         if dog_name:
             # Find marker ID for this dog name
             marker_id = self.dog_names.get(dog_name)
-            if marker_id:
+            if marker_id is not None:
                 if marker_id in self.last_known_positions:
                     del self.last_known_positions[marker_id]
                 self.active_dogs.discard(marker_id)
@@ -475,15 +510,15 @@ class DogTracker:
         current_time = time.time()
         result = {}
 
-        # First pass: collect ArUco-identified dogs
+        # First pass: collect every NAMED dog's box (any id_method) so an
+        # anonymous 'Dog' box on the same animal is suppressed below.
         aruco_bboxes = []
         for marker_id, tracking in self.last_known_positions.items():
-            if marker_id < 0:  # Skip generic entries first pass
+            if not self._is_named_entry(marker_id):
                 continue
             if current_time - tracking['time'] > self.persistence_time:
                 continue
-            if tracking.get('id_method') in ('aruco', 'color'):
-                aruco_bboxes.append(tracking.get('bbox', []))
+            aruco_bboxes.append(tracking.get('bbox', []))
 
         for marker_id, tracking in self.last_known_positions.items():
             # Only include dogs with recent tracking (within persistence time)
@@ -545,11 +580,19 @@ class DogTracker:
         """
         marker_id = None
 
-        # Try lookup by name first (ArUco-identified dogs)
-        if dog_name:
+        # The box currently DRAWN for this detection is what must get the label.
+        # If an anonymous entry exists for this detection index, that is the
+        # visible box — label it. Only then fall back to the (possibly stale)
+        # cached name: the detector's identity cache can still say "elsa" after
+        # the tracker moved the box to an unnamed entry, and the write went to
+        # an expired 315 entry while the visible "Dog" box stayed blank
+        # (2026-10-03).
+        if detection_idx is not None and -(detection_idx + 1000) in self.last_known_positions:
+            marker_id = -(detection_idx + 1000)
+
+        if marker_id is None and dog_name:
             marker_id = self.dog_names.get(dog_name)
 
-        # Fallback: try unidentified dog marker_id convention
         if marker_id is None and detection_idx is not None:
             marker_id = -(detection_idx + 1000)
 
