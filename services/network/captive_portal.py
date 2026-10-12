@@ -11,6 +11,8 @@ FastAPI server running on port 80 that provides:
 import os
 import asyncio
 import logging
+import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +28,44 @@ logger = logging.getLogger(__name__)
 
 # Template directory
 TEMPLATE_DIR = Path(__file__).parent / "templates"
+
+# Diagnostic log: an in-memory ring buffer of the last N log records from the
+# services.network.* loggers (wifi_manager, captive_portal, provisioning).
+# Exposed read-only at GET /log so the setup page can show the user WHY a
+# connect attempt failed (raw nmcli output etc.). Survives AP restarts because
+# it lives in the main process, not the browser.
+PORTAL_LOG_MAX = 200
+
+
+class _PortalLogBuffer(logging.Handler):
+    """Collects log records into a bounded deque for the /log endpoint."""
+
+    def __init__(self, maxlen: int = PORTAL_LOG_MAX):
+        super().__init__(level=logging.INFO)
+        self.records: deque = deque(maxlen=maxlen)
+        self._seq = 0
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            self._seq += 1
+            self.records.append({
+                "seq": self._seq,
+                "ts": record.created,
+                "time": time.strftime("%H:%M:%S", time.localtime(record.created)),
+                "level": record.levelname,
+                "source": record.name.rsplit(".", 1)[-1],
+                "message": self.format(record) if self.formatter else record.getMessage(),
+            })
+        except Exception:
+            self.handleError(record)
+
+    def since(self, seq: int = 0):
+        return [r for r in self.records if r["seq"] > seq]
+
+
+_portal_log = _PortalLogBuffer()
+_portal_log.setFormatter(logging.Formatter("%(message)s"))
+logging.getLogger("services.network").addHandler(_portal_log)
 
 
 class WiFiCredentials(BaseModel):
@@ -122,7 +162,8 @@ class CaptivePortal:
         @app.post("/connect")
         async def connect_wifi(credentials: WiFiCredentials):
             """Save WiFi credentials and trigger connection"""
-            logger.info(f"Received credentials for: {credentials.ssid}")
+            logger.info(f"Received credentials for: '{credentials.ssid}' "
+                        f"(password length {len(credentials.password or '')})")
 
             if not credentials.ssid:
                 raise HTTPException(status_code=400, detail="SSID is required")
@@ -147,6 +188,7 @@ class CaptivePortal:
                     })
                 else:
                     # Connection failed - restart AP mode so user can try again
+                    logger.warning(f"Connect to '{credentials.ssid}' failed: {result['message']}")
                     if result["should_restart_ap"]:
                         logger.info("Connection failed, restarting AP mode...")
                         asyncio.create_task(self._restart_ap_mode(credentials.ssid))
@@ -182,6 +224,18 @@ class CaptivePortal:
                     "success": False,
                     "error": str(e)
                 })
+
+        @app.get("/log")
+        async def get_portal_log(since: int = 0):
+            """Diagnostic log (read-only) — last network/provisioning log lines.
+            ?since=<seq> returns only records newer than that sequence number."""
+            entries = _portal_log.since(since)
+            return JSONResponse(content={
+                "success": True,
+                "entries": entries,
+                "latest_seq": entries[-1]["seq"] if entries else since,
+                "robot_time": time.strftime("%H:%M:%S"),
+            })
 
         @app.get("/reboot")
         async def trigger_reboot():

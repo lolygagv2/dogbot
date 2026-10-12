@@ -270,6 +270,123 @@
         .btn-forget:hover {
             background: #ffcdd2;
         }
+
+        /* Password reveal */
+        .password-wrap {
+            position: relative;
+        }
+
+        .password-wrap input {
+            padding-right: 48px;
+        }
+
+        .eye-btn {
+            position: absolute;
+            right: 6px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 36px;
+            height: 36px;
+            border: none;
+            background: transparent;
+            color: #666;
+            cursor: pointer;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+        }
+
+        .eye-btn:hover { background: #f0f0f0; color: #333; }
+        .eye-btn svg { width: 22px; height: 22px; }
+        .eye-btn .eye-off { display: none; }
+        .eye-btn.revealed .eye-on { display: none; }
+        .eye-btn.revealed .eye-off { display: block; }
+
+        /* Diagnostic log */
+        .diag {
+            margin-top: 20px;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .diag summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 12px 16px;
+            background: #f8f9fa;
+            font-size: 13px;
+            font-weight: 600;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .diag summary::-webkit-details-marker { display: none; }
+
+        .diag summary .diag-badge {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: none;
+            letter-spacing: 0;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: #e0e0e0;
+            color: #555;
+        }
+
+        .diag summary .diag-badge.has-error {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .diag-body {
+            max-height: 220px;
+            overflow-y: auto;
+            background: #1a1a2e;
+            padding: 10px 12px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .diag-line {
+            color: #cfd8dc;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .diag-line .t { color: #78909c; margin-right: 6px; }
+        .diag-line.WARNING { color: #ffb74d; }
+        .diag-line.ERROR, .diag-line.CRITICAL { color: #ef5350; }
+        .diag-line.client { color: #80cbc4; }
+        .diag-empty { color: #78909c; font-style: italic; }
+
+        .diag-tools {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: #f8f9fa;
+            font-size: 12px;
+            color: #888;
+        }
+
+        .diag-tools button {
+            border: none;
+            background: #e8e8e8;
+            color: #333;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -306,7 +423,13 @@
 
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" placeholder="Enter WiFi password">
+                <div class="password-wrap">
+                    <input type="password" id="password" placeholder="Enter WiFi password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+                    <button type="button" class="eye-btn" id="toggle-password" aria-label="Show password" title="Show password">
+                        <svg class="eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        <svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                    </button>
+                </div>
             </div>
 
             <button type="submit" class="btn btn-primary" id="connect-btn">
@@ -319,6 +442,20 @@
         </form>
 
         <div class="status" id="status"></div>
+
+        <details class="diag" id="diag">
+            <summary>
+                <span>Diagnostic log</span>
+                <span class="diag-badge" id="diag-badge">0</span>
+            </summary>
+            <div class="diag-body" id="diag-body">
+                <div class="diag-empty">No events yet.</div>
+            </div>
+            <div class="diag-tools">
+                <span id="diag-info">Read-only &bull; last 200 robot network events</span>
+                <button type="button" id="diag-refresh">Refresh</button>
+            </div>
+        </details>
 
         <div class="footer">
             WIM-Z Robot &bull; WiFi Provisioning
@@ -335,6 +472,81 @@
         const rescanBtn = document.getElementById('rescan-btn');
         const statusDiv = document.getElementById('status');
         const wifiForm = document.getElementById('wifi-form');
+
+        // Password reveal toggle
+        const togglePasswordBtn = document.getElementById('toggle-password');
+        togglePasswordBtn.addEventListener('click', function() {
+            const reveal = passwordInput.type === 'password';
+            passwordInput.type = reveal ? 'text' : 'password';
+            this.classList.toggle('revealed', reveal);
+            const label = reveal ? 'Hide password' : 'Show password';
+            this.setAttribute('aria-label', label);
+            this.title = label;
+            passwordInput.focus();
+        });
+
+        // ---- Diagnostic log (read-only) ----
+        // Server side: /log returns the last network/provisioning log lines from
+        // the robot (wifi_manager, captive_portal). Client-side events (form
+        // submits, fetch failures) are appended locally so the user sees both.
+        const diagEl = document.getElementById('diag');
+        const diagBody = document.getElementById('diag-body');
+        const diagBadge = document.getElementById('diag-badge');
+        const diagInfo = document.getElementById('diag-info');
+        let diagSeq = 0;
+        let diagCount = 0;
+        let diagHasError = false;
+        let diagSeeded = false;
+
+        function diagAppend(entry) {
+            if (!diagSeeded) { diagBody.innerHTML = ''; diagSeeded = true; }
+            const line = document.createElement('div');
+            line.className = 'diag-line ' + (entry.level || '');
+            const t = document.createElement('span');
+            t.className = 't';
+            t.textContent = entry.time;
+            line.appendChild(t);
+            line.appendChild(document.createTextNode(
+                (entry.source ? '[' + entry.source + '] ' : '') + entry.message));
+            diagBody.appendChild(line);
+            diagCount++;
+            if (entry.level === 'ERROR' || entry.level === 'WARNING' || entry.level === 'CRITICAL') {
+                diagHasError = true;
+            }
+            diagBadge.textContent = diagCount;
+            diagBadge.classList.toggle('has-error', diagHasError);
+            // keep the DOM bounded
+            while (diagBody.children.length > 300) diagBody.removeChild(diagBody.firstChild);
+            diagBody.scrollTop = diagBody.scrollHeight;
+        }
+
+        function diagLocal(message, level) {
+            const now = new Date();
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const ss = String(now.getSeconds()).padStart(2, '0');
+            diagAppend({ time: hh + ':' + mm + ':' + ss, level: level || 'client',
+                         source: 'phone', message: message });
+        }
+
+        async function diagPoll() {
+            try {
+                const response = await fetch('/log?since=' + diagSeq, { cache: 'no-store' });
+                const data = await response.json();
+                if (data.success) {
+                    data.entries.forEach(diagAppend);
+                    if (data.latest_seq > diagSeq) diagSeq = data.latest_seq;
+                    diagInfo.textContent = 'Read-only \u2022 robot time ' + data.robot_time;
+                }
+            } catch (e) {
+                // Portal unreachable (AP restarting / phone switched networks) — leave as-is.
+                diagInfo.textContent = 'Robot not reachable \u2014 retrying';
+            }
+        }
+
+        document.getElementById('diag-refresh').addEventListener('click', diagPoll);
+        diagEl.addEventListener('toggle', function() { if (diagEl.open) diagPoll(); });
+        setInterval(diagPoll, 3000);
 
         // Toggle manual SSID entry
         manualCheckbox.addEventListener('change', function() {
@@ -376,6 +588,7 @@
                 }
             } catch (error) {
                 console.error('Scan error:', error);
+                diagLocal('Scan request failed: ' + error, 'WARNING');
                 networkSelect.innerHTML = '<option value="">Scan failed - try again</option>';
             }
 
@@ -399,6 +612,8 @@
             connectBtn.disabled = true;
             connectBtn.innerHTML = '<span class="spinner"></span>Connecting...';
             showStatus('Connecting to ' + ssid + '...', 'loading');
+            diagLocal('Submitting credentials for "' + ssid + '" (password length ' + password.length + ')');
+            diagEl.open = true;
 
             try {
                 const response = await fetch('/connect', {
@@ -415,6 +630,7 @@
                 const data = await response.json();
 
                 if (data.success) {
+                    diagLocal('Robot reported: ' + data.message);
                     if (data.has_internet) {
                         showStatus(data.message, 'success');
                     } else {
@@ -430,6 +646,7 @@
                         }
                     }, 3000);
                 } else {
+                    diagLocal('Robot reported failure: ' + data.message, 'ERROR');
                     showStatus(data.message, 'error');
                     connectBtn.disabled = false;
                     connectBtn.textContent = 'Connect';
@@ -445,6 +662,7 @@
                 }
             } catch (error) {
                 console.error('Connection error:', error);
+                diagLocal('No reply from robot (' + error + '). The robot drops this WiFi while it tries the new network; it comes back if the attempt fails.', 'WARNING');
                 showStatus('Connection failed. Please try again.', 'error');
                 connectBtn.disabled = false;
                 connectBtn.textContent = 'Connect';
@@ -531,6 +749,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             loadSavedNetworks();
             scanNetworks();
+            diagPoll();
         });
     </script>
 </body>

@@ -238,6 +238,7 @@
       network/
          test_wifi_ap_flag_recovery.py  # AP-state regression (stale _in_ap_mode stranded relay, 2026-09-04). No hardware; pytest absent in env_new so runs standalone.
          test_wifi_network_cancel.py    # Network cancel: raise_local_ap sticky + breadcrumb, /run/wimz/net-cancel flag consumption (2026-09-25). Standalone.
+         test_captive_portal_diag_log.py # Captive portal: password-reveal markup + GET /log ring buffer captures failed-connect reason (2026-10-12). Mocked WiFiManager, localhost uvicorn; standalone.
       vision/
          test_camera_*.py
       streaming/
