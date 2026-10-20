@@ -56,6 +56,8 @@ class WiFiManager:
     # AP flavor; WIMZ-Demo was removed 2026-07 (phones couldn't follow the
     # SSID swap mid-session).
     AP_PASSWORD = "wimzsetup"
+    # Keep a fallback AP up this long after the last phone was seen on it.
+    AP_STA_GRACE_S = 600
 
     def __init__(self, interface: str = None):
         self.interface = interface or self.DEFAULT_INTERFACE
@@ -74,6 +76,14 @@ class WiFiManager:
         self.cancelled_ssid: Optional[str] = None
         self.cancelled_at: Optional[float] = None
         self.cancel_reason: Optional[str] = None
+        # AP occupancy memory: monotonic time a phone was last seen associated
+        # to our AP (has_associated_stations). The WiFi monitor keeps the AP up
+        # for AP_STA_GRACE_S after the last sighting — an idle phone that
+        # dropped the no-internet network must find the SAME AP when it comes
+        # back, not a 2-minute hole while we go looking for home WiFi.
+        self.last_station_seen: Optional[float] = None
+        # Consecutive failed rejoin attempts from a fallback AP (backoff input).
+        self.ap_rejoin_failures = 0
 
     def raise_local_ap(self, reason: str = "local_mode") -> bool:
         """Raise the ONE AP sticky (app Local Mode semantics) — shared by
@@ -271,7 +281,48 @@ class WiFiManager:
         )
         if not success:
             return False
-        return any(line.strip().startswith("Station") for line in output.splitlines())
+        present = any(line.strip().startswith("Station") for line in output.splitlines())
+        if present:
+            self.last_station_seen = time.monotonic()
+        return present
+
+    def station_seen_recently(self, grace_s: Optional[float] = None) -> bool:
+        """True if a phone was associated to our AP within grace_s (default
+        AP_STA_GRACE_S). Used by the WiFi monitor to hold the AP for a phone
+        that went idle and dropped the no-internet network."""
+        if self.last_station_seen is None:
+            return False
+        grace = self.AP_STA_GRACE_S if grace_s is None else grace_s
+        return (time.monotonic() - self.last_station_seen) < grace
+
+    def get_saved_ssids(self) -> List[str]:
+        """SSIDs of saved WiFi profiles (profile name can differ from SSID)."""
+        ssids = []
+        for conn in self.get_saved_connections():
+            name = conn.get('name')
+            if not name:
+                continue
+            ok, out = self._run_nmcli(
+                ["-g", "802-11-wireless.ssid", "connection", "show", name], timeout=5)
+            ssid = out.strip() if ok else ""
+            ssids.append(ssid or name)
+        return ssids
+
+    def known_network_in_cache(self) -> Optional[bool]:
+        """Was any saved SSID visible in the scan cached just before AP mode?
+
+        Returns None when there is no cache to judge from (caller should treat
+        that as unknown and attempt normally). We cannot scan while hostapd
+        owns the interface, so this is the only in-AP evidence of whether a
+        teardown-and-rejoin has any chance of succeeding."""
+        if not self._cached_networks:
+            return None
+        visible = {n.get('ssid') for n in self._cached_networks}
+        try:
+            saved = set(self.get_saved_ssids())
+        except Exception:
+            return None
+        return bool(visible & saved)
 
     def get_active_ap_ssid(self) -> Optional[str]:
         """Return SSID of the currently running AP by parsing the hostapd config."""
@@ -753,6 +804,14 @@ class WiFiManager:
             f"ssid={ssid}\n"
             f"{radio}"
             "wmm_enabled=1\n"
+            # Idle-phone tolerance. Defaults kick a power-saving phone that
+            # stops ACKing (disassoc_low_ack=1) or goes quiet for 300 s
+            # (ap_max_inactivity + inactivity poll). A phone sitting idle on
+            # a no-internet AP does both; let it stay associated for an hour
+            # and never deauth it for weak ACKs.
+            "disassoc_low_ack=0\n"
+            "ap_max_inactivity=3600\n"
+            "skip_inactivity_poll=1\n"
             "macaddr_acl=0\n"
             "auth_algs=1\n"
             "ignore_broadcast_ssid=0\n"

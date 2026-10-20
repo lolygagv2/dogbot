@@ -86,11 +86,28 @@ class DispenserService:
         self.COUNT_WINDOW_S = 6.0     # count window after rotation completes
         self.DISPENSE_CAP = 2         # max treats credited per normal dispense
         self.ANTIJAM_CAP = 6          # max treats credited per anti-jam run
+        self.BEAM_HISTORY_N = 4       # dispenses remembered for the miss tracker
+        self.BEAM_SUSPECT_MISSES = 3  # misses within history -> beam suspect
         # Sticky failure state — set when the full retry ladder yields zero
         # treats. Cleared by: service restart, treat-counter update/reset, or
         # any later beam-confirmed dispense. Surfaced via get_status().
         self.empty_or_jammed = False
         self.last_unjam_count = 0  # treats beam-counted by last manual unjam
+
+        # BEAM HEALTH. A misaligned/blocked beam silently turns every dispense
+        # into three (retry ladder re-rotates on every miss) — the "multiple
+        # treats come out quickly" complaint. Two guards:
+        #  - level check: beam reads "broken" at rest -> blocked/misaligned/
+        #    dead receiver; that dispense runs ONE rotation on motor truth.
+        #  - miss tracker: when most recent first rotations went unconfirmed
+        #    the beam is suspect -> no auto re-dispense until it confirms a
+        #    treat again or calibration passes.
+        self._beam_history = deque(maxlen=self.BEAM_HISTORY_N)  # True = first rotation confirmed
+        self.beam_suspect = False
+        self.beam_blocked_at_rest = False
+        self.last_beam_check = None       # dict from check_beam()
+        self.last_beam_calibration = None # dict from calibrate_beam()
+        self.dispense_started_mono = 0.0  # when the in-flight dispense began
 
         # Last spec dispense_log id + confirmation — read by callers linking
         # training_attempt (spec §6: reward_dispensed reads dispensed_confirmed
@@ -301,6 +318,12 @@ class DispenserService:
                         self.gpio_chip, self.beam_pin, edge, self._on_beam_edge)
                     self.logger.info(f"Through-beam sensor armed on GPIO{self.beam_pin} "
                                      f"(active_{'low' if self.beam_active_low else 'high'})")
+                    chk = self.check_beam()
+                    if chk.get('blocked_at_rest'):
+                        self.logger.warning(
+                            f"Through-beam reads BROKEN at rest on GPIO{self.beam_pin} "
+                            "— receiver blocked, misaligned, or dead. Dispenses fall "
+                            "back to motor truth until it clears (POST /treat/beam/calibrate).")
                 except Exception as e:
                     self.logger.error(f"Through-beam init failed (continuing unconfirmed): {e}")
                     self.beam_enabled = False
@@ -385,6 +408,205 @@ class DispenserService:
                 f"Beam counted {raw} breaks (cap {cap}) — treat counter likely "
                 f"stale or treats crumbling; crediting {cap}")
         return min(raw, cap), latency_ms, overage
+
+    # ── Beam health / calibration ──────────────────────────────────────
+
+    def read_beam_level(self) -> Optional[int]:
+        """Raw receiver level (1/0), or None when no beam / GPIO not open."""
+        if not self.beam_enabled or self.gpio_chip is None:
+            return None
+        try:
+            return int(lgpio.gpio_read(self.gpio_chip, self.beam_pin))
+        except Exception as e:
+            self.logger.debug(f"beam read failed: {e}")
+            return None
+
+    def beam_is_broken(self, level: Optional[int] = None) -> Optional[bool]:
+        """True when the receiver reports the beam interrupted right now."""
+        if level is None:
+            level = self.read_beam_level()
+        if level is None:
+            return None
+        return (level == 0) if self.beam_active_low else (level == 1)
+
+    def _beam_miss_count(self) -> int:
+        return sum(1 for ok in self._beam_history if not ok)
+
+    def _record_beam_outcome(self, first_rotation_confirmed: bool) -> None:
+        """Feed the miss tracker after a normal (non-degraded) dispense."""
+        self._beam_history.append(bool(first_rotation_confirmed))
+        misses = self._beam_miss_count()
+        if first_rotation_confirmed:
+            if self.beam_suspect:
+                self.logger.info("Beam confirmed a treat on the first rotation — "
+                                 "clearing beam_suspect")
+            self.beam_suspect = False
+        elif (not self.beam_suspect
+              and len(self._beam_history) >= self.BEAM_SUSPECT_MISSES
+              and misses >= self.BEAM_SUSPECT_MISSES):
+            self.beam_suspect = True
+            self.logger.warning(
+                f"BEAM SUSPECT: {misses} of the last {len(self._beam_history)} "
+                "dispenses needed retries — sensor likely misaligned. Auto "
+                "re-dispense disabled (one rotation per request) until the beam "
+                "confirms a treat or POST /treat/beam/calibrate passes.")
+
+    def check_beam(self, samples: int = 10, interval_s: float = 0.02) -> Dict[str, Any]:
+        """Instant beam health: sample the receiver at rest.
+
+        Verdicts: 'ok' (beam locked), 'blocked_at_rest' (reads broken —
+        treat lodged in the chute, misaligned, or dead receiver), 'flicker'
+        (level unstable at rest — marginal alignment), 'disabled', 'unavailable'.
+        Never moves the motor.
+        """
+        result: Dict[str, Any] = {
+            'beam_enabled': self.beam_enabled,
+            'pin': self.beam_pin,
+            'active_low': self.beam_active_low,
+            'level': None,
+            'blocked_at_rest': False,
+            'flicker': False,
+            'verdict': 'disabled' if not self.beam_enabled else 'unavailable',
+            'checked_at': time.time(),
+        }
+        if not self.beam_enabled:
+            self.last_beam_check = result
+            return result
+        levels = []
+        for _ in range(max(1, samples)):
+            lv = self.read_beam_level()
+            if lv is None:
+                break
+            levels.append(lv)
+            time.sleep(interval_s)
+        if not levels:
+            self.last_beam_check = result
+            return result
+        broken = [self.beam_is_broken(lv) for lv in levels]
+        result['level'] = levels[-1]
+        result['flicker'] = len(set(levels)) > 1
+        result['blocked_at_rest'] = all(broken)
+        if result['blocked_at_rest']:
+            result['verdict'] = 'blocked_at_rest'
+        elif result['flicker']:
+            result['verdict'] = 'flicker'
+        else:
+            result['verdict'] = 'ok'
+        self.beam_blocked_at_rest = result['blocked_at_rest']
+        self.last_beam_check = result
+        return result
+
+    def get_beam_status(self) -> Dict[str, Any]:
+        """Live beam view for GET /treat/beam/status (no motor movement)."""
+        chk = self.check_beam(samples=5)
+        now = time.monotonic()
+        last_break_age = (now - self._last_beam_break_mono) if self._last_beam_break_mono else None
+        return {
+            **chk,
+            'beam_suspect': self.beam_suspect,
+            'recent_first_rotation_misses': self._beam_miss_count(),
+            'recent_dispenses_tracked': len(self._beam_history),
+            'last_break_age_s': round(last_break_age, 1) if last_break_age is not None else None,
+            'total_breaks_seen': len(self._beam_breaks),
+            'last_calibration': self.last_beam_calibration,
+            'empty_or_jammed': self.empty_or_jammed,
+            'dispensing': self._dispense_active,
+        }
+
+    def calibrate_beam(self, rotate: bool = True) -> Dict[str, Any]:
+        """Beam alignment check: sample at rest, then (optionally) advance one
+        slot and watch for the break. Credits any treat that falls like a
+        manual dispense so counters stay honest.
+
+        Verdicts:
+          ok                 — rest level locked, treat broke the beam
+          blocked_at_rest    — reads broken before moving (clear chute / align)
+          no_break_detected  — motor ran, nothing crossed: carousel empty on
+                               that slot OR receiver not seeing the emitter
+          rest_only_ok       — rotate=False and the rest level is locked
+          disabled/unavailable
+        A passing calibration clears beam_suspect.
+        """
+        acquired = self._dispense_lock.acquire(timeout=self.DISPENSE_TIMEOUT + 2)
+        if not acquired:
+            return {'verdict': 'busy', 'message': 'dispenser busy'}
+        try:
+            report: Dict[str, Any] = {'started_at': time.time(), 'rotated': False}
+            rest = self.check_beam(samples=25, interval_s=0.02)
+            report['rest'] = rest
+            if rest['verdict'] in ('disabled', 'unavailable'):
+                report['verdict'] = rest['verdict']
+                report['message'] = 'beam sensor not enabled or GPIO unavailable'
+                self.last_beam_calibration = report
+                return report
+            if rest['blocked_at_rest']:
+                report['verdict'] = 'blocked_at_rest'
+                report['message'] = (
+                    f"GPIO{self.beam_pin} reads broken with nothing moving: "
+                    "treat lodged in chute, receiver misaligned (<10° cone), or "
+                    "receiver dead. Fix before trusting the beam.")
+                self.last_beam_calibration = report
+                return report
+            if not rotate:
+                report['verdict'] = 'rest_only_ok'
+                report['message'] = 'beam locked at rest (no rotation requested)'
+                self.last_beam_calibration = report
+                return report
+            if not self.initialized and not self.initialize():
+                report['verdict'] = 'unavailable'
+                report['message'] = 'dispenser failed to initialize'
+                self.last_beam_calibration = report
+                return report
+
+            fire = time.monotonic()
+            self._dispense_active = True
+            self.dispense_started_mono = fire
+            try:
+                motor_ok = self._rotate_carousel()
+                counted, latency_ms, overage = self._count_beam_window(fire, self.DISPENSE_CAP)
+            finally:
+                self._dispense_active = False
+            report.update({'rotated': True, 'motor_ok': motor_ok,
+                           'treats_counted': counted, 'first_break_ms': latency_ms,
+                           'flicker_at_rest': rest['flicker']})
+            if counted > 0:
+                self.treats_dispensed_today += counted
+                self.last_dispense_time = time.time()
+                self.last_dispense_mono = time.monotonic()
+                for _ in range(counted):
+                    self._increment_treat_counter()
+                self.empty_or_jammed = False
+                self.beam_suspect = False
+                self._beam_history.clear()
+                report['verdict'] = 'ok'
+                report['message'] = (
+                    f"beam locked at rest and broke {latency_ms} ms after the "
+                    f"slot advanced ({counted} treat(s) counted)")
+                if rest['flicker']:
+                    report['verdict'] = 'ok_marginal'
+                    report['message'] += '; level flickered at rest — alignment marginal'
+            elif not motor_ok:
+                report['verdict'] = 'motor_fault'
+                report['message'] = 'carousel rotation failed — see TMC2209 diagnostics'
+            else:
+                report['verdict'] = 'no_break_detected'
+                report['message'] = (
+                    "slot advanced but nothing crossed the beam: either that slot was "
+                    "empty (check the chute — did a treat fall?) or the receiver is "
+                    "not seeing the emitter. If a treat DID fall, realign the pair.")
+            try:
+                get_wimz_store().log_dispense(
+                    None, trigger='manual_pilot',
+                    dispensed_confirmed=1 if counted else 0,
+                    confirm_latency_ms=latency_ms,
+                    dispensed_count=counted, attempts=1, overage=overage)
+            except Exception as e:
+                self.logger.warning(f"wimz calibrate log failed: {e}")
+            self.logger.info(f"BEAM CALIBRATE: {report['verdict']} — {report['message']}")
+            self.last_beam_calibration = report
+            return report
+        finally:
+            self._dispense_lock.release()
 
     # TMC2209 DRV_STATUS (0x6F) bit map, per datasheet section 5.5. The
     # previous mapping was wrong in three places: bit 31 is stst (STANDSTILL),
@@ -577,10 +799,31 @@ class DispenserService:
                 attempts = 0
                 success = False
 
+                self.dispense_started_mono = fire_mono
+
+                # BEAM HEALTH gate. Blocked at rest or suspect -> the beam's
+                # "no treat" answer is not trustworthy, so do NOT climb the
+                # retry ladder (that is how one request became three treats).
+                # One rotation, motor completion is the truth, confirmed=0.
+                beam_trusted = self.beam_enabled
+                if self.beam_enabled:
+                    chk = self.check_beam(samples=3, interval_s=0.01)
+                    if chk.get('blocked_at_rest'):
+                        beam_trusted = False
+                        self.logger.warning(
+                            "Beam reads BROKEN at rest — treat lodged or sensor "
+                            "misaligned; single rotation on motor truth (no retry ladder)")
+                    elif self.beam_suspect:
+                        beam_trusted = False
+                        self.logger.warning(
+                            "Beam suspect (recent misses) — single rotation on motor "
+                            "truth (no retry ladder); run /treat/beam/calibrate")
+                max_attempts = 3 if beam_trusted else 1
+
                 # DISPENSE-VERIFY ladder: rotate and count treats through the
                 # beam (cap 2 — stacked pairs are real, more is a stale treat
                 # counter). Zero treats -> re-dispense, up to 3 rotations.
-                for attempt in range(1, 4):
+                for attempt in range(1, max_attempts + 1):
                     attempts = attempt
                     attempt_mono = time.monotonic()
                     success = self._rotate_carousel()
@@ -591,21 +834,25 @@ class DispenserService:
                     if latency is not None and confirm_latency_ms is None:
                         # latency from the ORIGINAL fire, for jam trending
                         confirm_latency_ms = latency + int((attempt_mono - fire_mono) * 1000)
-                    if not self.beam_enabled or counted >= 1:
+                    if not beam_trusted or counted >= 1:
                         break
                     if self._cancel_dispense:
                         self.logger.info(
                             f"Dispense cancelled after attempt {attempt} — "
                             f"skipping remaining retries")
                         break
-                    if attempt < 3:
+                    if attempt < max_attempts:
                         self.logger.warning(
                             f"Dispense attempt {attempt}: motor OK but no treat "
                             f"crossed beam — auto re-dispensing")
 
+                cancelled = self._cancel_dispense
+                if beam_trusted and success and not cancelled:
+                    # Miss tracker: did the FIRST rotation confirm?
+                    self._record_beam_outcome(attempts == 1 and counted >= 1)
+
                 # Rung 4: three empty rotations -> full anti-jam, still counting
-                if (self.beam_enabled and success and counted == 0
-                        and not self._cancel_dispense):
+                if (beam_trusted and success and counted == 0 and not cancelled):
                     self.logger.warning(
                         "3 dispenses, zero treats counted — running anti-jam procedure")
                     attempts = 4
@@ -622,9 +869,15 @@ class DispenserService:
                     beam_confirmed=self.beam_enabled and counted >= 1)
 
                 confirmed = 1 if counted >= 1 else 0
-                # Without a beam sensor, motor completion remains the only truth
-                credit = counted if self.beam_enabled else (1 if success else 0)
-                self.last_dispense_confirmed = confirmed if self.beam_enabled else int(success)
+                # Without a (trusted) beam, motor completion is the only truth.
+                # A degraded dispense that the beam happened to see still
+                # credits what it counted.
+                if beam_trusted:
+                    credit = counted
+                    self.last_dispense_confirmed = confirmed
+                else:
+                    credit = counted if counted >= 1 else (1 if success else 0)
+                    self.last_dispense_confirmed = confirmed
 
                 # Spec dispense_log row (+ paired treat_dispensed event)
                 try:
@@ -642,7 +895,16 @@ class DispenserService:
                 except Exception as e:
                     self.logger.warning(f"wimz dispense log failed: {e}")
 
-                if self.beam_enabled and success and credit == 0:
+                if beam_trusted and success and credit == 0 and cancelled:
+                    # Operator aborted the ladder (double-tap / LB release)
+                    # before it could prove anything — NOT evidence of an empty
+                    # carousel. Previously this set empty_or_jammed sticky
+                    # (2026-10-20 journal: every Xbox tap did it).
+                    self.logger.info("Dispense cancelled with no treat counted — "
+                                     "not flagging empty/jammed")
+                    return False
+
+                if beam_trusted and success and credit == 0:
                     # Full ladder exhausted, zero treats — out of treats or jam
                     # beyond anti-jam's reach. Sticky until refill/restart.
                     self.empty_or_jammed = True
@@ -1132,6 +1394,10 @@ class DispenserService:
             'treats_remaining': self.treats_remaining,
             'treats_low': self.treats_remaining < 5,
             'beam_enabled': self.beam_enabled,
+            'beam_suspect': self.beam_suspect,
+            'beam_blocked_at_rest': self.beam_blocked_at_rest,
+            'beam_recent_misses': self._beam_miss_count(),
+            'dispensing': self._dispense_active,
             'empty_or_jammed': self.empty_or_jammed,
             'last_dispense_confirmed': self.last_dispense_confirmed,
             'dog_treat_counts': self.dog_treat_counts.copy(),

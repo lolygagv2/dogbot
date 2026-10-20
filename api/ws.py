@@ -190,6 +190,17 @@ class TreatBotWebSocketServer:
         # Signal that an app client is connected (LED idle, publish event)
         self._on_app_connected()
 
+        # A reconnecting app (after an AP hole / phone idle) must not inherit
+        # a dead WebRTC session: prune failed/closed ones now so its next
+        # webrtc_request gets a fresh offer immediately.
+        try:
+            from services.streaming.webrtc import get_webrtc_service
+            pruned = await get_webrtc_service().prune_dead_sessions("local WS reconnect")
+            if pruned:
+                self.logger.info(f"[LOCAL] Pruned dead WebRTC session(s) on reconnect: {pruned}")
+        except Exception as e:
+            self.logger.debug(f"[LOCAL] WebRTC prune skipped: {e}")
+
         # Start telemetry if this is the first connection
         if len(self.manager.active_connections) == 1:
             await self._start_telemetry()

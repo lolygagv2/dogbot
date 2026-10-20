@@ -1053,6 +1053,29 @@ class WebRTCService:
         """Explicitly close a connection"""
         await self._cleanup_connection(session_id)
 
+    async def prune_dead_sessions(self, reason: str = "") -> list:
+        """Tear down sessions whose transport is already failed/closed.
+
+        Called when a local-WS client (re)connects: after an AP hole the old
+        'local' peer connection is dead but may still be sitting in its grace
+        timer, and the app's fresh webrtc_request then pays for that cleanup
+        inline. Pruning first makes the re-offer immediate. Sessions that are
+        merely 'disconnected' (transient) are left to the grace timer.
+        """
+        with self._lock:
+            dead = [
+                sid for sid, pc in self.connections.items()
+                if getattr(pc, 'iceConnectionState', None) in ('failed', 'closed')
+                or getattr(pc, 'connectionState', None) in ('failed', 'closed')
+            ]
+        for sid in dead:
+            self.logger.info(f"[WEBRTC] Pruning dead session {sid} ({reason})")
+            try:
+                await self._cleanup_connection(sid)
+            except Exception as e:
+                self.logger.warning(f"[WEBRTC] prune {sid} failed: {e}")
+        return dead
+
     def get_status(self) -> Dict[str, Any]:
         """Get WebRTC service status"""
         with self._lock:

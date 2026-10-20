@@ -2499,9 +2499,12 @@ class TreatBotMain:
         - Check every 15s; WiFi gone 30s+ -> raise the ONE AP
           (WIMZ-<serial> / wimzsetup — same SSID as the setup portal, so a
           phone that joined once always auto-rejoins).
-        - In AP mode: never touch the AP while a phone is associated;
-          otherwise attempt WiFi rejoin every 120s (each attempt is a
-          ~30-45s AP outage — that's why not 60s). App-commanded local mode
+        - In AP mode: never touch the AP while a phone is associated, nor
+          for AP_STA_GRACE_S (10 min) after one was last seen (idle phones
+          drop a no-internet AP and come back); otherwise attempt WiFi
+          rejoin with backoff 2/4/8/16/30 min (each attempt is a ~2 min AP
+          outage), skipping the first retry when no saved SSID was in
+          range at the last scan. App-commanded local mode
           (wifi.ap_deliberate) is sticky: no rejoin until cloud-mode
           command, reboot, or 10 min with zero stations.
         - On home WiFi: damp BSSID roam-flapping (dual-band/mesh ping-pong,
@@ -2592,8 +2595,17 @@ class TreatBotMain:
                         wifi.ap_deliberate = False
                         no_sta_since = None
 
-                    # Fallback AP: periodically try to get back on home WiFi
-                    if time.time() - self._wifi_disconnected_since > reconnect_interval:
+                    # Fallback AP: periodically try to get back on home WiFi.
+                    # Cadence backs off with each failed rejoin: 2, 4, 8, 16,
+                    # 30, 30... min. Every rejoin is a ~2 min hole where the
+                    # WIMZ network does not exist (teardown + nmcli + rebuild),
+                    # so a robot with no home WiFi in range must not punch
+                    # that hole every 2 minutes forever (2026-10-19 journal:
+                    # four holes in 12 min while the owner was trying to use
+                    # local mode).
+                    failures = wifi.ap_rejoin_failures
+                    interval = min(reconnect_interval * (2 ** failures), 1800)
+                    if time.time() - self._wifi_disconnected_since > interval:
                         # NEVER tear down the AP while a phone is connected to
                         # it. stop_hotspot() kicks the client mid-session and
                         # the rebuild frequently stutters (NM reclaim races,
@@ -2617,7 +2629,34 @@ class TreatBotMain:
                             )
                             self._wifi_disconnected_since = time.time()
                             continue
-                        self.logger.info("WiFi monitor: Attempting to reconnect to known networks...")
+                        # A phone that went idle drops a no-internet AP and
+                        # comes back on its own a little later — it must find
+                        # the SAME AP still up. Hold the AP for the station
+                        # grace period after the last sighting.
+                        if wifi.station_seen_recently():
+                            idle_for = int(time.monotonic() - wifi.last_station_seen)
+                            self.logger.info(
+                                f"WiFi monitor: phone was on the AP {idle_for}s ago "
+                                f"— keeping AP up (grace {wifi.AP_STA_GRACE_S}s)")
+                            self._wifi_disconnected_since = time.time()
+                            continue
+                        # First retry after a failure: if no saved SSID was even
+                        # visible in the scan taken as the AP went up, the
+                        # teardown cannot succeed — skip the hole and back off.
+                        # A real attempt (which rescans) still happens at the
+                        # next rung, so a robot carried home does rejoin.
+                        in_cache = wifi.known_network_in_cache()
+                        if in_cache is False and failures == 0:
+                            wifi.ap_rejoin_failures = 1
+                            self._wifi_disconnected_since = time.time()
+                            self.logger.info(
+                                "WiFi monitor: no saved network was in range at last "
+                                f"scan — keeping AP up, next rejoin attempt in "
+                                f"{min(reconnect_interval * 2, 1800) // 60} min")
+                            continue
+                        self.logger.info(
+                            f"WiFi monitor: Attempting to reconnect to known networks "
+                            f"(attempt {failures + 1}, interval {interval // 60} min)...")
                         # Stop AP temporarily to scan/connect
                         wifi.stop_hotspot()
                         self._wifi_ap_active = False
@@ -2626,6 +2665,8 @@ class TreatBotMain:
                             status = wifi.get_connection_status()
                             self.logger.info(f"WiFi reconnected: {status.get('ssid')} ({status.get('ip_address')})")
                             self._wifi_disconnected_since = None
+                            wifi.ap_rejoin_failures = 0
+                            wifi.last_station_seen = None
                             try:
                                 self.usb_audio.play_file("/wimz/wifi_connected.mp3")
                             except Exception as e:
@@ -2634,8 +2675,12 @@ class TreatBotMain:
                         else:
                             # Still no WiFi — rebuild the ONE AP (same SSID the
                             # phone already knows; there are no flavors).
+                            wifi.ap_rejoin_failures = failures + 1
+                            next_min = min(reconnect_interval * (2 ** wifi.ap_rejoin_failures), 1800) // 60
                             ssid = wifi.get_ap_ssid()
-                            self.logger.info(f"WiFi monitor: No known networks, restarting AP mode ({ssid})")
+                            self.logger.info(
+                                f"WiFi monitor: No known networks, restarting AP mode "
+                                f"({ssid}); next attempt in {next_min} min")
                             wifi.start_demo_hotspot(ssid=ssid, password=wifi.AP_PASSWORD)
                             self._wifi_ap_active = True
                             self._wifi_disconnected_since = time.time()
@@ -2646,6 +2691,7 @@ class TreatBotMain:
                     if self._wifi_disconnected_since is not None:
                         self.logger.info("WiFi connection restored")
                         self._wifi_disconnected_since = None
+                    wifi.ap_rejoin_failures = 0
 
                     # Roam-flap damping
                     bssid = wifi.get_current_bssid()
@@ -2707,6 +2753,8 @@ class TreatBotMain:
                             self.logger.warning(f"WiFi disconnected for {elapsed:.0f}s - starting AP mode ({ssid})")
                             if wifi.start_demo_hotspot(ssid=ssid, password=wifi.AP_PASSWORD):
                                 self._wifi_ap_active = True
+                                wifi.ap_rejoin_failures = 0
+                                wifi.last_station_seen = None
                                 self.logger.info(f"AP mode started: {ssid} (password: {wifi.AP_PASSWORD})")
                                 try:
                                     self.usb_audio.play_file("/wimz/ap_mode.mp3")

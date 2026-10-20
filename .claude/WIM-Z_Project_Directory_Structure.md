@@ -234,6 +234,7 @@
       hardware/
          leds_v3.py
          beam_watch.sh              # Live GPIO7 through-beam transition monitor (chute sensor alignment)
+         test_dispenser_beam_health.py # Beam health (2026-10-20): miss tracker -> beam_suspect, blocked-at-rest check, cancelled ladder never flags empty, suspect/blocked beam = ONE rotation on motor truth. No GPIO; standalone.
          test_power_button_hold.py  # Power-button hold classification: release<5s shutdown, hold 5s network cancel, 15s stuck (2026-09-25). No GPIO; standalone.
       network/
          test_wifi_ap_flag_recovery.py  # AP-state regression (stale _in_ap_mode stranded relay, 2026-09-04). No hardware; pytest absent in env_new so runs standalone.

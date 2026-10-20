@@ -811,7 +811,20 @@ async def dispense_treat(request: TreatRequest):
         # Double-tap to cancel: a second press while a dispense is still
         # running aborts the retry ladder and skips the anti-jam procedure,
         # for when the operator already knows the carousel is empty.
+        # Only honour it once the first rotation has had time to finish
+        # (~2.5 s): an accidental double-tap or a client retry that lands
+        # inside the first rotation is not an abort request (2026-10-20
+        # journal: Xbox taps cancelled every dispense and flagged "empty").
         if dispenser.is_dispensing:
+            import time as _t
+            running_for = _t.monotonic() - (dispenser.dispense_started_mono or _t.monotonic())
+            if running_for < 2.5:
+                return {
+                    "success": False,
+                    "cancelled": False,
+                    "busy": True,
+                    "message": f"Dispense already in progress ({running_for:.1f}s) — ignored",
+                }
             cancelled = dispenser.cancel_dispense()
             return {
                 "success": False,
@@ -856,6 +869,31 @@ async def get_treat_status():
     """Get treat dispenser status"""
     dispenser = get_dispenser_service()
     return dispenser.get_status()
+
+@app.get("/treat/beam/status")
+async def get_treat_beam_status():
+    """Live IR through-beam health: level at rest, suspect flag, miss history.
+
+    No motor movement. Verdicts: ok | flicker | blocked_at_rest | disabled | unavailable.
+    """
+    dispenser = get_dispenser_service()
+    return await asyncio.to_thread(dispenser.get_beam_status)
+
+@app.post("/treat/beam/calibrate")
+async def calibrate_treat_beam(rotate: bool = True):
+    """Beam alignment check. Samples the receiver at rest, then (rotate=true)
+    advances one slot and reports whether/when the treat broke the beam.
+    A treat that falls is credited like a manual dispense.
+
+    Verdicts: ok | ok_marginal | rest_only_ok | blocked_at_rest |
+              no_break_detected | motor_fault | busy | disabled | unavailable
+    """
+    try:
+        dispenser = get_dispenser_service()
+        return await asyncio.to_thread(dispenser.calibrate_beam, rotate)
+    except Exception as e:
+        logger.error(f"Beam calibrate error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/treat/unjam")
 async def treat_unjam():

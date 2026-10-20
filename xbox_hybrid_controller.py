@@ -1866,6 +1866,18 @@ class XboxHybridControllerFixed:
         if time_since_last < self.TREAT_COOLDOWN and self.last_treat_time > 0:
             logger.warning(f"Rapid treat request (only {time_since_last:.1f}s since last)")
 
+        # If a dispense is still running (retry ladder can take ~35 s with a
+        # misbehaving beam), a second LB tap used to hit the API's double-tap
+        # cancel and abort it — then flag the carousel "empty". Ask first and
+        # ignore the tap while one is in flight.
+        try:
+            st = self.api_request_blocking('GET', '/treat/status', timeout=1)
+            if st and st.get('dispensing'):
+                logger.info("LB: dispense already in progress — ignoring tap")
+                return
+        except Exception:
+            pass
+
         self.last_treat_time = current_time
 
         # Direct API call - no thread needed for treats
