@@ -1,5 +1,5 @@
 # WIM-Z Development TODO List
-*Last Updated: September 2026 · Release 2026.08.3 (OTA era — "Build N" retired)*
+*Last Updated: 2026-10-23 · Release 2026.10.2 (OTA era — "Build N" retired)*
 
 ## Current Status: Release 2026.08.3 — OTA-managed fleet, SG intelligence shipped
 
@@ -27,6 +27,28 @@
 ### Live verification needed (fixed in code 2026-10-20, tb4)
 - [ ] **Local-AP drops when phone idles** — journal 2026-10-19 02:01-02:14 showed the WiFi monitor tearing the AP down every 2 min once the idle phone dropped off (~2 min hole each, phone could not rejoin). Fix: AP held for 10 min after the last phone sighting (`WiFiManager.AP_STA_GRACE_S`), rejoin backoff 2/4/8/16/30 min, first retry skipped when no saved SSID was in the pre-AP scan cache, hostapd `disassoc_low_ack=0 ap_max_inactivity=3600 skip_inactivity_poll=1`, dead WebRTC sessions pruned when the local WS reconnects. Verify: local mode, lock the phone 5 min, unlock → app reconnects to the SAME AP with no "AP mode soon" hole; `journalctl -f | grep "WiFi monitor"` shows "phone was on the AP Ns ago — keeping AP up". APP SIDE (Flutter repo, still needed): auto-reconnect /ws/local with backoff and re-send `webrtc_request` after a reconnect instead of requiring an app restart.
 - [ ] **Dispenser: multiple treats / beam misaligned** — 30-day journal: 11 of 35 dispenses needed the retry ladder (beam missed a treat that fell → extra rotations). Fix: beam level check before every dispense (blocked at rest → one rotation on motor truth), miss tracker (3 of last 4 first rotations unconfirmed → `beam_suspect`, auto re-dispense off until the beam confirms again or calibration passes), cancelled ladder no longer flags empty/jammed, API double-tap cancel ignored inside the first 2.5 s, Xbox LB ignored while a dispense is in flight. New: `GET /treat/beam/status`, `POST /treat/beam/calibrate` (rest sample + one slot + verdict). Verify: `curl -X POST localhost:8000/treat/beam/calibrate` with a loaded slot → `ok` with `first_break_ms`; block the chute → `blocked_at_rest`; 10 Xbox LB taps → exactly 10 treats, no "EMPTY/JAMMED" unless truly empty.
+
+### APP (Flutter repo) + RELAY SERVER (api.wimzai.com) — owed after the 2026-10-23 robot fixes
+Robot-side changes are live on tb4 (commits 87793ff, 4532af6, a863194). Each item below is what the OTHER side must do, with the robot contract it talks to.
+
+**Relay server — stale-session "superseded" loop (root cause lives here)**
+- [ ] **Evidence:** 2026-10-23 12:07:23–12:08:49 EDT, device `wimz_robot_04`, session `9be6f2fd-4237-48a1-bcf6-03d12f5fff2c`. Relay sent `{"type":"webrtc_close","reason":"superseded","session_id":"9be6f2fd…"}` to the robot every ~2 s (37×) right after each `user_connected`; the robot never received a `webrtc_request` for ANY session in that window and never created 9be6f2fd. A robot reboot (fresh `robot_connected`) cleared it. Pull the relay log for that window and find where 9be6f2fd was created (most likely while the robot was offline on its setup AP 12:03–12:05).
+- [ ] **Fix 1 — clear sessions on robot (re)registration:** when a robot sends `robot_connected`, drop every session the relay holds for that `device_id` (they cannot be valid — the robot has no peer connections after a connect). Same on `robot_disconnecting` / socket close.
+- [ ] **Fix 2 — forward the request after supersede:** when a new `webrtc_request` supersedes an old session, send `webrtc_close(superseded)` for the OLD id AND still forward the NEW `webrtc_request` to the robot. Today the request seems to be swallowed, so the robot can never answer and the app never gets an offer.
+- [ ] **Fix 3 — don't create a session for an offline robot:** if the robot is not registered, answer the app with `robot_offline` instead of parking a session that will later shadow the real one.
+- [ ] **Robot-side safety net already in place (not a substitute):** robot re-registers after 5 unknown-session closes within 20 s when it has no live stream (`relay_client._note_unknown_close`, 2 min cooldown). Journal line: "re-registering with the relay to clear the stale session". If you see it, the server bug fired.
+
+**App — connection loop after a WiFi change**
+- [ ] **Reconnect backoff:** the app reconnected the relay websocket every ~2 s for 90 s. Use exponential backoff (1, 2, 4, 8 … 30 s) and stop after N failures with a visible "Robot not reachable — retry" state instead of a silent loop.
+- [ ] **Never reuse a WebRTC session id across reconnects:** generate a fresh `session_id` for every `webrtc_request`; never persist one. If the app does NOT reuse ids, then 9be6f2fd was relay-side only (see above) — confirm either way.
+- [ ] **Handle `webrtc_close reason=superseded` for an id the app is not using:** ignore it (log), do not tear down the socket and reconnect.
+- [ ] **Local WS (`/ws/local`) auto-reconnect with backoff + re-send `webrtc_request`** after the robot's AP comes back (owed since 2026-10-20; robot now keeps the AP up for idle phones but the app still needs a restart to get video back).
+
+**App — WiFi provisioning (local mode / setup)**
+- [ ] **`POST /system/wifi/connect` now returns immediately** with `{"success":true,"pending":true,"ssid":…,"ap_ssid":"WIMZ-xxxx","message":…}` (HTTP 200; `success:false,pending:true` if a connect is already running). The robot then drops the WIMZ AP to try the network, so the phone WILL lose the connection — that is expected, not an error. Do NOT show "invalid password" on a dropped request.
+- [ ] **Show the outcome from `GET /system/wifi/connect/status`** → `{"job":{"state":"idle|connecting|done","ssid","success","message","has_internet","ap_restarted","started","finished"}}`. Poll it for up to ~3 min: reachable again either on home WiFi (success → `http://<robot-ip>:8000`) or, on failure, when the WIMZ AP comes back (`ap_restarted:true`, `message` = "Wrong password. Please try again." / "Network not found…" / "Connection failed…"). Phone-side UX: "WIM-Z is joining '<ssid>'. If the WIMZ-xxxx network reappears in about a minute, the password was rejected — rejoin it and try again."
+- [ ] **Setup page (captive portal) already does this** — `GET /connect/status` on `http://192.168.4.1`; mirror its wording.
+- [ ] **PTT in the same room:** the robot now mutes its mic for the whole clip, which breaks the clip-echo loop. The remaining feedback path is phone speaker → robot mic (live audio) → phone. App: duck or mute robot audio playback while PTT is recording/sending, and prefer the earpiece or headphones when the user is within earshot of the robot.
 
 ### Validation (blocking "done" claims)
 - [ ] **Mission Scheduler** — validate auto-start, time-window enforcement, once/daily/weekly logic (implemented, never tested)
