@@ -225,10 +225,35 @@ class WIMZAudioTrack(MediaStreamTrack):
         self._ptt_mute_until = time.time() + duration_seconds
         self.logger.info(f"Audio track muted for PTT playback ({duration_seconds:.1f}s)")
 
+    def release_ptt_mute(self, tail_seconds: float = 0.0):
+        """End a PTT mute early: stay muted only `tail_seconds` more.
+
+        Called when speaker playback has actually finished, so the mute tracks
+        the real clip length instead of a guess. The tail covers room reverb
+        and the speaker's own decay.
+        """
+        if not self._ptt_muted:
+            return
+        until = time.time() + max(0.0, tail_seconds)
+        if until < self._ptt_mute_until:
+            self._ptt_mute_until = until
+        self.logger.info(f"Audio track PTT mute released (unmute in {tail_seconds:.1f}s)")
+
+    def _drain_queue(self):
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def _check_ptt_mute_expired(self):
         """Check if PTT mute has expired"""
         if self._ptt_muted and time.time() >= self._ptt_mute_until:
             self._ptt_muted = False
+            # The capture callback kept filling the queue while recv() sent
+            # silence, so it now holds the last ~1 s of the clip as heard by
+            # the mic. Sending that would be the echo we just suppressed.
+            self._drain_queue()
             self.logger.info("Audio track PTT mute expired, resuming")
 
     def is_muted(self) -> bool:
@@ -404,3 +429,10 @@ def mute_audio_for_ptt(duration_seconds: float):
     track = get_audio_track()
     if track:
         track.mute_for_ptt(duration_seconds)
+
+
+def release_audio_ptt_mute(tail_seconds: float = 0.0):
+    """Counterpart of mute_audio_for_ptt(): playback is over, unmute after `tail_seconds`."""
+    track = get_audio_track()
+    if track:
+        track.release_ptt_mute(tail_seconds)

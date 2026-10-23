@@ -25,6 +25,14 @@ TEMP_DIR = Path("/tmp/wimz_ptt")
 INCOMING_AUDIO = TEMP_DIR / "incoming_audio"
 OUTGOING_AUDIO = TEMP_DIR / "outgoing_audio"
 
+# Mic-track mute around speaker playback. The WebRTC mic track used to be muted
+# for only 0.2 s ("AEC handles the rest") — it did not: the live mic streamed
+# the clip to the app, the phone played it, the robot heard the phone, and so
+# on (2026-10-23, Morgan: "endless loop ... 4 quick replays"). Mute for the
+# whole playback (cap below as a safety net) and a short tail for room decay.
+PTT_MUTE_MAX_S = 30.0
+PTT_MUTE_TAIL_S = 0.7
+
 # Recording settings
 DEFAULT_DURATION = 5  # seconds
 MAX_DURATION = 10  # seconds
@@ -202,12 +210,12 @@ class PushToTalkService:
                 f.write(audio_data)
             self.logger.info(f"[PTT] Wrote {len(audio_data)} bytes to {input_file}")
 
-            # Brief mic mute for PTT playback. PipeWire echo cancellation handles
-            # speaker→mic bleed; this short mute covers the initial transient.
+            # Mute the WebRTC mic track for the WHOLE playback (released with a
+            # short tail in `finally` once the speaker is actually done).
             try:
                 from services.streaming.audio_track import mute_audio_for_ptt
-                mute_audio_for_ptt(0.2)
-                self.logger.debug("[PTT] WebRTC audio muted 200ms (AEC handles the rest)")
+                mute_audio_for_ptt(PTT_MUTE_MAX_S)
+                self.logger.info(f"[PTT] WebRTC mic muted for playback (cap {PTT_MUTE_MAX_S:.0f}s)")
             except Exception as e:
                 self.logger.debug(f"[PTT] Could not mute audio track: {e}")
 
@@ -259,6 +267,12 @@ class PushToTalkService:
             self.logger.error("[PTT] ffmpeg conversion timed out")
         except Exception as e:
             self.logger.error(f"[PTT] Playback error: {e}")
+        finally:
+            try:
+                from services.streaming.audio_track import release_audio_ptt_mute
+                release_audio_ptt_mute(PTT_MUTE_TAIL_S)
+            except Exception as e:
+                self.logger.debug(f"[PTT] Could not release mic mute: {e}")
 
     def play_audio_base64(self, base64_data: str, format: str = "aac") -> Dict[str, Any]:
         """

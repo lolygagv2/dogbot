@@ -62,6 +62,14 @@ DEBOUNCE_S = 0.1          # shorter than this = electrical noise
 CANCEL_HOLD_S = 5.0       # hold this long = network cancel
 STUCK_HOLD_S = 15.0       # hold this long = stuck button, ignore
 POLL_S = 0.01
+# Idle loop: wait for an lgpio edge alert for this long, then read the line
+# level directly. Edge alerts are the fast path; the level read is the safety
+# net. 2026-10-20 06:34 and 2026-10-21 00:40 the button did nothing and this
+# watcher logged NOTHING (not even a transient) between "Armed" and the Xbox
+# A+B shutdown — the press never surfaced as an edge event. A level poll
+# every 20 ms catches any press that lasts >= DEBOUNCE_S regardless.
+EDGE_WAIT_S = 0.02
+HEARTBEAT_S = 6 * 3600    # prove the watcher is alive and can read the line
 
 TREATBOT_API = "http://127.0.0.1:8000"
 CANCEL_ENDPOINT = f"{TREATBOT_API}/system/network-cancel"
@@ -97,6 +105,22 @@ def classify_hold(hold_s: float, released: bool) -> str:
     if hold_s >= CANCEL_HOLD_S:
         return 'cancel'
     return 'wait'
+
+
+def press_seen(wait_for_active, is_active, timeout: float = EDGE_WAIT_S) -> bool:
+    """One idle-loop step: True when the button is down.
+
+    `wait_for_active(timeout)` is the edge-driven wait (returns True on an
+    edge, False on timeout); `is_active()` is a direct level read taken after
+    every timeout so a press whose edge event was lost is still noticed
+    within `timeout` seconds.
+    """
+    try:
+        if wait_for_active(timeout):
+            return True
+    except Exception as e:  # never let the edge machinery take the watcher down
+        log(f"wait_for_active failed ({e}) — falling back to level polling")
+    return bool(is_active())
 
 
 def track_press(is_active, now=time.time, sleep=time.sleep) -> str:
@@ -189,8 +213,22 @@ def main() -> int:
     log(f"GPIO20 settled LOW. Armed: release <{CANCEL_HOLD_S:.0f}s = shutdown, "
         f"hold {CANCEL_HOLD_S:.0f}s = network cancel (AP mode).")
 
+    try:
+        from gpiozero.devices import Device
+        log(f"gpiozero pin factory: {type(Device.pin_factory).__name__}")
+    except Exception:
+        pass
+
+    last_heartbeat = time.time()
     while True:
-        button_input.wait_for_active()
+        if not press_seen(button_input.wait_for_active, lambda: button_input.is_active):
+            if time.time() - last_heartbeat >= HEARTBEAT_S:
+                last_heartbeat = time.time()
+                log(f"alive — GPIO20 reads {'HIGH' if button_input.is_active else 'LOW'}, armed")
+            continue
+        # Logged at press START so a future "button did nothing" has evidence
+        # of whether the press reached GPIO20 at all.
+        log("Press detected on GPIO20")
         action = track_press(lambda: button_input.is_active)
         if action == 'shutdown':
             return 0

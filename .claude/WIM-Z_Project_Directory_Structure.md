@@ -245,6 +245,7 @@
          test_camera_*.py
       streaming/
          test_abr_hysteresis.py     # ABR anti-flap: 16:9 tiers, REMB floor band, step-down debounce, post-down hold (2026-10-03). Standalone.
+        test_ptt_mic_mute.py          # PTT playback keeps the WebRTC mic muted for the whole clip + 0.7 s tail, drains stale frames on unmute (2026-10-23). No audio hardware; standalone.
       core/
          test_dog_tracker_dedupe.py # One box per dog: persistence re-match keeps id_method, generic-twin cleanup, ArUco tag 0 (2026-10-03). Standalone.
       motion/

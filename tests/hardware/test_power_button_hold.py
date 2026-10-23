@@ -158,3 +158,29 @@ if __name__ == "__main__":
                 print(f"FAIL {name}")
                 traceback.print_exc()
     sys.exit(1 if fails else 0)
+
+
+# ── Idle-loop press detection (2026-10-23: two presses never surfaced) ──────
+
+def test_press_seen_via_edge_event():
+    assert pb.press_seen(lambda timeout: True, lambda: False) is True
+
+
+def test_press_seen_via_level_poll_when_edge_missed():
+    """Edge wait times out but the line is HIGH: the press still counts."""
+    assert pb.press_seen(lambda timeout: False, lambda: True) is True
+
+
+def test_press_not_seen_when_idle():
+    assert pb.press_seen(lambda timeout: False, lambda: False) is False
+
+
+def test_press_seen_survives_edge_machinery_failure():
+    def broken(timeout):
+        raise RuntimeError("lgpio alert thread gone")
+    assert pb.press_seen(broken, lambda: True) is True
+    assert pb.press_seen(broken, lambda: False) is False
+
+
+def test_edge_wait_is_short_enough_to_catch_a_debounced_press():
+    assert pb.EDGE_WAIT_S < pb.DEBOUNCE_S
