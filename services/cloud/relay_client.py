@@ -146,7 +146,6 @@ class RelayClient:
         # and replayed in order on reconnect, so cloud activity history has no
         # gaps. The relay dedupes on the event 'id', so replays are idempotent.
         # In-memory only: a service restart drops the backlog (v1 tradeoff).
-        from collections import deque
         self._event_backlog: deque = deque(maxlen=500)
 
         self.logger.info(f"RelayClient initialized (enabled={config.enabled})")
