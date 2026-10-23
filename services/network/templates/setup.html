@@ -629,22 +629,20 @@
 
                 const data = await response.json();
 
-                if (data.success) {
+                if (data.pending) {
+                    // Robot accepted the credentials and is about to leave this
+                    // network to try them. The result can only be read back
+                    // once the phone can reach the robot again.
+                    diagLocal('Robot accepted credentials; it is leaving this network to join "' + ssid + '".');
+                    showStatus(data.message, 'loading');
+                    pollConnectOutcome(ssid, data.ap_ssid || 'WIMZ');
+                } else if (data.success) {
                     diagLocal('Robot reported: ' + data.message);
                     if (data.has_internet) {
                         showStatus(data.message, 'success');
                     } else {
                         showStatus(data.message + ' (No internet detected)', 'success');
                     }
-                    // Trigger reboot after successful connection
-                    setTimeout(async () => {
-                        showStatus('Rebooting WIM-Z...', 'loading');
-                        try {
-                            await fetch('/reboot');
-                        } catch (e) {
-                            // Expected - connection will drop during reboot
-                        }
-                    }, 3000);
                 } else {
                     diagLocal('Robot reported failure: ' + data.message, 'ERROR');
                     showStatus(data.message, 'error');
@@ -667,6 +665,55 @@
                 connectBtn.disabled = false;
                 connectBtn.textContent = 'Connect';
             }
+        }
+
+        // After a pending /connect: this network goes away while the robot
+        // tries the new one. Keep asking /connect/status quietly; it answers
+        // again only if the setup AP comes back (= the attempt failed).
+        let outcomePoll = null;
+        function pollConnectOutcome(ssid, apSsid) {
+            if (outcomePoll) clearInterval(outcomePoll);
+            const deadline = Date.now() + 4 * 60 * 1000;
+            outcomePoll = setInterval(async () => {
+                if (Date.now() > deadline) {
+                    clearInterval(outcomePoll); outcomePoll = null;
+                    showStatus('No word back from WIM-Z. If "' + apSsid + '" is not visible, it joined "' + ssid +
+                               '" — rejoin your home WiFi and open the WIM-Z app.', 'success');
+                    connectBtn.disabled = false; connectBtn.textContent = 'Connect';
+                    return;
+                }
+                try {
+                    const r = await fetch('/connect/status', { cache: 'no-store' });
+                    const d = await r.json();
+                    const job = d.job || {};
+                    if (job.state !== 'done' || job.ssid !== ssid) return;
+                    clearInterval(outcomePoll); outcomePoll = null;
+                    connectBtn.disabled = false; connectBtn.textContent = 'Connect';
+                    if (job.success) {
+                        showStatus(job.message || ('Connected to ' + ssid), 'success');
+                    } else {
+                        diagLocal('Robot reported failure: ' + job.message, 'ERROR');
+                        showStatus('Joining "' + ssid + '" failed: ' + job.message + ' Setup restored — please try again.', 'error');
+                        scanNetworks();
+                    }
+                } catch (e) {
+                    // Expected while the robot is off this network.
+                }
+            }, 4000);
+        }
+
+        // On load: if the previous attempt failed (AP came back), say why.
+        async function showLastAttempt() {
+            try {
+                const r = await fetch('/connect/status', { cache: 'no-store' });
+                const d = await r.json();
+                const job = d.job || {};
+                if (job.state === 'done' && job.success === false &&
+                    (Date.now() / 1000 - (job.finished || 0)) < 15 * 60) {
+                    showStatus('Last attempt to join "' + job.ssid + '" failed: ' + job.message, 'error');
+                    diagLocal('Previous attempt failed: ' + job.message, 'ERROR');
+                }
+            } catch (e) {}
         }
 
         // Form submission
@@ -750,6 +797,7 @@
             loadSavedNetworks();
             scanNetworks();
             diagPoll();
+            showLastAttempt();
         });
     </script>
 </body>

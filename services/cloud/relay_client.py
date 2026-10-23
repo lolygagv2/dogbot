@@ -22,6 +22,7 @@ from typing import Optional, Dict, Any, Callable
 from dataclasses import dataclass
 
 import aiohttp
+from collections import deque
 
 from core.bus import get_bus, CloudEvent
 from core.state import get_state, SystemMode
@@ -69,6 +70,10 @@ class RelayClient:
         # deferral logs once per episode instead of never (silent) or every
         # 15s (spam).
         self._ap_defer_logged = False
+        # webrtc_close for sessions this robot never created (see
+        # _note_unknown_close): monotonic timestamps + last self-heal time.
+        self._unknown_close_times: deque = deque(maxlen=32)
+        self._last_unknown_close_reset = 0.0
         self._reconnect_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._telemetry_task: Optional[asyncio.Task] = None
@@ -628,13 +633,49 @@ class RelayClient:
         """
         session_id = data.get('session_id')
         reason = data.get('reason', '')
+        known = bool(self._webrtc_service and self._webrtc_service.has_session(session_id))
         self.logger.info(
             f"[WEBRTC] Close request: session={session_id}"
-            f"{f' reason={reason}' if reason else ''} - mode unchanged")
+            f"{f' reason={reason}' if reason else ''}"
+            f"{'' if known else ' (session unknown to this robot)'} - mode unchanged")
         self._cancel_answer_watchdog(session_id)
 
         if self._webrtc_service:
             await self._webrtc_service.close_connection(session_id)
+
+        if not known:
+            await self._note_unknown_close(session_id, reason)
+
+    # A relay that keeps closing a session this robot never had means the
+    # relay (or the app) is holding a stale session for us — observed
+    # 2026-10-23 12:07: user_connected -> webrtc_close(superseded, same stale
+    # id) every ~2 s for 90 s, no webrtc_request ever arrived, and only a
+    # robot reboot (fresh relay registration) broke the loop. Re-register
+    # ourselves instead of waiting for someone to power-cycle the robot.
+    UNKNOWN_CLOSE_WINDOW_S = 20
+    UNKNOWN_CLOSE_TRIGGER = 5
+    UNKNOWN_CLOSE_COOLDOWN_S = 120
+
+    async def _note_unknown_close(self, session_id: str, reason: str):
+        now = time.monotonic()
+        self._unknown_close_times.append(now)
+        while (self._unknown_close_times
+               and now - self._unknown_close_times[0] > self.UNKNOWN_CLOSE_WINDOW_S):
+            self._unknown_close_times.popleft()
+        n = len(self._unknown_close_times)
+        if n < self.UNKNOWN_CLOSE_TRIGGER:
+            return
+        if now - self._last_unknown_close_reset < self.UNKNOWN_CLOSE_COOLDOWN_S:
+            return
+        if self._webrtc_service and self._webrtc_service.active_session_count() > 0:
+            return  # a live stream exists; never drop it for a self-heal
+        self._last_unknown_close_reset = now
+        self._unknown_close_times.clear()
+        self.logger.warning(
+            f"[WEBRTC] Relay closed session {session_id} (reason={reason or 'n/a'}) "
+            f"{n}x in {self.UNKNOWN_CLOSE_WINDOW_S}s but this robot never had it — "
+            "relay/app connect loop; re-registering with the relay to clear the stale session")
+        await self._disconnect(send_goodbye=True)
 
     # Command staleness thresholds (seconds)
     COMMAND_MAX_AGE_SEC = 30  # General commands

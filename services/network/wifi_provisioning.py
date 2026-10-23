@@ -118,7 +118,8 @@ class WiFiProvisioningService:
 
     def _on_credentials_saved(self, ssid: str):
         """Callback when WiFi credentials are saved"""
-        logger.info(f"Credentials saved for {ssid}, preparing to reboot...")
+        logger.info(f"Joined '{ssid}' with the submitted credentials — "
+                    "exiting so treatbot takes over (no reboot)")
         self._credentials_saved = True
 
     def _reboot_system(self):

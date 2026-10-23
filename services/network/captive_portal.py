@@ -161,7 +161,13 @@ class CaptivePortal:
 
         @app.post("/connect")
         async def connect_wifi(credentials: WiFiCredentials):
-            """Save WiFi credentials and trigger connection"""
+            """Accept WiFi credentials and start the connect in the background.
+
+            Answers immediately. The connect itself tears the setup AP down,
+            which drops the phone that sent this request — an inline result
+            could never reach it (the page then said "Connection failed" even
+            when the password was right). Outcome: GET /connect/status.
+            """
             logger.info(f"Received credentials for: '{credentials.ssid}' "
                         f"(password length {len(credentials.password or '')})")
 
@@ -169,45 +175,47 @@ class CaptivePortal:
                 raise HTTPException(status_code=400, detail="SSID is required")
 
             try:
-                # Save credentials (this stops the hotspot and tries to connect)
-                result = self.wifi_manager.save_credentials(
-                    credentials.ssid,
-                    credentials.password
-                )
-
-                if result["success"]:
-                    self._credentials_saved = True
-                    if self.on_credentials_saved:
-                        # Schedule callback (will trigger reboot)
-                        asyncio.create_task(self._trigger_callback(credentials.ssid))
-
-                    return JSONResponse(content={
-                        "success": True,
-                        "has_internet": result["has_internet"],
-                        "message": result["message"]
-                    })
-                else:
-                    # Connection failed - restart AP mode so user can try again
-                    logger.warning(f"Connect to '{credentials.ssid}' failed: {result['message']}")
-                    if result["should_restart_ap"]:
-                        logger.info("Connection failed, restarting AP mode...")
-                        asyncio.create_task(self._restart_ap_mode(credentials.ssid))
-
-                    return JSONResponse(content={
-                        "success": False,
-                        "message": result["message"],
-                        "restarting_ap": result["should_restart_ap"]
-                    })
-
+                started, job = self.wifi_manager.connect_in_background(
+                    credentials.ssid, credentials.password,
+                    on_success=self._on_connect_success)
             except Exception as e:
                 logger.error(f"Connection error: {e}")
-                # Try to restart AP mode on any error
-                asyncio.create_task(self._restart_ap_mode("error"))
-                return JSONResponse(content={
-                    "success": False,
-                    "message": f"Error: {str(e)}. Restarting setup...",
-                    "restarting_ap": True
-                })
+                return JSONResponse(status_code=500, content={
+                    "success": False, "message": f"Error: {str(e)}"})
+
+            if not started:
+                return JSONResponse(status_code=409, content={
+                    "success": False, "pending": True, "ssid": job.get("ssid"),
+                    "message": f"Already connecting to '{job.get('ssid')}' — please wait."})
+
+            ap_ssid = self._ap_ssid()
+            return JSONResponse(content={
+                "success": True,
+                "pending": True,
+                "ssid": credentials.ssid,
+                "ap_ssid": ap_ssid,
+                "message": (
+                    f"Credentials received — WIM-Z is joining '{credentials.ssid}' now. "
+                    f"This setup network will disappear for about a minute. "
+                    f"If '{ap_ssid}' comes back, the password was rejected: rejoin it and try again. "
+                    f"Otherwise WIM-Z is online — rejoin your home WiFi and open the WIM-Z app."),
+            })
+
+        @app.get("/connect/status")
+        async def connect_status():
+            """Outcome of the last credential connect (see POST /connect)."""
+            job = None
+            getter = getattr(self.wifi_manager, "get_connect_job", None)
+            if getter:
+                try:
+                    job = getter()
+                except Exception as e:
+                    logger.error(f"connect status error: {e}")
+            return JSONResponse(content={
+                "success": True,
+                "job": job or {"state": "idle"},
+                "robot_time": time.strftime("%H:%M:%S"),
+            })
 
         @app.get("/status")
         async def get_status():
@@ -276,9 +284,15 @@ class CaptivePortal:
 
         return app
 
-    async def _trigger_callback(self, ssid: str):
-        """Trigger the credentials saved callback after a delay"""
-        await asyncio.sleep(2)
+    def _ap_ssid(self) -> str:
+        try:
+            return self.wifi_manager.get_ap_ssid()
+        except Exception:
+            return "WIMZ"
+
+    def _on_connect_success(self, ssid: str, result: dict):
+        """Worker-thread callback from WiFiManager.connect_in_background."""
+        self._credentials_saved = True
         if self.on_credentials_saved:
             self.on_credentials_saved(ssid)
 

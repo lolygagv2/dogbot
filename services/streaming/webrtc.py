@@ -1053,6 +1053,15 @@ class WebRTCService:
         """Explicitly close a connection"""
         await self._cleanup_connection(session_id)
 
+    def has_session(self, session_id: str) -> bool:
+        """True if this robot currently holds a peer connection for session_id."""
+        with self._lock:
+            return session_id in self.connections
+
+    def active_session_count(self) -> int:
+        with self._lock:
+            return len(self.connections)
+
     async def prune_dead_sessions(self, reason: str = "") -> list:
         """Tear down sessions whose transport is already failed/closed.
 

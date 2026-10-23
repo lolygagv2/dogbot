@@ -4390,6 +4390,11 @@ async def wifi_connect(request: dict):
     """Connect to a WiFi network. Shuts down the WIMZ AP if active.
 
     Body: {"ssid": "NetworkName", "password": "secret"}
+
+    Returns immediately with pending=true: the connect tears the AP down,
+    which drops the phone that sent this request, so an inline result never
+    reached the app. Poll GET /system/wifi/connect/status (reachable again on
+    home WiFi after success, or on the restarted AP after a failure).
     """
     ssid = request.get("ssid", "").strip()
     password = request.get("password", "")
@@ -4403,34 +4408,43 @@ async def wifi_connect(request: dict):
         wifi = get_wifi_manager()
         logger.info(f"[LOCAL] WiFi configured via API — connecting to {ssid}, shutting down AP")
 
-        # save_credentials() stops the hotspot, connects to WiFi, and tests internet
-        result = wifi.save_credentials(ssid, password)
-
-        if result["success"]:
+        def _on_success(_ssid, result):
             wifi.ap_deliberate = False
             status = wifi.get_connection_status()
-            ip = status.get("ip_address", "unknown")
-            logger.info(f"[LOCAL] WiFi connected — relay mode at {ip}:8000")
-            return {
-                "success": True,
-                "message": result["message"],
-                "ip": ip,
-                "has_internet": result["has_internet"]
-            }
-        else:
-            # Connection failed — restart the AP so the user can retry
-            logger.warning(f"WiFi connect to '{ssid}' failed: {result['message']}")
-            if result.get("should_restart_ap"):
-                logger.info("[LOCAL] Restarting AP after failed WiFi connect")
-                wifi.start_demo_hotspot(ssid=wifi.get_ap_ssid(),
-                                        password=wifi.AP_PASSWORD)
-            return {
-                "success": False,
-                "message": result["message"]
-            }
+            logger.info(f"[LOCAL] WiFi connected — relay mode at {status.get('ip_address', 'unknown')}:8000")
+
+        def _restart_ap():
+            logger.info("[LOCAL] Restarting AP after failed WiFi connect")
+            return wifi.start_demo_hotspot(ssid=wifi.get_ap_ssid(), password=wifi.AP_PASSWORD)
+
+        started, job = wifi.connect_in_background(
+            ssid, password, on_success=_on_success, restart_ap=_restart_ap)
+        ap_ssid = wifi.get_ap_ssid()
+        if not started:
+            return {"success": False, "pending": True, "ssid": job.get("ssid"),
+                    "message": f"Already connecting to '{job.get('ssid')}' — please wait."}
+        return {
+            "success": True,
+            "pending": True,
+            "ssid": ssid,
+            "ap_ssid": ap_ssid,
+            "message": (f"Connecting to '{ssid}'. The '{ap_ssid}' network will drop; "
+                        f"if it comes back the password was rejected."),
+        }
 
     except Exception as e:
         logger.error(f"WiFi connect error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.get("/system/wifi/connect/status")
+async def wifi_connect_status():
+    """Outcome of the last POST /system/wifi/connect (state: idle|connecting|done)."""
+    try:
+        from services.network.wifi_manager import get_wifi_manager
+        job = get_wifi_manager().get_connect_job()
+        return {"success": True, "job": job or {"state": "idle"}}
+    except Exception as e:
         return {"success": False, "message": str(e)}
 
 

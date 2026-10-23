@@ -16,7 +16,7 @@ import time
 import signal
 import logging
 import threading
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,12 @@ class WiFiManager:
         self.last_station_seen: Optional[float] = None
         # Consecutive failed rejoin attempts from a fallback AP (backoff input).
         self.ap_rejoin_failures = 0
+        # Last/background credential connect (portal + API): see
+        # connect_in_background(). The phone that submitted the credentials
+        # is kicked off our AP the moment save_credentials() starts, so the
+        # outcome has to be stored here and served later, not returned inline.
+        self._connect_job: Optional[Dict] = None
+        self._job_lock = threading.Lock()
 
     def raise_local_ap(self, reason: str = "local_mode") -> bool:
         """Raise the ONE AP sticky (app Local Mode semantics) — shared by
@@ -432,6 +438,31 @@ class WiFiManager:
             logger.warning(f"Failed to delete connection '{ssid}': {output}")
             return False, f"Could not forget '{ssid}'"
 
+    def _saved_profile_targets(self, saved: List[Dict]) -> List[tuple]:
+        """[(profile_name, ssid, hidden)] for saved WiFi profiles.
+
+        Profile name and SSID can differ, and hidden profiles never appear in
+        a scan, so both are needed to decide which profiles are worth a
+        `connection up` attempt.
+        """
+        out = []
+        for conn in saved:
+            name = conn.get('name')
+            if not name:
+                continue
+            ssid, hidden = name, False
+            ok, raw = self._run_nmcli(
+                ["-g", "802-11-wireless.ssid,802-11-wireless.hidden",
+                 "connection", "show", name], timeout=5)
+            if ok:
+                lines = raw.strip().split('\n')
+                if lines and lines[0].strip():
+                    ssid = lines[0].strip().replace('\\:', ':')
+                if len(lines) > 1:
+                    hidden = lines[1].strip().lower() in ('yes', 'true', '1')
+            out.append((name, ssid, hidden))
+        return out
+
     def get_connection_status(self) -> Dict:
         """Get current WiFi connection status"""
         with self._op_lock:
@@ -507,16 +538,36 @@ class WiFiManager:
 
             nmcli_timeout = min(timeout, 10)
 
+            # Scan FIRST and only bring up profiles whose SSID is actually in
+            # range. `nmcli connection up` on an out-of-range profile does not
+            # fail fast — it sits until our timeout — so the old blind loop over
+            # every saved profile burned ~110 s (10 profiles x 10 s) and logged
+            # a "Command timed out" ERROR for each before the setup AP could
+            # even come up (2026-10-23 boot at a new location). Hidden-SSID
+            # profiles never show in a scan, so they are always attempted.
+            visible = {n['ssid']: n.get('signal', 0) for n in self._do_scan()}
+            targets = self._saved_profile_targets(saved)
+            if visible:
+                candidates = [(name, ssid) for (name, ssid, hidden) in targets
+                              if ssid in visible or hidden]
+                candidates.sort(key=lambda t: visible.get(t[1], -1), reverse=True)
+                if not candidates:
+                    logger.info(
+                        f"None of the {len(targets)} saved networks are in range "
+                        f"(scan saw {len(visible)} SSIDs) — skipping connect attempts")
+                    return False
+                logger.info(f"Saved networks in range: {[ssid for _, ssid in candidates]}")
+            else:
+                logger.warning("Scan returned no networks — trying every saved profile")
+                candidates = [(name, ssid) for (name, ssid, _hidden) in targets]
+
             # Reactivate a saved profile *by name* first. Coming out of AP mode,
             # wlan0 has no active profile, so a bare `nmcli device connect wlan0`
             # fails with "A 'wireless' setting is required if no AP path was
             # given" (NM has nothing to auto-pick) — the exact error that left
             # the robot stranded for ~40s during the demo. Bringing a saved
             # connection up by name avoids it and is what actually recovers WiFi.
-            for conn in saved:
-                name = conn.get('name')
-                if not name:
-                    continue
+            for name, _ssid in candidates:
                 ok, _out = self._run_nmcli(
                     ["connection", "up", name, "ifname", self.interface],
                     timeout=nmcli_timeout
@@ -1113,9 +1164,12 @@ address=/#/{self.HOTSPOT_IP}
         if not ssid_found:
             logger.warning(f"SSID '{ssid}' not in scan results — attempting connect anyway")
 
-        # Delete any existing connection with same name
-        self._run_nmcli(["connection", "delete", ssid])
-        time.sleep(1)
+        # Replace any existing profile with this name. Only delete when one
+        # exists — the unconditional delete logged an "unknown connection"
+        # WARNING on every first-time connect, which read as a failure.
+        if any(c.get('name') == ssid for c in self.get_saved_connections()):
+            self._run_nmcli(["connection", "delete", ssid])
+            time.sleep(1)
 
         # Create new connection
         success, output = self._run_nmcli([
@@ -1174,6 +1228,76 @@ address=/#/{self.HOTSPOT_IP}
             result["message"] = f"Connected to {ssid} but no internet detected. Proceeding anyway."
 
         return result
+
+    # ── Background credential connect (captive portal + /system/wifi/connect) ──
+    # save_credentials() tears the AP down as its first step, which kicks the
+    # phone that just POSTed the credentials off our network — so an inline
+    # response never reached it (the page showed "Connection failed", the app
+    # showed a generic error, and a correct password looked wrong). Answer the
+    # HTTP request immediately, then connect on a worker thread and keep the
+    # outcome here for GET .../connect/status once the phone can reach us again
+    # (home WiFi on success; the restarted setup AP on failure).
+    CONNECT_RESPONSE_GRACE_S = 1.5   # let the HTTP response leave before the AP drops
+
+    def connect_in_background(self, ssid: str, password: str,
+                              on_success: Optional[Callable] = None,
+                              restart_ap: Optional[Callable] = None):
+        """Start save_credentials() on a worker thread; return (started, job)."""
+        with self._job_lock:
+            job = self._connect_job
+            if job and job['state'] == 'connecting':
+                return False, dict(job)
+            self._connect_job = {
+                'ssid': ssid, 'state': 'connecting', 'started': time.time(),
+                'finished': None, 'success': None, 'message': '',
+                'has_internet': None, 'ap_restarted': False,
+            }
+            job = dict(self._connect_job)
+        threading.Thread(
+            target=self._connect_worker, args=(ssid, password, on_success, restart_ap),
+            daemon=True, name="wifi-connect").start()
+        return True, job
+
+    def _connect_worker(self, ssid: str, password: str,
+                        on_success: Optional[Callable], restart_ap: Optional[Callable]):
+        time.sleep(self.CONNECT_RESPONSE_GRACE_S)
+        try:
+            result = self.save_credentials(ssid, password)
+        except Exception as e:
+            logger.error(f"Background connect to '{ssid}' crashed: {e}")
+            result = {"success": False, "message": f"Error: {e}",
+                      "has_internet": False, "should_restart_ap": True}
+
+        ap_restarted = False
+        if result.get("success"):
+            if on_success:
+                try:
+                    on_success(ssid, result)
+                except Exception as e:
+                    logger.warning(f"connect on_success callback failed: {e}")
+        else:
+            logger.warning(f"Connect to '{ssid}' failed: {result.get('message')}")
+            if result.get("should_restart_ap"):
+                logger.info("Restarting setup AP so the phone can try again...")
+                try:
+                    if restart_ap:
+                        ap_restarted = bool(restart_ap())
+                    else:
+                        ap_restarted = bool(self.start_hotspot(self.get_ap_ssid(), self.AP_PASSWORD))
+                except Exception as e:
+                    logger.error(f"Setup AP restart failed: {e}")
+
+        with self._job_lock:
+            if self._connect_job and self._connect_job.get('ssid') == ssid:
+                self._connect_job.update(
+                    state='done', finished=time.time(),
+                    success=bool(result.get("success")), message=result.get("message", ""),
+                    has_internet=result.get("has_internet"), ap_restarted=ap_restarted)
+
+    def get_connect_job(self) -> Optional[Dict]:
+        """Copy of the last background connect job, or None."""
+        with self._job_lock:
+            return dict(self._connect_job) if self._connect_job else None
 
     def _ssid_has_5ghz(self, ssid: str) -> bool:
         """Return True if any visible BSSID for this SSID is on 5 GHz."""
