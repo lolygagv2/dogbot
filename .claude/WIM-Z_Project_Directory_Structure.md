@@ -236,6 +236,7 @@
          beam_watch.sh              # Live GPIO7 through-beam transition monitor (chute sensor alignment)
          test_dispenser_beam_health.py # Beam health (2026-10-20): miss tracker -> beam_suspect, blocked-at-rest check, cancelled ladder never flags empty, suspect/blocked beam = ONE rotation on motor truth. No GPIO; standalone.
          test_power_button_hold.py  # Power-button hold classification: release<5s shutdown, hold 5s network cancel, 15s stuck (2026-09-25). No GPIO; standalone.
+         test_xbox_read_event_closed_file.py # Xbox read_event on a closed/stale fd takes the 5 s reopen path, other errors rate-limited (28k-line journal flood 2026-10-24). System python3; standalone.
       network/
          test_wifi_ap_flag_recovery.py  # AP-state regression (stale _in_ap_mode stranded relay, 2026-09-04). No hardware; pytest absent in env_new so runs standalone.
          test_wifi_network_cancel.py    # Network cancel: raise_local_ap sticky + breadcrumb, /run/wimz/net-cancel flag consumption (2026-09-25). Standalone.
@@ -248,6 +249,11 @@
         test_ptt_mic_mute.py          # PTT playback keeps the WebRTC mic muted for the whole clip + 0.7 s tail, drains stale frames on unmute (2026-10-23). No audio hardware; standalone.
       core/
          test_dog_tracker_dedupe.py # One box per dog: persistence re-match keeps id_method, generic-twin cleanup, ArUco tag 0 (2026-10-03). Standalone.
+         test_dog_tracker_behavior_label.py # Behavior label lands on EVERY tracker entry for the animal (index, name, bbox overlap) so the drawn box never blinks (2026-10-24). Standalone.
+      api/
+         test_ws_night_mode_local.py # /ws/local night-vision contract (2026-10-24): night_mode_state on connect, set_night_mode_override + aliases, night_mode_status pull, worker-thread push. Uses the singleton server; standalone.
+      audio/
+         test_bark_classifier_runtime.py # Bark emotion model runs on ai_edge_litert (~25 MB) not full tensorflow (~505 MB) (2026-10-24 lag RCA). Standalone.
       motion/
          test_pan_tilt_framing.py   # Coach framing: no top/bottom limit cycle, fit check, one step per new bbox, target selection (2026-10-03). Fake servo; standalone.
       power/

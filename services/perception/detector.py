@@ -1111,8 +1111,10 @@ class DetectorService:
                 # This bridges behavior data to video_track.py so it can show "sit 34%"
                 # Works for both ArUco-identified dogs (by name) and unidentified (by index)
                 if hasattr(self.ai, 'dog_tracker') and self.ai.dog_tracker:
+                    _det = dogs[i] if 0 <= i < len(dogs) else None
                     self.ai.dog_tracker.update_dog_behavior(
-                        dog_name, behavior_name, confidence, detection_idx=i
+                        dog_name, behavior_name, confidence, detection_idx=i,
+                        bbox=[_det.x1, _det.y1, _det.x2, _det.y2] if _det is not None else None,
                     )
 
                 # Log behavior to store

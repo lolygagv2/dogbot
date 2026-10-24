@@ -566,7 +566,8 @@ class DogTracker:
         return result
 
     def update_dog_behavior(self, dog_name: str, behavior: str, confidence: float,
-                            keypoints: list = None, detection_idx: int = None):
+                            keypoints: list = None, detection_idx: int = None,
+                            bbox: list = None):
         """Update behavior and keypoints for a tracked dog.
 
         Handles both ArUco-identified dogs (by name) and unidentified dogs (by index).
@@ -596,9 +597,39 @@ class DogTracker:
         if marker_id is None and detection_idx is not None:
             marker_id = -(detection_idx + 1000)
 
+        # Label EVERY entry that describes this animal, not just one. The
+        # anonymous entry for the index and a named entry for the same dog can
+        # coexist for a few frames (identity arriving/expiring), and
+        # get_tracked_dogs() hides whichever anonymous box overlaps a named one
+        # -> the label landed on the hidden entry and the drawn box blinked
+        # "sit 97%" on/off every few frames (2026-10-24, Morgan's sit tests).
+        # Overlap with the detection's own bbox also covers index flips
+        # between frames when two detections swap order.
+        targets = set()
         if marker_id is not None and marker_id in self.last_known_positions:
-            self.last_known_positions[marker_id]['behavior'] = behavior
-            self.last_known_positions[marker_id]['behavior_confidence'] = confidence
-            self.last_known_positions[marker_id]['behavior_time'] = time.time()
+            targets.add(marker_id)
+        if dog_name:
+            named = self.dog_names.get(dog_name)
+            if named is not None and named in self.last_known_positions:
+                targets.add(named)
+        if detection_idx is not None and -(detection_idx + 1000) in self.last_known_positions:
+            targets.add(-(detection_idx + 1000))
+        ref_bbox = bbox
+        if not ref_bbox and marker_id is not None and marker_id in self.last_known_positions:
+            ref_bbox = self.last_known_positions[marker_id].get('bbox')
+        if ref_bbox:
+            for gid, tracking in self.last_known_positions.items():
+                gb = tracking.get('bbox')
+                if gb and self._bbox_iou(ref_bbox, gb) > 0.3:
+                    targets.add(gid)
+
+        now = time.time()
+        for gid in targets:
+            entry = self.last_known_positions.get(gid)
+            if entry is None:
+                continue
+            entry['behavior'] = behavior
+            entry['behavior_confidence'] = confidence
+            entry['behavior_time'] = now
             if keypoints:
-                self.last_known_positions[marker_id]['keypoints'] = keypoints
+                entry['keypoints'] = keypoints
