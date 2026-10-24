@@ -1852,8 +1852,8 @@ async def capture_snapshot_from_stream():
         filepath = f"/home/morgan/dogbot/captures/{filename}"
 
         # Save the frame
-        # Frame is RGB from Picamera2, convert to BGR for cv2.imwrite
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        # Frame is ALREADY BGR — picamera2 'RGB888' is BGR in memory (picamera2/request.py FORMAT_TABLE: RGB888 -> 'BGR'; video_track.py streams it as BGR and looks right). Converting again swapped red/blue: tan dog came out BLUE in every saved photo (2026-10-24).
+        frame_bgr = frame
         cv2.imwrite(filepath, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
         file_size = os.path.getsize(filepath)

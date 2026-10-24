@@ -225,7 +225,7 @@ class NightSentryMode:
             if frame is None:
                 logger.warning("Night Sentry: no frame available for snapshot")
                 return None, None
-            bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            bgr = frame  # already BGR — picamera2 'RGB888' is BGR in memory (picamera2/request.py FORMAT_TABLE: RGB888 -> 'BGR'; video_track.py streams it as BGR and looks right). Converting again swapped red/blue: tan dog came out BLUE in every saved photo (2026-10-24).
             ok, buf = cv2.imencode('.jpg', bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
             if not ok:
                 return None, None

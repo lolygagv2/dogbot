@@ -254,6 +254,8 @@
          test_ws_night_mode_local.py # /ws/local night-vision contract (2026-10-24): night_mode_state on connect, set_night_mode_override + aliases, night_mode_status pull, worker-thread push. Uses the singleton server; standalone.
       audio/
          test_bark_classifier_runtime.py # Bark emotion model runs on ai_edge_litert (~25 MB) not full tensorflow (~505 MB) (2026-10-24 lag RCA). Standalone.
+      media/
+         test_photo_colour_order.py # Saved photos keep camera colours: picamera2 RGB888 is already BGR, the old RGB2BGR made a tan dog blue (2026-10-24). Fake detector/store; standalone.
       motion/
          test_pan_tilt_framing.py   # Coach framing: no top/bottom limit cycle, fit check, one step per new bbox, target selection (2026-10-03). Fake servo; standalone.
       power/

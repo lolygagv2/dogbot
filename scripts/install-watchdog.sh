@@ -20,6 +20,7 @@ install -D -m644 "$SD/10-wimz-watchdog.conf" /etc/systemd/system.conf.d/10-wimz-
 
 echo "[2/6] treatbot stop-timeout drop-in -> /etc/systemd/system/treatbot.service.d/"
 install -D -m644 "$SD/10-treatbot-timeout.conf" /etc/systemd/system/treatbot.service.d/10-timeout.conf
+install -D -m644 "$SD/20-treatbot-malloc.conf" /etc/systemd/system/treatbot.service.d/20-malloc.conf
 
 echo "[3/6] healthcheck service + timer -> /etc/systemd/system/"
 install -m644 "$SD/wimz-healthcheck.service" /etc/systemd/system/wimz-healthcheck.service

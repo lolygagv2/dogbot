@@ -81,8 +81,8 @@ class PhotoCaptureService:
                     "error": "No camera frame available"
                 }
 
-            # Convert from RGB (Picamera2) to BGR (OpenCV)
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            # Frame is ALREADY BGR — picamera2 'RGB888' is BGR in memory (picamera2/request.py FORMAT_TABLE: RGB888 -> 'BGR'; video_track.py streams it as BGR and looks right). Converting again swapped red/blue: tan dog came out BLUE in every saved photo (2026-10-24).
+            frame_bgr = frame.copy()
 
             # Apply HUD overlay if requested
             if with_hud:

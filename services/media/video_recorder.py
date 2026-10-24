@@ -324,9 +324,9 @@ class VideoRecorder:
                 if frame.shape[:2] != self.resolution:
                     frame = cv2.resize(frame, self.resolution)
 
-                # Convert RGB to BGR for OpenCV
+                # Frame is ALREADY BGR (no conversion) — picamera2 'RGB888' is BGR in memory (picamera2/request.py FORMAT_TABLE: RGB888 -> 'BGR'; video_track.py streams it as BGR and looks right). Converting again swapped red/blue: tan dog came out BLUE in every saved photo (2026-10-24).
                 if len(frame.shape) == 3 and frame.shape[2] == 3:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    frame = frame.copy()
 
                 # Draw overlays
                 with self._lock:
@@ -638,7 +638,7 @@ class VideoRecorder:
                     if frame.shape[1] != target_res[0] or frame.shape[0] != target_res[1]:
                         frame = cv2.resize(frame, target_res)
                     if len(frame.shape) == 3 and frame.shape[2] == 3:
-                        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        frame = frame.copy()  # already BGR, see recording loop note
 
                     # Timestamp overlay
                     ts_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

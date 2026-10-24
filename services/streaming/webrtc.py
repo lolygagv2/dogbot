@@ -1190,8 +1190,20 @@ class WebRTCService:
                     vs = self.video_track.get_stats()
                     fc = vs.get('frame_count', 0)
                     fps = vs.get('actual_fps', 0.0)
-                msg = (f"[RTC-MEM] rss={rss_mb:.0f}MB sys_mem={sys_pct:.0f}% "
-                       f"connections={n_conn} video_frames={fc} fps={fps:.1f}")
+                # anon = private anonymous pages (heap/arenas/numpy), threads =
+                # glibc arena pressure. rss up with anon flat = page cache/mmap;
+                # anon up across coach cycles = heap growth (2026-10-24 creep RCA).
+                anon_mb = 0.0
+                try:
+                    with open('/proc/self/smaps_rollup') as _f:
+                        for _line in _f:
+                            if _line.startswith('Anonymous:'):
+                                anon_mb = int(_line.split()[1]) / 1024.0
+                                break
+                except Exception:
+                    pass
+                msg = (f"[RTC-MEM] rss={rss_mb:.0f}MB anon={anon_mb:.0f}MB threads={proc.num_threads()} "
+                       f"sys_mem={sys_pct:.0f}% connections={n_conn} video_frames={fc} fps={fps:.1f}")
                 if n_conn > 0:
                     self.logger.info(msg)
                 else:
