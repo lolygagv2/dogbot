@@ -55,6 +55,26 @@ LOG_FILE = Path('/home/morgan/dogbot/logs/night_mode.log')
 
 VALID_OVERRIDES = ('auto', 'force_day', 'force_night')
 
+# App/UI spellings accepted for the override, all mapped onto VALID_OVERRIDES.
+# The settings screen says "Daytime" / "Night vision" / "Auto"; the relay
+# contract says force_day / force_night / auto. Accept both so a wording
+# change on either side can never leave the toggle stuck.
+_OVERRIDE_ALIASES = {
+    'auto': 'auto', 'automatic': 'auto', 'none': 'auto', 'off': 'auto',
+    'force_day': 'force_day', 'day': 'force_day', 'daytime': 'force_day',
+    'daylight': 'force_day', 'color': 'force_day', 'colour': 'force_day',
+    'force_night': 'force_night', 'night': 'force_night', 'nighttime': 'force_night',
+    'night_vision': 'force_night', 'nightvision': 'force_night', 'ir': 'force_night',
+}
+
+
+def normalize_override(value: Any) -> Optional[str]:
+    """Map any accepted spelling onto a VALID_OVERRIDES entry, or None if unknown."""
+    if value is None:
+        return None
+    key = str(value).strip().lower().replace('-', '_').replace(' ', '_')
+    return _OVERRIDE_ALIASES.get(key)
+
 
 # --- Camera profiles ---
 # DAY_PROFILE: leave camera as-is, just clear any night locks.
@@ -153,11 +173,15 @@ class NightModeController:
     def set_override(self, override: str) -> bool:
         """Update the override preference. Returns immediately; any required mode
         transition runs on a worker thread (transitions can take ~3s due to AE settle)."""
+        override = normalize_override(override)
         if override not in VALID_OVERRIDES:
             return False
         target_mode: Optional[str] = None
         with self._lock:
             if override == self.override_mode:
+                # Nothing to change, but the caller (app) is waiting for a
+                # state echo — send it so the UI leaves "waiting for the robot".
+                self._push_state(reason=f'override={override} (unchanged)')
                 return True
             prev = self.override_mode
             self.override_mode = override
@@ -392,18 +416,30 @@ class NightModeController:
             self._last_heartbeat = now
             self._push_state(reason='heartbeat')
 
+    def state_event_payload(self, reason: str) -> Dict[str, Any]:
+        """Flat night_mode_state payload — identical over relay and /ws/local."""
+        return {**self.get_status(), 'reason': reason}
+
     def _push_state(self, reason: str) -> None:
-        """Send night_mode_state to the app via the relay (if connected)."""
+        """Send night_mode_state to the app over BOTH transports.
+
+        Relay (cloud mode) and the local websocket (AP / LAN mode). Until
+        2026-10-24 only the relay got it, so in AP mode the app's night-vision
+        setting sat on "waiting for the robot" forever.
+        """
+        payload = self.state_event_payload(reason)
         try:
             from services.cloud.relay_client import get_relay_client
             relay = get_relay_client()
             if relay and relay.connected:
-                relay.send_event('night_mode_state', {
-                    **self.get_status(),
-                    'reason': reason,
-                })
+                relay.send_event('night_mode_state', dict(payload))
         except Exception as e:
             logger.debug(f"NightMode: relay push skipped ({e})")
+        try:
+            from api.ws import get_websocket_server
+            get_websocket_server().broadcast_event_threadsafe('night_mode_state', dict(payload))
+        except Exception as e:
+            logger.debug(f"NightMode: local WS push skipped ({e})")
 
     def _write_transition_log(self, prev: str, new: str, reason: str) -> None:
         try:

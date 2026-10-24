@@ -938,19 +938,37 @@ class RelayClient:
         # made an independent lgpio.gpio_claim_output() on the same pin, which
         # loses a startup race with LedController and then fails 'GPIO busy'
         # for the rest of the process lifetime (silently returning False).
-        if command == 'set_night_mode_override':
-            override = (params.get('override') or '').lower()
+        if command in ('set_night_mode_override', 'set_night_mode', 'night_mode_override'):
+            raw = params.get('override', params.get('mode', params.get('value')))
             ok = False
+            status = None
             try:
-                from modes.night_mode_controller import get_night_mode_controller
+                from modes.night_mode_controller import get_night_mode_controller, normalize_override
                 nm = get_night_mode_controller()
-                ok = nm.set_override(override)
+                override = normalize_override(raw)
+                if override is not None:
+                    ok = nm.set_override(override)   # pushes night_mode_state over relay + local WS
+                status = nm.get_status()
             except Exception as e:
                 self.logger.error(f"set_night_mode_override error: {e}")
             await self._send({
                 'type': 'command_ack', 'command': command, 'success': ok,
-                'error': None if ok else f"invalid override '{override}' (use auto/force_day/force_night)",
+                'night_mode': status,
+                'error': None if ok else f"invalid override {raw!r} (use auto/force_day/force_night)",
             })
+            return
+
+        if command in ('night_mode_status', 'get_night_mode', 'night_mode_pull'):
+            status = None
+            try:
+                from modes.night_mode_controller import get_night_mode_controller
+                nm = get_night_mode_controller()
+                status = nm.get_status()
+                self.send_event('night_mode_state', nm.state_event_payload('status_pull'))
+            except Exception as e:
+                self.logger.error(f"night_mode_status error: {e}")
+            await self._send({'type': 'command_ack', 'command': command,
+                              'success': status is not None, 'night_mode': status})
             return
 
         if command == 'mood_led':
@@ -1465,6 +1483,21 @@ class RelayClient:
             })
         except Exception as e:
             self.logger.debug(f"Could not send battery sync on connect: {e}")
+
+        # Night-vision state on connect. Before 2026-10-24 the app only heard
+        # night_mode_state on a transition or the 60 s heartbeat, so the
+        # settings screen showed "waiting for the robot" for up to a minute.
+        try:
+            from modes.night_mode_controller import get_night_mode_controller
+            nm = get_night_mode_controller()
+            await self._send({
+                'event': 'night_mode_state',
+                'device_id': self.config.device_id,
+                **nm.state_event_payload('user_connected sync'),
+                'timestamp': time.time(),
+            })
+        except Exception as e:
+            self.logger.debug(f"Could not send night_mode_state on connect: {e}")
 
         self.logger.info(f"Sent mode sync to app on connect: {contract_mode}")
 

@@ -5885,10 +5885,13 @@ async def night_mode_override(request: Request):
     """
     try:
         body = await request.json()
-        override = (body.get('override') or '').lower()
-        from modes.night_mode_controller import get_night_mode_controller, VALID_OVERRIDES
+        raw = body.get('override', body.get('mode', body.get('value')))
+        from modes.night_mode_controller import (
+            get_night_mode_controller, normalize_override, VALID_OVERRIDES)
+        override = normalize_override(raw)
         if override not in VALID_OVERRIDES:
-            raise HTTPException(status_code=400, detail=f"override must be one of {VALID_OVERRIDES}")
+            raise HTTPException(status_code=400,
+                                detail=f"override {raw!r} must be one of {VALID_OVERRIDES} (or day/night/auto)")
         nm = get_night_mode_controller()
         ok = nm.set_override(override)
         return {"success": ok, "status": nm.get_status()}

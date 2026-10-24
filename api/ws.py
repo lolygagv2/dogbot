@@ -139,6 +139,29 @@ class TreatBotWebSocketServer:
         self.bus.subscribe("system", _make_sync_wrapper(self._on_system_event))
         self.bus.subscribe("mission", _make_sync_wrapper(self._on_mission_event))
 
+    def broadcast_event_threadsafe(self, event_type: str, data: Dict[str, Any]) -> bool:
+        """Push a flat contract event {"event": type, ...data} to every local WS
+        client from ANY thread. Same shape the relay uses, so the app parser is
+        shared. Returns False when no client loop is available (nothing connected
+        yet) — callers treat that as a no-op, not an error."""
+        import asyncio
+        if not self.manager.active_connections:
+            return False
+        payload = {"event": event_type, **data}
+        payload.setdefault("timestamp", time.time())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and loop is self._main_loop:
+            asyncio.ensure_future(self.manager.send_to_all(payload))
+            return True
+        target = self._main_loop
+        if target is None or not target.is_running():
+            return False
+        asyncio.run_coroutine_threadsafe(self.manager.send_to_all(payload), target)
+        return True
+
     def _get_services(self):
         """Lazy load services to avoid circular imports.
         Each service loaded independently so one failure doesn't block the rest."""
@@ -257,15 +280,34 @@ class TreatBotWebSocketServer:
         except Exception:
             pass
 
+        # Night-vision state too: the settings screen shows "waiting for the
+        # robot" until it hears night_mode_state, and in AP mode this socket
+        # is the ONLY channel that can deliver it.
+        night_mode = None
+        try:
+            from modes.night_mode_controller import get_night_mode_controller
+            night_mode = get_night_mode_controller().get_status()
+        except Exception:
+            pass
+
         await self.manager.send_to_one(websocket, {
             "type": "initial_status",
             "data": {
                 "system_state": state,
                 "mission_status": mission_status,
                 "audio_status": audio_status,
+                "night_mode": night_mode,
                 "timestamp": time.time()
             }
         })
+
+        if night_mode is not None:
+            await self.manager.send_to_one(websocket, {
+                "event": "night_mode_state",
+                **night_mode,
+                "reason": "connect sync",
+                "timestamp": time.time(),
+            })
 
     def _on_app_connected(self):
         """Signal that an app client connected via local WebSocket
@@ -835,6 +877,38 @@ class TreatBotWebSocketServer:
                 else:
                     result["success"] = False
                     result["error"] = "dog_id required"
+
+            elif command in ("set_night_mode_override", "set_night_mode", "night_mode_override"):
+                # {"command": "set_night_mode_override", "override": "auto"|"force_day"|"force_night"}
+                # Same contract as the relay command. Also accepts "mode"/"value"
+                # and the UI spellings day/daytime/night/auto. Was missing on
+                # /ws/local until 2026-10-24 -> "Unknown command" -> the app's
+                # night-vision setting stayed locked in AP mode.
+                from modes.night_mode_controller import (
+                    get_night_mode_controller, normalize_override, VALID_OVERRIDES)
+                raw = data.get("override", data.get("mode", data.get("value")))
+                override = normalize_override(raw)
+                nm = get_night_mode_controller()
+                if override is None:
+                    result = {"success": False, "command": command,
+                              "error": f"invalid override {raw!r} (use {'/'.join(VALID_OVERRIDES)})",
+                              "night_mode": nm.get_status()}
+                else:
+                    ok = nm.set_override(override)   # pushes night_mode_state itself
+                    result = {"success": ok, "command": command,
+                              "override": override, "night_mode": nm.get_status()}
+
+            elif command in ("night_mode_status", "get_night_mode", "night_mode_pull"):
+                # Pull: answer in the response AND as a night_mode_state event so
+                # either app parser picks it up (same pattern as sg_status_pull).
+                from modes.night_mode_controller import get_night_mode_controller
+                nm = get_night_mode_controller()
+                status = nm.get_status()
+                result = {"success": True, "command": command, "night_mode": status}
+                await self.manager.send_to_one(websocket, {
+                    "event": "night_mode_state", **status,
+                    "reason": "status_pull", "timestamp": time.time(),
+                })
 
             elif command == "take_photo":
                 # {"command": "take_photo", "with_hud": true}
