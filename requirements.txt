@@ -82,7 +82,11 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 PyYAML==6.0.1
 
-# Bark emotion classifier (replaced tflite-runtime)
+# Bark emotion classifier runtime. ai/bark_classifier.py prefers LiteRT:
+# ~+25 MB RSS vs +505 MB for importing full tensorflow in the robot process
+# (tb4 2026-10-24 lag RCA). tensorflow stays only as the last-resort fallback
+# and for offline training/conversion scripts.
+ai-edge-litert==2.3.0
 tensorflow==2.20.0
 librosa==0.11.0
 

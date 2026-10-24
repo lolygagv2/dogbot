@@ -1125,12 +1125,17 @@ class XboxHybridControllerFixed:
         Without this the controller stays dead until the process restarts.
         """
         try:
-            if self.device:
+            # Open the new node FIRST; only swap (and close the old fd) once
+            # that succeeds, so a failed reopen never leaves self.device as a
+            # closed file object (-> ValueError spin, 2026-10-24).
+            new_dev = open(self.device_path, 'rb')
+            old_dev = self.device
+            self.device = new_dev
+            if old_dev is not None and old_dev is not new_dev:
                 try:
-                    self.device.close()
+                    old_dev.close()
                 except Exception:
                     pass
-            self.device = open(self.device_path, 'rb')
             logger.info(f"Xbox controller reconnected — reopened {self.device_path}")
             self._device_disconnected = False
         except (FileNotFoundError, OSError):
@@ -1151,10 +1156,16 @@ class XboxHybridControllerFixed:
                         self._device_disconnected = False
                     timestamp, value, event_type, number = struct.unpack('IhBB', event_data)
                     return (timestamp, value, event_type, number)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             # Errno 19 = No such device — a Bluetooth link blip destroys and
             # recreates /dev/input/js0, leaving our fd stale. Reopen it.
-            if e.errno == 19:
+            # ValueError "I/O operation on closed file" = _reopen_device()
+            # closed the old fd but open() of the new node failed, so
+            # self.device is a closed file. Before 2026-10-24 that fell to the
+            # generic handler with no sleep: 28,408 "Error reading event" lines
+            # in ONE second (journal 02:44:04), the main loop spinning flat out.
+            closed = isinstance(e, ValueError) or getattr(e, 'errno', None) in (19, 9)
+            if closed:
                 if not getattr(self, '_device_disconnected', False):
                     logger.warning("Xbox controller disconnected — reopening device every 5s")
                     self._device_disconnected = True
@@ -1162,10 +1173,25 @@ class XboxHybridControllerFixed:
                 time.sleep(5.0)
                 self._reopen_device()
             else:
-                logger.error(f"Error reading event: {e}")
+                self._log_read_error(e)
         except Exception as e:
-            logger.error(f"Error reading event: {e}")
+            self._log_read_error(e)
         return None
+
+    def _log_read_error(self, e: Exception):
+        """Rate-limited error log + back-off so an unexpected read failure can
+        never turn the main loop into a busy spin that floods the journal."""
+        now = time.time()
+        last = getattr(self, '_last_read_error_log', 0.0)
+        suppressed = getattr(self, '_read_errors_suppressed', 0)
+        if now - last >= 5.0:
+            extra = f" ({suppressed} similar suppressed)" if suppressed else ""
+            logger.error(f"Error reading event: {e}{extra}")
+            self._last_read_error_log = now
+            self._read_errors_suppressed = 0
+        else:
+            self._read_errors_suppressed = suppressed + 1
+        time.sleep(0.1)
 
     def _calibrate_stick(self, number: int, normalized: float) -> float:
         """Correct a worn / off-center stick axis.

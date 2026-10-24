@@ -5,17 +5,31 @@ Detects and classifies dog bark emotions using TFLite model
 
 import numpy as np
 import librosa
+
+# Runtime preference (2026-10-24): the model is a 7-class bark-emotion net
+# saved by TF 2.20 (FULLY_CONNECTED v12). Measured on tb4 (Pi 5):
+#   ai_edge_litert 2.3.0  -> +23 MB RSS, loads + runs the model
+#   tflite_runtime 2.14   -> too old for the model ("Didn't find op ... v12")
+#   tensorflow 2.20       -> +505 MB RSS, 10-20 s import, drags in JAX/Keras
+# Importing full TensorFlow inside the robot process on the first COACH entry
+# was the 0.7 GB step (715 -> 1.4 GB) that pushed the Pi into swap and the
+# inference FPS to 2-5 during the first sit attempts.
+TFLITE_RUNTIME_NAME = None
 try:
-    # Try tflite_runtime first (lighter weight)
-    import tflite_runtime.interpreter as tflite
+    from ai_edge_litert import interpreter as tflite   # LiteRT (new TFLite)
+    TFLITE_RUNTIME_NAME = 'ai_edge_litert'
 except ImportError:
     try:
-        # Fall back to tensorflow
-        import tensorflow.lite as tflite
+        import tflite_runtime.interpreter as tflite
+        TFLITE_RUNTIME_NAME = 'tflite_runtime'
     except ImportError:
-        # Last resort - full tensorflow
-        import tensorflow as tf
-        tflite = tf.lite
+        try:
+            import tensorflow.lite as tflite
+            TFLITE_RUNTIME_NAME = 'tensorflow.lite'
+        except ImportError:
+            import tensorflow as tf
+            tflite = tf.lite
+            TFLITE_RUNTIME_NAME = 'tensorflow'
 import json
 import logging
 from pathlib import Path
@@ -72,6 +86,7 @@ class BarkClassifier:
         # Load TFLite model
         try:
             self.interpreter = tflite.Interpreter(model_path=model_path)
+            logger.info(f"Bark classifier interpreter runtime: {TFLITE_RUNTIME_NAME}")
             self.interpreter.allocate_tensors()
             logger.info(f"Loaded bark classifier model from {model_path}")
         except Exception as e:
