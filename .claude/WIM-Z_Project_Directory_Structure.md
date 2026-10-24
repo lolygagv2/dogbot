@@ -250,6 +250,8 @@
       core/
          test_dog_tracker_dedupe.py # One box per dog: persistence re-match keeps id_method, generic-twin cleanup, ArUco tag 0 (2026-10-03). Standalone.
          test_dog_tracker_behavior_label.py # Behavior label lands on EVERY tracker entry for the animal (index, name, bbox overlap) so the drawn box never blinks (2026-10-24). Standalone.
+      perception/
+         test_camera_variant_profile.py   # Daytime camera profile follows the module fitted NOW (libcamera Model 'imx708_wide' vs 'imx708_wide_noir' -> yaml standard_/noir_day_profile). Standalone, 6 PASS (2026-10-24).
       api/
          test_ws_night_mode_local.py # /ws/local night-vision contract (2026-10-24): night_mode_state on connect, set_night_mode_override + aliases, night_mode_status pull, worker-thread push. Uses the singleton server; standalone.
       audio/

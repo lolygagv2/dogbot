@@ -98,6 +98,7 @@ class DetectorService:
         # Camera
         self.camera = None
         self.camera_initialized = False
+        self.camera_model = ""  # libcamera sensor Model string, set when the camera opens (e.g. imx708_wide / imx708_wide_noir)
 
         # ArUco detector with tuned parameters to reduce false positives
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
@@ -318,11 +319,37 @@ class DetectorService:
             self._camera_error_reason = str(e)
             return False
 
-    def _apply_saved_calibration(self):
-        """Apply saved camera calibration from robot profile"""
+    def _camera_model(self) -> str:
+        """Sensor Model string of the camera actually fitted (read live, never from yaml)."""
         try:
+            props = getattr(self.camera, 'camera_properties', None) or {}
+            model = props.get('Model') or ''
+        except Exception:
+            model = ''
+        if not model:
+            from services.perception.camera_detect import detect_camera_model
+            model = detect_camera_model()
+        return model
+
+    def _apply_saved_calibration(self):
+        """Apply the saved daytime calibration for the camera variant fitted right now.
+
+        The module on a unit changes (tb4 alternates standard/NoIR IMX708 Wide),
+        so the variant is read from libcamera's Model string at this moment and
+        the matching `camera.noir_day_profile` / `camera.standard_day_profile`
+        block of the robot profile yaml is applied (legacy flat keys as fallback).
+        """
+        try:
+            from services.perception.camera_detect import camera_variant, select_day_profile
             config = get_config()
-            cam_config = config.camera
+            cam_cfg = getattr(config.camera, '_config', {}) or {}
+            model = self._camera_model()
+            self.camera_model = model
+            profile = select_day_profile(cam_cfg, model)
+            self.logger.info(
+                f"Camera model {model!r} -> variant {camera_variant(model)}, "
+                f"day profile keys: {sorted(profile) or 'none (libcamera defaults)'}"
+            )
 
             controls = {}
             awb_modes = {
@@ -330,35 +357,25 @@ class DetectorService:
                 "indoor": 4, "daylight": 5, "cloudy": 6, "custom": 7
             }
 
-            # Check for calibration settings in robot profile
-            if hasattr(cam_config, 'awb_mode') and cam_config.awb_mode:
-                mode = cam_config.awb_mode.lower()
+            if profile.get('awb_mode'):
+                mode = str(profile['awb_mode']).lower()
                 if mode in awb_modes:
                     controls["AwbMode"] = awb_modes[mode]
 
-            if hasattr(cam_config, 'brightness') and cam_config.brightness is not None:
-                controls["Brightness"] = float(cam_config.brightness)
+            for key, ctrl, cast in (
+                ('brightness', 'Brightness', float),
+                ('contrast', 'Contrast', float),
+                ('saturation', 'Saturation', float),
+                ('sharpness', 'Sharpness', float),
+                ('exposure_time', 'ExposureTime', int),
+                ('analogue_gain', 'AnalogueGain', float),
+                ('awb_enable', 'AwbEnable', bool),
+            ):
+                if profile.get(key) is not None:
+                    controls[ctrl] = cast(profile[key])
 
-            if hasattr(cam_config, 'contrast') and cam_config.contrast is not None:
-                controls["Contrast"] = float(cam_config.contrast)
-
-            if hasattr(cam_config, 'saturation') and cam_config.saturation is not None:
-                controls["Saturation"] = float(cam_config.saturation)
-
-            if hasattr(cam_config, 'sharpness') and cam_config.sharpness is not None:
-                controls["Sharpness"] = float(cam_config.sharpness)
-
-            if hasattr(cam_config, 'exposure_time') and cam_config.exposure_time:
-                controls["ExposureTime"] = int(cam_config.exposure_time)
-
-            if hasattr(cam_config, 'analogue_gain') and cam_config.analogue_gain:
-                controls["AnalogueGain"] = float(cam_config.analogue_gain)
-
-            if hasattr(cam_config, 'awb_enable') and cam_config.awb_enable is not None:
-                controls["AwbEnable"] = bool(cam_config.awb_enable)
-
-            if hasattr(cam_config, 'colour_gains') and cam_config.colour_gains:
-                cg = cam_config.colour_gains
+            if profile.get('colour_gains'):
+                cg = profile['colour_gains']
                 controls["ColourGains"] = (float(cg[0]), float(cg[1]))
 
             if controls:

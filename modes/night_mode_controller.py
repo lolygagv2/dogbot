@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Night Mode Controller — automatic day/night switching for NoIR camera + IR illuminator.
+Night Mode Controller — automatic day/night switching for the camera + IR illuminator.
 
-The IMX708 Wide NoIR sensor (IR-cut filter removed) is paired with a 48-LED 940nm
-IR illuminator that has its own ambient-light sensor and toggles its LEDs autonomously.
+The IMX708 Wide camera (standard IR-cut or NoIR — the module is swapped often, so the
+variant is read live from libcamera's Model string, never assumed) is paired with a
+48-LED 940nm IR illuminator that has its own ambient-light sensor and toggles its LEDs
+autonomously. Only a NoIR module actually sees the illuminator; with a standard module
+night mode still locks exposure/saturation but the IR light does not reach the sensor.
 This controller detects ambient light via the camera's own AE metadata (Lux field) and
 switches a separate "night mode" state in the robot — different camera controls, optional
 chassis-LED dimming, and a flag exposed to the app.
@@ -210,11 +213,16 @@ class NightModeController:
         self._callbacks.append(cb)
 
     def get_status(self) -> Dict[str, Any]:
+        det = self._get_detector()
+        model = getattr(det, 'camera_model', '') if det is not None else ''
+        from services.perception.camera_detect import camera_variant
         return {
             'mode': self.current_mode,
             'override': self.override_mode,
             'lux': self.last_lux,
             'last_changed_at': self.last_changed_at,
+            'camera_model': model,                    # live libcamera Model string
+            'camera_variant': camera_variant(model),  # 'noir' | 'standard' | 'unknown'
         }
 
     # ---- Monitor loop ----
