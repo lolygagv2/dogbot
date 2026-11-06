@@ -53,11 +53,21 @@ class FakeEmitter:
         return [e for e in self.events if e['type'] == etype]
 
 
-def svc():
+def svc(stills=False):
     em = FakeEmitter()
-    s = BehaviorEventService(emitter=em, config={'status_period_s': 10_000})
+    s = BehaviorEventService(emitter=em, config={'status_period_s': 10_000, 'stills_enabled': stills,
+                                                 'treat_still_delay_s': 0.05})
     s.read_status = lambda: {'battery': 80, 'mode': 'idle', 'treats_remaining': 12, 'docked': False, 'light_level': 90}
+    s.capture_still_url = lambda: 'https://relay/media/still.jpg'
     return s, em
+
+
+def wait_for(em, etype, n=1, timeout=2.0):
+    import time as _t
+    end = _t.time() + timeout
+    while _t.time() < end and len(em.of(etype)) < n:
+        _t.sleep(0.02)
+    return em.of(etype)
 
 
 def test_bark_episode():
@@ -156,7 +166,7 @@ def test_treat_and_mission_and_status():
                                data={'reason': 'cloud_command', 'command_id': 'c-9', 'dog_id': 'aruco_1',
                                      'timestamp': 4000.0})
     s._on_reward(ev)
-    tr = em.of('treat')
+    tr = wait_for(em, 'treat')
     check(len(tr) == 1 and tr[0]['data']['source'] == 'app' and tr[0]['data']['command_id'] == 'c-9',
           "treat row carries source and command_id echo")
     check(em.of('status'), "status emitted on treat (treats_remaining change)")
@@ -184,6 +194,35 @@ def test_treat_and_mission_and_status():
           "departure/arrival carry method=app")
 
 
+def test_stills():
+    s, em = svc(stills=True)
+    ev = types.SimpleNamespace(subtype='treat_dispensed', timestamp=7000.0,
+                               data={'reason': 'manual', 'timestamp': 7000.0})
+    s._on_reward(ev)
+    check(not em.of('treat'), "treat emit deferred until the still is captured")
+    tr = wait_for(em, 'treat')
+    check(tr and tr[0]['data'].get('image_url') == 'https://relay/media/still.jpg', "treat carries image_url")
+    # high severity episode gets a still, low does not
+    t = 8000.0
+    for i in range(12):
+        s.on_bark({'loudness_db': -15}, t + i)
+    s.tick(t + 12 + 31)
+    eps = wait_for(em, 'bark_episode')
+    check(eps and eps[0]['data']['severity'] == 'high' and eps[0]['data'].get('image_url'),
+          "high-severity bark_episode carries image_url")
+    s.on_bark({'loudness_db': -15}, t + 500)
+    s.tick(t + 500 + 31)
+    eps = wait_for(em, 'bark_episode', 2)
+    check(len(eps) == 2 and eps[1]['data']['severity'] == 'low' and 'image_url' not in eps[1]['data'],
+          "low-severity bark_episode has no still")
+    # capture failure still emits
+    s2, em2 = svc(stills=True)
+    s2.capture_still_url = lambda: None
+    s2._on_reward(ev)
+    tr = wait_for(em2, 'treat')
+    check(tr and 'image_url' not in tr[0]['data'], "treat still emitted when capture/upload fails")
+
+
 def test_music():
     s, em = svc()
     s.on_audio_state({'state': 'playing', 'playing': True, 'track': 'songs/default/bach.mp3'}, 6000.0)
@@ -198,6 +237,7 @@ if __name__ == '__main__':
     test_intervention_and_settle()
     test_pacing()
     test_treat_and_mission_and_status()
+    test_stills()
     test_music()
     print("\nALL PASS" if not FAILS else f"\n{len(FAILS)} FAILURE(S): {FAILS}")
     sys.exit(1 if FAILS else 0)

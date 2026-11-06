@@ -13,7 +13,8 @@ Event `data` per contract:
                  episode_id, result: quiet|no_quiet}
   settle        {time, seconds_since_last_intervention, calm_seconds}
   pacing        {start, end, reversals}   (best-effort heuristic, kill switch)
-  treat         {time, source: auto|app|connector|agent|schedule, command_id}
+  treat         {time, source: auto|app|connector|agent|schedule, command_id,
+                 image_url}  — still captured ~2 s after the dispense (HUD off)
   music         {start, end, track_class}
   mission_run   {mission_id, start, end, result: success|fail|aborted}
   status        {battery, mode, treats_remaining, docked,
@@ -45,6 +46,11 @@ CONFIG: Dict[str, Any] = {
     'status_period_s': 60.0,
     'status_battery_delta': 5,
     'tick_s': 1.0,
+    # Stills: capture (HUD off) + upload via the relay media store, attached
+    # as data.image_url. Treat: ~2 s after the dispense. bark_episode: on
+    # close when severity is high.
+    'treat_still_delay_s': 2.0,
+    'stills_enabled': True,
 }
 
 # dispense_treat(reason=...) -> treat.data.source
@@ -262,9 +268,12 @@ class BehaviorEventService:
         if duration < self.config.get('bark_episode_min_s', 0) and self._ep_barks < 3:
             logger.debug(f"[BEHAVIOR-EVENTS] bark episode below min_episode_s; not emitted")
             return
-        self.emitter.emit('bark_episode', data, dog_id=dog_id,
-                          dog_name=self._ep_dog_names.get(dog_id) if dog_id else None,
-                          event_id=ep_id)
+        kw = dict(dog_id=dog_id, dog_name=self._ep_dog_names.get(dog_id) if dog_id else None,
+                  event_id=ep_id)
+        if data['severity'] == 'high':
+            self._emit_with_still('bark_episode', data, 0.0, **kw)
+        else:
+            self.emitter.emit('bark_episode', data, **kw)
 
     def on_audio_state(self, data: Dict[str, Any], now: float) -> None:
         playing = bool(data.get('playing')) or data.get('state') == 'playing'
@@ -407,13 +416,14 @@ class BehaviorEventService:
             if event.subtype == 'treat_dispensed':
                 d = event.data or {}
                 now = d.get('timestamp') or getattr(event, 'timestamp', None) or time.time()
-                self.emitter.emit('treat', {
+                self._emit_with_still('treat', {
                     'time': _iso(float(now)),
                     'source': treat_source(d.get('reason')),
                     'command_id': d.get('command_id'),
                     'reason': d.get('reason'),
                     'behavior': d.get('behavior') or None,
-                }, dog_id=d.get('dog_id'), dog_name=d.get('dog_name'), id_method=d.get('id_method'))
+                }, self.config['treat_still_delay_s'],
+                    dog_id=d.get('dog_id'), dog_name=d.get('dog_name'), id_method=d.get('id_method'))
                 self._emit_status(time.time(), force=False)
         except Exception as e:
             logger.error(f"[BEHAVIOR-EVENTS] reward handler: {e}")
@@ -495,6 +505,53 @@ class BehaviorEventService:
         self.emitter.emit('pacing', {'start': _iso(info['start']), 'end': _iso(now),
                                      'reversals': info['reversals']},
                           dog_id=dog_id, dog_name=info.get('dog_name'))
+
+    # ------------------------------------------------------------- stills
+
+    def capture_still_url(self) -> Optional[str]:
+        """Capture a HUD-off still and upload it to the relay media store.
+        Returns the download URL or None (no camera / no relay / upload failed)."""
+        try:
+            from services.media.photo_capture import get_photo_capture_service
+            detector = None
+            try:
+                from services.perception.detector import get_detector_service
+                detector = get_detector_service()
+            except Exception:
+                pass
+            res = get_photo_capture_service().capture_photo(with_hud=False, detector=detector)
+            if not res.get('success') or not res.get('filepath'):
+                logger.debug(f"[BEHAVIOR-EVENTS] still capture failed: {res.get('error')}")
+                return None
+            from services.cloud import relay_client as rc_mod
+            rc = rc_mod._relay_client
+            if rc is None:
+                return None
+            return rc.upload_media_sync(res['filepath'], 'image/jpeg')
+        except Exception as e:
+            logger.debug(f"[BEHAVIOR-EVENTS] still failed: {e}")
+            return None
+
+    def _emit_with_still(self, etype: str, data: Dict[str, Any], delay_s: float, **kw) -> None:
+        """Emit after capturing a still (in a worker, so bus callbacks never
+        block). If stills are disabled or the capture/upload fails the event
+        still goes out, just without image_url."""
+        if not self.config.get('stills_enabled', True):
+            self.emitter.emit(etype, data, **kw)
+            return
+
+        def _worker():
+            try:
+                if delay_s > 0:
+                    time.sleep(delay_s)
+                url = self.capture_still_url()
+                if url:
+                    data['image_url'] = url
+            except Exception as e:
+                logger.debug(f"[BEHAVIOR-EVENTS] still worker: {e}")
+            self.emitter.emit(etype, data, **kw)
+
+        threading.Thread(target=_worker, daemon=True, name=f"Still-{etype}").start()
 
     # ------------------------------------------------------------- status
 

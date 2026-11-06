@@ -252,7 +252,7 @@ class ToolDispatcher:
                                description='JPEG of the current camera frame (any mode)'))
         self.register(ToolSpec('standby', self._tool_standby, 10.0, preemptive=True,
                                description='Stop audio and return to IDLE'))
-        self.register(ToolSpec('dispense_treat', self._tool_dispense_treat, 15.0,
+        self.register(ToolSpec('dispense_treat', self._tool_dispense_treat, 60.0,   # retry ladder + unjam can take ~45 s
                                description='Dispense one treat (source app|agent|connector)'))
         self.register(ToolSpec('set_mode', self._tool_set_mode, 10.0,
                                description='Switch mode: idle|silent_guardian|coach|manual|night_sentry'))

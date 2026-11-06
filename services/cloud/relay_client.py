@@ -1947,6 +1947,34 @@ class RelayClient:
             self.logger.warning(f"[HTTP] download_sync failed: {e}")
             return None
 
+    def upload_media_sync(self, filepath: str, content_type: str = 'image/jpeg',
+                          timeout: float = 20.0) -> Optional[str]:
+        """Upload a file to the relay media store (POST /api/media/upload —
+        the same endpoint the video path uses) and return an absolute
+        download URL, or None. Used for treat / bark_episode stills."""
+        import os
+        try:
+            with open(filepath, 'rb') as f:
+                blob = f.read()
+        except OSError as e:
+            self.logger.warning(f"[MEDIA] cannot read {filepath}: {e}")
+            return None
+        form = aiohttp.FormData()
+        form.add_field('device_id', str(self.config.device_id))
+        form.add_field('file', blob, filename=os.path.basename(filepath), content_type=content_type)
+        try:
+            status, body = self.http_sync('POST', '/api/media/upload', data=form, timeout=timeout)
+        except Exception as e:
+            self.logger.warning(f"[MEDIA] upload failed: {e}")
+            return None
+        if status != 200 or not isinstance(body, dict):
+            self.logger.warning(f"[MEDIA] upload -> {status}")
+            return None
+        url = body.get('download_url') or body.get('url') or ''
+        if url and not url.startswith('http'):
+            url = self._relay_http_base() + url
+        return url or None
+
     # ---- outbox pump: POST /events ----------------------------------
 
     OUTBOX_BATCH = 200

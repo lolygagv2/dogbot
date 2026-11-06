@@ -402,11 +402,11 @@ Response: 2xx (optionally `{"accepted": [ids], "duplicate": [ids], "rejected": [
 
 | type | data |
 |---|---|
-| `bark_episode` | `{start, end, bark_count, peak_db, severity: low(<3 barks)\|med(3-9)\|high(>=10 or >60 s), duration_s}` — the row `id` is the `episode_id` interventions reference |
+| `bark_episode` | `{start, end, bark_count, peak_db, severity: low(<3 barks)\|med(3-9)\|high(>=10 or >60 s), duration_s, image_url?}` — the row `id` is the `episode_id` interventions reference; `image_url` = HUD-off still uploaded via `POST /api/media/upload` when severity is high |
 | `intervention` | `{time, sg_level, kind: sound\|voice\|treat\|music\|approach, episode_id, result: quiet\|no_quiet}` (L1 sound, L2 voice, L3 approach, L4 music, treat on quiet) |
 | `settle` | `{time, seconds_since_last_intervention, calm_seconds}` (300 s calm after an outcome, once) |
 | `pacing` | `{start, end, reversals}` — best-effort bbox-centre oscillation heuristic |
-| `treat` | `{time, source: auto\|app\|connector\|agent\|schedule, command_id, reason, behavior}` — `command_id` echoes the `dispense_treat` command |
+| `treat` | `{time, source: auto\|app\|connector\|agent\|schedule, command_id, reason, behavior, image_url?}` — `command_id` echoes the `dispense_treat` command; `image_url` = HUD-off still captured ~2 s after the dispense and uploaded via `POST /api/media/upload` (the row is emitted after the upload, so it arrives ~2-4 s after the dispense) |
 | `music` | `{start, end, track_class: calming\|owner\|other, track}` |
 | `mission_run` | `{mission_id, run_id, start, end, result: success\|fail\|aborted, rewards_given}` |
 | `status` | `{battery, mode, treats_remaining, docked, light_level}` — `light_level` = mean camera frame brightness 0-255; every 60 s and on change |
