@@ -36,6 +36,7 @@ PTT_MUTE_TAIL_S = 0.7
 # Recording settings
 DEFAULT_DURATION = 5  # seconds
 MAX_DURATION = 10  # seconds
+UTTERANCE_MAX_S = 30  # CONTRACT v2: one agent utterance, WAV <= 30 s
 SAMPLE_RATE = 16000  # 16kHz for speech
 CHANNELS = 1  # mono
 
@@ -121,7 +122,32 @@ class PushToTalkService:
             self.logger.warning(f"Speaker check failed: {e}")
             return False
 
-    def play_audio(self, audio_data: bytes, format: str = "aac") -> Dict[str, Any]:
+    @staticmethod
+    def _pcm_to_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
+        import io
+        import wave
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as w:
+            w.setnchannels(channels)
+            w.setsampwidth(2)
+            w.setframerate(int(sample_rate))
+            w.writeframes(pcm)
+        return buf.getvalue()
+
+    def clear_queue(self) -> int:
+        """Drop every clip still waiting (agent 'interrupt'). Returns count."""
+        with self._queue_lock:
+            n = len(self._play_queue)
+            self._play_queue.clear()
+        if n:
+            self.logger.info(f"[PTT] Cleared {n} queued clip(s)")
+        return n
+
+    def is_playing(self) -> bool:
+        return bool(getattr(self, '_playing', False))
+
+    def play_audio(self, audio_data: bytes, format: str = "aac",
+                   sample_rate: Optional[int] = None) -> Dict[str, Any]:
         """
         Play audio received from app via USBAudio service (pygame).
         Routes through USBAudio to avoid device conflicts with aplay.
@@ -138,6 +164,12 @@ class PushToTalkService:
         """
         try:
             ext = format.lower()
+            if ext in ('pcm', 'pcm_s16le'):
+                # Agent speech may arrive as raw 16-bit mono PCM (relay
+                # protocol v2 'audio' frame) — wrap in a WAV header so pygame
+                # can play it directly, no ffmpeg round-trip.
+                audio_data = self._pcm_to_wav(audio_data, sample_rate or 16000)
+                ext = 'wav'
             if ext not in ('aac', 'mp3', 'wav', 'opus', 'm4a'):
                 ext = 'aac'
 
@@ -274,7 +306,8 @@ class PushToTalkService:
             except Exception as e:
                 self.logger.debug(f"[PTT] Could not release mic mute: {e}")
 
-    def play_audio_base64(self, base64_data: str, format: str = "aac") -> Dict[str, Any]:
+    def play_audio_base64(self, base64_data: str, format: str = "aac",
+                          sample_rate: Optional[int] = None) -> Dict[str, Any]:
         """
         Play base64 encoded audio from app.
 
@@ -288,7 +321,7 @@ class PushToTalkService:
         try:
             audio_data = base64.b64decode(base64_data)
             self.logger.info(f"[PTT] Base64 decoded: {len(base64_data)} chars → {len(audio_data)} bytes")
-            return self.play_audio(audio_data, format)
+            return self.play_audio(audio_data, format, sample_rate=sample_rate)
         except Exception as e:
             self.logger.error(f"[PTT] Base64 decode FAILED: {e}")
             return {"success": False, "error": f"Invalid base64 data: {e}"}
@@ -433,7 +466,8 @@ class PushToTalkService:
             finally:
                 self._recording = False
 
-    def capture_audio(self, duration: float = DEFAULT_DURATION) -> Dict[str, Any]:
+    def capture_audio(self, duration: float = DEFAULT_DURATION,
+                      max_duration: Optional[float] = None) -> Dict[str, Any]:
         """
         Capture audio from USB microphone and return as base64 WAV.
         Simpler than record_audio - no format conversion, returns raw WAV.
@@ -451,8 +485,8 @@ class PushToTalkService:
         if self._recording:
             return {"success": False, "error": "Already recording"}
 
-        # Clamp duration
-        duration = min(max(duration, 1), MAX_DURATION)
+        # Clamp duration (agent utterances may go to UTTERANCE_MAX_S)
+        duration = min(max(duration, 1), max_duration or MAX_DURATION)
 
         with self._lock:
             self._recording = True

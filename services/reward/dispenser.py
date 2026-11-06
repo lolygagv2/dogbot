@@ -749,7 +749,8 @@ class DispenserService:
     def dispense_treat(self, dog_id: Optional[str] = None, reason: str = "manual",
                        behavior: str = "", confidence: float = 0.0,
                        wimz_session_id: Optional[str] = None,
-                       dog_name: Optional[str] = None) -> bool:
+                       dog_name: Optional[str] = None,
+                       command_id: Optional[str] = None) -> bool:
         """
         Dispense a single treat.
 
@@ -784,8 +785,20 @@ class DispenserService:
                 self.logger.warning(f"Daily treat limit reached ({self.daily_limit})")
                 return False
 
-            # Check minimum interval
+            # Treat policy gate (protocol v2 settings: treat_schedule multiplier
+            # + protocol cooldown; owner taps pass except at the daily cap).
             now = time.time()
+            try:
+                from services.reward.treat_policy import get_treat_policy
+                decision = get_treat_policy().check(reason, now, self.treats_dispensed_today)
+                if not decision.allowed:
+                    self.logger.warning(
+                        f"Dispense blocked by treat policy: {decision.code} "
+                        f"(reason={reason} class={decision.reason_class} "
+                        f"m={decision.multiplier} cooldown={decision.cooldown_s:.0f}s)")
+                    return False
+            except Exception as e:
+                self.logger.debug(f"treat policy check skipped: {e}")
             if now - self.last_dispense_time < self.min_dispense_interval:
                 self.logger.warning("Dispense too soon after last dispense")
                 return False
@@ -957,11 +970,17 @@ class DispenserService:
                     # leave id_method None so the relay boundary labels them from
                     # their carried dog / vision provenance or the fallback.
                     id_method = 'owner_selected' if (dog_id and reason in ('manual', 'cloud_command')) else None
+                    try:
+                        from services.reward.treat_policy import get_treat_policy
+                        get_treat_policy().record_dispense(reason, now)
+                    except Exception:
+                        pass
                     publish_reward_event('treat_dispensed', {
                         'dog_id': dog_id,
                         'dog_name': dog_name,
                         'id_method': id_method,
                         'reason': reason,
+                        'command_id': command_id,
                         'behavior': behavior,
                         'confidence': confidence,
                         'treats_dispensed': credit,

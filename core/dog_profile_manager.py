@@ -563,3 +563,34 @@ def get_dog_profile_manager() -> DogProfileManager:
         if _profile_manager is None:
             _profile_manager = DogProfileManager()
     return _profile_manager
+
+
+def resolve_relay_dog(dog_id=None, dog_name=None, aruco_id=None, id_method=None):
+    """(app_dog_id, id_method) for an outgoing relay event.
+
+    Factored from main_treatbot._forward_event_to_relay (attribution contract
+    2026-07-13, always-assign): an explicit, resolvable identity wins and
+    advances the last-dog pointer; otherwise exactly-one-paired-dog
+    (sole_dog), then the most recent explicit dog (last_dog), else None.
+    Shared by the legacy flat events and the protocol-v2 emitter so both
+    paths stamp identical ids.
+    """
+    mgr = get_dog_profile_manager()
+    resolved = mgr.resolve_app_dog_id(dog_id=dog_id, dog_name=dog_name, aruco_id=aruco_id)
+    from core.state import get_state
+    state = get_state()
+    if resolved is not None:
+        method = id_method or 'explicit'
+        try:
+            state.note_dog_attribution(resolved, dog_name)
+        except Exception:
+            pass
+        return resolved, method
+    resolved = mgr.sole_app_dog_id()
+    if resolved is not None:
+        return resolved, 'sole_dog'
+    try:
+        resolved, _ = state.get_last_dog()
+    except Exception:
+        resolved = None
+    return (resolved, 'last_dog') if resolved else (None, None)

@@ -276,6 +276,18 @@ class WimzStore:
             logger.info(f"Dog registered: {name or legacy_id} -> {dog_id}")
             return dog_id
 
+    def dog_id_for_app_id(self, app_dog_id: str) -> Optional[str]:
+        """Local dog.dog_id for an app canonical UUID, or None."""
+        if not app_dog_id:
+            return None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT dog_id FROM dog WHERE app_dog_id=?", (str(app_dog_id),)).fetchone()
+            return row[0] if row else None
+        except sqlite3.Error:
+            return None
+
     def register_model(self, name: str, kind: str, version: str,
                        artifact_path: str = None) -> str:
         with self._lock:
@@ -384,18 +396,25 @@ class WimzStore:
     def log_event(self, session_id: str, event_type: str, payload: Dict[str, Any] = None,
                   dog_id: str = None, ts_ms: int = None, confidence: float = None,
                   model_id: str = None, label_source: str = 'machine',
-                  media_id: str = None) -> Optional[str]:
-        """Batched — row hits disk on next flush (<=3s / 50 rows)."""
+                  media_id: str = None, origin: str = None,
+                  event_id: str = None) -> Optional[str]:
+        """Batched — row hits disk on next flush (<=3s / 50 rows).
+
+        origin: None for native rows; 'backfill:<src>' / 'demo:<dog_id>'
+        for retrofit / replayed rows (spec v0.7/v0.8). event_id lets a
+        replay supply a deterministic UUIDv7 so re-runs are idempotent
+        (INSERT OR IGNORE).
+        """
         if not self._writable or self._closed:
             return None
         if not session_id:
             session_id = self.ensure_ambient_session()
-        event_id = uuid7()
+        event_id = event_id or uuid7()
         now = _now_ms()
         row = (event_id, session_id, self._device_id, dog_id, ts_ms or now,
                self._next_seq(session_id), event_type,
                json.dumps(payload) if payload else None,
-               confidence, model_id, label_source, media_id, 0, now)
+               confidence, model_id, label_source, media_id, 0, origin, now)
         self._queue.append(row)
         self._drained.clear()
         if len(self._queue) >= _FLUSH_BATCH_ROWS:
@@ -580,7 +599,7 @@ class WimzStore:
                 self._conn.executemany(
                     "INSERT OR IGNORE INTO event (event_id, session_id, device_id, dog_id, ts, "
                     "seq, event_type, payload, confidence, model_id, label_source, media_id, "
-                    "synced, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                    "synced, origin, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
                 self._conn.commit()
         except sqlite3.Error as e:
             # Retry rows one-by-one; dead-letter failures to the log, never wedge
@@ -591,8 +610,8 @@ class WimzStore:
                         self._conn.execute(
                             "INSERT OR IGNORE INTO event (event_id, session_id, device_id, "
                             "dog_id, ts, seq, event_type, payload, confidence, model_id, "
-                            "label_source, media_id, synced, created_at) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+                            "label_source, media_id, synced, origin, created_at) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
                         self._conn.commit()
                 except sqlite3.Error as e2:
                     logger.error(f"Dead-lettered event {row[0]} ({row[6]}): {e2}")

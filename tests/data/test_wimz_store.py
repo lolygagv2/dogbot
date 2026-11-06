@@ -55,7 +55,9 @@ def test_schema_matches_spec():
     missing = [s for s in _spec_statements() if s not in db_sql]
     assert not missing, f"DB schema diverges from spec: {missing[:3]}"
     ver = conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0]
-    assert ver == '0.3', ver
+    from core.data.schema import SCHEMA_VERSION
+    assert ver == SCHEMA_VERSION, ver
+    assert 'relay_outbox' in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == 'delete' or True
     conn.close()
     store.close()

@@ -92,8 +92,16 @@ def resolve_voice_file(
             path = p
             break
 
-    # No custom recording for this dog -> default folder. Never another
-    # dog's recordings.
+    # No custom recording for this dog -> device-level override
+    # (talks/_custom/default/<cmd>, sound registry 2026-11-06) -> factory
+    # default folder. Never another dog's recordings.
+    if path is None:
+        for ext in EXTENSIONS:
+            p = os.path.join(VOICE_ROOT, '_custom', DEFAULT_DIR, f"{command_id}{ext}")
+            if os.path.exists(p):
+                path = p
+                resolved = '_custom'
+                break
     if path is None:
         path = _try_paths(DEFAULT_DIR, command_id)
 

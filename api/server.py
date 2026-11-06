@@ -5901,6 +5901,183 @@ async def night_mode_override(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- Relay CONTRACT v2 (2026-11-06): settings, commands, sounds, outbox ---
+@app.get("/settings")
+async def remote_settings_get():
+    """Remote settings as applied (treat_schedule, sg_sensitivity, music_plan, quiet_hours, notify_rules)."""
+    try:
+        from services.cloud.remote_settings import get_remote_settings
+        return get_remote_settings().get()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/settings")
+async def remote_settings_apply(request: Request):
+    """Apply settings locally (AP mode / testing). Body: {<key>: <value>, ...} or {"settings": {...}}."""
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be an object")
+        settings = body.get('settings', body)
+        from services.cloud.remote_settings import get_remote_settings
+        rs = get_remote_settings()
+        result = rs.apply(settings, source='local_api')
+        if result['rejected'] and not result['applied']:
+            raise HTTPException(status_code=400, detail=result)
+        return {"success": True, **result, "settings": rs.get()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tools")
+async def tools_list():
+    """Relay-callable commands served by the dispatcher, and whether one is running."""
+    try:
+        from services.cloud.tool_dispatcher import get_tool_dispatcher
+        return get_tool_dispatcher().list_tools()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tools/{name}")
+async def tools_call(name: str, request: Request):
+    """Run a command synchronously (curl testing). Body = args. 404 unknown, 409 busy."""
+    try:
+        try:
+            args = await request.json()
+        except Exception:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        from services.cloud.tool_dispatcher import get_tool_dispatcher
+        disp = get_tool_dispatcher()
+        if not disp.has_tool(name):
+            raise HTTPException(status_code=404, detail=f"unknown command {name!r}")
+        timeout = next((t['timeout_s'] for t in disp.list_tools()['tools'] if t['name'] == name), 30.0)
+        import uuid as _uuid
+        frame = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: disp.call(name, args, call_id=f"local-{_uuid.uuid4().hex[:8]}",
+                                    wait_s=timeout + 15))
+        if frame.get('error', {}) and frame['error'].get('code') == 'busy':
+            raise HTTPException(status_code=409, detail=frame)
+        return frame
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/events/outbox")
+async def events_outbox_status():
+    """Durable relay outbox counters (pending / sent retained)."""
+    try:
+        from services.cloud.relay_outbox import get_relay_outbox
+        return get_relay_outbox().stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/events/departure")
+async def events_departure(request: Request):
+    """Owner left (app instruction). Body: {"dog_id"?: str}."""
+    try:
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+        from services.cloud.behavior_events import get_behavior_event_service
+        return {"success": True, "event": get_behavior_event_service().mark_departure((body or {}).get('dog_id'))}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/events/arrival")
+async def events_arrival(request: Request):
+    """Owner home (app instruction). Body: {"dog_id"?: str}."""
+    try:
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+        from services.cloud.behavior_events import get_behavior_event_service
+        return {"success": True, "event": get_behavior_event_service().mark_arrival((body or {}).get('dog_id'))}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sounds")
+async def sounds_list():
+    """Sound ids (<group>/<stem>), factory path and whether a custom override is active."""
+    try:
+        from services.media.sound_registry import get_sound_registry
+        return {"sounds": get_sound_registry().list()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sounds/{group}/{stem}/replace")
+async def sounds_replace(group: str, stem: str, request: Request):
+    """Install a custom override for a factory sound. Body: {"data": <b64>, "format": "mp3"}."""
+    try:
+        body = await request.json()
+        import base64
+        try:
+            data = base64.b64decode(body.get('data') or '')
+        except Exception:
+            raise HTTPException(status_code=400, detail="data must be base64")
+        if not data:
+            raise HTTPException(status_code=400, detail="data required")
+        from services.media.sound_registry import get_sound_registry
+        res = get_sound_registry().replace(f"{group}/{stem}", data, str(body.get('format') or 'mp3'))
+        if not res.get('success'):
+            raise HTTPException(status_code=400, detail=res.get('error'))
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sounds/{group}/{stem}/reset")
+async def sounds_reset(group: str, stem: str):
+    """Remove the custom override for one sound (factory file plays again)."""
+    try:
+        from services.media.sound_registry import get_sound_registry
+        return get_sound_registry().reset(f"{group}/{stem}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sounds/reset_all")
+async def sounds_reset_all():
+    """Remove every custom override. Factory files are never touched."""
+    try:
+        from services.media.sound_registry import get_sound_registry
+        return get_sound_registry().reset_all()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sounds/{group}/{stem}/play")
+async def sounds_play(group: str, stem: str):
+    """Play a sound id through the normal path (override wins if present)."""
+    try:
+        from services.media.sound_registry import get_sound_registry
+        path = get_sound_registry().resolve(f"{group}/{stem}")
+        if not path:
+            raise HTTPException(status_code=404, detail="unknown sound id")
+        return get_usb_audio_service().play_file(path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- Missions (Contract) ---
 @app.get("/missions")
 async def missions_list_contract():

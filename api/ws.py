@@ -139,6 +139,14 @@ class TreatBotWebSocketServer:
         self.bus.subscribe("system", _make_sync_wrapper(self._on_system_event))
         self.bus.subscribe("mission", _make_sync_wrapper(self._on_mission_event))
 
+    @staticmethod
+    def _dispatcher_has(command) -> bool:
+        try:
+            from services.cloud.tool_dispatcher import get_tool_dispatcher
+            return get_tool_dispatcher().has_tool(command)
+        except Exception:
+            return False
+
     def broadcast_event_threadsafe(self, event_type: str, data: Dict[str, Any]) -> bool:
         """Push a flat contract event {"event": type, ...data} to every local WS
         client from ANY thread. Same shape the relay uses, so the app parser is
@@ -290,6 +298,15 @@ class TreatBotWebSocketServer:
         except Exception:
             pass
 
+        # Remote settings (CONTRACT v2) so the AP-mode app shows the same
+        # treat/SG/music settings the relay holds.
+        remote_settings = None
+        try:
+            from services.cloud.remote_settings import get_remote_settings
+            remote_settings = get_remote_settings().get()
+        except Exception:
+            pass
+
         await self.manager.send_to_one(websocket, {
             "type": "initial_status",
             "data": {
@@ -297,9 +314,16 @@ class TreatBotWebSocketServer:
                 "mission_status": mission_status,
                 "audio_status": audio_status,
                 "night_mode": night_mode,
+                "remote_settings": remote_settings,
                 "timestamp": time.time()
             }
         })
+
+        if remote_settings is not None:
+            await self.manager.send_to_one(websocket, {
+                "event": "settings_state", **remote_settings,
+                "reason": "connect sync", "timestamp": time.time(),
+            })
 
         if night_mode is not None:
             await self.manager.send_to_one(websocket, {
@@ -909,6 +933,78 @@ class TreatBotWebSocketServer:
                     "event": "night_mode_state", **status,
                     "reason": "status_pull", "timestamp": time.time(),
                 })
+
+            elif command in ("settings", "set_settings", "apply_settings"):
+                # {"command":"settings","settings":{treat_schedule:{...}, ...}} or flat keys
+                from services.cloud.remote_settings import get_remote_settings, KNOWN_KEYS
+                rs = get_remote_settings()
+                settings = data.get("settings") or {k: data[k] for k in KNOWN_KEYS if k in data}
+                res = rs.apply(settings, source="local_ws")
+                result = {"success": bool(res["applied"]), "command": command, **res,
+                          "settings": rs.get()}
+
+            elif command in ("settings_pull", "get_settings", "settings_status"):
+                from services.cloud.remote_settings import get_remote_settings
+                snap = get_remote_settings().get()
+                result = {"success": True, "command": command, "settings": snap}
+                await self.manager.send_to_one(websocket, {
+                    "event": "settings_state", **snap, "reason": "status_pull",
+                    "timestamp": time.time()})
+
+            elif command in ("mark_departure", "departure", "mark_arrival", "arrival"):
+                # Owner left / came home — app instruction only (no sensing).
+                from services.cloud.behavior_events import get_behavior_event_service
+                svc = get_behavior_event_service()
+                if "depart" in command:
+                    ev = svc.mark_departure(data.get("dog_id"))
+                else:
+                    ev = svc.mark_arrival(data.get("dog_id"))
+                result = {"success": True, "command": command, "event": ev}
+
+            elif command in ("sounds_list", "list_sounds"):
+                from services.media.sound_registry import get_sound_registry
+                result = {"success": True, "command": command,
+                          "sounds": get_sound_registry().list()}
+
+            elif command in ("sound_replace", "sound_reset", "sounds_reset_all"):
+                from services.media.sound_registry import get_sound_registry
+                reg = get_sound_registry()
+                if command == "sounds_reset_all":
+                    result = {"command": command, **reg.reset_all()}
+                elif command == "sound_reset":
+                    result = {"command": command, **reg.reset(str(data.get("id") or data.get("sound_id") or ""))}
+                else:
+                    import base64
+                    try:
+                        blob = base64.b64decode(data.get("data") or "")
+                    except Exception:
+                        blob = b""
+                    if not blob:
+                        result = {"success": False, "command": command, "error": "data (base64) required"}
+                    else:
+                        result = {"command": command, **reg.replace(
+                            str(data.get("id") or data.get("sound_id") or ""), blob,
+                            str(data.get("format") or "mp3"))}
+
+            elif data.get("command_id") and self._dispatcher_has(command):
+                # CONTRACT v2 command frame (command_id present): run in the
+                # dispatcher and answer with command_result on this socket,
+                # exactly like the relay path. command_response still follows.
+                from services.cloud.tool_dispatcher import get_tool_dispatcher
+                loop = self._main_loop
+                ws_ref = websocket
+
+                def _reply(frame, _loop=loop, _ws=ws_ref):
+                    if _loop is None:
+                        return
+                    asyncio.run_coroutine_threadsafe(self.manager.send_to_one(_ws, frame), _loop)
+
+                args = {k: v for k, v in data.items()
+                        if k not in ("command", "command_id", "timestamp", "type")}
+                get_tool_dispatcher().dispatch(
+                    {"name": command, "id": data.get("command_id"), "args": args}, reply=_reply)
+                result = {"success": True, "command": command, "accepted": True,
+                          "command_id": data.get("command_id")}
 
             elif command == "take_photo":
                 # {"command": "take_photo", "with_hud": true}

@@ -380,6 +380,77 @@ All WebSocket messages use this envelope:
 
 ---
 
+## Relay CONTRACT v2 FINAL (2026-11-06) — Agent Summit demo
+
+The relay is the consumer and owns the wire. Robot slice shipped 2026-11-06
+(`services/cloud/{relay_outbox,event_emitter,behavior_events,remote_settings,tool_dispatcher}.py`,
+`orchestrators/trick_runner.py`, `services/reward/treat_policy.py`,
+`services/media/sound_registry.py`). Offline-safe: every piece runs with no relay.
+
+### Events — HTTP `POST /events` (device HMAC headers `X-Device-ID`, `X-Timestamp`, `X-Signature`)
+Durable outbox in `wimz.db` (`relay_outbox`, spec v0.8). One pump sends rows in `seq` order in
+batches of ≤200; rows are marked sent when the relay accepts or reports them as duplicates;
+any HTTP failure stops the pump, which retries with backoff (1 s → 60 s). Nothing bypasses
+the pump, so ordering survives restarts. Body:
+```json
+{"device_id": "wimz_robot_05",
+ "events": [{"id": "<uuid7>", "type": "bark_episode", "device_id": "...", "dog_id": "<app id|null>",
+             "id_method": "aruco|sole_dog|last_dog|null", "timestamp": "2026-11-06T14:02:11.120Z",
+             "data": {...}}]}
+```
+Response: 2xx (optionally `{"accepted": [ids], "duplicate": [ids], "rejected": [ids]}`); 409 = all duplicates; 400/422 = batch dropped.
+
+| type | data |
+|---|---|
+| `bark_episode` | `{start, end, bark_count, peak_db, severity: low(<3 barks)\|med(3-9)\|high(>=10 or >60 s), duration_s}` — the row `id` is the `episode_id` interventions reference |
+| `intervention` | `{time, sg_level, kind: sound\|voice\|treat\|music\|approach, episode_id, result: quiet\|no_quiet}` (L1 sound, L2 voice, L3 approach, L4 music, treat on quiet) |
+| `settle` | `{time, seconds_since_last_intervention, calm_seconds}` (300 s calm after an outcome, once) |
+| `pacing` | `{start, end, reversals}` — best-effort bbox-centre oscillation heuristic |
+| `treat` | `{time, source: auto\|app\|connector\|agent\|schedule, command_id, reason, behavior}` — `command_id` echoes the `dispense_treat` command |
+| `music` | `{start, end, track_class: calming\|owner\|other, track}` |
+| `mission_run` | `{mission_id, run_id, start, end, result: success\|fail\|aborted, rewards_given}` |
+| `status` | `{battery, mode, treats_remaining, docked, light_level}` — `light_level` = mean camera frame brightness 0-255; every 60 s and on change |
+| `departure` / `arrival` | `{time, method: "app"}` — ONLY on app/relay instruction (`mark_departure`/`mark_arrival` on `/ws/local`, `POST /events/departure|arrival`); no sensing |
+
+### Settings — `GET /api/dogs/{dog_id}/settings` (HMAC) on connect (after `profiles`), then WS push
+```json
+{"type": "settings_updated", "dog_id": "...", "key": "treat_schedule", "value": {...}, "version": 7}
+```
+Keys: `treat_schedule {daily_cap, default_multiplier, max_per_hour, windows:[{start,end,multiplier}]}`
+→ TreatPolicy (dispenser gate: window multiplier scales the 120 s protocol cooldown, m=0 blocks
+auto treats, owner taps always pass except at the daily cap, max_per_hour rolling);
+`sg_sensitivity {level: low|medium|high, min_episode_s, escalate_after_s}` → SG profile
+relaxed|normal|sensitive written into `bark_detection` (threshold/loudness/confidence),
+`escalate_after_s` → bark window seconds, `min_episode_s` → bark_episode minimum;
+`music_plan {enabled, volume, on_departure{track, delay_s, duration_min}, schedule[]}`;
+`quiet_hours` and `notify_rules` stored verbatim. Last good document cached in treatbot.db.
+Sounds: `{"type":"sound_updated","sound_id":"default/sit","url":"<asset>|null"}` installs/removes an override.
+
+### Commands — existing command frame + `command_id` → `command_result`
+```json
+{"type":"command","command":"run_trick","command_id":"c-123","cue":"sit","force":false,"timestamp":...}
+{"type":"command_result","command_id":"c-123","command":"run_trick","ok":true,"result":{...},"error":null,"duration_ms":18200}
+```
+`error` = `{"code","message"}` (unknown_command, busy, timeout, exception, invalid_cue, …). One
+command at a time; `standby` preempts. Frames WITHOUT `command_id` keep the legacy `command_ack` path.
+Commands: `dispense_treat{source?, dog_id?}`, `set_mode{mode}`, `play_sound{url|sound_id, kind?}`
+(agent speech arrives as `play_sound{url, kind:"tts"}`), `start_mission{mission_id}`, `go_to` (not supported),
+`standby{announce?}`, `run_trick{cue, force?, retry?, timeout_s?}` → `result: success|no_dog|wrong_pose|timeout|busy|cancelled`,
+`take_photo{with_hud}` → `{jpeg_b64, width, height, ...}`, `agent_utterance{duration_s<=30, dog_id?}`
+(records WAV via the PTT capture path, multipart `POST /agent/utterance` with HMAC + `dog_id`, plays the returned `audio_url`).
+Every command is logged (`[TOOL]` journald + wimz `tool_call` row). Same commands work on `/ws/local`.
+
+### Robot local additions
+REST `GET/POST /settings`, `GET /tools`, `POST /tools/{name}`, `GET /events/outbox`,
+`POST /events/departure|arrival`, `GET /sounds`, `POST /sounds/{group}/{stem}/replace|reset|play`,
+`POST /sounds/reset_all`. WS: `settings`, `settings_pull` (+ `settings_state` event, also on connect),
+`mark_departure`/`mark_arrival`, `sounds_list`, `sound_replace`, `sound_reset`, `sounds_reset_all`.
+Sound ids are `<group>/<stem>` over `VOICEMP3/wimz` (release, immutable) and `talks/default`;
+overrides live in `talks/_custom/<group>/<stem>.mp3` (shared, survives OTA). Precedence:
+per-dog recording > custom override > factory.
+
+---
+
 ## Version History
 
 | Version | Date | Changes |
@@ -388,3 +459,4 @@ All WebSocket messages use this envelope:
 | 1.1 | 2025-01-18 | Added WebRTC signaling, Cloudflare TURN |
 | 1.2 | 2026-01-26 | Added take_photo, audio_message, audio_request, call_dog commands; documented LED patterns and modes |
 | 1.3 | 2026-02-22 | Always-on WebRTC audio track (robot→app), deprecated audio_request/audio_message for listening, mode/UX restructure with resolution constraints, mode transition rules with source context, adaptive audio quality |
+| 2.0 | 2026-11-06 | Relay CONTRACT v2 FINAL: HTTP POST /events (durable outbox), per-dog settings GET + settings_updated push, command_id → command_result, sound_updated, agent_utterance; robot slice for the Dec 9 AI Summit demo |

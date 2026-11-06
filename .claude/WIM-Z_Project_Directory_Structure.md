@@ -254,10 +254,20 @@
          test_camera_variant_profile.py   # Daytime camera profile follows the module fitted NOW (libcamera Model 'imx708_wide' vs 'imx708_wide_noir' -> yaml standard_/noir_day_profile). Standalone, 6 PASS (2026-10-24).
       api/
          test_ws_night_mode_local.py # /ws/local night-vision contract (2026-10-24): night_mode_state on connect, set_night_mode_override + aliases, night_mode_status pull, worker-thread push. Uses the singleton server; standalone.
+         test_ws_command_result_local.py # CONTRACT v2 on /ws/local (2026-11-06): command_id -> command_result, settings/settings_pull + settings_state, initial_status.remote_settings, mark_departure. Standalone.
+      cloud/                        # Relay CONTRACT v2 (2026-11-06) — all standalone, no hardware
+         test_relay_outbox_ordered_flush.py   # Durable outbox: seq order, mid-batch failure resume, cross-process durability, prune cap, pump POST /events batches of 200 + stop-on-failure/backoff, HMAC headers.
+         test_behavior_events_derivation.py   # bark_episode (gap/severity/peak_db/gate), intervention kind/result/episode_id, settle 300 s, pacing yes/no, treat source + command_id, mission_run vocab, status fields, departure method=app.
+         test_remote_settings_apply.py        # treat_schedule -> TreatPolicy, sg_sensitivity level/min_episode_s/escalate_after_s -> SG profile + tracker, music_plan/quiet_hours/notify_rules stored, single-key push w/ version, persist + load_cached, per-key rejection.
+         test_tool_dispatcher_single_flight.py # command_result shape, unknown/busy/timeout/exception, slot held until handler returns, preemptive standby, every call logged, relay interception only with command_id.
+         test_trick_runner_sequence.py        # run_trick: success (one treat), no_dog/wrong_pose/timeout, invalid cue, SG busy unless force, engine hold/release, mode restored even on dispenser exception.
+      reward/
+         test_treat_policy_windows.py # TreatPolicy: midnight-wrap windows, m=0 blocks auto allows owner, cooldown 120/m, daily cap blocks all, max_per_hour rolling, default_multiplier, reason classes.
       audio/
          test_bark_classifier_runtime.py # Bark emotion model runs on ai_edge_litert (~25 MB) not full tensorflow (~505 MB) (2026-10-24 lag RCA). Standalone.
       media/
          test_photo_colour_order.py # Saved photos keep camera colours: picamera2 RGB888 is already BGR, the old RGB2BGR made a tan dog blue (2026-10-24). Fake detector/store; standalone.
+         test_sound_registry_override.py # Sound ids <group>/<stem>: override in talks/_custom wins, factory never written, reset/reset_all, traversal ids rejected, ffmpeg-missing clean failure (2026-11-06). Temp dirs; standalone.
       motion/
          test_pan_tilt_framing.py   # Coach framing: no top/bottom limit cycle, fit check, one step per new bbox, target selection (2026-10-03). Fake servo; standalone.
       power/

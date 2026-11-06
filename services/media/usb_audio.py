@@ -292,6 +292,14 @@ class USBAudioService:
             else:
                 full_path = filepath
 
+            # Sound overrides (2026-11-06): a custom file for this factory sound
+            # id (talks/_custom/<group>/<stem>.mp3) replaces it transparently.
+            try:
+                from services.media.sound_registry import get_sound_registry
+                full_path = get_sound_registry().resolve_for_path(full_path)
+            except Exception:
+                pass
+
             # Check if file exists
             if not os.path.exists(full_path):
                 self.logger.error(f"Audio file not found: {full_path}")

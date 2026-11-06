@@ -203,6 +203,12 @@ class CoachingEngine:
         # Global session cooldown - prevents rapid-fire automatic sessions
         # Guide button can reset this to allow manual triggering
         self._last_session_end: float = 0.0
+
+        # Tool hold (run_trick, 2026-11-06): while held the run loop idles so a
+        # synchronous agent tool can own cue/pose/reward without the autonomous
+        # engine racing it. start() must NOT reset this flag.
+        self._held: bool = False
+        self._hold_reason: Optional[str] = None
         self.global_session_cooldown_sec = 30.0  # 30 seconds between automatic sessions (was 180s — too long)
 
         logger.info("Coaching Engine initialized")
@@ -531,6 +537,11 @@ class CoachingEngine:
 
                 # Clean stale dog visibility
                 self._cleanup_stale_dogs()
+
+                # Held by an agent tool (run_trick): idle, don't drive the FSM.
+                if self._held:
+                    time.sleep(0.1)
+                    continue
 
                 # frames_total now increments in event handler alongside frames_seen
                 # This ensures presence ratio works correctly with detection event timing
@@ -1175,6 +1186,26 @@ class CoachingEngine:
         time.sleep(2.0)
         self.fsm_state = CoachState.WAITING_FOR_DOG
         logger.info("Returning to WAITING_FOR_DOG state")
+
+    def hold(self, reason: str = 'tool') -> None:
+        """Pause the autonomous loop (state machine not advanced) for a tool."""
+        self._held = True
+        self._hold_reason = reason
+        logger.info(f"[COACH] held ({reason})")
+
+    def release(self) -> None:
+        """Resume after a tool; arm the post-session grace so no autonomous
+        session fires the instant the tool hands back."""
+        if not self._held:
+            return
+        self._held = False
+        self._hold_reason = None
+        self._last_session_end = time.time()
+        logger.info("[COACH] released")
+
+    @property
+    def held(self) -> bool:
+        return self._held
 
     def _play_audio(self, filename: str, wait: bool = False, timeout: float = 5.0):
         """Play audio file using resolve_voice_file for ALL path resolution."""

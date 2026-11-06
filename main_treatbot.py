@@ -475,6 +475,20 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"OTA manager failed to start: {e}")
 
+        # CONTRACT v2 (2026-11-06): cached remote settings (offline boot keeps
+        # the last relay values) + the command dispatcher (command_id ->
+        # command_result; also serves /ws/local).
+        try:
+            from services.cloud.remote_settings import get_remote_settings
+            get_remote_settings().load_cached()
+        except Exception as e:
+            self.logger.error(f"Remote settings cache load failed: {e}")
+        try:
+            from services.cloud.tool_dispatcher import get_tool_dispatcher
+            get_tool_dispatcher().attach(relay_client=self.relay_client)
+        except Exception as e:
+            self.logger.error(f"Tool dispatcher attach failed: {e}")
+
     def _initialize_orchestrators(self) -> bool:
         """Initialize orchestration layer"""
         try:
@@ -638,6 +652,21 @@ class TreatBotMain:
                     self.logger.info("Controller pairing manager started")
                 except Exception as e:
                     self.logger.error(f"Controller pairing manager failed: {e}")
+
+            # CONTRACT v2 event stream + treat policy run with or without the
+            # relay (outbox buffers offline; policy gates the dispenser).
+            try:
+                from services.reward.treat_policy import get_treat_policy
+                get_treat_policy().start()
+                self.logger.info("Treat policy started (midnight reset armed)")
+            except Exception as e:
+                self.logger.error(f"Treat policy failed to start: {e}")
+            try:
+                from services.cloud.behavior_events import get_behavior_event_service
+                get_behavior_event_service().start()
+                self.logger.info("Behavior event service started (bark_episode/intervention/settle/pacing/treat/music/mission_run/status)")
+            except Exception as e:
+                self.logger.error(f"Behavior event service failed to start: {e}")
 
             # Start dog event logger (persistent behavior logging)
             from services.logging.dog_event_logger import get_dog_event_logger
@@ -1109,31 +1138,16 @@ class TreatBotMain:
                 # boundary; internal bus payloads keep their local ids.
                 if 'dog_id' in event_data:
                     try:
-                        from core.dog_profile_manager import get_dog_profile_manager
-                        mgr = get_dog_profile_manager()
-                        resolved = mgr.resolve_app_dog_id(
+                        # Attribution contract 2026-07-13 (always-assign), shared
+                        # with the protocol-v2 emitter: explicit wins (and
+                        # advances last-dog), else sole_dog, else last_dog.
+                        from core.dog_profile_manager import resolve_relay_dog
+                        resolved, id_method = resolve_relay_dog(
                             dog_id=event_data.get('dog_id'),
                             dog_name=event_data.get('dog_name'),
                             aruco_id=event_data.get('aruco_id'),
+                            id_method=self._normalize_id_method(event_data.get('id_method')),
                         )
-                        # Attribution contract 2026-07-13 (always-assign):
-                        # 1) Explicit attribution (a resolvable dog_id/name/aruco
-                        #    on the event — command echo or live vision) ALWAYS
-                        #    wins and advances the last-dog pointer.
-                        # 2) Fallback, in order: exactly one paired dog -> that
-                        #    dog (sole_dog); else the most-recent explicit dog
-                        #    (last_dog). Every stamped id carries id_method so a
-                        #    guess stays distinguishable from an identification.
-                        if resolved is not None:
-                            id_method = self._normalize_id_method(event_data.get('id_method'))
-                            self.state.note_dog_attribution(resolved, event_data.get('dog_name'))
-                        else:
-                            resolved = mgr.sole_app_dog_id()
-                            if resolved is not None:
-                                id_method = 'sole_dog'
-                            else:
-                                resolved, _ = self.state.get_last_dog()
-                                id_method = 'last_dog' if resolved else None
                         event_data['dog_id'] = resolved
                         event_data['id_method'] = id_method if resolved else None
                     except Exception as e:
@@ -2972,6 +2986,24 @@ class TreatBotMain:
     def _stop_subsystems(self) -> None:
         """Stop all subsystems"""
         try:
+            # CONTRACT v2 services first: closes open bark/pacing/music episodes
+            # into the outbox before the store is flushed.
+            try:
+                from services.cloud.tool_dispatcher import get_tool_dispatcher
+                get_tool_dispatcher().cancel_current(wait_s=2.0)
+            except Exception as e:
+                self.logger.debug(f"tool dispatcher cancel: {e}")
+            try:
+                from services.cloud.behavior_events import get_behavior_event_service
+                get_behavior_event_service().stop()
+            except Exception as e:
+                self.logger.debug(f"behavior events stop: {e}")
+            try:
+                from services.reward.treat_policy import get_treat_policy
+                get_treat_policy().stop()
+            except Exception as e:
+                self.logger.debug(f"treat policy stop: {e}")
+
             # Flush + close the spec data store first (bounded: batcher drains
             # in one transaction, well inside the 25s stop budget)
             try:

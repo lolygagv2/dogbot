@@ -4,7 +4,7 @@ Do not edit the DDL here. The spec is the source of truth: change it there
 first (version bump + changelog), then mirror it here. See spec §10.
 """
 
-SCHEMA_VERSION = "0.7"
+SCHEMA_VERSION = "0.8"
 
 # Spec §10 — explicit stepwise migrations, additive-only. Key = the version a
 # live DB is at; value = statements that bring it to the NEXT version. Applied
@@ -43,6 +43,15 @@ MIGRATIONS = {
         "ALTER TABLE dispense_log ADD COLUMN origin TEXT;",
         "ALTER TABLE session ADD COLUMN origin TEXT;",
         "UPDATE schema_meta SET value='0.7' WHERE key='schema_version';",
+    ],
+    # 0.8 (relay protocol v2, 2026-11-06): durable relay outbox table + new
+    # event types (taxonomy). See spec changelog 0.8.
+    "0.7": [
+        "CREATE TABLE relay_outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "event_id TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL, payload TEXT NOT NULL, "
+        "created_at INTEGER NOT NULL, sent_at INTEGER, attempts INTEGER NOT NULL DEFAULT 0);",
+        "CREATE INDEX idx_outbox_pending ON relay_outbox(seq) WHERE sent_at IS NULL;",
+        "UPDATE schema_meta SET value='0.8' WHERE key='schema_version';",
     ],
 }
 
@@ -256,6 +265,21 @@ CREATE TABLE session_report (
 -- Idempotency guard: same session + same input never produces a duplicate report.
 CREATE UNIQUE INDEX idx_session_report_idem ON session_report(session_id, input_hash);
 
+-- v0.8: durable relay outbox. Robot-internal delivery queue for the relay
+-- WebSocket (one row per wire event, strict send order by seq). Rows are
+-- marked sent_at on a successful socket write and pruned after 24 h; the
+-- relay dedupes on event_id, so a resend after a crash is idempotent.
+CREATE TABLE relay_outbox (
+  seq              INTEGER PRIMARY KEY AUTOINCREMENT,  -- send order
+  event_id         TEXT NOT NULL UNIQUE,               -- wire 'id' (UUIDv7); relay dedupe key
+  event_type       TEXT NOT NULL,
+  payload          TEXT NOT NULL,                      -- full wire event JSON (the inner 'event' object)
+  created_at       INTEGER NOT NULL,                   -- epoch ms
+  sent_at          INTEGER,                            -- NULL = pending
+  attempts         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_outbox_pending ON relay_outbox(seq) WHERE sent_at IS NULL;
+
 -- Tracks what has been pushed to the cloud, per table, for incremental sync.
 CREATE TABLE sync_state (
   table_name       TEXT PRIMARY KEY,
@@ -269,5 +293,5 @@ CREATE TABLE schema_meta (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.5.1');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.8');
 """

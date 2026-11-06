@@ -107,6 +107,11 @@ class RelayClient:
             # local-AP path — both land in voice_manager.save_voice().
             'voice_command_updated': self._handle_voice_command_updated,
             'voice_command_deleted': self._handle_voice_command_deleted,
+            # CONTRACT v2 FINAL (2026-11-06): per-key settings push and sound
+            # override push. Events go out over HTTP POST /events (outbox pump);
+            # commands keep the existing command frame (+command_id -> command_result).
+            'settings_updated': self._handle_settings_updated,
+            'sound_updated': self._handle_sound_updated,
         }
 
         # Last reported camera availability, for edge-triggered alerting.
@@ -147,6 +152,16 @@ class RelayClient:
         # gaps. The relay dedupes on the event 'id', so replays are idempotent.
         # In-memory only: a service restart drops the backlog (v1 tradeoff).
         self._event_backlog: deque = deque(maxlen=500)
+
+        # Protocol v2 durable outbox (services/cloud/relay_outbox.py): the new
+        # structured event types are inserted into wimz.db at emission time and
+        # drained by ONE pump coroutine in strict seq order, so a reconnect
+        # backlog and fresh live events can never interleave out of order.
+        self._outbox = None
+        self._outbox_wake: Optional[asyncio.Event] = None
+        self._outbox_task: Optional[asyncio.Task] = None
+        self._outbox_fail_logged_at: Optional[float] = None
+        self._outbox_last_status: Optional[int] = None
 
         self.logger.info(f"RelayClient initialized (enabled={config.enabled})")
 
@@ -750,6 +765,11 @@ class RelayClient:
             })
             return
 
+        # CONTRACT v2: command_id present and the dispatcher knows the command
+        # -> run it there and answer with command_result (exactly once).
+        if self._dispatch_v2_command(command, data, params):
+            return
+
         # HOTFIX: Reset manual timeout on ANY app command while in MANUAL mode
         # This prevents 5-minute timeout when app is actively controlling
         if self.state.get_mode() == SystemMode.MANUAL:
@@ -1167,6 +1187,13 @@ class RelayClient:
         if self._profile_manager:
             self._profile_manager.update_profiles_from_cloud(profiles)
             self.logger.debug("Updated dog profiles from cloud")
+
+        # CONTRACT v2: settings live per dog on the relay — fetch once the
+        # paired dog ids are known (connect + every profiles push).
+        try:
+            asyncio.get_running_loop().create_task(self.fetch_settings())
+        except Exception as e:
+            self.logger.debug(f"settings fetch not scheduled: {e}")
 
     async def request_profiles(self):
         """Request dog profiles from cloud relay"""
@@ -1631,6 +1658,7 @@ class RelayClient:
                     # Start heartbeat and telemetry in background
                     self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
                     self._telemetry_task = asyncio.create_task(self._telemetry_loop())
+                    self._outbox_task = asyncio.create_task(self._outbox_pump())
                     # Start receive loop
                     await self._receive_loop()
                     # Cancel background tasks when receive loop ends
@@ -1638,6 +1666,8 @@ class RelayClient:
                         self._heartbeat_task.cancel()
                     if self._telemetry_task:
                         self._telemetry_task.cancel()
+                    self._cancel_outbox_pump()
+                    self._on_socket_lost()
                 else:
                     backoff = min(backoff * 2, 30.0)  # Double each time, cap at 30s
             else:
@@ -1681,12 +1711,15 @@ class RelayClient:
             # Start heartbeat and telemetry in background
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._telemetry_task = asyncio.create_task(self._telemetry_loop())
+            self._outbox_task = asyncio.create_task(self._outbox_pump())
             await self._receive_loop()
             # Cancel background tasks when receive loop ends
             if self._heartbeat_task:
                 self._heartbeat_task.cancel()
             if self._telemetry_task:
                 self._telemetry_task.cancel()
+            self._cancel_outbox_pump()
+            self._on_socket_lost()
 
         # Start reconnection loop if still running
         if self._running:
@@ -1731,6 +1764,7 @@ class RelayClient:
             self._heartbeat_task.cancel()
         if self._telemetry_task:
             self._telemetry_task.cancel()
+        self._cancel_outbox_pump()
 
         # Schedule disconnect in the event loop and wait for it (with goodbye message)
         if self._loop and self._connected:
@@ -1811,6 +1845,319 @@ class RelayClient:
             })
         except Exception as e:
             self.logger.debug(f"network_state event failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Relay protocol v2 (2026-11-06): durable outbox, settings, tools, audio
+    # ------------------------------------------------------------------
+
+    def _get_outbox(self):
+        if self._outbox is None:
+            from services.cloud.relay_outbox import get_relay_outbox
+            self._outbox = get_relay_outbox()
+        return self._outbox
+
+    def enqueue_event(self, event: dict) -> Optional[int]:
+        """Durably queue a contract-v2 event (thread-safe).
+
+        `event` is the row POSTed to /events: {"id","type","device_id",
+        "dog_id","timestamp","data":{...}}. The pump ships rows in seq order
+        in batches of <=200; nothing bypasses it, so ordering holds across
+        restarts. Works with the relay disabled or offline (rows accumulate
+        up to the outbox cap) so producers never check connectivity.
+        """
+        try:
+            seq = self._get_outbox().enqueue(event)
+        except Exception as e:
+            self.logger.error(f"[OUTBOX] enqueue failed: {e}")
+            return None
+        self._wake_outbox()
+        return seq
+
+    def _wake_outbox(self) -> None:
+        loop, wake = self._loop, self._outbox_wake
+        if loop and wake and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(wake.set)
+            except RuntimeError:
+                pass
+
+    def _cancel_outbox_pump(self) -> None:
+        if self._outbox_task:
+            self._outbox_task.cancel()
+            self._outbox_task = None
+
+    # ---- HTTP (HMAC) -------------------------------------------------
+
+    def _http_headers(self) -> dict:
+        ts = int(time.time())
+        return {'X-Device-ID': self.config.device_id, 'X-Timestamp': str(ts),
+                'X-Signature': self._generate_auth_signature(ts)}
+
+    def _http_url(self, path: str) -> str:
+        if path.startswith(('http://', 'https://')):
+            return path
+        return self._relay_http_base() + (path if path.startswith('/') else '/' + path)
+
+    async def _http(self, method: str, path: str, *, json_body=None, data=None,
+                    timeout: float = 15.0):
+        """One authenticated request. Returns (status, parsed_json|bytes|None)."""
+        if not self._session or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        url = self._http_url(path)
+        async with self._session.request(
+                method, url, json=json_body, data=data, headers=self._http_headers(),
+                timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+            ctype = resp.headers.get('Content-Type', '')
+            if 'json' in ctype:
+                try:
+                    body = await resp.json(content_type=None)
+                except Exception:
+                    body = None
+            else:
+                body = await resp.read()
+            return resp.status, body
+
+    def http_sync(self, method: str, path: str, *, json_body=None, data=None,
+                  timeout: float = 15.0):
+        """Thread-safe blocking wrapper for callers off the relay loop."""
+        if not self._loop or self._loop.is_closed():
+            raise RuntimeError('relay loop not running')
+        fut = asyncio.run_coroutine_threadsafe(
+            self._http(method, path, json_body=json_body, data=data, timeout=timeout), self._loop)
+        return fut.result(timeout=timeout + 5)
+
+    async def download(self, url: str, timeout: float = 20.0) -> Optional[bytes]:
+        """GET a relay-hosted asset (audio) with device HMAC."""
+        try:
+            status, body = await self._http('GET', url, timeout=timeout)
+            if 200 <= status < 300 and isinstance(body, (bytes, bytearray)):
+                return bytes(body)
+            self.logger.warning(f"[HTTP] download {url} -> {status}")
+        except Exception as e:
+            self.logger.warning(f"[HTTP] download {url} failed: {e}")
+        return None
+
+    def download_sync(self, url: str, timeout: float = 20.0) -> Optional[bytes]:
+        if not self._loop or self._loop.is_closed():
+            return None
+        try:
+            return asyncio.run_coroutine_threadsafe(
+                self.download(url, timeout), self._loop).result(timeout=timeout + 5)
+        except Exception as e:
+            self.logger.warning(f"[HTTP] download_sync failed: {e}")
+            return None
+
+    # ---- outbox pump: POST /events ----------------------------------
+
+    OUTBOX_BATCH = 200
+    OUTBOX_BACKOFF_MAX_S = 60.0
+
+    async def _outbox_pump(self):
+        """Single writer: POST /events in seq order, batches of <=200.
+
+        Mark rows sent when the relay accepts them or reports them as
+        duplicates; on any HTTP failure stop and retry with exponential
+        backoff (1 s .. 60 s). Independent of the WebSocket — it only needs
+        a route to the relay host.
+        """
+        self._outbox_wake = asyncio.Event()
+        self._outbox_wake.set()
+        loop = asyncio.get_running_loop()
+        try:
+            outbox = self._get_outbox()
+        except Exception as e:
+            self.logger.error(f"[OUTBOX] unavailable, pump idle: {e}")
+            return
+        backoff = 1.0
+        try:
+            while self._running:
+                try:
+                    await asyncio.wait_for(self._outbox_wake.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    pass
+                self._outbox_wake.clear()
+                while self._running:
+                    batch = await loop.run_in_executor(None, outbox.pending, self.OUTBOX_BATCH)
+                    if not batch:
+                        backoff = 1.0
+                        break
+                    seqs = [seq for seq, _ in batch]
+                    ok, sent_ids = await self._post_events([ev for _, ev in batch])
+                    if ok:
+                        if sent_ids is None:
+                            sent = seqs
+                        else:
+                            sent = [seq for seq, ev in batch if ev.get('id') in sent_ids]
+                        if sent:
+                            await loop.run_in_executor(None, outbox.mark_sent, sent)
+                        unsent = [seq for seq in seqs if seq not in set(sent)]
+                        if unsent:
+                            # Rejected by the relay (bad rows): never retry forever.
+                            await loop.run_in_executor(None, outbox.mark_attempt, unsent)
+                            await loop.run_in_executor(None, outbox.mark_sent, unsent)
+                            self.logger.warning(f"[OUTBOX] relay rejected {len(unsent)} row(s); dropped")
+                        if self._outbox_fail_logged_at is not None:
+                            self.logger.info("[OUTBOX] POST /events recovered")
+                            self._outbox_fail_logged_at = None
+                        self.logger.info(f"[OUTBOX] posted {len(sent)}/{len(batch)} event(s)")
+                        backoff = 1.0
+                        continue
+                    await loop.run_in_executor(None, outbox.mark_attempt, seqs)
+                    # One WARNING per outage (and every ~10 min while it lasts), DEBUG otherwise.
+                    if (self._outbox_fail_logged_at is None
+                            or time.time() - self._outbox_fail_logged_at > 600):
+                        self._outbox_fail_logged_at = time.time()
+                        self.logger.warning(f"[OUTBOX] POST /events failing (last status "
+                                            f"{self._outbox_last_status}); retrying with backoff, "
+                                            f"pending={await loop.run_in_executor(None, outbox.pending_count)}")
+                    else:
+                        self.logger.debug(f"[OUTBOX] POST /events failed; retry in {backoff:.0f}s")
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, self.OUTBOX_BACKOFF_MAX_S)
+                    self._outbox_wake.set()
+                    break
+                await loop.run_in_executor(None, outbox.prune)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.error(f"[OUTBOX] pump error: {e}")
+        finally:
+            self._outbox_wake = None
+
+    async def _post_events(self, events: list):
+        """POST /events. Returns (ok, accepted_ids|None).
+
+        ok=False -> network/5xx/auth failure (retry later).
+        accepted_ids=None -> 2xx with no per-row detail: all accepted.
+        Per-row detail honoured when present: accepted / duplicate / rejected
+        lists of ids (duplicates count as sent).
+        """
+        if not self.config.device_id or not self.config.device_secret:
+            return False, None
+        body = {'device_id': self.config.device_id, 'events': events}
+        try:
+            status, resp = await self._http('POST', '/events', json_body=body, timeout=20.0)
+        except Exception as e:
+            self._outbox_last_status = None
+            self.logger.debug(f"[OUTBOX] POST /events error: {e}")
+            return False, None
+        if 200 <= status < 300 or status == 409:
+            if isinstance(resp, dict):
+                acc = set(resp.get('accepted') or []) | set(resp.get('duplicate') or resp.get('duplicates') or [])
+                if acc or resp.get('rejected'):
+                    return True, acc
+            return True, None
+        if status in (400, 422):
+            # Whole batch malformed: let the pump drop it rather than loop.
+            self.logger.error(f"[OUTBOX] POST /events {status}: {str(resp)[:300]}")
+            return True, set()
+        self._outbox_last_status = status
+        self.logger.debug(f"[OUTBOX] POST /events -> {status}")
+        return False, None
+
+    # ---- settings -----------------------------------------------------
+
+    def _settings_dog_ids(self) -> list:
+        try:
+            from core.dog_profile_manager import get_dog_profile_manager
+            return [p.dog_id for p in get_dog_profile_manager().get_all_profiles() if p.dog_id]
+        except Exception:
+            return []
+
+    async def fetch_settings(self) -> None:
+        """GET /api/dogs/{dog_id}/settings for each paired dog and apply."""
+        dog_ids = self._settings_dog_ids()
+        if not dog_ids:
+            self.logger.info("[SETTINGS] no paired dog ids yet; settings fetch skipped")
+            return
+        loop = asyncio.get_running_loop()
+        from services.cloud.remote_settings import get_remote_settings
+        rs = get_remote_settings()
+        for dog_id in dog_ids:
+            try:
+                status, body = await self._http('GET', f'/api/dogs/{dog_id}/settings')
+            except Exception as e:
+                self.logger.warning(f"[SETTINGS] GET settings for {dog_id} failed: {e}")
+                continue
+            if status != 200 or not isinstance(body, dict):
+                self.logger.warning(f"[SETTINGS] GET settings for {dog_id} -> {status}")
+                continue
+            settings = body.get('settings', body)
+            result = await loop.run_in_executor(
+                None, lambda s=settings, d=dog_id: rs.apply(s, source='relay_get', dog_id=d))
+            self.logger.info(f"[SETTINGS] dog {dog_id}: {result}")
+
+    async def _handle_settings_updated(self, data: dict):
+        """{type:"settings_updated", dog_id, key, value, version}"""
+        key, value = data.get('key'), data.get('value')
+        if not key:
+            self.logger.warning("settings_updated without key")
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            from services.cloud.remote_settings import get_remote_settings
+            result = await loop.run_in_executor(
+                None, lambda: get_remote_settings().apply(
+                    {key: value}, source='relay_push', dog_id=data.get('dog_id'),
+                    version=data.get('version')))
+            self.logger.info(f"[SETTINGS] push {key} v{data.get('version')}: {result}")
+        except Exception as e:
+            self.logger.error(f"[SETTINGS] push apply failed: {e}")
+
+    async def _handle_sound_updated(self, data: dict):
+        """{type:"sound_updated", sound_id, url|null, format?} -> override / reset."""
+        sound_id = data.get('sound_id') or data.get('id')
+        url = data.get('url')
+        if not sound_id:
+            self.logger.warning("sound_updated without sound_id")
+            return
+        loop = asyncio.get_running_loop()
+        from services.media.sound_registry import get_sound_registry
+        reg = get_sound_registry()
+        if not url:
+            res = await loop.run_in_executor(None, lambda: reg.reset(sound_id))
+            self.logger.info(f"[SOUNDS] reset {sound_id}: {res}")
+            return
+        audio = await self.download(url)
+        if not audio:
+            self.logger.error(f"[SOUNDS] download failed for {sound_id}")
+            return
+        fmt = (data.get('format') or url.rsplit('.', 1)[-1].split('?')[0] or 'mp3').lower()
+        res = await loop.run_in_executor(None, lambda: reg.replace(sound_id, audio, fmt))
+        self.logger.info(f"[SOUNDS] replace {sound_id}: {res}")
+
+    # ---- commands with command_id -> command_result ------------------
+
+    def send_message(self, message: dict) -> None:
+        """Thread-safe send through the normal (offline-queued) path."""
+        message.setdefault('device_id', self.config.device_id)
+        if not self._loop or self._loop.is_closed():
+            if len(self._message_queue) < self._max_queue_size:
+                self._message_queue.append(message)
+            return
+        asyncio.run_coroutine_threadsafe(self._send(message), self._loop)
+
+    def _dispatch_v2_command(self, command: str, data: dict, params: dict) -> bool:
+        """CONTRACT v2: a command frame carrying command_id is answered with
+        {type:"command_result", command_id, ok, result, error} by the
+        ToolDispatcher. Returns True when handled here."""
+        command_id = data.get('command_id')
+        if not command_id:
+            return False
+        try:
+            from services.cloud.tool_dispatcher import get_tool_dispatcher
+            disp = get_tool_dispatcher()
+        except Exception as e:
+            self.logger.error(f"[TOOL] dispatcher unavailable: {e}")
+            return False
+        if not disp.has_tool(command):
+            return False
+        args = dict(params or {})
+        args.pop('command_id', None)
+        args.pop('timestamp', None)
+        disp.dispatch({'id': command_id, 'name': command, 'args': args},
+                      reply=self.send_message)
+        return True
 
     def send_event(self, event_type: str, data: dict):
         """Send event to relay (thread-safe)

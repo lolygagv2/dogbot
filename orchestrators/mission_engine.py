@@ -933,7 +933,11 @@ class MissionEngine:
         # Dispense treat
         if self.dispenser:
             try:
-                self.dispenser.dispense_treat()
+                # reason='mission' so TreatPolicy / the relay `treat` event
+                # attribute it correctly (was counted as 'manual').
+                self.dispenser.dispense_treat(
+                    dog_id=getattr(session, 'dog_id', None), reason='mission',
+                    wimz_session_id=getattr(self, 'wimz_session_id', None))
                 session.rewards_given += 1
                 self.logger.debug(f"Treat dispensed ({session.rewards_given}/{session.mission.max_rewards})")
             except Exception as e:

@@ -590,6 +590,21 @@ class SilentGuardianMode:
                 }, dog_id=wimz_dog, label_source='auto_rule')
         except Exception as e:
             logger.debug(f"wimz sg_intervention log failed: {e}")
+        # Relay protocol v2 (2026-11-06): logging-only mirror on the bus so the
+        # BehaviorEventService can emit `intervention` {action, outcome}
+        # without reaching into this state machine.
+        try:
+            publish_system_event('sg_intervention_record', {
+                'phase': phase,
+                'escalation_level': self.current_escalation_level,
+                'quiet_achieved': quiet_achieved,
+                'treat_given': treat_given,
+                'music_played': music_played,
+                'dog_id': dog_id,
+                'dog_name': dog_name,
+            }, 'silent_guardian')
+        except Exception as e:
+            logger.debug(f"sg_intervention_record publish failed: {e}")
 
     def _on_audio_event(self, event):
         """Handle bark events"""
@@ -1174,6 +1189,16 @@ class SilentGuardianMode:
                         # Reset for next quiet period
                         self.quiet_start_time = now
 
+    def _protocol_cooldown(self) -> float:
+        """Treat cooldown: TreatPolicy (remote treat_schedule multiplier) over
+        the yaml min_time_between_treats default."""
+        default = self.config.get('session_limits', {}).get('min_time_between_treats', 120)
+        try:
+            from services.reward.treat_policy import get_treat_policy
+            return get_treat_policy().protocol_cooldown_s(default=default)
+        except Exception:
+            return default
+
     def _get_calming_playlist(self):
         """Return (playlist, base_path) for calming music.
 
@@ -1187,7 +1212,31 @@ class SilentGuardianMode:
             old_file = audio_config.get('calming_music', 'songs/default/mozart_piano.mp3')
             playlist = [old_file]
         base = audio_config.get('base', '/home/morgan/dogbot/VOICEMP3')
+        # Remote settings music_plan.track_class (protocol v2): if a folder
+        # songs/<track_class>/ exists, it replaces the yaml playlist. Lookup
+        # only — the music phase itself is unchanged.
+        try:
+            plan = self._music_plan()
+            cls = (plan or {}).get('track_class')
+            if cls and cls != 'calming':
+                folder = os.path.join(base, 'songs', str(cls))
+                if os.path.isdir(folder):
+                    custom = sorted(os.path.join('songs', str(cls), f)
+                                    for f in os.listdir(folder)
+                                    if f.lower().endswith(('.mp3', '.wav', '.m4a')))
+                    if custom:
+                        return custom, base
+        except Exception as e:
+            logger.debug(f"music_plan playlist lookup failed: {e}")
         return playlist, base
+
+    @staticmethod
+    def _music_plan():
+        try:
+            from services.cloud.remote_settings import get_remote_settings
+            return get_remote_settings().get_music_plan()
+        except Exception:
+            return None
 
     def _play_random_calming_track(self) -> bool:
         """Play one random calming track (never the same track back-to-back)."""
@@ -1213,6 +1262,18 @@ class SilentGuardianMode:
         if self.calming_music_playing:
             return
         try:
+            plan = self._music_plan() or {}
+            self._music_plan_started_at = time.time()
+            self._music_plan_minutes = float(plan.get('minutes') or 0) or None
+            self._music_prev_volume = None
+            if plan.get('enabled', True) and plan.get('volume') is not None:
+                try:
+                    from services.media.volume_manager import get_volume_manager
+                    vm = get_volume_manager()
+                    self._music_prev_volume = vm.get_volume()
+                    vm.set_volume(int(plan['volume']))
+                except Exception as e:
+                    logger.debug(f"music_plan volume not applied: {e}")
             if self._play_random_calming_track():
                 self.calming_music_playing = True
         except Exception as e:
@@ -1227,6 +1288,12 @@ class SilentGuardianMode:
         Called from the mode run loop (~10Hz).
         """
         if not self.calming_music_playing or not self.audio:
+            return
+        # music_plan.minutes (remote settings): bounded music phase.
+        minutes = getattr(self, '_music_plan_minutes', None)
+        if minutes and now - getattr(self, '_music_plan_started_at', now) > minutes * 60:
+            logger.info(f"Calming music stopped after music_plan.minutes={minutes}")
+            self._stop_calming_music()
             return
         # Startup grace: play() takes a moment before is_busy() reports True
         if now - self.calming_track_started_at < 3.0:
@@ -1263,6 +1330,14 @@ class SilentGuardianMode:
             self.calming_music_playing = False
             self.calming_music_index = 0
             self.calming_track_started_at = 0.0
+            prev = getattr(self, '_music_prev_volume', None)
+            if prev is not None:
+                try:
+                    from services.media.volume_manager import get_volume_manager
+                    get_volume_manager().set_volume(int(prev))
+                except Exception as e:
+                    logger.debug(f"volume restore failed: {e}")
+                self._music_prev_volume = None
             logger.info("Calming music stopped")
         except Exception as e:
             logger.error(f"Failed to stop calming music: {e}")
@@ -1695,8 +1770,7 @@ class SilentGuardianMode:
         self.last_unprompted_reward_time = now
 
         max_treats = self.config.get('session_limits', {}).get('max_treats', 11)
-        min_time = self.config.get('session_limits', {}).get(
-            'min_time_between_treats', 120)
+        min_time = self._protocol_cooldown()
         time_since_treat = (now - self.last_treat_time
                             if self.last_treat_time > 0 else float('inf'))
 
@@ -1833,7 +1907,7 @@ class SilentGuardianMode:
 
         # Check treat eligibility (anti-farming)
         # Also enforce min_time_between_treats as backup
-        min_time = self.config.get('session_limits', {}).get('min_time_between_treats', 120)
+        min_time = self._protocol_cooldown()
         time_since_treat = time.time() - self.last_treat_time if self.last_treat_time > 0 else float('inf')
 
         if not self.treat_eligible or time_since_treat < min_time:

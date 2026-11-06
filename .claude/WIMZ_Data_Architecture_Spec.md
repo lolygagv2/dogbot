@@ -2,7 +2,7 @@
 
 **Shared data contract for the Edge (robot), App, and Relay components.**
 
-Version: 0.7
+Version: 0.8
 Owner: Morgan Hill (morgan@wimzai.com)
 Status: Authoritative source of truth for the data schema and data flow. All three component instances build against this file. Do not diverge from it without bumping the version and updating the changelog at the bottom.
 
@@ -145,10 +145,12 @@ CREATE TABLE dog (
   color            TEXT,                    -- v0.3: app-authoritative, human-entered; robot-consumed
   treats_per_reward INTEGER,                -- v0.3: app-authoritative reward config; robot-consumed (null -> robot defaults to 1)
   signature        TEXT,                    -- optional visual embedding ref/hash
+  app_dog_id       TEXT,                    -- v0.6: app/cloud canonical UUID (the relay-accepted id); analytics/export key
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
 CREATE INDEX idx_dog_qr ON dog(qr_code_id);
+CREATE UNIQUE INDEX idx_dog_app_id ON dog(app_dog_id) WHERE app_dog_id IS NOT NULL;
 
 -- Every model that ever produces a label is registered here, so every
 -- machine label is attributable. This is label provenance.
@@ -308,6 +310,21 @@ CREATE TABLE session_report (
 -- Idempotency guard: same session + same input never produces a duplicate report.
 CREATE UNIQUE INDEX idx_session_report_idem ON session_report(session_id, input_hash);
 
+-- v0.8: durable relay outbox. Robot-internal delivery queue for the relay
+-- WebSocket (one row per wire event, strict send order by seq). Rows are
+-- marked sent_at on a successful socket write and pruned after 24 h; the
+-- relay dedupes on event_id, so a resend after a crash is idempotent.
+CREATE TABLE relay_outbox (
+  seq              INTEGER PRIMARY KEY AUTOINCREMENT,  -- send order
+  event_id         TEXT NOT NULL UNIQUE,               -- wire 'id' (UUIDv7); relay dedupe key
+  event_type       TEXT NOT NULL,
+  payload          TEXT NOT NULL,                      -- full wire event JSON (the inner 'event' object)
+  created_at       INTEGER NOT NULL,                   -- epoch ms
+  sent_at          INTEGER,                            -- NULL = pending
+  attempts         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_outbox_pending ON relay_outbox(seq) WHERE sent_at IS NULL;
+
 -- Tracks what has been pushed to the cloud, per table, for incremental sync.
 CREATE TABLE sync_state (
   table_name       TEXT PRIMARY KEY,
@@ -321,7 +338,7 @@ CREATE TABLE schema_meta (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.7');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.8');
 ```
 
 ---
@@ -343,6 +360,14 @@ INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.7');
 | `error`           | fault / exception                        | `{"code":"motor_stall","detail":"..."}` |
 | `panic_episode`   | SG panic: intense barking, interventions suppressed | `{"trigger":"burst\|sustained_rate\|futility","bark_type_mix":{"distress":6,"demand":1},"barks_in_window":7,"loud_noise_prior":true,"episode_num":1,"duration_sec":420}` |
 | `sg_intervention` | v0.6: SG intervention lifecycle (`phase:'triggered'` when it starts — the `followed_by` join target — and `phase:'outcome'` when it resolves) | `{"phase":"outcome","escalation_level":2,"quiet_achieved":true,"treat_given":true,"music_played":false,"dispense_id":null,"barks_triggering":3}` |
+| `bark_episode`    | v0.8: barks grouped into one episode (gap-closed, 30 s default); event_id doubles as the relay `episode_id` | `{"start":"ISO","end":"ISO","bark_count":7,"peak_db":-18.2,"severity":"med","duration_s":41.0}` |
+| `settle`          | v0.8: dog calm for N s after an SG intervention outcome | `{"time":"ISO","seconds_since_last_intervention":312,"calm_seconds":300}` |
+| `pacing`          | v0.8: sustained back-and-forth travel in frame (best-effort heuristic) | `{"start":"ISO","end":"ISO","reversals":8}` |
+| `departure`       | v0.8: owner marked leaving (app/relay instruction only) | `{"time":"ISO","method":"app"}` |
+| `arrival`         | v0.8: owner marked home (app/relay instruction only) | `{"time":"ISO","method":"app"}` |
+| `mission_run`     | v0.8: one mission execution, written at end | `{"mission_id":"sit_stay","start":"ISO","end":"ISO","result":"success\|fail\|aborted","rewards_given":2}` |
+| `tool_call`       | v0.8: a relay/agent tool invocation (audit) | `{"name":"run_trick","args":{"cue":"sit"},"id":"...","duration_ms":18200,"ok":true,"error":null}` |
+| `intervention`, `treat`, `music`, `status` | v0.8: relay-only event types (POST /events). NOT stored in `event` — already covered by `sg_intervention`, `dispense_log`/`treat_dispensed`, audio state, telemetry | wire shapes per API_CONTRACT "Relay CONTRACT v2" |
 
 **Derived fields (export layer, not stored — agreed with App Claude 2026-09-01):**
 `followed_by` on an exported bark row = the next `sg_intervention` event or
@@ -480,6 +505,14 @@ corpus/       ML-ready datasets: vision (COCO/YOLO) + behavioral (Parquet)
 
 ## Changelog
 
+- **0.8** Additive (relay protocol v2, 2026-11-06). New table `relay_outbox`
+  (§4): durable, strictly-ordered delivery queue for the relay WebSocket —
+  replaces the in-memory 500-event backlog so a restart while offline loses
+  nothing; rows are robot-internal (never synced), marked `sent_at` on socket
+  write, pruned after 24 h. New event types (§5): `bark_episode`, `settle`,
+  `pacing`, `departure`, `arrival`, `mission_run`, `tool_call`; the relay-only
+  types `intervention`/`treat`/`music`/`status` are POSTed but not stored
+  (already covered by existing rows). Migration walks 0.7 → 0.8.
 - **0.7** Additive (backfill amendment, R5 reversed by Morgan 2026-09-01).
   New nullable `origin TEXT` on `event`, `training_attempt`, `dispense_log`,
   `session`: NULL = natively-written; `'backfill:<source>'` = retrofit row
