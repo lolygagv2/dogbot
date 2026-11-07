@@ -2131,7 +2131,28 @@ class TreatBotMain:
                         self.logger.warning(f"select_dog: no dog_id in params={params}")
 
                 else:
-                    self.logger.warning(f"Unknown cloud command: {command}")
+                    # 2026-11-07 08:19: the agent's TTS reply arrived as
+                    # play_sound WITHOUT a command_id, so it skipped the
+                    # CONTRACT v2 dispatcher and landed here unplayed. Any
+                    # command the ToolDispatcher knows runs there regardless
+                    # of command_id; without one there is nobody to answer,
+                    # so the command_result is logged and dropped.
+                    handled = False
+                    try:
+                        from services.cloud.tool_dispatcher import get_tool_dispatcher
+                        disp = get_tool_dispatcher()
+                        if command and disp.has_tool(command):
+                            args = dict(params) if params else {
+                                k: v for k, v in event.data.items()
+                                if k not in ('type', 'command', 'timestamp', 'command_id')}
+                            self.logger.info(f"[CMD] {command} (no command_id) -> dispatcher keys={sorted(args)}")
+                            disp.dispatch({'id': None, 'name': command, 'args': args},
+                                          reply=lambda frame: None)
+                            handled = True
+                    except Exception as e:
+                        self.logger.error(f"Dispatcher fallback failed for {command}: {e}")
+                    if not handled:
+                        self.logger.warning(f"Unknown cloud command: {command} keys={sorted(event.data)}")
 
         except httpx.TimeoutException:
             self.logger.error(f"Cloud command timeout: {command}")

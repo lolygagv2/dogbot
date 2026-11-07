@@ -60,7 +60,7 @@ def log_tool_call(name: str, args: Dict[str, Any], call_id: Optional[str],
     try:
         logger.info(f"[TOOL] name={name} command_id={call_id} ok={ok} duration_ms={duration_ms} "
                     f"args={json.dumps(args, default=str)[:300]} "
-                    f"error={error!r}" + (f" result={result_summary[:200]}" if result_summary else ''))
+                    f"error={error!r}" + (f" result={result_summary[:600]}" if result_summary else ''))
     except Exception:
         pass
     try:
