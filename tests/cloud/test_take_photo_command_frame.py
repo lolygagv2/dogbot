@@ -105,8 +105,10 @@ class FakeRelay:
         self.config = type('C', (), {'device_id': 'tb-test'})()
     def upload_media_sync(self, filepath, content_type='image/jpeg', timeout=20.0, filename=None):
         self.uploads.append((filepath, filename)); return f"https://relay/media/{filename}"
+    def send_message(self, frame):
+        self.events.append((frame.get('type'), frame))
     def send_event(self, et, data):
-        self.events.append((et, data))
+        raise AssertionError('photo_ready must be a type frame via send_message, not an event')
 fr = FakeRelay(); d._relay = fr
 d.PHOTO_REPLY_BUDGET_S = 0.5
 
@@ -127,17 +129,31 @@ d._capture_photo_blocking = staticmethod(slow)
 t0 = time.monotonic()
 out = d._tool_take_photo({'_command_id': 'c-slow', 'with_hud': True}, threading.Event())
 dt = time.monotonic() - t0
-check(out['ok'] is True and out.get('pending') is True and out.get('photo_id') and dt < 1.0
+check(out['ok'] is True and out.get('deferred') is True and out.get('photo_id') and dt < 1.0
       and out['media_filename'] == out['photo_id'] + '.jpg',
-      f"slow capture -> immediate ok:true photo_id pending in {dt:.2f}s ({sorted(out)})")
+      f"slow capture -> immediate ok:true deferred:true photo_id in {dt:.2f}s ({sorted(out)})")
 for _ in range(60):
     if fr.events:
         break
     time.sleep(0.05)
 check(fr.uploads and fr.uploads[0][1] == out['photo_id'] + '.jpg', f"JPEG uploaded as <photo_id>.jpg ({fr.uploads})")
 check(fr.events and fr.events[0][0] == 'photo_ready' and fr.events[0][1]['command_id'] == 'c-slow'
-      and fr.events[0][1]['photo_id'] == out['photo_id'] and fr.events[0][1]['image_url'].endswith('.jpg'),
-      f"photo_ready {{command_id, photo_id, image_url}} sent ({fr.events})")
+      and fr.events[0][1]['photo_id'] == out['photo_id'] and fr.events[0][1]['image_url'].endswith('.jpg')
+      and set(fr.events[0][1]) == {'type', 'command_id', 'photo_id', 'image_url'},
+      f"photo_ready {{type, command_id, photo_id, image_url}} sent, nothing else ({fr.events})")
+
+# ---- slow capture whose upload fails -> command_result error, never a photo_ready
+fr.events.clear(); fr.uploads.clear()
+fr.upload_media_sync = lambda *a, **k: None
+out = d._tool_take_photo({'_command_id': 'c-fail', 'with_hud': True}, threading.Event())
+for _ in range(60):
+    if fr.events:
+        break
+    time.sleep(0.05)
+check(fr.events and fr.events[0][0] == 'command_result' and fr.events[0][1]['ok'] is False
+      and fr.events[0][1]['command_id'] == 'c-fail' and fr.events[0][1]['error']['code'] == 'upload_failed'
+      and not any(e[0] == 'photo_ready' for e in fr.events),
+      f"deferred upload failure -> command_result upload_failed, no photo_ready ({fr.events})")
 
 print('\nALL PASS' if not FAILS else f"\n{len(FAILS)} FAILED")
 sys.exit(1 if FAILS else 0)

@@ -323,19 +323,33 @@ class ToolDispatcher:
             if res.get('success') and self._relay is not None and res.get('filepath'):
                 url = self._relay.upload_media_sync(res['filepath'], 'image/jpeg',
                                                     filename=f"{photo_id}.jpg")
-            frame = {'command_id': command_id, 'photo_id': photo_id, 'ok': bool(url),
-                     'image_url': url, 'media_filename': f"{photo_id}.jpg",
-                     'error': None if url else str(res.get('error') or 'upload failed')}
+            # Relay contract (2026-11-07, relay 2422577): photo_ready
+            # {type, command_id, photo_id, image_url} is the FINAL result of
+            # that command_id; nothing else may follow it. On failure send a
+            # command_result error instead (no photo_ready, so it is still
+            # the single final answer).
+            if url:
+                frame = {'type': 'photo_ready', 'command_id': command_id,
+                         'photo_id': photo_id, 'image_url': url}
+            else:
+                err = str(res.get('error') or 'upload failed')
+                frame = {'type': 'command_result', 'command_id': command_id, 'command': 'take_photo',
+                         'ok': False, 'result': {'photo_id': photo_id},
+                         'error': {'code': 'capture_failed' if not res.get('success') else 'upload_failed',
+                                   'message': err}}
             if self._relay is not None:
                 try:
-                    self._relay.send_event('photo_ready', frame)
+                    self._relay.send_message(frame)
                 except Exception as e:
-                    logger.error(f"[TOOL] photo_ready send failed: {e}")
-            logger.info(f"[TOOL] deferred take_photo {photo_id}: {'uploaded ' + url if url else frame['error']}")
+                    logger.error(f"[TOOL] {frame['type']} send failed: {e}")
+            logger.info(f"[TOOL] deferred take_photo {photo_id}: "
+                        f"{'photo_ready ' + url if url else 'failed: ' + frame['error']['message']}")
 
         threading.Thread(target=_deliver, daemon=True, name=f"PhotoDeliver-{photo_id[:8]}").start()
-        return {'ok': True, 'photo_id': photo_id, 'pending': True, 'with_hud': with_hud,
-                'media_filename': f"{photo_id}.jpg"}
+        # Interim reply: result.deferred=true tells the relay's waiters to
+        # ignore this and keep waiting for photo_ready.
+        return {'ok': True, 'deferred': True, 'pending': True, 'photo_id': photo_id,
+                'with_hud': with_hud, 'media_filename': f"{photo_id}.jpg"}
 
     @staticmethod
     def _capture_photo_blocking(with_hud: bool) -> Dict[str, Any]:
