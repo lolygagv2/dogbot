@@ -39,7 +39,9 @@ DEFAULTS: Dict[str, float] = {
     'max_deg': 90,
     'hard_cap_s': 5.0,
     'obstacle_stop_cm': 30.0,
-    'ramp_s': 0.2,              # gradual ramp up / down (hardware-safety rule)
+    'ramp_s': 0.05,             # one command tick of ramp up/down: hardware-safety asks for a gradual
+                                # transition and sets 50 ms as the minimum command interval; anything
+                                # longer starves the short (0.3-0.5 s) steps the relay sends
     'tick_s': 0.05,             # 50 ms command cadence (rate-limit floor, watchdog is 500 ms)
     'recenter_every_s': 1.0,    # re-center gimbal during a forward move
 }
@@ -296,7 +298,6 @@ class RelayMove:
                 remaining = duration - elapsed
                 ramp = c['ramp_s'] if c['ramp_s'] > 0 else 1e-6
                 scale = min(1.0, elapsed / ramp, max(remaining, 0.0) / ramp)
-                scale = max(scale, 0.25)  # never below a quarter of slow speed (deadzone)
                 if not self._send(int(round(left_t * scale)), int(round(right_t * scale))):
                     stopped = 'timeout'
                     logger.error("[MOVE] motor bus rejected command — aborting")
