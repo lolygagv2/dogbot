@@ -161,6 +161,7 @@ class RelayClient:
         self._outbox_wake: Optional[asyncio.Event] = None
         self._outbox_task: Optional[asyncio.Task] = None
         self._outbox_fail_logged_at: Optional[float] = None
+        self._outbox_held_logged_at = 0.0
         self._outbox_last_status: Optional[int] = None
 
         self.logger.info(f"RelayClient initialized (enabled={config.enabled})")
@@ -1703,6 +1704,18 @@ class RelayClient:
             else:
                 break  # Stop if we lost connection again
 
+    def _on_socket_lost(self) -> None:
+        """Relay WebSocket ended (receive loop returned). Mark the link down
+        so send paths queue instead of writing; the outbox pump is cancelled
+        by the caller and restarted on reconnect, its rows untouched.
+        (Called from _run and _reconnect_loop since 5be5c06 but was never
+        defined, so the first socket drop raised AttributeError out of _run
+        and the client never reached _reconnect_loop.)"""
+        self._connected = False
+        self._socket_lost_at = time.time()
+        self.logger.warning(f"[RTC-TIMING] relay signaling websocket LOST "
+                            f"(url={self.config.relay_url}) | t={self._socket_lost_at:.3f}")
+
     async def _run(self):
         """Main async run loop"""
         self._running = True
@@ -1859,7 +1872,7 @@ class RelayClient:
     def enqueue_event(self, event: dict) -> Optional[int]:
         """Durably queue a contract-v2 event (thread-safe).
 
-        `event` is the row POSTed to /events: {"id","type","device_id",
+        `event` is the row POSTed to /events: {"event_id","type","device_id",
         "dog_id","timestamp","data":{...}}. The pump ships rows in seq order
         in batches of <=200; nothing bypasses it, so ordering holds across
         restarts. Works with the relay disabled or offline (rows accumulate
@@ -1983,10 +1996,13 @@ class RelayClient:
     async def _outbox_pump(self):
         """Single writer: POST /events in seq order, batches of <=200.
 
-        Mark rows sent when the relay accepts them or reports them as
-        duplicates; on any HTTP failure stop and retry with exponential
-        backoff (1 s .. 60 s). Independent of the WebSocket — it only needs
-        a route to the relay host.
+        A row leaves the queue only on the relay's word: marked sent on a
+        per-row "accepted"/"duplicate", dropped on a per-row "rejected".
+        A 2xx with no per-row detail accepts the whole batch. Any whole-batch
+        failure (network, 4xx incl. 422 validation, 5xx) keeps every row
+        pending and retries with exponential backoff (1 s .. 60 s) — a
+        validation error never destroys queued events. Independent of the
+        WebSocket — it only needs a route to the relay host.
         """
         self._outbox_wake = asyncio.Event()
         self._outbox_wake.set()
@@ -2005,39 +2021,70 @@ class RelayClient:
                     pass
                 self._outbox_wake.clear()
                 while self._running:
-                    batch = await loop.run_in_executor(None, outbox.pending, self.OUTBOX_BATCH)
-                    if not batch:
+                    # Wider window than one batch so rows the relay cannot take
+                    # yet (held) never block the sendable rows behind them.
+                    window = await loop.run_in_executor(None, outbox.pending, self.OUTBOX_BATCH * 5)
+                    if not window:
                         backoff = 1.0
                         break
+                    wire, unsendable = [], []
+                    for seq, ev in window:
+                        w = self._wire_event(ev)
+                        (wire if w is not None else unsendable).append((seq, w if w is not None else ev))
+                    wire = wire[:self.OUTBOX_BATCH]
+                    if unsendable:
+                        await loop.run_in_executor(None, outbox.mark_attempt, [s for s, _ in unsendable])
+                        if time.time() - self._outbox_held_logged_at > 600:
+                            self._outbox_held_logged_at = time.time()
+                            kinds = sorted({ev.get('type') for _, ev in unsendable if isinstance(ev, dict)})
+                            self.logger.warning(f"[OUTBOX] {len(unsendable)} row(s) held (no dog_id; relay "
+                                                f"requires one on dog-scoped types) types={kinds}; kept pending")
+                    if not wire:
+                        backoff = 1.0
+                        break
+                    batch = wire
                     seqs = [seq for seq, _ in batch]
-                    ok, sent_ids = await self._post_events([ev for _, ev in batch])
+                    ok, sent_ids, rejected_ids = await self._post_events([ev for _, ev in wire])
                     if ok:
                         if sent_ids is None:
                             sent = seqs
                         else:
-                            sent = [seq for seq, ev in batch if ev.get('id') in sent_ids]
+                            sent = [seq for seq, ev in wire if ev['event_id'] in sent_ids]
+                        dropped = [seq for seq, ev in wire
+                                   if seq not in sent and ev['event_id'] in rejected_ids]
+                        held = [seq for seq in seqs if seq not in sent and seq not in dropped]
                         if sent:
                             await loop.run_in_executor(None, outbox.mark_sent, sent)
-                        unsent = [seq for seq in seqs if seq not in set(sent)]
-                        if unsent:
-                            # Rejected by the relay (bad rows): never retry forever.
-                            await loop.run_in_executor(None, outbox.mark_attempt, unsent)
-                            await loop.run_in_executor(None, outbox.mark_sent, unsent)
-                            self.logger.warning(f"[OUTBOX] relay rejected {len(unsent)} row(s); dropped")
+                        if dropped:
+                            # Only a per-row "rejected" verdict removes a row.
+                            await loop.run_in_executor(None, outbox.mark_attempt, dropped)
+                            await loop.run_in_executor(None, outbox.mark_sent, dropped)
+                            self.logger.warning(f"[OUTBOX] relay rejected {len(dropped)} row(s) "
+                                                f"per-row; dropped")
+                        if held:
+                            # Relay neither accepted nor rejected these: stay pending.
+                            await loop.run_in_executor(None, outbox.mark_attempt, held)
                         if self._outbox_fail_logged_at is not None:
                             self.logger.info("[OUTBOX] POST /events recovered")
                             self._outbox_fail_logged_at = None
-                        self.logger.info(f"[OUTBOX] posted {len(sent)}/{len(batch)} event(s)")
-                        backoff = 1.0
-                        continue
-                    await loop.run_in_executor(None, outbox.mark_attempt, seqs)
+                        self.logger.info(f"[OUTBOX] posted {len(sent)}/{len(batch)} event(s)"
+                                         + (f", {len(held)} held" if held else ""))
+                        if sent or dropped:
+                            backoff = 1.0
+                            continue
+                        # No progress on a 2xx: back off rather than spin.
+                    else:
+                        await loop.run_in_executor(None, outbox.mark_attempt, seqs)
                     # One WARNING per outage (and every ~10 min while it lasts), DEBUG otherwise.
                     if (self._outbox_fail_logged_at is None
                             or time.time() - self._outbox_fail_logged_at > 600):
                         self._outbox_fail_logged_at = time.time()
                         self.logger.warning(f"[OUTBOX] POST /events failing (last status "
-                                            f"{self._outbox_last_status}); retrying with backoff, "
-                                            f"pending={await loop.run_in_executor(None, outbox.pending_count)}")
+                                            f"{self._outbox_last_status}); rows kept, retrying with "
+                                            f"backoff, pending="
+                                            f"{await loop.run_in_executor(None, outbox.pending_count)}"
+                                            + (f" | {self._outbox_last_body}"
+                                               if getattr(self, '_outbox_last_body', '') else ""))
                     else:
                         self.logger.debug(f"[OUTBOX] POST /events failed; retry in {backoff:.0f}s")
                     await asyncio.sleep(backoff)
@@ -2052,36 +2099,88 @@ class RelayClient:
         finally:
             self._outbox_wake = None
 
-    async def _post_events(self, events: list):
-        """POST /events. Returns (ok, accepted_ids|None).
+    # Relay EventIn (api.wimzai.com/openapi.json, 2026-11-06; relay change
+    # 2026-11-07): required event_id, type (enum), ts; dog_id required on
+    # every type EXCEPT `status` (device-scoped: battery/mode, no dog) —
+    # the relay only fills a missing dog_id itself when the owner has
+    # exactly one dog, otherwise it rejects the row. Optional duration_s,
+    # data, device_id. No id_method / timestamp keys.
+    DEVICE_SCOPED_TYPES = frozenset({'status'})
 
-        ok=False -> network/5xx/auth failure (retry later).
+    @classmethod
+    def _wire_event(cls, ev: dict) -> Optional[dict]:
+        """Queued row -> relay EventIn row, or None when the row cannot
+        satisfy the schema (a dog-scoped type with no dog_id — the relay
+        would reject it per-row; holding keeps it for a later rule change).
+        `status` ships without a dog_id key. Rows from older builds
+        ('id'/'timestamp') are rewritten so a restart ships them unchanged."""
+        dog_id = ev.get('dog_id')
+        etype = ev.get('type')
+        if not dog_id and etype not in cls.DEVICE_SCOPED_TYPES:
+            return None
+        data = dict(ev.get('data') or {})
+        if ev.get('id_method') and 'id_method' not in data:
+            data['id_method'] = ev['id_method']
+        out = {
+            'event_id': ev.get('event_id') or ev.get('id'),
+            'type': etype,
+            'ts': ev.get('ts') or ev.get('timestamp'),
+            'data': data,
+            'device_id': ev.get('device_id'),
+        }
+        if dog_id:
+            out['dog_id'] = str(dog_id)
+        dur = ev.get('duration_s', data.get('duration_s'))
+        if isinstance(dur, (int, float)):
+            out['duration_s'] = max(0.0, min(float(dur), 86400.0))
+        return out
+
+    @staticmethod
+    def _id_set(val) -> set:
+        """Per-row lists may be bare ids or {"event_id": ...} objects."""
+        out = set()
+        for x in (val or []):
+            if isinstance(x, dict):
+                x = x.get('event_id') or x.get('id')
+            if x:
+                out.add(x)
+        return out
+
+    async def _post_events(self, events: list):
+        """POST /events. Returns (ok, accepted_ids|None, rejected_ids).
+
+        ok=False -> network / auth / 4xx (incl. 422 validation) / 5xx:
+                    whole batch stays pending, retry with backoff.
         accepted_ids=None -> 2xx with no per-row detail: all accepted.
-        Per-row detail honoured when present: accepted / duplicate / rejected
-        lists of ids (duplicates count as sent).
+        Per-row detail honoured when present: accepted + duplicate count as
+        sent; rejected is the ONLY thing that drops a row; anything else
+        stays pending.
         """
         if not self.config.device_id or not self.config.device_secret:
-            return False, None
+            return False, None, set()
         body = {'device_id': self.config.device_id, 'events': events}
         try:
             status, resp = await self._http('POST', '/events', json_body=body, timeout=20.0)
         except Exception as e:
             self._outbox_last_status = None
+            self._outbox_last_body = ''
             self.logger.debug(f"[OUTBOX] POST /events error: {e}")
-            return False, None
+            return False, None, set()
         if 200 <= status < 300 or status == 409:
             if isinstance(resp, dict):
-                acc = set(resp.get('accepted') or []) | set(resp.get('duplicate') or resp.get('duplicates') or [])
-                if acc or resp.get('rejected'):
-                    return True, acc
-            return True, None
-        if status in (400, 422):
-            # Whole batch malformed: let the pump drop it rather than loop.
-            self.logger.error(f"[OUTBOX] POST /events {status}: {str(resp)[:300]}")
-            return True, set()
+                acc = self._id_set(resp.get('accepted')) | self._id_set(
+                    resp.get('duplicate') or resp.get('duplicates'))
+                rej = self._id_set(resp.get('rejected'))
+                if acc or rej:
+                    return True, acc, rej
+            return True, None, set()
         self._outbox_last_status = status
-        self.logger.debug(f"[OUTBOX] POST /events -> {status}")
-        return False, None
+        # Whole-batch refusal (4xx incl. 422 validation, 5xx): a contract or
+        # auth mismatch to fix, never a reason to lose rows. The pump's
+        # rate-limited outage WARNING carries this snippet.
+        self._outbox_last_body = str(resp)[:300] if status in (400, 401, 403, 422) else ''
+        self.logger.debug(f"[OUTBOX] POST /events -> {status} {self._outbox_last_body}")
+        return False, None, set()
 
     # ---- settings -----------------------------------------------------
 

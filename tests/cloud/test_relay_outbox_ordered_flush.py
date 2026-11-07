@@ -38,8 +38,8 @@ import services.cloud.relay_outbox as ob_mod  # noqa: E402
 
 
 def ev(i, etype='treat'):
-    return {'id': f'id-{i:05d}', 'type': etype, 'device_id': 'tb-test',
-            'dog_id': None, 'timestamp': '2026-11-06T00:00:00.000Z', 'data': {'n': i}}
+    return {'event_id': f'id-{i:05d}', 'type': etype, 'device_id': 'tb-test', 'dog_id': 'dog-1',
+            'timestamp': '2026-11-06T00:00:00.000Z', 'data': {'n': i}}
 
 
 def test_order_and_mark_sent():
@@ -48,12 +48,12 @@ def test_order_and_mark_sent():
     check(seqs == sorted(seqs) and None not in seqs, "enqueue returns increasing seq")
     check(ob.pending_count() == 300, f"300 pending ({ob.pending_count()})")
     batch = ob.pending(200)
-    check(len(batch) == 200 and [e['id'] for _, e in batch] == [f'id-{i:05d}' for i in range(200)],
+    check(len(batch) == 200 and [e['event_id'] for _, e in batch] == [f'id-{i:05d}' for i in range(200)],
           "pending(200) is the oldest 200 in order")
     # mid-batch failure: only first 149 sent
     ob.mark_sent([s for s, _ in batch[:149]])
     rest = ob.pending(500)
-    check(len(rest) == 151 and rest[0][1]['id'] == 'id-00149', "unsent rows resume at the failure point")
+    check(len(rest) == 151 and rest[0][1]['event_id'] == 'id-00149', "unsent rows resume at the failure point")
     ob.mark_sent([s for s, _ in rest])
     check(ob.pending_count() == 0, "all sent after resume")
     # duplicate id is ignored
@@ -69,7 +69,7 @@ def test_durability_across_process():
     code = (
         "import os,sys; sys.path.insert(0,%r); os.environ['WIMZ_DATA_ROOT']=%r;"
         "from pathlib import Path; from services.cloud.relay_outbox import RelayOutbox;"
-        "ob=RelayOutbox(Path(%r)/'wimz.db'); print([e['id'] for _,e in ob.pending(10)])"
+        "ob=RelayOutbox(Path(%r)/'wimz.db'); print([e['event_id'] for _,e in ob.pending(10)])"
         % (str(ROOT), TMP, TMP))
     out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=60)
     check("'id-01000'" in out.stdout and "'id-01004'" in out.stdout,
@@ -109,11 +109,11 @@ def test_pump_stop_on_failure_then_resume():
     state = {'fail_next': True}
 
     async def fake_http(method, path, json_body=None, data=None, timeout=15.0):
-        posts.append((method, path, [e['id'] for e in json_body['events']]))
+        posts.append((method, path, [e['event_id'] for e in json_body['events']]))
         if state['fail_next']:
             state['fail_next'] = False
             return 503, None
-        return 200, {'accepted': [e['id'] for e in json_body['events']]}
+        return 200, {'accepted': [e['event_id'] for e in json_body['events']]}
 
     rc._http = fake_http
     rc._running = True
@@ -141,6 +141,63 @@ def test_pump_stop_on_failure_then_resume():
     ob.close()
 
 
+
+def test_422_keeps_rows_and_per_row_rejected_drops():
+    """A whole-batch 422 (validation) must NOT drop rows; only a per-row
+    'rejected' verdict does. Legacy rows keyed 'id' ship as 'event_id'."""
+    from services.cloud.relay_client import RelayClient, RelayConfig
+    rc = RelayClient(RelayConfig(enabled=True, device_id='tb-test', device_secret='s3cret'))
+    ob = RelayOutbox(Path(TMP) / 'wimz.db')
+    rc._outbox = ob
+    nodog = dict(ev(4999)); nodog['dog_id'] = None                   # dog-scoped row, no dog: held
+    ob.enqueue(nodog)
+    status = dict(ev(4998, 'status')); status['dog_id'] = None       # device-scoped: ships w/o dog_id
+    ob.enqueue(status)
+    legacy = dict(ev(5000)); legacy['id'] = legacy.pop('event_id')   # queued by an older build
+    legacy['timestamp'] = legacy.pop('ts', legacy.get('timestamp', '2026-11-06T00:00:00Z'))
+    ob.enqueue(legacy)
+    for i in range(5001, 5004):
+        ob.enqueue(ev(i))
+    posts = []
+    wire_rows = []
+    state = {'n': 0}
+
+    async def fake_http(method, path, json_body=None, data=None, timeout=15.0):
+        rows = json_body['events']
+        posts.append([e.get('event_id') for e in rows])
+        wire_rows.append(rows[0])
+        state['n'] += 1
+        if state['n'] == 1:
+            return 422, {'detail': [{'type': 'missing', 'loc': ['body', 'events', 0, 'event_id']}]}
+        ids = [e['event_id'] for e in rows]
+        # accept first two, reject the third, say nothing about the fourth
+        # accept the status + legacy rows, reject the first treat, say nothing about the rest
+        return 200, {'accepted': ids[:2], 'rejected': [{'event_id': ids[2], 'reason': 'bad'}]}
+
+    rc._http = fake_http
+    rc._running = True
+
+    async def run():
+        rc._loop = asyncio.get_running_loop()
+        task = asyncio.create_task(rc._outbox_pump())
+        await asyncio.sleep(2.5)
+        rc._running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    asyncio.run(run())
+    check(posts and posts[0][:2] == ['id-04998', 'id-05000'],
+          f"dog-less status row ships, dog-less treat row skipped, legacy 'id' row POSTed as 'event_id' ({posts[:1]})")
+    check(wire_rows and set(wire_rows[0]) == {'event_id','type','ts','data','device_id'},
+          f"status wire row has no dog_id key ({sorted(wire_rows[0])})")
+    check(len(posts) >= 2 and posts[1] == posts[0], f"422 kept all 5 rows and retried the same batch ({posts[:2]})")
+    pend = [e['event_id'] for _, e in ob.pending(10)]
+    check(pend == ['id-04999', 'id-05002', 'id-05003'],
+          f"dog-less treat held, status+legacy accepted, 5001 rejected+gone, unmentioned rows pending ({pend})")
+    ob.close()
+
 def test_headers():
     from services.cloud.relay_client import RelayClient, RelayConfig
     rc = RelayClient(RelayConfig(enabled=True, device_id='tb-test', device_secret='s3cret',
@@ -153,6 +210,7 @@ def test_headers():
 
 if __name__ == '__main__':
     test_order_and_mark_sent()
+    test_422_keeps_rows_and_per_row_rejected_drops()
     test_durability_across_process()
     test_prune_cap()
     test_pump_stop_on_failure_then_resume()

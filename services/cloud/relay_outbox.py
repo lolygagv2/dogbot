@@ -67,11 +67,15 @@ class RelayOutbox:
     # ------------------------------------------------------------- writes
 
     def enqueue(self, event: dict) -> Optional[int]:
-        """Insert one wire event (must carry 'id' and 'event'). Returns seq."""
-        event_id = event.get('id')
-        event_type = event.get('event', 'unknown')
+        """Insert one wire event (must carry 'event_id' and 'type'). Returns seq.
+
+        Legacy rows keyed 'id' are still accepted; the pump rewrites them to
+        'event_id' on the wire (CONTRACT v2 FINAL).
+        """
+        event_id = event.get('event_id') or event.get('id')
+        event_type = event.get('type') or event.get('event', 'unknown')
         if not event_id:
-            raise ValueError("outbox event needs an 'id'")
+            raise ValueError("outbox event needs an 'event_id'")
         payload = json.dumps(event, separators=(',', ':'), default=str)
         with self._lock:
             if self._conn is None:

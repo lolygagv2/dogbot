@@ -2,12 +2,18 @@
 
 CONTRACT v2 FINAL (2026-11-06). One row per event, POSTed by the outbox
 pump to /events in batches:
-    {"id": "<uuid7>", "type": "<event type>", "device_id": "...",
+    {"event_id": "<uuid7>", "type": "<event type>", "device_id": "...",
      "dog_id": "<app id|null>", "id_method": "...", "timestamp": "ISO Z",
      "data": {...type-specific fields...}}
+The outbox pump (RelayClient._wire_event) rewrites this to the relay's
+EventIn on the wire: {event_id, type, dog_id, ts, duration_s?, data, device_id}
+(id_method folded into data). dog_id is REQUIRED by the relay on every type
+except `status` (device-scoped; relay change 2026-11-07, no robot<->dog pairing
+any more — this robot serves all of the owner's dogs). A dog-scoped row
+without one is held pending, not sent.
 
 For every emit():
-  1. row built here (id = UUIDv7 so the relay can order/dedupe);
+  1. row built here (event_id = UUIDv7 so the relay can order/dedupe);
   2. dog_id resolved to the app's canonical id via the SAME rule the legacy
      relay boundary uses (core.dog_profile_manager.resolve_relay_dog);
   3. wimz.db row for the natively-stored types;
@@ -108,7 +114,7 @@ class RelayEventEmitter:
         else:
             app_id, method = dog_id, id_method
         return {
-            'id': event_id or uuid7(),
+            'event_id': event_id or uuid7(),
             'type': event_type,
             'device_id': self.device_id(),
             'dog_id': app_id,
@@ -153,7 +159,7 @@ class RelayEventEmitter:
             wimz_dog = wimz.dog_id_for_app_id(ev.get('dog_id')) if ev.get('dog_id') else None
             wimz.log_event(None, ev['type'], ev['data'], dog_id=wimz_dog,
                            ts_ms=int(parse_ts(ev['timestamp']) * 1000),
-                           label_source='auto_rule', event_id=ev['id'])
+                           label_source='auto_rule', event_id=ev['event_id'])
         except Exception as e:
             logger.debug(f"wimz row failed for {ev.get('type')}: {e}")
 

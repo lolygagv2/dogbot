@@ -389,16 +389,21 @@ The relay is the consumer and owns the wire. Robot slice shipped 2026-11-06
 
 ### Events — HTTP `POST /events` (device HMAC headers `X-Device-ID`, `X-Timestamp`, `X-Signature`)
 Durable outbox in `wimz.db` (`relay_outbox`, spec v0.8). One pump sends rows in `seq` order in
-batches of ≤200; rows are marked sent when the relay accepts or reports them as duplicates;
-any HTTP failure stops the pump, which retries with backoff (1 s → 60 s). Nothing bypasses
-the pump, so ordering survives restarts. Body:
+batches of ≤200. A row leaves the queue only on the relay's per-row verdict: `accepted`/`duplicate`
+→ sent, `rejected` → dropped; a 2xx with no per-row detail accepts the batch. ANY whole-batch
+failure (network, 4xx incl. 422 validation, 5xx) keeps every row pending and retries with backoff
+(1 s → 60 s) — a validation error never destroys queued events. Rows the relay cannot take yet
+(dog-scoped type, no `dog_id`) are held pending without blocking the rows behind them. Nothing bypasses the pump,
+so ordering survives restarts. Wire row = relay `EventIn` (verified against
+`api.wimzai.com/openapi.json` 2026-11-06):
 ```json
 {"device_id": "wimz_robot_05",
- "events": [{"id": "<uuid7>", "type": "bark_episode", "device_id": "...", "dog_id": "<app id|null>",
-             "id_method": "aruco|sole_dog|last_dog|null", "timestamp": "2026-11-06T14:02:11.120Z",
-             "data": {...}}]}
+ "events": [{"event_id": "<uuid7>", "type": "bark_episode", "dog_id": "<app id, REQUIRED>",
+             "ts": "2026-11-06T14:02:11.120Z", "duration_s": 12.5, "device_id": "...",
+             "data": {..., "id_method": "aruco|sole_dog|last_dog"}}]}
 ```
-Response: 2xx (optionally `{"accepted": [ids], "duplicate": [ids], "rejected": [ids]}`); 409 = all duplicates; 400/422 = batch dropped.
+Response `EventBatchResult`: `{"accepted": [event_id], "duplicate": [event_id], "rejected": [{"event_id", "reason"}]}`; 422 = whole batch refused (robot keeps rows).
+RESOLVED (relay change 2026-11-07): there is no robot↔dog pairing any more — a robot serves all of its owner's dogs (`paired_dog_ids` in `profiles` now lists every dog; never filter on it). `dog_id` is required on every type EXCEPT `status`, which ships with no `dog_id` key (`data.battery`, `data.mode`, optional `docked`/`light_level`/`treats_remaining`; sent every 60 s and on any mode/dock/treat change). The relay fills a missing `dog_id` only when the owner has exactly one dog, otherwise rejects the row — so dog-scoped rows without a dog are still held on the robot. `/agent/utterance` without `dog_id` falls back to the owner's oldest dog.
 
 | type | data |
 |---|---|
