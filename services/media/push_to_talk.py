@@ -467,7 +467,8 @@ class PushToTalkService:
                 self._recording = False
 
     def capture_audio(self, duration: float = DEFAULT_DURATION,
-                      max_duration: Optional[float] = None) -> Dict[str, Any]:
+                      max_duration: Optional[float] = None,
+                      pause_bark: bool = True) -> Dict[str, Any]:
         """
         Capture audio from USB microphone and return as base64 WAV.
         Simpler than record_audio - no format conversion, returns raw WAV.
@@ -490,16 +491,21 @@ class PushToTalkService:
 
         with self._lock:
             self._recording = True
+            bark_paused = False
             try:
                 wav_file = TEMP_DIR / "capture_audio.wav"
 
-                # Pause bark detector if running
-                bark_paused = self._pause_bark_detector()
+                # Pause bark detector if running — unless the caller wants it
+                # kept alive (relay `listen`, 2026-11-07). Both readers use the
+                # PipeWire 'default' device, which serves them concurrently
+                # (verified: 2 s capture while the bark buffer held the mic).
+                bark_paused = self._pause_bark_detector() if pause_bark else False
                 if bark_paused:
                     time.sleep(0.3)
 
                 # Record from USB microphone
-                self.logger.info(f"[MIC] Capturing {duration}s from USB mic (card {USB_AUDIO_CARD})")
+                self.logger.info(f"[MIC] Capturing {duration}s from USB mic (card {USB_AUDIO_CARD}, "
+                                 f"bark_paused={bark_paused})")
                 record_cmd = [
                     'arecord',
                     '-D', 'default',
@@ -545,11 +551,13 @@ class PushToTalkService:
 
             except subprocess.TimeoutExpired:
                 self.logger.error("[MIC] Capture timed out")
-                self._resume_bark_detector()
+                if bark_paused:
+                    self._resume_bark_detector()
                 return {"success": False, "error": "Capture timed out"}
             except Exception as e:
                 self.logger.error(f"[MIC] Capture error: {e}")
-                self._resume_bark_detector()
+                if bark_paused:
+                    self._resume_bark_detector()
                 return {"success": False, "error": str(e)}
             finally:
                 self._recording = False

@@ -29,6 +29,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger('ToolDispatcher')
@@ -266,6 +267,9 @@ class ToolDispatcher:
                                            'amount cm (cap 50) or deg (cap 90)}; 5 s hard cap, motors off after'))
         self.register(ToolSpec('go_to', self._tool_go_to, 5.0,
                                description='Navigate to a named place (not supported yet)'))
+        self.register(ToolSpec('listen', self._tool_listen, self.LISTEN_MAX_S + 15.0,
+                               description='Record {seconds<=15} from the mic (16 kHz mono WAV), tag with '
+                                           'YAMNet, upload WAV; bark detection keeps running'))
         self.register(ToolSpec('agent_utterance', self._tool_agent_utterance, 60.0,
                                description='Record one utterance (WAV <=30 s), POST /agent/utterance, play reply'))
 
@@ -540,6 +544,75 @@ class ToolDispatcher:
         if not ok:
             return _err('start_failed', f"could not start {name!r}", available=sorted(me.missions))
         return {'ok': True, 'mission_id': name}
+
+    LISTEN_MAX_S = 15.0
+
+    def _tool_listen(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        """listen {seconds}: PTT capture (16 kHz mono WAV, bark detector NOT
+        paused) -> YAMNet top-5 + mean dBFS -> WAV to relay media store.
+        Reply {labels:[{label, confidence}], mean_db, audio_url, seconds, bytes}."""
+        import base64
+        import shutil
+        try:
+            seconds = float(args.get('seconds') or args.get('duration_s') or 5)
+        except (TypeError, ValueError):
+            return _err('bad_args', 'seconds must be a number')
+        seconds = max(1.0, min(seconds, self.LISTEN_MAX_S))
+
+        from services.media.push_to_talk import get_push_to_talk_service
+        ptt = get_push_to_talk_service()
+        cap = ptt.capture_audio(seconds, max_duration=self.LISTEN_MAX_S, pause_bark=False)
+        if not cap.get('success'):
+            return _err('capture_failed', str(cap.get('error')))
+        wav = base64.b64decode(cap['data'])
+
+        # Park the WAV in the spec media tree + media_asset row
+        filepath = None
+        try:
+            from core.data import get_wimz_store
+            store = get_wimz_store()
+            filepath = store.media_path_for(ext='wav')
+            with open(filepath, 'wb') as f:
+                f.write(wav)
+            store.register_media(str(filepath), 'audio', codec='pcm_s16le',
+                                 duration_ms=int(seconds * 1000),
+                                 start_ts_ms=int((time.time() - seconds) * 1000),
+                                 retention_class='ephemeral')
+        except Exception as e:
+            logger.warning(f"[TOOL] listen: media store write failed: {e}")
+            import tempfile
+            fd, tmp = tempfile.mkstemp(prefix='listen_', suffix='.wav')
+            with open(fd, 'wb') as f:
+                f.write(wav)
+            filepath = tmp
+
+        out: Dict[str, Any] = {'ok': True, 'seconds': seconds, 'bytes': len(wav),
+                               'filepath': str(filepath), 'labels': [], 'mean_db': None, 'audio_url': None}
+        try:
+            from ai.yamnet_classifier import get_yamnet
+            y = get_yamnet()
+            if y.available():
+                res = y.classify_wav(str(filepath), top_k=5)
+                out['labels'], out['mean_db'] = res['labels'], res['mean_db']
+            else:
+                out['classifier_error'] = 'yamnet model missing'
+        except Exception as e:
+            logger.warning(f"[TOOL] listen: YAMNet failed: {e}")
+            out['classifier_error'] = str(e)
+            try:
+                from ai.yamnet_classifier import read_wav_mono16k, mean_dbfs
+                out['mean_db'] = mean_dbfs(read_wav_mono16k(str(filepath)))
+            except Exception:
+                pass
+
+        if self._relay is not None:
+            try:
+                out['audio_url'] = self._relay.upload_media_sync(
+                    str(filepath), 'audio/wav', filename=f"{Path(str(filepath)).stem}.wav", timeout=20.0)
+            except Exception as e:
+                logger.warning(f"[TOOL] listen: upload failed: {e}")
+                out['upload_error'] = str(e)
+        return out
 
     @staticmethod
     def _tool_move(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
