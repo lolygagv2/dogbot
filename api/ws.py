@@ -391,6 +391,23 @@ class TreatBotWebSocketServer:
             if data.get("type") == "debug_log":
                 return
 
+            # Relay settings push replayed on the local socket (live tests /
+            # AP-mode parity): identical handler to the relay path, applied
+            # before the next frame on this socket is read.
+            if data.get("type") == "settings_updated":
+                from services.cloud.remote_settings import apply_settings_updated_frame
+                loop = asyncio.get_running_loop()
+                try:
+                    res = await loop.run_in_executor(
+                        None, lambda: apply_settings_updated_frame(data, source='local_ws_push'))
+                    ack = {"type": "settings_applied", "key": data.get("key"), "dog_id": data.get("dog_id"),
+                           "version": data.get("version"), **res}
+                except Exception as e:
+                    ack = {"type": "settings_applied", "key": data.get("key"), "applied": [],
+                           "rejected": {str(data.get("key")): str(e)}}
+                await self.manager.send_to_one(websocket, ack)
+                return
+
             # Handle webrtc_close (app closing video session)
             if data.get("type") == "webrtc_close":
                 session_id = data.get("session_id", "local")
@@ -409,7 +426,12 @@ class TreatBotWebSocketServer:
             if data.get("type") == "command" and "command" in data:
                 inner_cmd = data["command"]
                 inner_data = data.get("data") or {}
-                data = {**inner_data, "type": inner_cmd, "command": inner_cmd}
+                # Keep the other top-level keys (command_id, dog_id, timestamp,
+                # ...): the relay's CONTRACT v2 frame puts its args there, and
+                # dropping command_id sent every such frame to "Unknown command"
+                # on /ws/local (2026-11-07).
+                outer = {k: v for k, v in data.items() if k not in ("type", "command", "data", "device_id")}
+                data = {**outer, **inner_data, "type": inner_cmd, "command": inner_cmd}
                 self.logger.info(f"[LOCAL] Unwrapped command: {inner_cmd} (keys: {list(data.keys())})")
 
             # Handle push-to-talk audio message (play from app)

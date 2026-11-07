@@ -276,13 +276,36 @@ def main():
          "trigger": {"kind": "schedule", "times": ["09:00"]}, "duration_s": 99999, "reward_treats": 0},
         {"id": "m-dep", "type": "recall", "trigger": {"kind": "departure"}},
         {"id": "m-spin", "type": "spin", "trigger": {"kind": "schedule", "times": ["10:00"]}},
-        {"id": "m-off", "type": "down", "enabled": False, "trigger": {"kind": "schedule", "times": ["11:00"]}},
+        {"id": "m-off", "type": "sit", "enabled": False, "trigger": {"kind": "schedule", "times": ["11:00"]}},
     ]}
     res = sched4.apply_missions_setting('dogA', {"key": "missions", "value": doc, "version": 7})
     check(len(res['loaded']) == 4 and len(res['skipped']) == 1 and res['skipped'][0]['id'] == 'm-dep',
           f"missions setting: 4 schedule missions loaded, departure skipped ({res})")
     rows = {r['id']: r for r in sched4.get_scheduled_missions(dog_id='dogA')}
     check(set(rows) == {'m-sit', 'm-sg', 'm-spin', 'm-off'}, f"schedule_sync ids are the setting's ids ({sorted(rows)})")
+    check(all('reason' in r and 'unsupported_reason' in r for r in rows.values()), "every entry carries reason / unsupported_reason")
+    check(rows['m-spin']['reason'] and 'spin' in rows['m-spin']['reason'], f"spin reason={rows['m-spin']['reason']!r}")
+    check(rows['m-off']['reason'] == 'disabled', "disabled entry reason=disabled")
+    # alternate trigger shapes the relay may use
+    alt = {"missions": [
+        {"id": "a-time", "type": "sit", "trigger": {"kind": "schedule", "time": "03:00"}},
+        {"id": "a-secs", "type": "sit", "trigger": {"kind": "schedule", "times": ["03:00:00", "4:05"]}},
+        {"id": "a-top", "type": "sit", "trigger": "schedule", "times": ["05:00"], "days": "mon,wed"},
+        {"id": "a-objs", "type": "sit", "trigger": {"kind": "schedule", "times": [{"time": "06:30"}]}},
+        {"id": "a-none", "type": "sit", "trigger": {"kind": "schedule"}},
+        {"id": "a-junk", "type": "sit", "trigger": {"kind": "schedule", "times": ["25:99"]}},
+    ]}
+    sched4.apply_missions_setting('dogZ', alt)
+    rz = {r['id']: r for r in sched4.get_scheduled_missions(dog_id='dogZ')}
+    check(rz['a-time']['times'] == ['03:00'] and rz['a-secs']['times'] == ['03:00', '04:05']
+          and rz['a-top']['times'] == ['05:00'] and rz['a-top']['days_of_week'] == ['monday', 'wednesday']
+          and rz['a-objs']['times'] == ['06:30'],
+          f"trigger.time / HH:MM:SS / top-level times+days string / [{{time}}] all parse ({ {k: v['times'] for k, v in rz.items()} })")
+    check(rz['a-none']['next_fire_at'] is None and 'time' in (rz['a-none']['reason'] or '')
+          and rz['a-junk']['next_fire_at'] is None and rz['a-junk']['reason'],
+          "no/invalid time -> entry kept, next_fire_at null, reason set")
+    check(all(r['next_fire_at'] for k, r in rz.items() if k not in ('a-none', 'a-junk')), "parsed entries armed")
+    sched4.apply_missions_setting('dogZ', {"missions": []})
     r = rows['m-sit']
     check(r['enabled'] and r['type'] == 'weekly' and r['days_of_week'] == ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
           and r['times'] == sorted([t1.strftime('%H:%M'), '23:59']) and r['mission_name'] == 'sit',

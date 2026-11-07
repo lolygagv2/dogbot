@@ -2307,18 +2307,19 @@ class RelayClient:
 
     async def _handle_settings_updated(self, data: dict):
         """{type:"settings_updated", dog_id, key, value, version}"""
-        key, value = data.get('key'), data.get('value')
+        key = data.get('key')
         if not key:
             self.logger.warning("settings_updated without key")
             return
+        # Awaited here, and _receive_loop awaits this handler, so the next
+        # frame on the socket (the relay's schedule_sync ~40 ms later) is not
+        # read until the setting is applied.
         loop = asyncio.get_running_loop()
         try:
-            from services.cloud.remote_settings import get_remote_settings
+            from services.cloud.remote_settings import apply_settings_updated_frame
             result = await loop.run_in_executor(
-                None, lambda: get_remote_settings().apply(
-                    {key: value}, source='relay_push', dog_id=data.get('dog_id'),
-                    version=data.get('version')))
-            self.logger.info(f"[SETTINGS] push {key} v{data.get('version')}: {result}")
+                None, lambda: apply_settings_updated_frame(data, source='relay_push'))
+            self.logger.info(f"[SETTINGS] push {key} v{data.get('version')} dog={data.get('dog_id')}: {result}")
         except Exception as e:
             self.logger.error(f"[SETTINGS] push apply failed: {e}")
 

@@ -475,6 +475,14 @@ reported like any run (`mission.started`/`.completed` → `mission_run{mission_i
 run_id, result, rewards_given:0, kind:"mode", schedule_mission_id:<setting id>, scheduled:true}`, and
 `schedule_sync.active = {id, run_id, kind:"mode", ends_at, remaining_s}`); `cancel_mission{mission_id}` ends it
 early (`mission_run.result: aborted`). Other scheduled runs also carry `schedule_mission_id` + `schedule_id`.
+Push ordering: `settings_updated` is applied inside the awaited handler, so the next frame on the socket (the
+relay's `schedule_sync` ~40 ms later) is read only after the set is replaced. Trigger times accepted:
+`trigger.times:["HH:MM"]`, `trigger.time:"HH:MM"`, `at`, `"HH:MM:SS"`, `[{time}]`, top-level `times`; days as
+`mon..sun` or full names, list or "mon,wed". An entry whose time cannot be parsed, or whose type has no program,
+is still listed in `schedule_sync` with `next_fire_at: null` and `reason` (also `unsupported_reason`); disabled
+entries carry `reason: "disabled"`. The robot logs the first raw entry of every push (`[SCHED] missions setting
+dog=… first={…}`). `/ws/local` accepts the identical `settings_updated` frame (replies `settings_applied`) —
+used by `tests/integration/test_missions_push_ws_live.py`.
 
 ### Robot local additions
 REST `GET/POST /settings`, `GET /tools`, `POST /tools/{name}`, `GET /events/outbox`,

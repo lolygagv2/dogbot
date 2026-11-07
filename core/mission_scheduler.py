@@ -32,7 +32,9 @@ Those were never armed at boot before this rewrite, so they stay off unless
 multi-hour quiet missions on every unit.
 """
 
+import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -256,6 +258,8 @@ class MissionScheduler:
         armed = 0
         now = _now()
         for s in self.schedule_manager.get_active_schedules():
+            if s.get("unsupported"):
+                continue
             nxt, missed = self._next_for(s, now)
             self._record_missed(s, missed)
             fields = {"next_fire_at": nxt.isoformat() if nxt else None}
@@ -310,6 +314,8 @@ class MissionScheduler:
             "tz": s.get("tz"),
             "times": s.get("times") or ([s.get("start_time")] if s.get("start_time") else []),
             "unsupported": s.get("unsupported"),
+            "reason": s.get("unsupported") or (None if s.get("enabled", True) else "disabled"),
+            "unsupported_reason": s.get("unsupported"),
             "mission_name": s.get("mission_name"),
             "name": s.get("name"),
             "dog_id": s.get("dog_id"),
@@ -367,7 +373,7 @@ class MissionScheduler:
         now = _now()
         due: List[Tuple[datetime, Dict[str, Any]]] = []
         for s in self.schedule_manager.get_active_schedules():
-            if not s.get("mission_name"):
+            if not s.get("mission_name") or s.get("unsupported"):
                 continue
             nxt, missed = self._next_for(s, now)
             self._record_missed(s, missed)
@@ -650,6 +656,9 @@ class MissionScheduler:
         Runtime state (last_run_*, last_fired_at) carries over when the same
         mission id is still present, so a re-push never re-fires a slot."""
         missions = _missions_list(value)
+        if missions:
+            self.logger.info(f"[SCHED] missions setting dog={dog_id}: {len(missions)} entries, first="
+                             f"{json.dumps(missions[0], default=str)[:600]}")
         mgr = self.schedule_manager
         tz = None
         try:
@@ -682,10 +691,8 @@ class MissionScheduler:
             if kind != "schedule" or not mid:
                 skipped.append({"id": mid or None, "reason": f"trigger {kind or 'none'}"})
                 continue
-            times = trig.get("times") or m.get("times") or []
-            if isinstance(times, str):
-                times = [times]
-            days = trig.get("days") or m.get("days") or []
+            times = _extract_times(trig, m)
+            days = _extract_days(trig, m)
             mtype = str(m.get("type") or "").lower()
             data = {
                 "mission_id": mid, "dog_id": str(dog_id or m.get("dog_id") or "unknown"),
@@ -704,11 +711,28 @@ class MissionScheduler:
                                  "unsupported": f"no mission program for type {mtype!r}"})
                 else:
                     data["mission_name"] = prog
+            if not times:
+                data.update({"times": [], "start_time": "00:00", "allow_unknown_mission": True,
+                             "unsupported": "no fire time: trigger needs times [\"HH:MM\"]"})
+                data.setdefault("mission_name", mtype or "unknown")
+                data.pop("mode", None); data["kind"] = "mission"
             res = mgr.create_schedule(data)
             if not res.get("success"):
-                skipped.append({"id": mid, "reason": res.get("error")})
-                self.logger.warning(f"[SCHED] missions setting: {mid} rejected: {res.get('error')}")
-                continue
+                # Keep the entry visible in schedule_sync with the reason
+                # (relay reads `reason`); it can never fire.
+                reason = res.get("error") or "rejected"
+                self.logger.warning(f"[SCHED] missions setting: {mid} rejected: {reason} "
+                                    f"entry={json.dumps(m, default=str)[:400]}")
+                stub = {"mission_id": mid, "dog_id": str(dog_id or m.get("dog_id") or "unknown"),
+                        "name": m.get("name") or mid, "times": [], "start_time": "00:00", "type": "daily",
+                        "enabled": bool(m.get("enabled", True)), "source": "relay_settings", "tz": tz,
+                        "mission_type": mtype, "mission_name": mtype or "unknown", "kind": "mission",
+                        "allow_unknown_mission": True, "unsupported": reason,
+                        "duration_s": m.get("duration_s"), "reward_treats": m.get("reward_treats")}
+                res = mgr.create_schedule(stub)
+                if not res.get("success"):
+                    skipped.append({"id": mid, "reason": reason})
+                    continue
             sid = res["schedule"]["schedule_id"]
             if mid in carry and any(v is not None for v in carry[mid].values()):
                 mgr.set_runtime(sid, {k: v for k, v in carry[mid].items() if v is not None})
@@ -807,6 +831,63 @@ class MissionScheduler:
 
 def _now() -> datetime:
     return datetime.now().astimezone()
+
+
+_HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::\d{2})?$")
+_TIME_KEYS = ("times", "time", "at", "hhmm", "time_of_day", "start_time", "start", "fire_times",
+              "fire_at", "when", "schedule", "slots")
+_DAY_KEYS = ("days", "days_of_week", "weekdays", "dow", "repeat_days")
+
+
+def _hhmm(v: Any) -> Optional[str]:
+    if isinstance(v, dict):
+        v = v.get("time") or v.get("at") or v.get("hhmm") or v.get("start")
+    if v is None:
+        return None
+    m = _HHMM_RE.match(str(v).strip())
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    if not (0 <= h < 24 and 0 <= mi < 60):
+        return None
+    return f"{h:02d}:{mi:02d}"
+
+
+def _extract_times(trig: Dict[str, Any], m: Dict[str, Any]) -> List[str]:
+    """Relay trigger shapes seen/expected: times:["HH:MM"], time:"HH:MM",
+    at:"HH:MM", schedule:{times:[..]}, [{"time":..}], "HH:MM:SS". Returns
+    sorted unique HH:MM; [] when nothing parses."""
+    out: List[str] = []
+    for src in (trig, m):
+        if not isinstance(src, dict):
+            continue
+        for k in _TIME_KEYS:
+            v = src.get(k)
+            if v is None:
+                continue
+            if isinstance(v, dict):
+                v = v.get("times") or v.get("time") or v.get("at") or []
+            items = v if isinstance(v, (list, tuple)) else [v]
+            for it in items:
+                t = _hhmm(it)
+                if t and t not in out:
+                    out.append(t)
+        if out:
+            break
+    return sorted(out)
+
+
+def _extract_days(trig: Dict[str, Any], m: Dict[str, Any]) -> List[Any]:
+    for src in (trig, m):
+        if not isinstance(src, dict):
+            continue
+        for k in _DAY_KEYS:
+            v = src.get(k)
+            if isinstance(v, str):
+                v = [x for x in re.split(r"[,\s]+", v) if x]
+            if isinstance(v, (list, tuple)) and v:
+                return list(v)
+    return []
 
 
 def _missions_list(value: Any) -> List[Dict[str, Any]]:

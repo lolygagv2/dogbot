@@ -359,6 +359,17 @@ class RemoteSettings:
             return dict(v) if isinstance(v, dict) else None
 
 
+def apply_settings_updated_frame(data: Dict[str, Any], source: str = 'relay_push') -> Dict[str, Any]:
+    """{type:"settings_updated", dog_id, key, value, version} -> apply().
+    The ONE code path for the relay WS push and the /ws/local replay of it
+    (live test), so both behave identically. value is the bare setting."""
+    key, value = data.get('key'), data.get('value')
+    if not key:
+        raise ValueError("settings_updated without key")
+    return get_remote_settings().apply({key: value}, source=source, dog_id=data.get('dog_id'),
+                                       version=data.get('version'))
+
+
 _instance: Optional[RemoteSettings] = None
 _instance_lock = threading.Lock()
 
