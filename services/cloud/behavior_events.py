@@ -151,6 +151,7 @@ class BehaviorEventService:
         self.bus.subscribe('system', self._on_system)
         self.bus.subscribe('reward', self._on_reward)
         self.bus.subscribe('vision', self._on_vision)
+        self._open_mode_segment()
         self._thread = threading.Thread(target=self._loop, daemon=True, name='BehaviorEvents')
         self._thread.start()
         logger.info("[BEHAVIOR-EVENTS] started")
@@ -167,6 +168,7 @@ class BehaviorEventService:
             except Exception:
                 pass
         now = time.time()
+        self._close_mode_segment(now, next_mode='shutdown', reason='service_stop')
         try:
             self._close_bark_episode(now)
             for dog_id in list(self._pace_open):
@@ -335,6 +337,65 @@ class BehaviorEventService:
                 self._on_owner_departure(d)
         except Exception as e:
             logger.error(f"[BEHAVIOR-EVENTS] system handler: {e}")
+
+    # ------------------------------------------------------------- mode segments
+    # Relay request 2026-11-07: one `mode_change` row per completed stay in
+    # a mode {mode, start, end, duration_s, next_mode, reason}, so time in
+    # each mode is in the event store. The row for a mode is sent when that
+    # mode ENDS (its end is only known then); the open segment is closed on
+    # service stop (clean shutdown/restart) with next_mode "shutdown". A hard
+    # power cut loses the open segment — the next boot's first row then
+    # starts at service start.
+
+    def _open_mode_segment(self) -> None:
+        try:
+            from core.state import get_state
+            st = get_state()
+            mode = st.get_mode().value
+            start = float(getattr(st, 'mode_changed_time', 0) or 0) or time.time()
+            st.subscribe('mode_change', self._on_mode_change)
+        except Exception as e:
+            logger.debug(f"[BEHAVIOR-EVENTS] mode listener unavailable: {e}")
+            mode, start = None, time.time()
+        with self._lock:
+            self._mode_seg = {'mode': mode, 'start': start}
+
+    def _on_mode_change(self, data: Dict[str, Any]) -> None:
+        """core.state listener (runs on its own thread)."""
+        try:
+            end = float(data.get('timestamp') or time.time())
+            self._close_mode_segment(end, next_mode=data.get('new_mode'), reason=data.get('reason'),
+                                     previous=data.get('previous_mode'))
+            # No segment for the terminal state: the service-stop close that
+            # follows would otherwise add a 3 s "shutdown" row.
+            if data.get('new_mode') != 'shutdown':
+                with self._lock:
+                    self._mode_seg = {'mode': data.get('new_mode'), 'start': end}
+        except Exception as e:
+            logger.error(f"[BEHAVIOR-EVENTS] mode_change handler: {e}")
+
+    def _close_mode_segment(self, end: float, next_mode: Optional[str], reason: Optional[str],
+                            previous: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            seg = getattr(self, '_mode_seg', None)
+            self._mode_seg = None
+        if not seg:
+            return None
+        mode = seg.get('mode') or previous
+        if not mode:
+            return None
+        start = float(seg['start'])
+        if end < start:
+            end = start
+        row = {
+            'mode': mode,
+            'start': _iso(start),
+            'end': _iso(end),
+            'duration_s': round(end - start, 3),
+            'next_mode': next_mode,
+            'reason': reason,
+        }
+        return self.emitter.emit('mode_change', row, resolve_dog=False)
 
     def _open_iv(self, data: Dict[str, Any], now: float) -> None:
         self._iv_open = {'time': now, 'level': int(data.get('escalation_level') or 1),

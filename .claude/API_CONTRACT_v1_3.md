@@ -414,6 +414,7 @@ RESOLVED (relay change 2026-11-07): there is no robot↔dog pairing any more —
 | `treat` | `{time, source: auto\|app\|connector\|agent\|schedule, command_id, reason, behavior, image_url?}` — `command_id` echoes the `dispense_treat` command; `image_url` = HUD-off still captured ~2 s after the dispense and uploaded via `POST /api/media/upload` (the row is emitted after the upload, so it arrives ~2-4 s after the dispense) |
 | `music` | `{start, end, track_class: calming\|owner\|other, track}` |
 | `mission_run` | `{mission_id, run_id, start, end, result: success\|fail\|aborted, rewards_given}` |
+| `mode_change` | `{mode: idle\|silent_guardian\|coach\|mission\|night_sentry\|manual\|photography\|emergency, start, end, duration_s, next_mode, reason}` — one row per completed stay in a mode, sent when that mode ends (relay request 2026-11-07); the open segment is closed on clean shutdown/restart with `next_mode: "shutdown"`; not attributed to a dog |
 | `status` | `{battery, mode, treats_remaining, docked, light_level}` — `light_level` = mean camera frame brightness 0-255; every 60 s and on change |
 | `departure` / `arrival` | `{time, method: "app"}` — ONLY on app/relay instruction (`mark_departure`/`mark_arrival` on `/ws/local`, `POST /events/departure|arrival`); no sensing |
 

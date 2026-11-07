@@ -29,7 +29,7 @@ class _SG:
 sg_mod.get_silent_guardian_mode = lambda: _SG()
 sys.modules['modes.silent_guardian'] = sg_mod
 
-from services.cloud.behavior_events import BehaviorEventService, bark_severity, treat_source  # noqa: E402
+from services.cloud.behavior_events import BehaviorEventService, bark_severity, treat_source, _iso  # noqa: E402
 
 FAILS = []
 
@@ -232,6 +232,37 @@ def test_music():
           "music row with track_class from the SG playlist")
 
 
+def test_mode_change_segments():
+    """Relay 2026-11-07: one mode_change row per completed stay in a mode."""
+    s, em = svc()
+    s._mode_seg = {'mode': 'idle', 'start': 1000.0}
+    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'coach', 'reason': 'app', 'timestamp': 1060.0})
+    mc = em.of('mode_change')
+    check(len(mc) == 1 and mc[0]['data'] == {'mode': 'idle', 'start': _iso(1000.0), 'end': _iso(1060.0),
+                                            'duration_s': 60.0, 'next_mode': 'coach', 'reason': 'app'},
+          f"mode_change row for the ended mode {{mode, start, end}} ({mc[0]['data'] if mc else None})")
+    check(mc[0]['kw'].get('resolve_dog') is False, "mode_change is not attributed to a dog")
+    s._on_mode_change({'previous_mode': 'coach', 'new_mode': 'silent_guardian', 'reason': 'dropdown', 'timestamp': 1100.0})
+    s._on_mode_change({'previous_mode': 'silent_guardian', 'new_mode': 'idle', 'reason': 'user', 'timestamp': 1400.0})
+    mc = em.of('mode_change')
+    check([r['data']['mode'] for r in mc] == ['idle', 'coach', 'silent_guardian']
+          and [r['data']['duration_s'] for r in mc] == [60.0, 40.0, 300.0]
+          and mc[1]['data']['start'] == mc[0]['data']['end'] and mc[2]['data']['start'] == mc[1]['data']['end'],
+          "segments are contiguous: each start == previous end, durations add up")
+    s._close_mode_segment(1450.0, next_mode='shutdown', reason='service_stop')
+    mc = em.of('mode_change')
+    check(len(mc) == 4 and mc[3]['data']['mode'] == 'idle' and mc[3]['data']['next_mode'] == 'shutdown'
+          and mc[3]['data']['duration_s'] == 50.0, "service stop closes the open segment with next_mode shutdown")
+    check(s._close_mode_segment(1500.0, 'x', 'y') is None and len(em.of('mode_change')) == 4,
+          "closing twice emits nothing")
+    s._mode_seg = {'mode': 'idle', 'start': 2000.0}
+    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'shutdown', 'reason': 'System shutdown', 'timestamp': 2010.0})
+    s._close_mode_segment(2013.0, next_mode='shutdown', reason='service_stop')
+    mc = em.of('mode_change')
+    check(len(mc) == 5 and mc[4]['data']['mode'] == 'idle' and mc[4]['data']['next_mode'] == 'shutdown',
+          "state -> shutdown then service stop: one idle row, no 'shutdown' segment row")
+
+
 if __name__ == '__main__':
     test_bark_episode()
     test_intervention_and_settle()
@@ -239,5 +270,6 @@ if __name__ == '__main__':
     test_treat_and_mission_and_status()
     test_stills()
     test_music()
+    test_mode_change_segments()
     print("\nALL PASS" if not FAILS else f"\n{len(FAILS)} FAILURE(S): {FAILS}")
     sys.exit(1 if FAILS else 0)

@@ -31,7 +31,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger('EventEmitter')
 
 EVENT_TYPES = ('bark_episode', 'intervention', 'settle', 'pacing', 'departure',
-               'arrival', 'treat', 'music', 'mission_run', 'status')
+               'arrival', 'treat', 'music', 'mission_run', 'status', 'mode_change')
 
 # Written to wimz.db as native rows. intervention/treat/music/status are
 # already covered by sg_intervention / dispense_log / audio / telemetry.
