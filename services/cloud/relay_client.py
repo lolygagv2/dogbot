@@ -529,7 +529,17 @@ class RelayClient:
             try:
                 await handler(data)
             except Exception as e:
-                self.logger.error(f"Handler error for {msg_type}: {e}")
+                self.logger.error(f"Handler error for {msg_type}: {e}", exc_info=True)
+                cid = data.get('command_id') if isinstance(data, dict) else None
+                if cid and msg_type == 'command':
+                    # CONTRACT v2: exactly one command_result per command_id —
+                    # a crash in the handler must not leave the relay waiting.
+                    try:
+                        self.send_message({'type': 'command_result', 'command_id': cid,
+                                           'command': data.get('command'), 'ok': False, 'result': None,
+                                           'error': {'code': 'exception', 'message': str(e)}})
+                    except Exception as e2:
+                        self.logger.error(f"[CMD] command_result for {cid} failed: {e2}")
         else:
             self.logger.warning(
                 f"Unknown message type: {msg_type} | keys={sorted(data.keys())}")
@@ -730,6 +740,34 @@ class RelayClient:
     SAFETY_COMMAND_MAX_AGE_SEC = 5  # Safety-critical commands (physical actions)
     SAFETY_COMMANDS = {'dispense_treat', 'motor_command', 'drive', 'emergency_stop'}
 
+    @staticmethod
+    def _parse_cmd_ts_ms(val) -> Optional[int]:
+        """Command-frame timestamp -> epoch ms, or None if absent/unparseable.
+        Accepts epoch ms or s (int/float/numeric string) and ISO 8601
+        (with 'Z' or offset; naive = UTC)."""
+        if val is None or val == '':
+            return None
+        try:
+            if isinstance(val, str):
+                v = val.strip()
+                try:
+                    num = float(v)
+                except ValueError:
+                    from datetime import datetime, timezone
+                    if v.endswith('Z') or v.endswith('z'):
+                        v = v[:-1] + '+00:00'
+                    dt = datetime.fromisoformat(v)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return int(dt.timestamp() * 1000)
+            else:
+                num = float(val)
+            if num <= 0:
+                return None
+            return int(num if num > 1e11 else num * 1000)
+        except Exception:
+            return None
+
     async def _handle_command(self, data: dict):
         """Handle command from app
 
@@ -744,8 +782,17 @@ class RelayClient:
         if not params:
             params = {k: v for k, v in data.items() if k not in ('type', 'command')}
 
+        command_id = data.get('command_id')
+        if command_id:
+            self.logger.info(f"[CMD] {command} command_id={command_id} keys={sorted(params)}")
+
         # --- Staleness check: reject commands with old timestamps ---
-        cmd_timestamp = data.get('timestamp')
+        # The relay sends `timestamp` as an ISO string (observed 2026-11-07:
+        # "unsupported operand type(s) for -: 'int' and 'str'" killed every
+        # take_photo before it reached the dispatcher, so no command_result
+        # was ever sent and the relay timed out). Parse ms/s/numeric
+        # string/ISO; an unparseable value skips the check, never crashes.
+        cmd_timestamp = self._parse_cmd_ts_ms(data.get('timestamp'))
         if cmd_timestamp is not None:
             now_ms = int(time.time() * 1000)
             age_sec = (now_ms - cmd_timestamp) / 1000.0
@@ -758,6 +805,11 @@ class RelayClient:
                     f"STALE command rejected: {command}, age={age_sec:.1f}s (max={max_age}s), "
                     f"timestamp={cmd_timestamp}"
                 )
+                if command_id:
+                    self.send_message({'type': 'command_result', 'command_id': command_id,
+                                       'command': command, 'ok': False, 'result': None,
+                                       'error': {'code': 'stale', 'message': f'command too old ({age_sec:.1f}s > {max_age}s)'}})
+                    return
                 await self._send({
                     'type': 'command_ack',
                     'command': command,
@@ -772,6 +824,11 @@ class RelayClient:
                     f"FUTURE command rejected: {command}, age={age_sec:.1f}s, "
                     f"timestamp={cmd_timestamp} (clock skew?)"
                 )
+                if command_id:
+                    self.send_message({'type': 'command_result', 'command_id': command_id,
+                                       'command': command, 'ok': False, 'result': None,
+                                       'error': {'code': 'future_timestamp', 'message': f'command timestamp {-age_sec:.1f}s in the future'}})
+                    return
                 await self._send({
                     'type': 'command_ack',
                     'command': command,
@@ -1994,7 +2051,7 @@ class RelayClient:
             return None
 
     def upload_media_sync(self, filepath: str, content_type: str = 'image/jpeg',
-                          timeout: float = 20.0) -> Optional[str]:
+                          timeout: float = 20.0, filename: Optional[str] = None) -> Optional[str]:
         """Upload a file to the relay media store (POST /api/media/upload —
         the same endpoint the video path uses) and return an absolute
         download URL, or None. Used for treat / bark_episode stills."""
@@ -2007,7 +2064,8 @@ class RelayClient:
             return None
         form = aiohttp.FormData()
         form.add_field('device_id', str(self.config.device_id))
-        form.add_field('file', blob, filename=os.path.basename(filepath), content_type=content_type)
+        form.add_field('file', blob, filename=filename or os.path.basename(filepath),
+                       content_type=content_type)
         try:
             status, body = self.http_sync('POST', '/api/media/upload', data=form, timeout=timeout)
         except Exception as e:

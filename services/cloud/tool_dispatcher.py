@@ -248,8 +248,9 @@ class ToolDispatcher:
     # ------------------------------------------------------------- built-ins
 
     def _register_builtins(self) -> None:
-        self.register(ToolSpec('take_photo', self._tool_take_photo, 15.0,
-                               description='JPEG of the current camera frame (any mode)'))
+        self.register(ToolSpec('take_photo', self._tool_take_photo, self.PHOTO_REPLY_BUDGET_S + 2.0,
+                               description='JPEG of the current camera frame (any mode); '
+                                           'deferred via media upload if capture is slow'))
         self.register(ToolSpec('standby', self._tool_standby, 10.0, preemptive=True,
                                description='Stop audio and return to IDLE'))
         self.register(ToolSpec('dispense_treat', self._tool_dispense_treat, 60.0,   # retry ladder + unjam can take ~45 s
@@ -265,8 +266,66 @@ class ToolDispatcher:
         self.register(ToolSpec('agent_utterance', self._tool_agent_utterance, 60.0,
                                description='Record one utterance (WAV <=30 s), POST /agent/utterance, play reply'))
 
+    # The relay waits 10 s for a command_result. Capture normally takes
+    # <1 s; if it has not finished inside this budget we answer at once with
+    # ok:true + photo_id (pending:true), finish the capture in the background,
+    # upload the JPEG to the relay media store as <photo_id>.jpg and announce
+    # it with a WS `photo_ready` {command_id, photo_id, image_url} frame.
+    PHOTO_REPLY_BUDGET_S = 8.0
+
+    def _tool_take_photo(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        from core.data.ids import uuid7
+        photo_id = uuid7()
+        command_id = args.get('_command_id')
+        with_hud = bool(args.get('with_hud', args.get('hud', True)))
+        max_w = args.get('max_width')
+        box: Dict[str, Any] = {}
+        done = threading.Event()
+
+        def _capture():
+            try:
+                box['res'] = self._capture_photo_blocking(with_hud)
+            except Exception as e:
+                box['res'] = {'success': False, 'error': str(e)}
+            finally:
+                done.set()
+
+        threading.Thread(target=_capture, daemon=True, name=f"Photo-{photo_id[:8]}").start()
+        if done.wait(self.PHOTO_REPLY_BUDGET_S):
+            res = box['res']
+            if not res.get('success'):
+                return _err('capture_failed', str(res.get('error', 'capture failed')))
+            out = self._photo_result(res, max_w, with_hud)
+            out['photo_id'] = photo_id
+            return out
+
+        # Slow capture: reply now, deliver later.
+        logger.warning(f"[TOOL] take_photo slower than {self.PHOTO_REPLY_BUDGET_S:.0f}s; "
+                       f"deferring photo_id={photo_id} command_id={command_id}")
+
+        def _deliver():
+            done.wait(60.0)
+            res = box.get('res') or {'success': False, 'error': 'capture did not finish'}
+            url = None
+            if res.get('success') and self._relay is not None and res.get('filepath'):
+                url = self._relay.upload_media_sync(res['filepath'], 'image/jpeg',
+                                                    filename=f"{photo_id}.jpg")
+            frame = {'command_id': command_id, 'photo_id': photo_id, 'ok': bool(url),
+                     'image_url': url, 'media_filename': f"{photo_id}.jpg",
+                     'error': None if url else str(res.get('error') or 'upload failed')}
+            if self._relay is not None:
+                try:
+                    self._relay.send_event('photo_ready', frame)
+                except Exception as e:
+                    logger.error(f"[TOOL] photo_ready send failed: {e}")
+            logger.info(f"[TOOL] deferred take_photo {photo_id}: {'uploaded ' + url if url else frame['error']}")
+
+        threading.Thread(target=_deliver, daemon=True, name=f"PhotoDeliver-{photo_id[:8]}").start()
+        return {'ok': True, 'photo_id': photo_id, 'pending': True, 'with_hud': with_hud,
+                'media_filename': f"{photo_id}.jpg"}
+
     @staticmethod
-    def _tool_take_photo(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+    def _capture_photo_blocking(with_hud: bool) -> Dict[str, Any]:
         from services.media.photo_capture import get_photo_capture_service
         detector = None
         try:
@@ -274,12 +333,11 @@ class ToolDispatcher:
             detector = get_detector_service()
         except Exception:
             pass
-        with_hud = bool(args.get('with_hud', args.get('hud', True)))
-        res = get_photo_capture_service().capture_photo(with_hud=with_hud, detector=detector)
-        if not res.get('success'):
-            return _err('capture_failed', str(res.get('error', 'capture failed')))
+        return get_photo_capture_service().capture_photo(with_hud=with_hud, detector=detector)
+
+    @staticmethod
+    def _photo_result(res: Dict[str, Any], max_w, with_hud: bool) -> Dict[str, Any]:
         jpeg_b64 = res.get('data')
-        max_w = args.get('max_width')
         width = height = None
         try:
             w, h = str(res.get('resolution', '')).lower().split('x')
