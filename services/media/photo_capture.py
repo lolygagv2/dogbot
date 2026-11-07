@@ -46,6 +46,58 @@ class PhotoCaptureService:
 
         self.logger.info("PhotoCaptureService initialized")
 
+    # Hard ceiling for one capture (frame copy + HUD + JPEG + SD-card write +
+    # media_asset row). Picked so a stalled capture can never hold up a relay
+    # command_result (relay waits 10 s) or the uvicorn loop.
+    CAPTURE_TIMEOUT_S = 5.0
+
+    def capture_photo_safe(
+        self,
+        with_hud: bool = True,
+        detector=None,
+        timeout_s: Optional[float] = None,
+        **kw,
+    ) -> Dict[str, Any]:
+        """Non-blocking, non-raising capture_photo.
+
+        Runs capture_photo() on its own daemon thread and waits at most
+        ``timeout_s`` (default CAPTURE_TIMEOUT_S). Returns the usual result
+        dict, or {"success": False, "error": ...} on timeout or any
+        exception. Never raises, never touches the perception camera handle
+        (capture_photo only reads DetectorService.get_last_frame(), a locked
+        copy of the detector's latest frame). A capture that outlives the
+        timeout keeps running on its thread and is simply dropped.
+
+        2026-11-07: added after the agent's take_photo was blamed for a
+        robot drop (it was WiFi beacon loss); this makes the photo path
+        provably unable to block or crash a caller either way.
+        """
+        timeout = self.CAPTURE_TIMEOUT_S if timeout_s is None else float(timeout_s)
+        box: Dict[str, Any] = {}
+        done = threading.Event()
+
+        def _run():
+            try:
+                box['res'] = self.capture_photo(with_hud=with_hud, detector=detector, **kw)
+            except BaseException as e:  # capture_photo already catches Exception; belt and braces
+                box['res'] = {"success": False, "error": f"{type(e).__name__}: {e}"}
+            finally:
+                done.set()
+
+        try:
+            threading.Thread(target=_run, daemon=True, name="PhotoCaptureSafe").start()
+        except Exception as e:
+            return {"success": False, "error": f"could not start capture thread: {e}"}
+
+        if not done.wait(timeout):
+            self.logger.warning(f"Photo capture timed out after {timeout:.1f}s (HUD={with_hud}); "
+                                f"capture thread abandoned")
+            return {"success": False, "error": f"capture timed out after {timeout:.0f}s"}
+        res = box.get('res')
+        if not isinstance(res, dict):
+            return {"success": False, "error": "capture returned no result"}
+        return res
+
     def capture_photo(
         self,
         with_hud: bool = True,

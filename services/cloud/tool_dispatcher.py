@@ -290,9 +290,10 @@ class ToolDispatcher:
             finally:
                 done.set()
 
+        t_start = time.monotonic()
         threading.Thread(target=_capture, daemon=True, name=f"Photo-{photo_id[:8]}").start()
         if done.wait(self.PHOTO_REPLY_BUDGET_S):
-            res = box['res']
+            res = box.get('res') or {'success': False, 'error': 'capture returned no result'}
             if not res.get('success'):
                 return _err('capture_failed', str(res.get('error', 'capture failed')))
             out = self._photo_result(res, max_w, with_hud)
@@ -305,9 +306,12 @@ class ToolDispatcher:
             out['image_url'] = None
             if self._relay is not None and res.get('filepath'):
                 try:
+                    # Spend only what is left of the reply budget on the upload
+                    # so capture + upload together stay inside the relay's wait.
+                    remaining = self.PHOTO_REPLY_BUDGET_S - (time.monotonic() - t_start)
                     out['image_url'] = self._relay.upload_media_sync(
                         res['filepath'], 'image/jpeg', filename=f"{photo_id}.jpg",
-                        timeout=max(1.0, self.PHOTO_REPLY_BUDGET_S - 1.0))
+                        timeout=max(1.0, remaining))
                 except Exception as e:
                     logger.warning(f"[TOOL] take_photo media upload failed: {e}")
             return out
@@ -351,8 +355,14 @@ class ToolDispatcher:
         return {'ok': True, 'deferred': True, 'pending': True, 'photo_id': photo_id,
                 'with_hud': with_hud, 'media_filename': f"{photo_id}.jpg"}
 
-    @staticmethod
-    def _capture_photo_blocking(with_hud: bool) -> Dict[str, Any]:
+    # Hard cap on the capture itself (frame copy -> JPEG -> SD write). The
+    # safe wrapper returns success:false on timeout/exception; it never
+    # raises and never touches the picamera2 handle (reads the detector's
+    # locked last-frame copy only). Upload time is budgeted separately.
+    PHOTO_CAPTURE_TIMEOUT_S = 5.0
+
+    @classmethod
+    def _capture_photo_blocking(cls, with_hud: bool) -> Dict[str, Any]:
         from services.media.photo_capture import get_photo_capture_service
         detector = None
         try:
@@ -360,7 +370,8 @@ class ToolDispatcher:
             detector = get_detector_service()
         except Exception:
             pass
-        return get_photo_capture_service().capture_photo(with_hud=with_hud, detector=detector)
+        return get_photo_capture_service().capture_photo_safe(
+            with_hud=with_hud, detector=detector, timeout_s=cls.PHOTO_CAPTURE_TIMEOUT_S)
 
     @staticmethod
     def _photo_result(res: Dict[str, Any], max_w, with_hud: bool) -> Dict[str, Any]:

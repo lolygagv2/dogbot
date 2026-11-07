@@ -519,7 +519,7 @@ class BehaviorEventService:
                 detector = get_detector_service()
             except Exception:
                 pass
-            res = get_photo_capture_service().capture_photo(with_hud=False, detector=detector)
+            res = get_photo_capture_service().capture_photo_safe(with_hud=False, detector=detector)
             if not res.get('success') or not res.get('filepath'):
                 logger.debug(f"[BEHAVIOR-EVENTS] still capture failed: {res.get('error')}")
                 return None

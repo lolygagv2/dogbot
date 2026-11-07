@@ -1246,8 +1246,10 @@ class TreatBotWebSocketServer:
             photo_service = get_photo_capture_service()
             detector = get_detector_service()
 
-            # Capture photo with HUD
-            result = photo_service.capture_photo(
+            # Capture photo with HUD — off the event loop, hard 5 s cap,
+            # never raises (2026-11-07).
+            result = await asyncio.to_thread(
+                photo_service.capture_photo_safe,
                 with_hud=with_hud,
                 detector=detector,
                 mission_engine=self.mission_engine

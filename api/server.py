@@ -1902,7 +1902,10 @@ async def capture_photo_with_hud(request: PhotoCaptureRequest = PhotoCaptureRequ
         photo_service = get_photo_capture_service()
         detector = get_detector_service()
 
-        result = photo_service.capture_photo(
+        # Off the event loop + hard 5 s cap: a stalled capture must never
+        # freeze uvicorn or raise (2026-11-07).
+        result = await asyncio.to_thread(
+            photo_service.capture_photo_safe,
             with_hud=request.with_hud,
             detector=detector
         )
