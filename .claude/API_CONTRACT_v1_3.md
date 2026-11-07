@@ -445,6 +445,37 @@ Commands: `dispense_treat{source?, dog_id?}`, `set_mode{mode}`, `play_sound{url|
 (records WAV via the PTT capture path, multipart `POST /agent/utterance` with HMAC + `dog_id`, plays the returned `audio_url`).
 Every command is logged (`[TOOL]` journald + wimz `tool_call` row). Same commands work on `/ws/local`.
 
+Mission scheduler (2026-11-07, persisted timers, armed at boot, 5 s tick — fires within ~5 s of its instant
+and within ~30 s across a restart; a slot that comes due while the service is down fires on the first tick
+after boot if still inside its grace):
+`schedule_mission{mission|mission_name, dog_id, fire_at ISO|epoch (one-shot) | start_time "HH:MM" [+type
+once|daily|weekly, days[]], mission_id? (relay id, echoed back), end_time?, grace_s?}` → the schedule_sync row;
+`schedule_sync{dog_id?, enabled_only?}` → `{missions:[{mission_id, schedule_id, mission_name, dog_id, type,
+enabled, start_time, end_time, days_of_week, fire_at, grace_s, next_fire_at, last_run_at, last_run_end,
+last_run_id, last_result, missed_at}], count, scheduler:{enabled, now}, active}`;
+`cancel_mission{mission_id}` (schedule_id | relay mission_id | mission_name; `"active"` = whatever is running)
+→ `{cancelled: schedule_id|null, stopped_run, run_id}` or `error.code: not_found`.
+`last_result`: `starting|running|success|fail|aborted|missed|start_failed:<reason>`; the `mission_run` event for
+that run has `run_id == last_run_id` and the same success|fail|aborted vocabulary. Grace = `grace_s`, else the
+start_time..end_time window (min 60 s), else 1 h for `fire_at` one-shots; beyond it the slot is `missed`.
+
+Settings key `missions` (relay request 2026-11-07): `{missions:[{id, type, name, enabled, trigger{kind:
+schedule|departure|manual, times:["HH:MM"], days:["mon".."sun"]}, duration_s, reward_treats}]}` — arrives by
+`settings_updated{key:"missions", dog_id}` or in `GET /api/dogs/{dog_id}/settings` (wrapped `{key,value,version}`;
+the robot unwraps every key). Every `trigger.kind == "schedule"` mission becomes one persisted schedule (all its
+`times`, `days` mon..sun → weekly, none → daily) **replacing that dog's previous relay set**, applied synchronously
+before the apply call returns (so before the next command). `last_run_*` carries over when the same `id` is still
+present, so a re-push never re-fires a slot. `times` are the dog's local HH:MM in the `timezone` setting (IANA);
+`next_fire_at` is reported in the robot's UTC offset, or `null` when the mission will not fire (disabled, no slot,
+or `unsupported` type). Each `schedule_sync` entry carries `{id, enabled, next_fire_at}` plus the fields above
+(`id` == the setting's mission id). Type → program: sit→sit, sit_stay|stay→sit_sustained, down|down_stay|place→
+down_sustained, recall→come_and_sit, quiet→quiet_progressive; `silent_guardian` and `coach` are **mode
+missions**: at fire time `set_mode(type)` for `duration_s` (cap 43200 = 12 h), then idle; `reward_treats` 0;
+reported like any run (`mission.started`/`.completed` → `mission_run{mission_id:"coach"|"silent_guardian",
+run_id, result, rewards_given:0, kind:"mode", schedule_mission_id:<setting id>, scheduled:true}`, and
+`schedule_sync.active = {id, run_id, kind:"mode", ends_at, remaining_s}`); `cancel_mission{mission_id}` ends it
+early (`mission_run.result: aborted`). Other scheduled runs also carry `schedule_mission_id` + `schedule_id`.
+
 ### Robot local additions
 REST `GET/POST /settings`, `GET /tools`, `POST /tools/{name}`, `GET /events/outbox`,
 `POST /events/departure|arrival`, `GET /sounds`, `POST /sounds/{group}/{stem}/replace|reset|play`,

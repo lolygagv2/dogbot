@@ -522,7 +522,10 @@ class TreatBotMain:
 
             # Mission scheduler (for auto-starting scheduled missions)
             self.mission_scheduler = get_mission_scheduler()
-            self.logger.info("Mission scheduler ready")
+            # 2026-11-07: armed at boot. Persisted timers in /schedules re-arm
+            # here, so a slot that came due during the restart fires at once.
+            self.mission_scheduler.enable()
+            self.logger.info("Mission scheduler ready (armed)")
 
             return True
 

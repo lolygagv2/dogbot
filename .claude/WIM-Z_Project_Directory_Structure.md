@@ -85,7 +85,7 @@
       bark_frequency_tracker.py     # Bark threshold tracking
       bark_store.py                 # Bark event storage
       weekly_summary.py             # Weekly report generation (NEEDS REWORK)
-      mission_scheduler.py          # Mission auto-scheduling (NEEDS REWORK)
+      mission_scheduler.py          # Persisted mission timers: armed at boot, 5 s tick, re-arm/catch-up, last_result from bus (2026-11-07)
       ai_controller_3stage_fixed.py # 3-stage AI pipeline
       motor_command_bus.py          # Motor command routing
       camera_mode_controller.py     # Camera mode management

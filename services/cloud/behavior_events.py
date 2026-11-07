@@ -399,7 +399,15 @@ class BehaviorEventService:
             result = 'aborted'
         else:
             result = 'success' if data.get('success', True) else 'fail'
-        self.emitter.emit('mission_run', {
+        # Scheduler-started runs (relay missions setting / schedule_mission)
+        # also carry the relay's mission id and the dog the schedule names.
+        meta = None
+        try:
+            from core.mission_scheduler import get_mission_scheduler
+            meta = get_mission_scheduler().run_meta(mid)
+        except Exception:
+            meta = None
+        payload = {
             'mission_id': data.get('mission_name') or mid,
             'run_id': mid,
             'start': _iso(start) if start else None,
@@ -407,7 +415,18 @@ class BehaviorEventService:
             'result': result,
             'rewards_given': data.get('rewards_given'),
             'reason': data.get('reason'),
-        }, dog_id=dog_id)
+        }
+        if data.get('kind'):
+            payload['kind'] = data.get('kind')
+        if meta:
+            payload['schedule_mission_id'] = meta.get('mission_id')
+            payload['schedule_id'] = meta.get('schedule_id')
+            payload['scheduled'] = True
+            dog_id = dog_id or meta.get('dog_id')
+        elif data.get('schedule_mission_id'):
+            payload['schedule_mission_id'] = data.get('schedule_mission_id')
+            payload['scheduled'] = True
+        self.emitter.emit('mission_run', payload, dog_id=dog_id)
 
     # ------------------------------------------------------------- bus: reward
 

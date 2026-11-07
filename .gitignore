@@ -62,3 +62,4 @@ hailov2/temp_extract/
 hailov2/*.zip
 hailov2/*.onnx
 simple_test_results_*/
+schedules/

@@ -305,6 +305,17 @@ class ToolDispatcher:
                                            'replies at once (wait:true to block until played)'))
         self.register(ToolSpec('start_mission', self._tool_start_mission, 10.0,
                                description='Start a mission by id/name'))
+        self.register(ToolSpec('schedule_mission', self._tool_schedule_mission, 10.0,
+                               description='Persist a timer: {mission|mission_name, dog_id, fire_at ISO|epoch '
+                                           '(one-shot) or start_time HH:MM + type once|daily|weekly [+days], '
+                                           'mission_id? (relay id), end_time?, grace_s?}; survives restart'))
+        self.register(ToolSpec('schedule_sync', self._tool_schedule_sync, 10.0,
+                               description='Every scheduled mission with next_fire_at, last_run_at, last_result '
+                                           '({dog_id?, enabled_only?})'))
+        self.register(ToolSpec('cancel_mission', self._tool_cancel_mission, 15.0,
+                               description='{mission_id}: delete that schedule (schedule_id | relay mission_id | '
+                                           'mission_name) and stop its run if executing; "active" stops the '
+                                           'running mission'))
         self.register(ToolSpec('move', self._tool_move, 8.0,   # 5 s hard cap + ramp/center slack
                                description='Bounded base move: {action: forward|back|turn_left|turn_right|stop, '
                                            'amount cm (cap 50) or deg (cap 90)}; 5 s hard cap, motors off after',
@@ -591,6 +602,91 @@ class ToolDispatcher:
         if not ok:
             return _err('start_failed', f"could not start {name!r}", available=sorted(me.missions))
         return {'ok': True, 'mission_id': name}
+
+    # ---- mission scheduler (persisted timers, 2026-11-07) ------------------
+
+    @staticmethod
+    def _tool_schedule_mission(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        from core.schedule_manager import get_schedule_manager
+        from core.mission_scheduler import get_mission_scheduler
+        from orchestrators.mission_engine import get_mission_engine, MISSION_ALIASES
+        me = get_mission_engine()
+        name = args.get('mission') or args.get('mission_name') or args.get('type_name')
+        if not name and args.get('mission_id') and str(args['mission_id']) in me.missions:
+            name = args['mission_id']          # relay sent our mission name as the id
+        if not name:
+            return _err('bad_request', 'mission (mission name) required', available=sorted(me.missions))
+        name = MISSION_ALIASES.get(str(name), str(name))
+        if name not in me.missions:
+            return _err('unknown_mission', f"mission {name!r} not loaded", available=sorted(me.missions))
+
+        fire_at = args.get('fire_at') or args.get('at')
+        start_time = args.get('start_time')
+        times = args.get('times')
+        if not fire_at and not start_time and isinstance(times, list) and times:
+            start_time = str(times[0])
+        if not fire_at and not start_time:
+            return _err('bad_request', 'fire_at (ISO/epoch) or start_time HH:MM required')
+        stype = args.get('schedule_type') or args.get('type')
+        if fire_at:
+            stype = 'once'
+        elif not stype:
+            stype = 'weekly' if args.get('days') or args.get('days_of_week') else 'daily'
+        data = {
+            'mission_name': name,
+            'dog_id': str(args.get('dog_id') or 'unknown'),
+            'name': args.get('name') or args.get('title') or f"{name} ({stype})",
+            'type': stype,
+            'start_time': start_time,
+            'end_time': args.get('end_time'),
+            'days_of_week': args.get('days_of_week') or args.get('days') or [],
+            'enabled': args.get('enabled', True),
+            'mission_id': args.get('mission_id'),
+            'grace_s': args.get('grace_s'),
+        }
+        if fire_at:
+            data['fire_at'] = fire_at
+        res = get_schedule_manager().create_schedule(data)
+        if not res.get('success'):
+            return _err('bad_request', res.get('error', 'create failed'))
+        sched = get_mission_scheduler()
+        sched.poke()
+        row = sched._sync_row(res['schedule'], __import__('core.mission_scheduler', fromlist=['_now'])._now())
+        return {'ok': True, 'scheduled': True, 'scheduler_enabled': sched.enabled, **row}
+
+    @staticmethod
+    def _tool_schedule_sync(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        from datetime import datetime
+        from core.mission_scheduler import get_mission_scheduler, _now
+        sched = get_mission_scheduler()
+        rows = sched.get_scheduled_missions(dog_id=args.get('dog_id'),
+                                            include_disabled=not args.get('enabled_only', False))
+        me = sched.mission_engine
+        sess = me.active_session
+        active = None
+        if sess:
+            meta = sched.run_meta(sess.mission_id) or {}
+            active = {'mission_name': sess.mission.name, 'run_id': sess.mission_id, 'dog_id': sess.dog_id,
+                      'kind': 'mission', 'id': meta.get('mission_id'), 'schedule_id': meta.get('schedule_id')}
+        else:
+            mr = sched.active_mode_run()
+            if mr:
+                active = {'mission_name': mr['mode'], 'run_id': mr['run_id'], 'dog_id': mr.get('dog_id'),
+                          'kind': 'mode', 'id': mr.get('mission_id'), 'schedule_id': mr.get('schedule_id'),
+                          'ends_at': datetime.fromtimestamp(mr['ends_at']).astimezone().isoformat(),
+                          'remaining_s': max(0, int(mr['ends_at'] - time.time()))}
+        return {'ok': True, 'missions': rows, 'count': len(rows),
+                'scheduler': {'enabled': sched.enabled, 'now': _now().isoformat(),
+                              'check_interval_s': sched.check_interval},
+                'active': active}
+
+    @staticmethod
+    def _tool_cancel_mission(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        from core.mission_scheduler import get_mission_scheduler
+        mid = args.get('mission_id') or args.get('schedule_id') or args.get('mission')
+        if not mid:
+            return _err('bad_request', 'mission_id required')
+        return get_mission_scheduler().cancel(str(mid), stop_running=args.get('stop_running', True))
 
     LISTEN_MAX_S = 15.0
 

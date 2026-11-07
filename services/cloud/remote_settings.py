@@ -44,7 +44,8 @@ SG_PROFILES: Dict[str, Dict[str, Any]] = {
 }
 LEVEL_TO_PROFILE = {'low': 'relaxed', 'medium': 'normal', 'med': 'normal', 'high': 'sensitive',
                     'relaxed': 'relaxed', 'normal': 'normal', 'sensitive': 'sensitive'}
-KNOWN_KEYS = ('treat_schedule', 'sg_sensitivity', 'music_plan', 'quiet_hours', 'notify_rules')
+KNOWN_KEYS = ('treat_schedule', 'sg_sensitivity', 'music_plan', 'quiet_hours', 'notify_rules',
+              'missions', 'timezone')
 
 
 class RemoteSettings:
@@ -118,7 +119,22 @@ class RemoteSettings:
         rejected: Dict[str, str] = {}
         now = time.time()
 
+        # The relay's GET /api/dogs/{id}/settings wraps each key as
+        # {"key","value","version","updated_at","updated_by"}; pushes send
+        # the bare value. Unwrap so both paths apply the same document.
+        unwrapped: Dict[str, Any] = {}
+        wrapped_versions: Dict[str, Any] = {}
         for key, value in settings.items():
+            if isinstance(value, dict) and 'value' in value and value.get('key') == key:
+                if value.get('version') is not None:
+                    wrapped_versions[key] = value.get('version')
+                value = value.get('value')
+            unwrapped[key] = value
+        settings = unwrapped
+
+        # timezone first: the missions loader needs it for the dog's HH:MM
+        ordered = sorted(settings.items(), key=lambda kv: 0 if kv[0] == 'timezone' else 1)
+        for key, value in ordered:
             try:
                 if key == 'treat_schedule':
                     self._apply_treat_schedule(value)
@@ -133,10 +149,18 @@ class RemoteSettings:
                 elif key == 'notify_rules':
                     if value is not None and not isinstance(value, list):
                         raise ValueError("notify_rules must be a list")
+                elif key == 'timezone':
+                    self._validate_timezone(value)
                 with self._lock:
                     self._settings[key] = value
                     if version is not None:
                         self._versions[key] = version
+                    elif key in wrapped_versions:
+                        self._versions[key] = wrapped_versions[key]
+                if key == 'missions':
+                    # Loaded synchronously: the scheduler set is replaced
+                    # before this call returns, i.e. before the next command.
+                    self._apply_missions(value, dog_id)
                 applied.append(key)
             except Exception as e:
                 rejected[key] = str(e)
@@ -244,6 +268,31 @@ class RemoteSettings:
                 raise ValueError("on_departure.duration_min must be > 0")
         if value.get('schedule') is not None and not isinstance(value['schedule'], list):
             raise ValueError("schedule must be a list")
+
+    @staticmethod
+    def _validate_timezone(value) -> None:
+        if value is None:
+            return
+        if not isinstance(value, str):
+            raise ValueError("timezone must be an IANA zone string")
+        from zoneinfo import ZoneInfo
+        ZoneInfo(value)              # raises on an unknown zone
+
+    @staticmethod
+    def _apply_missions(value, dog_id) -> None:
+        """missions {missions:[{id, type, name, enabled, trigger{kind, times[], days[]},
+        duration_s, reward_treats}]} -> MissionScheduler (replace that dog's set)."""
+        if value is not None and not isinstance(value, (dict, list)):
+            raise ValueError("missions must be an object or list")
+        from core.mission_scheduler import get_mission_scheduler
+        res = get_mission_scheduler().apply_missions_setting(dog_id, value)
+        logger.info(f"[SETTINGS] missions for dog {dog_id}: loaded={len(res['loaded'])} "
+                    f"skipped={res['skipped']} replaced={res['replaced']}")
+
+    def get_timezone(self) -> Optional[str]:
+        with self._lock:
+            tz = self._settings.get('timezone')
+            return tz if isinstance(tz, str) and tz else None
 
     @staticmethod
     def _validate_quiet_hours(value) -> None:
