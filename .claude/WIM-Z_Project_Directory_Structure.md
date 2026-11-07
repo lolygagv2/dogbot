@@ -230,6 +230,9 @@
 
    tests/                           # Test files
       integration/
+         test_scheduler_restart_fires_live.py  # LIVE, restarts treatbot: one-shot 2 min out fires <=30 s after its instant across the restart; mission_run matched by run_id.
+         test_missions_setting_live.py         # LIVE: POST /settings missions -> coach mode run -> idle -> mission_run (15 checks).
+         test_missions_push_ws_live.py         # LIVE: relay settings_updated{missions} replayed on /ws/local, schedule_sync 40 ms later: ids/reasons/removal/per-dog (19 checks).
          test_10_gates_validation.py
       hardware/
          leds_v3.py
@@ -248,6 +251,7 @@
          test_abr_hysteresis.py     # ABR anti-flap: 16:9 tiers, REMB floor band, step-down debounce, post-down hold (2026-10-03). Standalone.
         test_ptt_mic_mute.py          # PTT playback keeps the WebRTC mic muted for the whole clip + 0.7 s tail, drains stale frames on unmute (2026-10-23). No audio hardware; standalone.
       core/
+         test_mission_scheduler_timers.py   # Scheduler (2026-11-07, no hardware): next_fire math once/daily/weekly+grace+missed, one-shot fires after simulated restart, results via run_id, cancel, schedule_mission/sync/cancel tools, relay missions setting (shapes, tz, per-dog replace, reasons), coach mode run.
          test_dog_tracker_dedupe.py # One box per dog: persistence re-match keeps id_method, generic-twin cleanup, ArUco tag 0 (2026-10-03). Standalone.
          test_dog_tracker_behavior_label.py # Behavior label lands on EVERY tracker entry for the animal (index, name, bbox overlap) so the drawn box never blinks (2026-10-24). Standalone.
       perception/
@@ -259,6 +263,7 @@
          test_relay_outbox_ordered_flush.py   # Durable outbox: seq order, mid-batch failure resume, cross-process durability, prune cap, pump POST /events batches of 200 + stop-on-failure/backoff, HMAC headers.
          test_behavior_events_derivation.py   # bark_episode (gap/severity/peak_db/gate), intervention kind/result/episode_id, settle 300 s, pacing yes/no, treat source + command_id, mission_run vocab, status fields, departure method=app.
          test_remote_settings_apply.py        # treat_schedule -> TreatPolicy, sg_sensitivity level/min_episode_s/escalate_after_s -> SG profile + tracker, music_plan/quiet_hours/notify_rules stored, single-key push w/ version, persist + load_cached, per-key rejection.
+         test_behavior_events_derivation.py   # + mode_change segments (2026-11-07): {mode,start,end,duration_s,next_mode}, contiguous, shutdown close, no terminal row.
          test_tool_dispatcher_single_flight.py # command_result shape, unknown/busy/timeout/exception, slot held until handler returns, preemptive standby, every call logged, relay interception only with command_id.
          test_trick_runner_sequence.py        # run_trick: success (one treat), no_dog/wrong_pose/timeout, invalid cue, SG busy unless force, engine hold/release, mode restored even on dispenser exception.
       reward/
