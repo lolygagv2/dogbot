@@ -471,7 +471,7 @@ class ToolDispatcher:
         form = aiohttp.FormData()
         form.add_field('dog_id', str(dog_id or ''))
         form.add_field('device_id', str(self._relay.config.device_id))
-        form.add_field('audio', wav, filename='utterance.wav', content_type='audio/wav')
+        form.add_field('file', wav, filename='utterance.wav', content_type='audio/wav')
         try:
             status, body = self._relay.http_sync('POST', '/agent/utterance', data=form, timeout=45.0)
         except Exception as e:
