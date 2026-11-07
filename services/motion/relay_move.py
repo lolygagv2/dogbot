@@ -33,8 +33,8 @@ ACTIONS = ('forward', 'back', 'turn_left', 'turn_right', 'stop')
 # Defaults (overridable via robot_config `relay_move:` section).
 DEFAULTS: Dict[str, float] = {
     'speed_pct': 40,            # hardware-safety safe range is 40-70 %; 40 is the slowest
-    'cm_per_s': 15.0,           # CALIBRATE: cm/s at speed_pct on the floor
-    'deg_per_s': 60.0,          # CALIBRATE: deg/s spinning in place at speed_pct
+    'cm_per_s': 35.0,           # measured 2026-11-07 tb5: 2.0 s @ 40 % -> ~70 cm on floor
+    'deg_per_s': 103.0,         # measured 2026-11-07 tb5: 1.02 s @ 40 % -> ~105 deg
     'max_cm': 50,
     'max_deg': 90,
     'hard_cap_s': 5.0,
