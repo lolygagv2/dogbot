@@ -11,6 +11,8 @@ Maintains persistent connection to the cloud relay server for:
 import asyncio
 import hashlib
 import hmac
+import traceback
+import sys
 import json
 import logging
 import os
@@ -356,6 +358,36 @@ class RelayClient:
                 self._connected = False
                 break
 
+    def _status_watchdog(self) -> None:
+        """Relay change 2026-11-07: the relay has no stored status unless we
+        POST `status` rows (every 60 s from BehaviorEventService._loop). That
+        loop stalled silently once (2026-11-06 22:39, no error logged), so
+        when the last status row is older than 3 periods, log the stalled
+        thread's stack once and emit status from here. emit_status_now()
+        takes no BehaviorEventService lock, so it works even if the loop
+        thread is wedged holding one."""
+        try:
+            from services.cloud.behavior_events import get_behavior_event_service
+            svc = get_behavior_event_service()
+            if not svc._running or not svc._last_status_t:
+                return
+            age = time.time() - svc._last_status_t
+            limit = 3 * float(svc.config.get('status_period_s', 60.0))
+            if age < limit:
+                self._status_stall_logged = False
+                return
+            if not getattr(self, '_status_stall_logged', False):
+                self._status_stall_logged = True
+                th = getattr(svc, '_thread', None)
+                frame = sys._current_frames().get(th.ident) if th else None
+                stack = ''.join(traceback.format_stack(frame)) if frame else '<thread not found>'
+                self.logger.error(f"[STATUS-WD] no status row for {age:.0f}s; BehaviorEvents thread "
+                                  f"alive={bool(th and th.is_alive())}; stack:\n{stack}")
+            svc.emit_status_now()
+            self.logger.warning("[STATUS-WD] status emitted by relay heartbeat fallback")
+        except Exception as e:
+            self.logger.debug(f"[STATUS-WD] skipped: {e}")
+
     async def _heartbeat_loop(self):
         """Send heartbeat every 30 seconds while connected"""
         while self._running and self._connected:
@@ -368,6 +400,7 @@ class RelayClient:
                         'timestamp': int(time.time())
                     })
                     self.logger.debug("Heartbeat sent")
+                self._status_watchdog()
             except asyncio.CancelledError:
                 break
             except Exception as e:
