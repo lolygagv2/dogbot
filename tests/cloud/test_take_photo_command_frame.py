@@ -116,6 +116,10 @@ d._capture_photo_blocking = staticmethod(lambda with_hud: dict(fake_res))
 out = d._tool_take_photo({'_command_id': 'c-fast', 'with_hud': False}, threading.Event())
 check(out['ok'] and out['jpeg_b64'] == 'QUJD' and out.get('photo_id') and out['width'] == 640
       and 'pending' not in out, f"fast capture -> jpeg_b64 + photo_id ({sorted(out)})")
+check(fr.uploads and fr.uploads[0][1] == out['photo_id'] + '.jpg'
+      and out['image_url'] == f"https://relay/media/{out['photo_id']}.jpg",
+      f"fast capture also uploads <photo_id>.jpg and returns image_url ({out.get('image_url')})")
+fr.uploads.clear()
 
 def slow(with_hud):
     time.sleep(1.5); return dict(fake_res)

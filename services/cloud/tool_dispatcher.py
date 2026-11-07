@@ -297,6 +297,19 @@ class ToolDispatcher:
                 return _err('capture_failed', str(res.get('error', 'capture failed')))
             out = self._photo_result(res, max_w, with_hud)
             out['photo_id'] = photo_id
+            out['media_filename'] = f"{photo_id}.jpg"
+            # Also park the JPEG in the relay media store as <photo_id>.jpg so
+            # the relay can fetch by photo_id instead of the inline b64
+            # (2026-11-07: relay answered no_image_returned to an ok:true
+            # result that carried a 147 KB jpeg_b64).
+            out['image_url'] = None
+            if self._relay is not None and res.get('filepath'):
+                try:
+                    out['image_url'] = self._relay.upload_media_sync(
+                        res['filepath'], 'image/jpeg', filename=f"{photo_id}.jpg",
+                        timeout=max(1.0, self.PHOTO_REPLY_BUDGET_S - 1.0))
+                except Exception as e:
+                    logger.warning(f"[TOOL] take_photo media upload failed: {e}")
             return out
 
         # Slow capture: reply now, deliver later.
