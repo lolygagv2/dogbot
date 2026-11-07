@@ -261,6 +261,9 @@ class ToolDispatcher:
                                description='Play a relay-hosted url or a registry sound_id'))
         self.register(ToolSpec('start_mission', self._tool_start_mission, 10.0,
                                description='Start a mission by id/name'))
+        self.register(ToolSpec('move', self._tool_move, 8.0,   # 5 s hard cap + ramp/center slack
+                               description='Bounded base move: {action: forward|back|turn_left|turn_right|stop, '
+                                           'amount cm (cap 50) or deg (cap 90)}; 5 s hard cap, motors off after'))
         self.register(ToolSpec('go_to', self._tool_go_to, 5.0,
                                description='Navigate to a named place (not supported yet)'))
         self.register(ToolSpec('agent_utterance', self._tool_agent_utterance, 60.0,
@@ -537,6 +540,15 @@ class ToolDispatcher:
         if not ok:
             return _err('start_failed', f"could not start {name!r}", available=sorted(me.missions))
         return {'ok': True, 'mission_id': name}
+
+    @staticmethod
+    def _tool_move(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        from services.motion.relay_move import get_relay_move
+        action = str(args.get('action') or '').strip().lower()
+        amount = args.get('amount', args.get('cm', args.get('degrees')))
+        # relay bd3290a also sends unit ("cm"|"deg"), speed ("creep") and source;
+        # speed is always the slowest safe setting here regardless.
+        return get_relay_move().execute(action, amount, cancel, unit=args.get('unit'))
 
     @staticmethod
     def _tool_go_to(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
