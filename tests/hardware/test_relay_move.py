@@ -181,6 +181,17 @@ check(mv.execute('forward', 'lots')['error']['code'] == 'bad_amount' and mv.exec
 bus.running = False
 check(mv.execute('forward', 10)['error']['code'] == 'motors_unavailable', "motor bus down -> motors_unavailable")
 
+# config: robot_config.yaml relay_move: is read; unit profile overrides; bad values ignored
+import yaml as _yaml  # noqa: E402
+tmp = Path(tempfile.mkdtemp(prefix='movecfg_')) / 'robot_config.yaml'
+tmp.write_text(_yaml.safe_dump({'relay_move': {'cm_per_s': 35.0, 'deg_per_s': 103.0, 'speed_pct': 40, 'max_cm': 'junk'}}))
+cfg = rm.load_config(str(tmp))
+check(cfg['cm_per_s'] == 35.0 and cfg['deg_per_s'] == 103.0 and cfg['speed_pct'] == 40 and cfg['max_cm'] == rm.DEFAULTS['max_cm'],
+      f"load_config reads robot_config relay_move, ignores bad value ({cfg['cm_per_s']}, {cfg['deg_per_s']}, {cfg['max_cm']})")
+check(rm.load_config('/nonexistent/robot_config.yaml')['cm_per_s'] == rm.DEFAULTS['cm_per_s'], "missing robot_config -> code defaults")
+live = rm.load_config()
+check(live['cm_per_s'] == 35.0 and live['deg_per_s'] == 103.0, f"live robot_config.yaml carries the measured calibration ({live['cm_per_s']}, {live['deg_per_s']})")
+
 # dispatcher wiring
 import services.cloud.tool_dispatcher as td  # noqa: E402
 d = td.ToolDispatcher()

@@ -113,17 +113,43 @@ def cliff_detected() -> Optional[bool]:
         return None
 
 
-def load_config() -> Dict[str, float]:
+ROBOT_CONFIG_PATH = '/home/morgan/dogbot/config/robot_config.yaml'
+
+
+def load_config(robot_config_path: str = ROBOT_CONFIG_PATH) -> Dict[str, float]:
+    """DEFAULTS <- robot_config.yaml `relay_move:` (fleet default)
+    <- unit profile `relay_move:` (config/robot_profiles/<unit>.yaml, via get_config())."""
     cfg = dict(DEFAULTS)
+    sources = []
+
+    def _apply(over: Any, name: str) -> None:
+        if not isinstance(over, dict):
+            return
+        for k in DEFAULTS:
+            if k in over:
+                try:
+                    cfg[k] = type(DEFAULTS[k])(over[k])
+                except (TypeError, ValueError):
+                    logger.warning(f"[MOVE] ignoring bad {name} relay_move.{k}={over[k]!r}")
+        sources.append(name)
+
+    try:
+        import yaml
+        with open(robot_config_path, 'r') as f:
+            _apply((yaml.safe_load(f) or {}).get('relay_move'), 'robot_config')
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"[MOVE] robot_config relay_move unreadable: {e}")
     try:
         from config.config_loader import get_config
         raw = getattr(get_config(), '_config', None) or {}
-        over = raw.get('relay_move') or {}
-        for k in DEFAULTS:
-            if k in over:
-                cfg[k] = type(DEFAULTS[k])(over[k])
+        if raw.get('relay_move'):
+            _apply(raw.get('relay_move'), 'unit_profile')
     except Exception:
         pass
+    logger.info(f"[MOVE] config from {sources or ['code defaults']}: "
+                f"speed={cfg['speed_pct']}% cm_per_s={cfg['cm_per_s']} deg_per_s={cfg['deg_per_s']}")
     return cfg
 
 

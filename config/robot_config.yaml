@@ -172,3 +172,18 @@ cloud:
   # DEVICE_SECRET: Device secret for HMAC authentication
   reconnect_delay: 5      # Seconds between reconnection attempts
   heartbeat_interval: 30  # Seconds between heartbeat pings
+
+# Relay `move` command (services/motion/relay_move.py) — bounded open-loop base steps.
+# Fleet defaults measured on treatbot5 2026-11-07 (floor, 40 % PWM). A unit profile
+# (config/robot_profiles/<unit>.yaml) may carry its own relay_move: block to override.
+relay_move:
+  speed_pct: 40           # slowest value in the hardware-safety safe range (40-70)
+  cm_per_s: 35.0          # measured: 2.0 s @ 40 % -> ~70 cm
+  deg_per_s: 103.0        # measured: 0.87 s @ 40 % -> ~90 deg (spin in place)
+  max_cm: 50
+  max_deg: 90
+  hard_cap_s: 5.0
+  obstacle_stop_cm: 30.0  # inert until an obstacle sensor registers a provider
+  ramp_s: 0.05            # one 50 ms command tick of ramp up/down
+  tick_s: 0.05
+  recenter_every_s: 1.0
