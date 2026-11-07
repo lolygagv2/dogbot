@@ -425,12 +425,23 @@ class ScheduleManager:
             self.logger.error(f"Failed to delete schedule file: {e}")
             # Already removed from memory, continue
 
-        self.logger.info(f"Deleted schedule: {schedule['name']} ({schedule_id})")
+        self.logger.info(f"Deleted schedule: {schedule['name']} ({schedule_id}) "
+                         f"source={schedule.get('source')} mission_id={schedule.get('mission_id')}")
 
-        return {
+        # Relay request 2026-11-07: the schedule_deleted event (this dict,
+        # forwarded verbatim by the delete_schedule command) carries the
+        # relay's mission_id + dog_id for relay_settings entries so the relay
+        # drops it from the dog's missions setting and it does not come back
+        # on the next push / reconnect.
+        out = {
             "success": True,
-            "deleted": schedule_id
+            "deleted": schedule_id,
+            "dog_id": schedule.get('dog_id'),
+            "source": schedule.get('source'),
         }
+        if schedule.get('mission_id'):
+            out["mission_id"] = schedule['mission_id']
+        return out
 
     def get_active_schedules(self) -> List[Dict[str, Any]]:
         """Get all enabled schedules for the scheduler to check"""

@@ -215,6 +215,12 @@ def main():
     res = sm.get_schedule_manager().create_schedule({'mission_name': 'sit', 'dog_id': 'd1', 'type': 'daily',
                                                      'start_time': '03:00', 'mission_id': 'relay-m-9'})
     csid = res['schedule']['schedule_id']
+    direct = sm.get_schedule_manager().create_schedule({'mission_name': 'sit', 'dog_id': 'd7', 'type': 'daily',
+                                                        'start_time': '03:30', 'mission_id': 'relay-m-del', 'source': 'relay_settings'})
+    dres = sm.get_schedule_manager().delete_schedule(direct['schedule']['schedule_id'])
+    check(dres == {'success': True, 'deleted': direct['schedule']['schedule_id'], 'dog_id': 'd7',
+                   'source': 'relay_settings', 'mission_id': 'relay-m-del'},
+          f"delete_schedule result (= schedule_deleted event) carries mission_id + dog_id ({dres})")
     out = sched3.cancel('relay-m-9')
     check(out['ok'] and out['cancelled'] == csid and sm.get_schedule_manager().get_schedule(csid) is None
           and not (Path(os.environ['WIMZ_SCHEDULES_DIR']) / f"{csid}.json").exists(),
