@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 os.environ['WIMZ_DATA_ROOT'] = tempfile.mkdtemp(prefix='tooltest_')
 
 import services.cloud.tool_dispatcher as td  # noqa: E402
-from services.cloud.tool_dispatcher import ToolDispatcher, ToolSpec  # noqa: E402
+from services.cloud.tool_dispatcher import ToolDispatcher, ToolSpec, MOTION  # noqa: E402
 
 FAILS = []
 
@@ -61,8 +61,10 @@ def main():
         while time.time() < t_end and not cancel.is_set():
             time.sleep(0.02)
         return {'ok': True, 'cancelled': cancel.is_set()}
-    d.register(ToolSpec('slow', slow, 0.5))
+    d.register(ToolSpec('slow', slow, 0.5, group=MOTION))
+    d.register(ToolSpec('slow2', slow, 5.0, group=MOTION))
     d.register(ToolSpec('stop', lambda args, cancel: {'ok': True}, 5.0, preemptive=True))
+    d.register(ToolSpec('echo_motion', lambda args, cancel: {'ok': True, 'echo': args.get('x')}, 5.0, group=MOTION))
 
     frames, done, reply = collect()
     d.dispatch({'command': 'echo', 'command_id': 'c-1', 'args': {'x': 42}}, reply)
@@ -80,30 +82,47 @@ def main():
     f = d.call('boom', {}, 'c-4')
     check(f['ok'] is False and f['error']['code'] == 'exception', "exception -> command_result exception")
 
-    # busy
+    # busy: only within the motion group (2026-11-07: audio must not block photos)
     frames, done, reply = collect()
     d.dispatch({'command': 'slow', 'command_id': 'c-5', 'args': {'s': 0.3}}, reply)
     time.sleep(0.05)
-    f = d.call('echo', {}, 'c-6')
-    check(f['ok'] is False and f['error']['code'] == 'busy' and f['result']['running'] == 'slow',
-          "second command while one runs -> busy")
+    f = d.call('echo_motion', {}, 'c-6')
+    check(f['ok'] is False and f['error']['code'] == 'busy' and f['result']['running'] == 'slow'
+          and f['result']['group'] == MOTION, "second MOTION command while one runs -> busy")
+    f = d.call('echo', {'x': 7}, 'c-6b')
+    check(f['ok'] is True and f['result']['echo'] == 7, "ungrouped command runs while a motion command is running")
+    lt = d.list_tools()
+    check(lt['busy'] is True and lt['current']['name'] == 'slow' and [r['name'] for r in lt['running']] == ['slow'],
+          f"list_tools reports motion busy + running ({lt['running']})")
     done.wait(2)
     check(frames and frames[0]['ok'] is True and frames[0]['command_id'] == 'c-5', "slow completes normally")
+
+    # two ungrouped slow commands overlap
+    def slow_free(args, cancel):
+        time.sleep(0.3); return {'ok': True}
+    d.register(ToolSpec('slow_free', slow_free, 5.0))
+    fr1, dn1, rp1 = collect(); fr2, dn2, rp2 = collect()
+    t0 = time.time()
+    d.dispatch({'command': 'slow_free', 'command_id': 'c-6c'}, rp1)
+    d.dispatch({'command': 'slow_free', 'command_id': 'c-6d'}, rp2)
+    dn1.wait(2); dn2.wait(2)
+    check(fr1 and fr2 and fr1[0]['ok'] and fr2[0]['ok'] and time.time() - t0 < 0.5,
+          f"two ungrouped commands run concurrently ({time.time() - t0:.2f}s)")
 
     # timeout: handler ignores cancel for 1.2 s, spec timeout 0.5 s
     def stubborn(args, cancel):
         time.sleep(1.2)
         return {'ok': True}
-    d.register(ToolSpec('stubborn', stubborn, 0.5))
+    d.register(ToolSpec('stubborn', stubborn, 0.5, group=MOTION))
     t0 = time.time()
     f = d.call('stubborn', {}, 'c-7', wait_s=3)
     check(f['ok'] is False and f['error']['code'] == 'timeout' and time.time() - t0 < 1.0,
           "timeout answered at 0.5 s without waiting for the handler")
-    f2 = d.call('echo', {}, 'c-8')
-    check(f2['ok'] is False and f2['error']['code'] == 'busy', "slot stays held until the timed-out handler returns")
+    f2 = d.call('echo_motion', {}, 'c-8')
+    check(f2['ok'] is False and f2['error']['code'] == 'busy', "motion slot stays held until the timed-out handler returns")
     time.sleep(1.0)
-    f3 = d.call('echo', {}, 'c-9')
-    check(f3['ok'] is True, "slot released after the handler returned")
+    f3 = d.call('echo_motion', {}, 'c-9')
+    check(f3['ok'] is True, "motion slot released after the handler returned")
 
     # preemptive
     frames, done, reply = collect()
@@ -117,6 +136,19 @@ def main():
     check(len(logged) >= 10 and all(len(a) >= 6 for a in logged), f"every call logged ({len(logged)})")
     names = {a[0] for a in logged}
     check({'echo', 'nope', 'fail', 'boom', 'slow', 'stubborn', 'stop'} <= names, "log covers unknown/busy/timeout too")
+
+    # built-in grouping: only move/go_to/run_trick are motion; audio/photo/listen/treat are free
+    real = ToolDispatcher()
+    try:
+        from orchestrators.trick_runner import register_run_trick
+        register_run_trick(real)
+    except Exception as e:
+        print('note: run_trick not registered in test env:', e)
+    groups = {n: t.group for n, t in real._tools.items()}
+    check(all(groups.get(n) == MOTION for n in ('move', 'go_to') if n in groups)
+          and groups.get('run_trick', MOTION) == MOTION
+          and all(groups.get(n) is None for n in ('play_sound', 'take_photo', 'listen', 'dispense_treat', 'set_mode')),
+          f"built-in groups: motion only for move/go_to/run_trick ({groups})")
 
     # relay interception rule
     from services.cloud.relay_client import RelayClient, RelayConfig

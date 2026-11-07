@@ -293,8 +293,9 @@ def get_trick_runner() -> TrickRunner:
 
 
 def register_run_trick(dispatcher) -> None:
-    from services.cloud.tool_dispatcher import ToolSpec
+    from services.cloud.tool_dispatcher import ToolSpec, MOTION
     dispatcher.register(ToolSpec(
         'run_trick', lambda args, cancel: get_trick_runner().run(args, cancel),
         timeout_s=MAX_TIMEOUT_S + 10.0,
-        description='Play the owner cue, wait for the pose, reward; restores prior mode'))
+        description='Play the owner cue, wait for the pose, reward; restores prior mode',
+        group=MOTION))

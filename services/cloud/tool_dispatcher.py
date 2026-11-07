@@ -44,6 +44,15 @@ class ToolSpec:
     timeout_s: float = 30.0
     preemptive: bool = False
     description: str = ''
+    # Exclusivity group. Tools in the same group are single-flight with each
+    # other (busy); tools with group=None run concurrently with everything.
+    # 2026-11-07: audio playback (play_sound) held the one global slot and
+    # take_photo got busy:"command play_sound is running". Only physical
+    # motion (move, go_to, run_trick) is exclusive now.
+    group: Optional[str] = None
+
+
+MOTION = 'motion'
 
 
 def _err(code: str, message: str, **extra) -> Dict[str, Any]:
@@ -79,8 +88,9 @@ class ToolDispatcher:
     def __init__(self):
         self._tools: Dict[str, ToolSpec] = {}
         self._lock = threading.RLock()
-        self._slot = threading.Lock()
-        self._current: Optional[Dict[str, Any]] = None   # {name, id, cancel, started}
+        self._group_locks: Dict[str, threading.Lock] = {}
+        self._running: Dict[int, Dict[str, Any]] = {}   # run_no -> {name, id, group, cancel, started}
+        self._run_no = 0
         self._relay = None
         self._attached = False
         self._register_builtins()
@@ -93,8 +103,24 @@ class ToolDispatcher:
         logger.debug(f"[TOOL] registered {spec.name} (timeout {spec.timeout_s}s)")
 
     def register_tool(self, name: str, handler: Handler, timeout_s: float = 30.0,
-                      preemptive: bool = False, description: str = '') -> None:
-        self.register(ToolSpec(name, handler, timeout_s, preemptive, description))
+                      preemptive: bool = False, description: str = '',
+                      group: Optional[str] = None) -> None:
+        self.register(ToolSpec(name, handler, timeout_s, preemptive, description, group))
+
+    def _group_lock(self, group: str) -> threading.Lock:
+        with self._lock:
+            lk = self._group_locks.get(group)
+            if lk is None:
+                lk = self._group_locks[group] = threading.Lock()
+            return lk
+
+    def running(self, group: Optional[str] = None) -> list:
+        """Snapshot of running commands (optionally one group), oldest first."""
+        with self._lock:
+            rows = [dict(r) for r in self._running.values() if group is None or r['group'] == group]
+        for r in rows:
+            r.pop('cancel', None)
+        return sorted(rows, key=lambda r: r['started'])
 
     def has_tool(self, name: Optional[str]) -> bool:
         return bool(name) and name in self._tools
@@ -102,12 +128,13 @@ class ToolDispatcher:
     def list_tools(self) -> Dict[str, Any]:
         with self._lock:
             tools = [{'name': s.name, 'timeout_s': s.timeout_s, 'preemptive': s.preemptive,
-                      'description': s.description} for s in self._tools.values()]
-            cur = dict(self._current) if self._current else None
-        if cur:
-            cur.pop('cancel', None)
-        return {'tools': sorted(tools, key=lambda t: t['name']), 'busy': cur is not None,
-                'current': cur}
+                      'group': s.group, 'description': s.description} for s in self._tools.values()]
+        running = self.running()
+        motion = [r for r in running if r['group'] == MOTION]
+        return {'tools': sorted(tools, key=lambda t: t['name']),
+                'busy': bool(motion),                       # motion slot held
+                'current': motion[0] if motion else None,   # wire-compat
+                'running': running}
 
     def attach(self, relay_client=None) -> None:
         """Wire late-bound tools (run_trick) and remember the relay."""
@@ -151,16 +178,26 @@ class ToolDispatcher:
         return box
 
     def cancel_current(self, wait_s: float = 3.0) -> bool:
+        """Cancel every running command (preemptive standby) and wait for the
+        motion group to drain. Ungrouped commands get the cancel event but
+        are not waited on."""
         with self._lock:
-            cur = self._current
-        if not cur:
+            rows = list(self._running.values())
+        if not rows:
             return True
-        cur['cancel'].set()
-        logger.info(f"[TOOL] cancel requested for {cur['name']} command_id={cur['id']}")
-        got = self._slot.acquire(timeout=wait_s)
-        if got:
-            self._slot.release()
-        return got
+        for r in rows:
+            r['cancel'].set()
+            logger.info(f"[TOOL] cancel requested for {r['name']} command_id={r['id']}")
+        groups = {r['group'] for r in rows if r['group']}
+        ok = True
+        deadline = time.monotonic() + wait_s
+        for g in groups:
+            lk = self._group_lock(g)
+            got = lk.acquire(timeout=max(0.0, deadline - time.monotonic()))
+            if got:
+                lk.release()
+            ok = ok and got
+        return ok
 
     def _run(self, name: str, call_id: Optional[str], args: Dict[str, Any],
              reply: Callable[[Dict[str, Any]], None]) -> None:
@@ -179,17 +216,21 @@ class ToolDispatcher:
         if spec.preemptive:
             self.cancel_current(wait_s=3.0)
 
-        if not self._slot.acquire(blocking=False):
-            with self._lock:
-                cur = self._current
-            result = _err('busy', f"command {cur['name'] if cur else '?'} is running",
-                          result='busy', running=cur['name'] if cur else None)
+        lock = self._group_lock(spec.group) if spec.group else None
+        if lock is not None and not lock.acquire(blocking=False):
+            others = self.running(spec.group)
+            cur = others[0]['name'] if others else '?'
+            result = _err('busy', f"command {cur} is running",
+                          result='busy', running=cur, group=spec.group)
             self._finish(name, call_id, args, t0, result, result['error']['message'], reply)
             return
 
         cancel = threading.Event()
         with self._lock:
-            self._current = {'name': name, 'id': call_id, 'cancel': cancel, 'started': time.time()}
+            self._run_no += 1
+            run_no = self._run_no
+            self._running[run_no] = {'name': name, 'id': call_id, 'group': spec.group,
+                                     'cancel': cancel, 'started': time.time()}
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"Tool-{name}")
         released = threading.Event()
 
@@ -199,10 +240,11 @@ class ToolDispatcher:
             except Exception:
                 pass
             with self._lock:
-                self._current = None
+                self._running.pop(run_no, None)
             if not released.is_set():
                 released.set()
-                self._slot.release()
+                if lock is not None:
+                    lock.release()
             pool.shutdown(wait=False)
 
         future = pool.submit(spec.handler, args, cancel)
@@ -259,14 +301,16 @@ class ToolDispatcher:
         self.register(ToolSpec('set_mode', self._tool_set_mode, 10.0,
                                description='Switch mode: idle|silent_guardian|coach|manual|night_sentry'))
         self.register(ToolSpec('play_sound', self._tool_play_sound, 60.0,
-                               description='Play a relay-hosted url or a registry sound_id'))
+                               description='Queue a relay-hosted url or a registry sound_id on the audio queue; '
+                                           'replies at once (wait:true to block until played)'))
         self.register(ToolSpec('start_mission', self._tool_start_mission, 10.0,
                                description='Start a mission by id/name'))
         self.register(ToolSpec('move', self._tool_move, 8.0,   # 5 s hard cap + ramp/center slack
                                description='Bounded base move: {action: forward|back|turn_left|turn_right|stop, '
-                                           'amount cm (cap 50) or deg (cap 90)}; 5 s hard cap, motors off after'))
+                                           'amount cm (cap 50) or deg (cap 90)}; 5 s hard cap, motors off after',
+                               group=MOTION))
         self.register(ToolSpec('go_to', self._tool_go_to, 5.0,
-                               description='Navigate to a named place (not supported yet)'))
+                               description='Navigate to a named place (not supported yet)', group=MOTION))
         self.register(ToolSpec('listen', self._tool_listen, self.LISTEN_MAX_S + 15.0,
                                description='Record {seconds<=15} from the mic (16 kHz mono WAV), tag with '
                                            'YAMNet, upload WAV; bark detection keeps running'))
@@ -489,7 +533,9 @@ class ToolDispatcher:
         from services.media.usb_audio import get_usb_audio_service
         audio = get_usb_audio_service()
         url, sound_id = args.get('url'), args.get('sound_id')
-        wait = bool(args.get('wait', True))
+        # Default: enqueue and return (the PTT queue / pygame play in the
+        # background). agent_utterance passes wait=True explicitly.
+        wait = bool(args.get('wait', False))
         if url:
             data = None
             if self._relay is not None:
@@ -513,7 +559,8 @@ class ToolDispatcher:
                 time.sleep(0.5)
                 while (ptt.is_playing() or audio.is_busy()) and time.time() < deadline and not cancel.is_set():
                     time.sleep(0.1)
-            return {'ok': True, 'played': 'url', 'bytes': len(data), 'kind': args.get('kind')}
+            return {'ok': True, 'played': 'url', 'bytes': len(data), 'kind': args.get('kind'),
+                    'queued': not wait}
         if sound_id:
             from services.media.sound_registry import get_sound_registry
             path = get_sound_registry().resolve(sound_id)
@@ -528,7 +575,7 @@ class ToolDispatcher:
                 return _err('play_failed', str(res.get('error')))
             if wait:
                 audio.wait_for_completion(30.0)
-            return {'ok': True, 'played': 'sound_id', 'sound_id': sound_id, 'path': path}
+            return {'ok': True, 'played': 'sound_id', 'sound_id': sound_id, 'path': path, 'queued': not wait}
         return _err('bad_request', 'play_sound needs url or sound_id')
 
     @staticmethod
