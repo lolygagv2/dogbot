@@ -5,7 +5,8 @@ Drives the service with synthetic bus payloads and a fake clock and checks
 the emitted rows: bark_episode (gap close, bark_count, peak_db, severity,
 loudness gate), intervention (kind/result/episode_id), settle, pacing
 (oscillation yes / straight walk no), treat source + command_id echo,
-mission_run result names, status fields.
+mission_run result names, status fields, mode_change segments,
+trick_attempt rows + coach_session aggregation (2026-11-08).
 
 Run: /home/morgan/dogbot/env_new/bin/python tests/cloud/test_behavior_events_derivation.py
 Standalone (no pytest).
@@ -263,6 +264,79 @@ def test_mode_change_segments():
           "state -> shutdown then service stop: one idle row, no 'shutdown' segment row")
 
 
+def test_trick_attempt_and_coach_session():
+    """Relay 2026-11-08: trick_attempt per cue (coach / mission / run_trick) and
+    coach_session {start, end, cues_given, successes, treats} per Coach activation."""
+    import types as _types
+    s, em = svc()
+
+    def sysev(subtype, data, ts):
+        return _types.SimpleNamespace(subtype=subtype, data=data, timestamp=ts, source='t')
+
+    def rewev(data, ts):
+        return _types.SimpleNamespace(subtype='treat_dispensed', data=data, timestamp=ts, source='t')
+
+    # A run_trick-only COACH activation (engine held, one agent cue) -> no coach_session row
+    s._on_system(sysev('coaching_started', {}, 2000.0))
+    s._on_system(sysev('trick_attempt', {'source': 'run_trick', 'cue': 'sit', 'result': 'success',
+                                         'confidence': 0.91, 'dog_id': 'aruco_1', 'attempt': 1,
+                                         'behavior': 'sit', 'time': 2010.0}, 2010.0))
+    s._on_system(sysev('coaching_stopped', {}, 2020.0))
+    ta = em.of('trick_attempt')
+    check(len(ta) == 1 and ta[0]['data']['source'] == 'run_trick' and ta[0]['data']['cue'] == 'sit'
+          and ta[0]['data']['result'] == 'success' and ta[0]['data']['confidence'] == 0.91
+          and ta[0]['data']['attempt'] == 1 and ta[0]['kw'].get('dog_id') == 'aruco_1',
+          f"run_trick cue -> trick_attempt {{cue, result, confidence, source, attempt}} ({ta[0]['data'] if ta else None})")
+    check(ta[0]['data']['time'] == _iso(2010.0), "trick_attempt.time is the producer's cue-resolution time")
+    check(len(em.of('coach_session')) == 0, "COACH entered only for run_trick (no coach cues) -> no coach_session row")
+
+    # A real Coach activation: 3 cues, 2 successes, 2 coaching treats; an app treat inside is not counted
+    s._on_system(sysev('coaching_started', {}, 3000.0))
+    s._on_system(sysev('trick_attempt', {'source': 'coach', 'cue': 'sit', 'result': 'timeout',
+                                         'confidence': None, 'dog_id': 'aruco_1', 'attempt': 1,
+                                         'time': 3030.0}, 3030.0))
+    s._on_system(sysev('trick_attempt', {'source': 'coach', 'cue': 'sit', 'result': 'success',
+                                         'confidence': 0.8, 'dog_id': 'aruco_1', 'attempt': 2,
+                                         'behavior': 'sit', 'time': 3050.0}, 3050.0))
+    s._on_reward(rewev({'reason': 'coaching_reward', 'dog_id': 'aruco_1', 'timestamp': 3052.0}, 3052.0))
+    s._on_reward(rewev({'reason': 'manual', 'dog_id': 'aruco_1', 'timestamp': 3060.0}, 3060.0))
+    s._on_system(sysev('trick_attempt', {'source': 'coach', 'cue': 'speak', 'result': 'success',
+                                         'confidence': 1.0, 'dog_id': 'aruco_1', 'attempt': 1,
+                                         'behavior': 'bark', 'time': 3400.0}, 3400.0))
+    s._on_reward(rewev({'reason': 'coaching_reward', 'dog_id': 'aruco_1', 'timestamp': 3402.0}, 3402.0))
+    # a mission cue arriving mid-activation counts as its own trick_attempt, not a coach cue
+    s._on_system(sysev('trick_attempt', {'source': 'mission', 'cue': 'laydown', 'result': 'no_dog',
+                                         'dog_id': 'aruco_1', 'attempt': 1, 'time': 3500.0}, 3500.0))
+    check(len(em.of('coach_session')) == 0, "coach_session is not sent before the activation ends")
+    s._on_system(sysev('coaching_stopped', {}, 3600.0))
+    cs = em.of('coach_session')
+    check(len(cs) == 1 and cs[0]['data']['start'] == _iso(3000.0) and cs[0]['data']['end'] == _iso(3600.0)
+          and cs[0]['data']['cues_given'] == 3 and cs[0]['data']['successes'] == 2
+          and cs[0]['data']['treats'] == 2 and cs[0]['data']['duration_s'] == 600.0,
+          f"coach_session {{start, end, cues_given 3, successes 2, treats 2}} ({cs[0]['data'] if cs else None})")
+    check(cs[0]['kw'].get('resolve_dog') is False, "coach_session is per activation, not attributed to one dog")
+    check(len(em.of('trick_attempt')) == 5 and em.of('trick_attempt')[-1]['data']['result'] == 'no_dog'
+          and em.of('trick_attempt')[-1]['data']['source'] == 'mission',
+          "mission cue -> trick_attempt source=mission result=no_dog")
+
+    # Empty activation (dog never came): still a row with zero counts
+    s._on_system(sysev('coaching_started', {}, 4000.0))
+    s._on_system(sysev('coaching_stopped', {}, 4100.0))
+    cs = em.of('coach_session')
+    check(len(cs) == 2 and cs[1]['data']['cues_given'] == 0 and cs[1]['data']['treats'] == 0,
+          "Coach activation with no cues at all -> coach_session row with zero counts")
+
+    # Unknown result string is clamped to the contract set
+    s._on_system(sysev('trick_attempt', {'source': 'coach', 'cue': 'sit', 'result': 'weird', 'time': 4200.0}, 4200.0))
+    check(em.of('trick_attempt')[-1]['data']['result'] == 'timeout', "off-contract result clamps to 'timeout'")
+
+    # Open activation closed on service stop
+    s._on_system(sysev('coaching_started', {}, 5000.0))
+    s._running = True
+    s.stop()
+    check(len(em.of('coach_session')) == 3, "service stop closes the open coach activation")
+
+
 if __name__ == '__main__':
     test_bark_episode()
     test_intervention_and_settle()
@@ -271,5 +345,6 @@ if __name__ == '__main__':
     test_stills()
     test_music()
     test_mode_change_segments()
+    test_trick_attempt_and_coach_session()
     print("\nALL PASS" if not FAILS else f"\n{len(FAILS)} FAILURE(S): {FAILS}")
     sys.exit(1 if FAILS else 0)

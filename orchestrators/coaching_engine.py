@@ -852,6 +852,33 @@ class CoachingEngine:
         self.fsm_state = CoachState.WATCHING
         logger.info(f"[COACH] Command issued: {trick} (target={target_behavior}) → WATCHING")
 
+    def _report_attempt(self, result: str, confidence: Optional[float] = None,
+                        behavior: Optional[str] = None) -> None:
+        """Relay `trick_attempt` row for the cue just resolved (2026-11-08).
+        result: success | no_dog | wrong_pose | timeout. Called once per cue
+        (first command and the retry are separate cues)."""
+        s = self.current_session
+        if not s:
+            return
+        try:
+            from services.cloud.behavior_events import publish_trick_attempt
+            publish_trick_attempt('coach', s.trick_requested, result, confidence=confidence,
+                                  dog_id=s.dog_id, dog_name=s.dog_name, attempt=s.attempt,
+                                  behavior=behavior)
+        except Exception as e:
+            logger.debug(f"[COACH] trick_attempt publish failed: {e}")
+
+    def _failure_result(self, behavior_seen: Optional[str]) -> str:
+        """Classify an unsuccessful watch window: the dog did something else
+        (wrong_pose), the dog is no longer in view (no_dog), or nothing at all
+        happened while it was there (timeout)."""
+        if behavior_seen:
+            return 'wrong_pose'
+        s = self.current_session
+        if s and s.dog_id not in self.dogs_in_view:
+            return 'no_dog'
+        return 'timeout'
+
     def _state_watching(self):
         """Watch for behavior response using BehaviorInterpreter (Layer 1)"""
         if not self.current_session:
@@ -878,6 +905,7 @@ class CoachingEngine:
                 self.listening_for_barks = False
                 self.fsm_state = CoachState.FAILURE
                 logger.info(f"Speak failed - too many barks ({self.bark_count})")
+                self._report_attempt('wrong_pose', behavior='too_many_barks')
                 return
 
             # Check if we have enough barks (success!)
@@ -887,6 +915,7 @@ class CoachingEngine:
                 self.current_session.behavior_detected = 'bark'
                 self.fsm_state = CoachState.SUCCESS
                 logger.info(f"Success! Dog spoke with {self.bark_count} bark(s)")
+                self._report_attempt('success', confidence=1.0, behavior='bark')
                 return
 
             # Check timeout (no barks or not enough)
@@ -894,6 +923,7 @@ class CoachingEngine:
                 self.listening_for_barks = False
                 self.fsm_state = CoachState.FAILURE
                 logger.info(f"Speak timeout - only {self.bark_count} bark(s), need {min_barks}")
+                self._report_attempt(self._failure_result(None))
                 return
 
             return  # Keep watching for barks
@@ -922,6 +952,7 @@ class CoachingEngine:
                        f"(behavior={result.behavior_detected}, "
                        f"held={result.hold_duration:.1f}s, conf={result.confidence:.2f}, "
                        f"watch_time={watch_elapsed:.1f}s)")
+            self._report_attempt('success', confidence=result.confidence, behavior=result.behavior_detected)
             return
 
         # Log progress for debugging
@@ -935,6 +966,9 @@ class CoachingEngine:
                 logger.info(f"Timeout - {result.reason}")
             else:
                 logger.info(f"Timeout - no behavior detected for {expected_trick}")
+            seen = result.behavior_detected or self.current_session.behavior_detected
+            self._report_attempt(self._failure_result(seen),
+                                 confidence=result.confidence if seen else None, behavior=seen)
 
     def _state_success(self):
         """Handle successful trick"""
@@ -1083,6 +1117,7 @@ class CoachingEngine:
                 self.listening_for_barks = False
                 self.fsm_state = CoachState.FINAL_FAILURE
                 logger.info(f"Retry speak failed - too many barks ({self.bark_count})")
+                self._report_attempt('wrong_pose', behavior='too_many_barks')
                 return
 
             # Check if we have enough barks (success!)
@@ -1092,6 +1127,7 @@ class CoachingEngine:
                 self.current_session.behavior_detected = 'bark'
                 self.fsm_state = CoachState.SUCCESS
                 logger.info(f"Success on retry! Dog spoke with {self.bark_count} bark(s)")
+                self._report_attempt('success', confidence=1.0, behavior='bark')
                 return
 
             # Check timeout
@@ -1099,6 +1135,7 @@ class CoachingEngine:
                 self.listening_for_barks = False
                 self.fsm_state = CoachState.FINAL_FAILURE
                 logger.info(f"Retry speak timeout - only {self.bark_count} bark(s)")
+                self._report_attempt(self._failure_result(None))
                 return
 
             return  # Keep watching for barks
@@ -1111,12 +1148,16 @@ class CoachingEngine:
             self.current_session.behavior_detected = result.behavior_detected
             self.fsm_state = CoachState.SUCCESS
             logger.info(f"Success on retry! {dog_name} performed {expected_trick}")
+            self._report_attempt('success', confidence=result.confidence, behavior=result.behavior_detected)
             return
 
         # Check timeout - go to final failure
         if watch_elapsed >= detection_window:
             self.fsm_state = CoachState.FINAL_FAILURE
             logger.info(f"Retry timeout - {expected_trick} not performed")
+            seen = result.behavior_detected or self.current_session.behavior_detected
+            self._report_attempt(self._failure_result(seen),
+                                 confidence=result.confidence if seen else None, behavior=seen)
 
     def _state_final_failure(self):
         """Handle final failure after retry - no treat"""

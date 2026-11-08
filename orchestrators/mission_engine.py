@@ -840,6 +840,32 @@ class MissionEngine:
 
         self._send_mission_status("watching", trick)
 
+    def _report_attempt(self, result: str, confidence: Optional[float] = None,
+                        behavior: Optional[str] = None, trick: Optional[str] = None) -> None:
+        """Relay `trick_attempt` row for the cue/watch window just resolved
+        (2026-11-08). result: success | no_dog | wrong_pose | timeout."""
+        session = self.active_session
+        if not session:
+            return
+        cue = trick or session.trick_requested
+        if not cue:
+            return
+        try:
+            from services.cloud.behavior_events import publish_trick_attempt
+            publish_trick_attempt('mission', cue, result, confidence=confidence,
+                                  dog_id=session.dog_id, dog_name=session.dog_name,
+                                  attempt=int(session.attempts) + 1, behavior=behavior)
+        except Exception as e:
+            self.logger.debug(f"trick_attempt publish failed: {e}")
+
+    def _failure_result(self, behavior_seen: Optional[str]) -> str:
+        if behavior_seen:
+            return 'wrong_pose'
+        session = self.active_session
+        if session and session.dog_id not in self.dogs_in_view:
+            return 'no_dog'
+        return 'timeout'
+
     def _state_watching(self):
         """Watch for behavior response (same as coaching engine)"""
         session = self.active_session
@@ -866,6 +892,7 @@ class MissionEngine:
                 self.listening_for_barks = False
                 session.state = MissionState.FAILURE
                 self.logger.info(f"Speak failed - too many barks ({self.bark_count})")
+                self._report_attempt('wrong_pose', behavior='too_many_barks')
                 return
 
             if self.bark_count >= min_barks:
@@ -873,16 +900,19 @@ class MissionEngine:
                 session.behavior_detected = 'bark'
                 session.state = MissionState.SUCCESS
                 self.logger.debug(f"Success: dog spoke with {self.bark_count} bark(s)")
+                self._report_attempt('success', confidence=1.0, behavior='bark')
                 return
 
             if watch_elapsed >= speak_timeout:
                 self.listening_for_barks = False
                 session.state = MissionState.FAILURE
                 self.logger.info(f"Speak timeout - only {self.bark_count} bark(s)")
+                self._report_attempt(self._failure_result(None))
                 return
             return
 
         # Standard pose-based tricks
+        result = None
         if trick:
             result = self.interpreter.check_trick(trick, dog_id=dog_name)
 
@@ -894,12 +924,16 @@ class MissionEngine:
                     session.behavior_detected = result.behavior_detected
                     session.state = MissionState.SUCCESS
                     self.logger.debug(f"Success: {dog_name} held {trick} for {result.hold_duration:.1f}s")
+                    self._report_attempt('success', confidence=result.confidence,
+                                         behavior=result.behavior_detected)
                     return
             else:
                 if result.completed:
                     session.behavior_detected = result.behavior_detected
                     session.state = MissionState.SUCCESS
                     self.logger.debug(f"Success: {dog_name} performed {trick}")
+                    self._report_attempt('success', confidence=result.confidence,
+                                         behavior=result.behavior_detected)
                     return
 
             # Log progress
@@ -910,6 +944,11 @@ class MissionEngine:
         if watch_elapsed >= detection_window:
             session.state = MissionState.FAILURE
             self.logger.debug(f"Watch timeout for {trick}")
+            if trick:
+                seen = (result.behavior_detected if result else None) or session.behavior_detected
+                self._report_attempt(self._failure_result(seen),
+                                     confidence=(result.confidence if (result and seen) else None),
+                                     behavior=seen)
 
     def _state_success(self):
         """Handle successful behavior detection"""
@@ -1327,6 +1366,12 @@ class MissionEngine:
     def _handle_stage_timeout(self, stage: MissionStage):
         """Handle stage timeout"""
         session = self.active_session
+
+        # A pose stage that timed out while still waiting for a dog: the cue
+        # (the preceding sequence stage's audio) got no dog at all -> no_dog.
+        # Watch-window outcomes are reported from _state_watching itself.
+        if session.state == MissionState.WAITING_FOR_DOG and self._is_pose_stage(stage):
+            self._report_attempt('no_dog', trick=self._get_trick_name(stage))
 
         # Optional stages skip to next on timeout instead of failing
         if stage.conditions.get("optional", False):

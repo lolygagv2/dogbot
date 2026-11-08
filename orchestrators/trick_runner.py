@@ -87,7 +87,12 @@ class TrickRunner:
 
         prev_mode = state.get_mode()
         prev_override = getattr(fsm, 'override_mode', None)
-        if (prev_mode.value in REFUSE_MODES or state.is_mode_locked()) and not force:
+        # core.state exposes is_mode_locked as a @property (calling it raised
+        # "'bool' object is not callable" and failed every live run_trick).
+        locked = getattr(state, 'is_mode_locked', False)
+        if callable(locked):
+            locked = locked()
+        if (prev_mode.value in REFUSE_MODES or bool(locked)) and not force:
             with self._lock:
                 self._active = False
             return {**base, 'result': 'busy', 'prev_mode': prev_mode.value,
@@ -240,6 +245,18 @@ class TrickRunner:
             err_msg = str(e)
             logger.error(f"[TRICK] error: {e}")
         finally:
+            # Relay `trick_attempt` row (2026-11-08) — only when a cue was actually
+            # given; busy/invalid_cue/cancelled-before-cue/error produce none.
+            # Published BEFORE the mode restore so the coaching engine's
+            # coaching_stopped (which closes the coach_session window) sees it.
+            if base['attempts'] >= 1 and result_code in ('success', 'no_dog', 'wrong_pose', 'timeout'):
+                try:
+                    from services.cloud.behavior_events import publish_trick_attempt
+                    publish_trick_attempt('run_trick', cue, result_code, confidence=base.get('confidence'),
+                                          dog_id=dog_id, attempt=base['attempts'],
+                                          behavior=base.get('behavior_detected'))
+                except Exception as e:
+                    logger.debug(f"[TRICK] trick_attempt publish failed: {e}")
             try:
                 interp.set_target_behavior(None)
             except Exception:

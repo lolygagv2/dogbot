@@ -36,7 +36,8 @@ class FakeState:
         self.mode, self.locked = mode, locked
     def get_mode(self):
         return self.mode
-    def is_mode_locked(self):
+    @property
+    def is_mode_locked(self):   # a @property on core.state, as on the real object
         return self.locked
 
 

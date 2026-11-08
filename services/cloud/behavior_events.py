@@ -21,6 +21,12 @@ Event `data` per contract:
                  light_level: mean camera frame brightness 0-255}
   departure /   {time, method: "app"} — only on app or relay instruction
   arrival       (mark_departure / mark_arrival), never from sensing.
+  mode_change   {mode, start, end, duration_s, next_mode, reason} per stay
+  trick_attempt {time, cue, result: success|no_dog|wrong_pose|timeout,
+                 confidence, source: coach|mission|run_trick, attempt}
+                 — one per cue given (2026-11-08)
+  coach_session {start, end, duration_s, cues_given, successes, treats}
+                 — one per Coach activation (2026-11-08)
 """
 import logging
 import threading
@@ -86,6 +92,31 @@ def _iso(ts: float) -> str:
     return iso_z(ts)
 
 
+TRICK_RESULTS = ('success', 'no_dog', 'wrong_pose', 'timeout')
+TRICK_SOURCES = ('coach', 'mission', 'run_trick')
+
+
+def publish_trick_attempt(source: str, cue: str, result: str, confidence: Optional[float] = None,
+                          dog_id: Optional[str] = None, dog_name: Optional[str] = None,
+                          attempt: Optional[int] = None, behavior: Optional[str] = None,
+                          now: Optional[float] = None) -> None:
+    """Producers (coaching engine, mission engine, trick runner) call this once
+    per cue given; BehaviorEventService turns it into the relay `trick_attempt`
+    row and counts it into the open `coach_session`. Never raises."""
+    try:
+        if result not in TRICK_RESULTS:
+            result = 'timeout'
+        publish_system_event('trick_attempt', {
+            'source': source, 'cue': cue, 'result': result,
+            'confidence': None if confidence is None else round(float(confidence), 3),
+            'dog_id': dog_id, 'dog_name': dog_name,
+            'attempt': attempt, 'behavior': behavior,
+            'time': float(now or time.time()),
+        }, source)
+    except Exception as e:
+        logger.debug(f"publish_trick_attempt failed: {e}")
+
+
 class BehaviorEventService:
     def __init__(self, emitter=None, config: Optional[Dict[str, Any]] = None):
         self.config = dict(CONFIG)
@@ -129,6 +160,9 @@ class BehaviorEventService:
         # missions
         self._mission_start: Dict[Any, Tuple[float, Optional[str]]] = {}
 
+        # coach session (one per Coach activation: coaching_started -> coaching_stopped)
+        self._coach: Optional[Dict[str, Any]] = None
+
         # status
         self._last_status_t: float = 0.0
         self._last_status: Optional[Dict[str, Any]] = None
@@ -169,6 +203,10 @@ class BehaviorEventService:
                 pass
         now = time.time()
         self._close_mode_segment(now, next_mode='shutdown', reason='service_stop')
+        try:
+            self.on_coach_stopped(now)
+        except Exception as e:
+            logger.debug(f"coach_session close-on-stop failed: {e}")
         try:
             self._close_bark_episode(now)
             for dog_id in list(self._pace_open):
@@ -335,8 +373,76 @@ class BehaviorEventService:
                 self.on_mission_end(st, d, now)
             elif st == 'owner_departure':
                 self._on_owner_departure(d)
+            elif st == 'trick_attempt':
+                self.on_trick_attempt(d, now)
+            elif st == 'coaching_started':
+                self.on_coach_started(now)
+            elif st == 'coaching_stopped':
+                self.on_coach_stopped(now)
         except Exception as e:
             logger.error(f"[BEHAVIOR-EVENTS] system handler: {e}")
+
+    # ------------------------------------------------------------- coach / cues
+    # Relay request 2026-11-08: `trick_attempt` {cue, result: success|no_dog|
+    # wrong_pose|timeout, confidence} on EVERY cue given — Coach mode, a
+    # mission stage, or the agent's run_trick (data.source says which) — and
+    # `coach_session` {start, end, cues_given, successes, treats} once per
+    # Coach activation (coaching_started -> coaching_stopped). Treats are the
+    # coaching_reward dispenses inside that window. run_trick enters COACH
+    # for its own cue with the engine held; that activation gives no coach
+    # cues and is not reported as a coach_session.
+
+    def on_trick_attempt(self, d: Dict[str, Any], now: float) -> None:
+        result = d.get('result') if d.get('result') in TRICK_RESULTS else 'timeout'
+        source = d.get('source') or 'coach'
+        row = {
+            'time': _iso(float(d.get('time') or now)),
+            'cue': d.get('cue'),
+            'result': result,
+            'confidence': d.get('confidence'),
+            'source': source,
+        }
+        if d.get('attempt') is not None:
+            row['attempt'] = d.get('attempt')
+        if d.get('behavior'):
+            row['behavior'] = d.get('behavior')
+        with self._lock:
+            c = self._coach
+            if c is not None:
+                if source == 'coach':
+                    c['cues_given'] += 1
+                    if result == 'success':
+                        c['successes'] += 1
+                else:
+                    c['other_cues'] += 1
+        self.emitter.emit('trick_attempt', row, dog_id=d.get('dog_id'), dog_name=d.get('dog_name'))
+
+    def on_coach_started(self, now: float) -> None:
+        with self._lock:
+            prev = self._coach
+            self._coach = {'start': now, 'cues_given': 0, 'successes': 0, 'treats': 0, 'other_cues': 0}
+        if prev is not None:
+            self._emit_coach_session(prev, now)
+
+    def on_coach_stopped(self, now: float) -> None:
+        with self._lock:
+            c = self._coach
+            self._coach = None
+        if c is not None:
+            self._emit_coach_session(c, now)
+
+    def _emit_coach_session(self, c: Dict[str, Any], end: float) -> Optional[Dict[str, Any]]:
+        if c['cues_given'] == 0 and c['other_cues'] > 0:
+            logger.debug("[BEHAVIOR-EVENTS] coach activation served only run_trick/mission cues; no coach_session row")
+            return None
+        start = float(c['start'])
+        if end < start:
+            end = start
+        return self.emitter.emit('coach_session', {
+            'start': _iso(start), 'end': _iso(end),
+            'duration_s': round(end - start, 3),
+            'cues_given': c['cues_given'], 'successes': c['successes'], 'treats': c['treats'],
+        }, resolve_dog=False)
 
     # ------------------------------------------------------------- mode segments
     # Relay request 2026-11-07: one `mode_change` row per completed stay in
@@ -496,6 +602,10 @@ class BehaviorEventService:
             if event.subtype == 'treat_dispensed':
                 d = event.data or {}
                 now = d.get('timestamp') or getattr(event, 'timestamp', None) or time.time()
+                if (d.get('reason') or '') == 'coaching_reward':
+                    with self._lock:
+                        if self._coach is not None:
+                            self._coach['treats'] += 1
                 self._emit_with_still('treat', {
                     'time': _iso(float(now)),
                     'source': treat_source(d.get('reason')),
