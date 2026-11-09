@@ -328,9 +328,12 @@ class RemoteSettings:
         th.start()
 
     def _push_upstream(self, value: Dict[str, Any], dogs: List[str]) -> None:
-        """PUT /api/dogs/{dog}/settings/treat_schedule for every known dog,
-        retrying with backoff until the relay acks or the override TTL ends.
-        A newer local write supersedes this one (pending value differs)."""
+        """PUT /api/dogs/{dog}/settings/treat_schedule once. treat_schedule is
+        account-wide on the relay (relay brief 2026-11-09): one PUT updates every
+        dog of the owner and the relay fans out a settings_updated per dog, so the
+        first accepted write finishes the job; the other dogs are only fallbacks
+        if that one fails. Retries with backoff until acked or the override TTL
+        ends. A newer local write supersedes this one (pending value differs)."""
         try:
             from services.cloud.relay_client import get_relay_client
             relay = get_relay_client()
@@ -354,8 +357,10 @@ class RemoteSettings:
                     still.append(dog)
                     continue
                 if 200 <= status < 300:
-                    logger.info(f"[TREAT-SYNC] relay accepted treat limits for dog {dog} "
-                                f"({self._limits_brief(value)})")
+                    logger.info(f"[TREAT-SYNC] relay accepted treat limits via dog {dog} "
+                                f"({self._limits_brief(value)}) — account-wide, fans out to all dogs")
+                    still = []
+                    break
                 elif status in (404, 405):
                     logger.warning(f"[TREAT-SYNC] relay has no PUT treat_schedule yet "
                                    f"(HTTP {status}) dog={dog} — will retry")

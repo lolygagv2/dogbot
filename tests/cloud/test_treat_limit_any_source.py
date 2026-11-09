@@ -131,6 +131,26 @@ check('2xx clears pending', wait_for(lambda: rs.get_treat_sync_status()['pending
 res = rs.set_treat_limits(daily_cap=25, source='local_api')
 check('same value -> no_change, no PUT', res['upstream'] == 'no_change' and len(fake_relay.calls) == 1)
 
+# ---------------------------------------------------------------- account-wide: two dogs -> ONE PUT (relay fans out)
+DOG2 = '019f58ad-0000-7aff-adae-000000000002'
+rs.apply({'treat_schedule': {'daily_cap': 25, 'default_multiplier': 1.0, 'max_per_hour': 3, 'windows': []}},
+         source='relay_push', dog_id=DOG2)
+check('second dog tracked', rs.get_treat_sync_status()['dog_ids'] == sorted([DOG, DOG2]))
+fake_relay.calls.clear(); fake_relay.ev.clear()
+res = rs.set_treat_limits(daily_cap=30, source='local_api')
+check('two-dog write pending', res['upstream'] == 'pending', str(res))
+check('2xx clears pending (two dogs)', wait_for(lambda: rs.get_treat_sync_status()['pending_local'] is None))
+time.sleep(0.2)
+check('account-wide: exactly one PUT for two dogs', len(fake_relay.calls) == 1, str(fake_relay.calls))
+# first dog fails -> falls back to the second, still one accepted write
+fake_relay.calls.clear(); fake_relay.ev.clear()
+fake_relay.responses = [(500, 'boom')]
+res = rs.set_treat_limits(daily_cap=25, source='local_api')
+check('fallback clears pending', wait_for(lambda: rs.get_treat_sync_status()['pending_local'] is None))
+time.sleep(0.2)
+check('account-wide: failed dog then other dog -> 2 calls, stops after accept',
+      len(fake_relay.calls) == 2 and fake_relay.calls[0][1] != fake_relay.calls[1][1], str(fake_relay.calls))
+
 # ---------------------------------------------------------------- stale relay push while pending (404 relay)
 fake_relay.calls.clear()
 fake_relay.responses = [(404, None)] * 10     # relay without the PUT endpoint
