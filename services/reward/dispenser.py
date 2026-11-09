@@ -634,7 +634,6 @@ class DispenserService:
                          'short_ground_a', 'short_ground_b',
                          'overtemp_shutdown', 'overtemp_warning')
 
-    @property
     def _refuse(self, code: str, reason: Optional[str], **extra) -> Dict[str, Any]:
         """Record why the last dispense was refused, in the wire shape the
         app shows (relay brief 2026-11-09 §5): treat_cap_reached {used, cap,
@@ -659,6 +658,7 @@ class DispenserService:
                              'reason': reason, 'message': msg, 'at': time.time(), **extra}
         return self.last_refusal
 
+    @property
     def is_dispensing(self) -> bool:
         """True while a dispense (including its retry ladder) is running."""
         return self._dispense_active
