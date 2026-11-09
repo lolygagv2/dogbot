@@ -28,7 +28,6 @@ from collections import deque
 
 from core.bus import get_bus, CloudEvent
 from core.state import get_state, SystemMode
-from services.reward.treat_policy import extract_treat_limits
 
 # Robot version for connection announcement
 ROBOT_VERSION = "1.0.0"
@@ -1030,20 +1029,9 @@ class RelayClient:
                 if 'fast_escalation_bpm' in params:
                     bark['fast_escalation_bpm'] = int(params['fast_escalation_bpm'])
                     updated['fast_escalation_bpm'] = bark['fast_escalation_bpm']
-                # Treat limits riding on sg_config (app slider). The robot
-                # listens to everybody for the cap, not just the relay's
-                # settings document: apply here and write back upstream.
-                self.logger.info(f"[TREAT-SYNC] sg_config fields={sorted(params.keys())}")
-                limits = extract_treat_limits(params)
-                if limits:
-                    from services.cloud.remote_settings import get_remote_settings
-                    res = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: get_remote_settings().set_treat_limits(
-                            daily_cap=limits.get('daily_cap', ...),
-                            max_per_hour=limits.get('max_per_hour', ...),
-                            source='app_sg_config'))
-                    updated['treat_schedule'] = res.get('treat_schedule')
-                    updated['treat_upstream'] = res.get('upstream')
+                # Treat limits are NOT taken from sg_config / mission_config:
+                # the relay parses the app's message, saves treat_schedule and
+                # pushes settings_updated (relay brief 2026-11-09 §4).
                 self.logger.info(f"sg_config applied: {updated}")
                 await self._send({
                     'type': 'command_ack', 'command': command,

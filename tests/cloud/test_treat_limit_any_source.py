@@ -191,6 +191,36 @@ res = rs.set_treat_limits(max_per_hour=5, source='local_api')
 check('hourly-only write keeps cap 20', tp.get_settings()['max_per_hour'] == 5 and tp.get_settings()['daily_cap'] == 20)
 wait_for(lambda: rs.get_treat_sync_status()['pending_local'] is None, 2.0)
 
+# ---------------------------------------------------------------- daily_cap_enabled (relay brief 2026-11-09 §1)
+r = rs.apply({'treat_schedule': {'daily_cap': 65, 'daily_cap_enabled': True, 'max_per_hour': 0,
+                                 'default_multiplier': 1.0, 'windows': []}}, source='relay_push', dog_id=DOG)
+check('relay doc with daily_cap_enabled true -> cap 65, per_hour 0 = off',
+      tp.get_settings()['daily_cap'] == 65 and fake_disp.daily_limit == 65 and tp.get_settings()['max_per_hour'] in (0, None))
+check('max_per_hour 0 does not block protocol treats',
+      tp.check('silent_guardian_reward', treats_today=0).allowed is True, str(tp.check('silent_guardian_reward', treats_today=0)))
+r = rs.apply({'treat_schedule': {'daily_cap': 65, 'daily_cap_enabled': False, 'max_per_hour': 0,
+                                 'default_multiplier': 1.0, 'windows': []}}, source='relay_push', dog_id=DOG)
+check('daily_cap_enabled false -> unlimited (policy None, dispenser 300)',
+      tp.get_settings()['daily_cap'] is None and fake_disp.daily_limit == 300 and rs._settings['treat_schedule']['daily_cap'] == 65)
+check('unlimited: 70th treat allowed', tp.check('cloud_command', treats_today=70).allowed is True)
+res = rs.set_treat_limits(daily_cap_enabled=True, source='local_api')
+check('local re-enable keeps parked cap 65', tp.get_settings()['daily_cap'] == 65 and res['treat_schedule']['daily_cap_enabled'] is True)
+check('71st treat refused at cap 65', tp.check('cloud_command', treats_today=70).allowed is False
+      and tp.check('cloud_command', treats_today=70).code == 'daily_cap')
+wait_for(lambda: rs.get_treat_sync_status()['pending_local'] is None, 2.0)
+check('enabled-only write sent full value upstream',
+      fake_relay.calls[-1][2]['value'].get('daily_cap_enabled') is True and fake_relay.calls[-1][2]['value']['daily_cap'] == 65)
+
+# ---------------------------------------------------------------- wire codes + reset time
+from services.reward.treat_policy import wire_code, TreatPolicy
+check('wire codes', (wire_code('daily_cap'), wire_code('cooldown'), wire_code('max_per_hour'), wire_code('window_blocked'))
+      == ('treat_cap_reached', 'treat_rate', 'treat_rate', 'treat_window_closed'))
+from services.cloud.remote_settings import get_remote_settings
+get_remote_settings().apply({'timezone': 'America/New_York'}, source='relay_push', dog_id=DOG)
+ra = TreatPolicy.resets_at_iso()
+check('resets_at is next local midnight in dog tz', ra.endswith('00:00:00-05:00') or ra.endswith('00:00:00-04:00'), ra)
+check('seconds_until_midnight sane', 0 < TreatPolicy.seconds_until_midnight() <= 86400)
+
 print()
 print('ALL PASS' if all(results) else f'{results.count(False)} FAILED')
 sys.exit(0 if all(results) else 1)

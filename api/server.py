@@ -852,13 +852,27 @@ async def dispense_treat(request: TreatRequest):
             )
             success = dispensed > 0
 
-        return {
+        out = {
             "success": success,
             "treats_dispensed": dispensed,
             "requested": count,
             "dog_id": request.dog_id,
             "reason": request.reason
         }
+        if not success:
+            # Refusal reason in the wire shape the app shows (relay brief
+            # 2026-11-09 §5): treat_cap_reached {used, cap, resets_at} |
+            # treat_rate | treat_window_closed. Only when the policy said no
+            # (an empty/jammed carousel sets empty_or_jammed instead).
+            ref = getattr(dispenser, 'last_refusal', None)
+            if ref:
+                out.update({"refused": True, "code": ref['code'], "used": ref['used'],
+                            "cap": ref['cap'], "resets_at": ref['resets_at'],
+                            "message": ref['message']})
+            elif getattr(dispenser, 'empty_or_jammed', False):
+                out.update({"refused": False, "code": "dispenser_empty",
+                            "message": "Carousel empty or jammed"})
+        return out
 
     except Exception as e:
         logger.error(f"Treat dispense error: {e}")
@@ -1220,20 +1234,6 @@ async def update_sg_config(config: Dict[str, Any]):
         sg.config.setdefault('bark_detection', {})['fast_escalation_bpm'] = new_bpm
         updated['fast_escalation_bpm'] = new_bpm
 
-    # Treat limits riding on sg_config (LAN/AP app path) — same seam as the
-    # relay-socket sg_config: apply + write back to the relay.
-    from services.reward.treat_policy import extract_treat_limits
-    limits = extract_treat_limits(config)
-    if limits:
-        from services.cloud.remote_settings import get_remote_settings
-        res = await asyncio.to_thread(
-            get_remote_settings().set_treat_limits,
-            daily_cap=limits.get('daily_cap', ...),
-            max_per_hour=limits.get('max_per_hour', ...),
-            source='local_sg_config')
-        updated['treat_schedule'] = res.get('treat_schedule')
-        updated['treat_upstream'] = res.get('upstream')
-
     return {"success": True, "updated": updated}
 
 
@@ -1254,24 +1254,29 @@ async def treat_limit_get():
 async def treat_limit_set(request: Request):
     """Set treat limits from anything local (curl, Xbox, dashboard).
 
-    Body: {"daily_cap": int|null, "max_per_hour": int|null} — send only the
-    fields to change; null removes that limit. daily_cap 0 blocks all treats
-    today. Applied immediately to the policy + dispenser, persisted, and
-    written back to the relay so the app agrees (sync.pending_local shows
-    the write in flight)."""
+    Body: {"daily_cap": int|null, "daily_cap_enabled": bool,
+           "max_per_hour": int|null} — send only the fields to change.
+    daily_cap_enabled false = unlimited (daily_cap kept for the toggle);
+    daily_cap 0 blocks all treats today; max_per_hour 0/null = no hourly
+    limit. Applied immediately to the policy + dispenser, persisted, and
+    written back to the relay (the only setting a robot may write) so the
+    app agrees; sync.pending_local shows the write in flight. This is a
+    robot-initiated change — startup/reconnect never writes."""
     from services.cloud.remote_settings import get_remote_settings
     try:
         body = await request.json()
     except Exception:
         body = {}
-    if not isinstance(body, dict) or not ({'daily_cap', 'max_per_hour'} & set(body)):
+    keys = {'daily_cap', 'daily_cap_enabled', 'max_per_hour'}
+    if not isinstance(body, dict) or not (keys & set(body)):
         return JSONResponse(status_code=400, content={
-            "success": False, "error": "send daily_cap and/or max_per_hour"})
+            "success": False, "error": "send daily_cap, daily_cap_enabled and/or max_per_hour"})
     try:
         res = await asyncio.to_thread(
             get_remote_settings().set_treat_limits,
             daily_cap=body['daily_cap'] if 'daily_cap' in body else ...,
             max_per_hour=body['max_per_hour'] if 'max_per_hour' in body else ...,
+            daily_cap_enabled=body['daily_cap_enabled'] if 'daily_cap_enabled' in body else ...,
             source=str(body.get('source') or 'local_api'))
     except (TypeError, ValueError) as e:
         return JSONResponse(status_code=400, content={"success": False, "error": str(e)})

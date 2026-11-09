@@ -121,6 +121,7 @@ class DispenserService:
         self.last_dispense_mono = 0.0       # monotonic — for elapsed gates (battery idle check)
         self.min_dispense_interval = 0.0
         self.daily_limit = 300
+        self.last_refusal: Optional[Dict[str, Any]] = None  # see _refuse()
 
         # Per-dog tracking
         self.dog_treat_counts = {}
@@ -634,6 +635,30 @@ class DispenserService:
                          'overtemp_shutdown', 'overtemp_warning')
 
     @property
+    def _refuse(self, code: str, reason: Optional[str], **extra) -> Dict[str, Any]:
+        """Record why the last dispense was refused, in the wire shape the
+        app shows (relay brief 2026-11-09 §5): treat_cap_reached {used, cap,
+        resets_at} | treat_rate | treat_window_closed. Read by /treat/dispense,
+        the relay command path and the v2 tool dispatcher."""
+        from services.reward.treat_policy import get_treat_policy
+        try:
+            resets_at = get_treat_policy().resets_at_iso()
+        except Exception:
+            resets_at = None
+        cap = self.daily_limit
+        used = self.treats_dispensed_today
+        if code == 'treat_cap_reached':
+            msg = f"Daily treat limit reached ({used}/{cap}). Resets at midnight."
+        elif code == 'treat_rate':
+            msg = "Treats are coming too fast — try again in a bit."
+        elif code == 'treat_window_closed':
+            msg = "Treats are off in this time window."
+        else:
+            msg = f"Treat refused ({code})."
+        self.last_refusal = {'code': code, 'used': used, 'cap': cap, 'resets_at': resets_at,
+                             'reason': reason, 'message': msg, 'at': time.time(), **extra}
+        return self.last_refusal
+
     def is_dispensing(self) -> bool:
         """True while a dispense (including its retry ladder) is running."""
         return self._dispense_active
@@ -780,9 +805,10 @@ class DispenserService:
                     self.logger.error("Dispenser auto-initialization failed")
                     return False
 
-            # Check daily limit
+            # Check daily limit (relay treat_schedule.daily_cap; 0 = block all)
             if self.treats_dispensed_today >= self.daily_limit:
                 self.logger.warning(f"Daily treat limit reached ({self.daily_limit})")
+                self._refuse('treat_cap_reached', reason)
                 return False
 
             # Treat policy gate (protocol v2 settings: treat_schedule multiplier
@@ -796,13 +822,19 @@ class DispenserService:
                         f"Dispense blocked by treat policy: {decision.code} "
                         f"(reason={reason} class={decision.reason_class} "
                         f"m={decision.multiplier} cooldown={decision.cooldown_s:.0f}s)")
+                    from services.reward.treat_policy import wire_code
+                    self._refuse(wire_code(decision.code), reason,
+                                 policy_code=decision.code,
+                                 cooldown_s=round(decision.cooldown_s, 1))
                     return False
             except Exception as e:
                 self.logger.debug(f"treat policy check skipped: {e}")
             if now - self.last_dispense_time < self.min_dispense_interval:
                 self.logger.warning("Dispense too soon after last dispense")
+                self._refuse('treat_rate', reason, policy_code='min_interval')
                 return False
 
+            self.last_refusal = None
             try:
                 self.last_wimz_dispense_id = None
                 fire_mono = time.monotonic()

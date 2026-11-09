@@ -515,7 +515,15 @@ class ToolDispatcher:
         ok = d.dispense_treat(dog_id=args.get('dog_id'), dog_name=args.get('dog_name'),
                               reason=reason, command_id=args.get('_command_id'))
         if not ok:
-            return _err('dispense_blocked', 'dispense refused (policy, cap, empty or jam)',
+            ref = getattr(d, 'last_refusal', None)
+            if ref:
+                # treat_cap_reached {used, cap, resets_at} | treat_rate | treat_window_closed
+                return _err(ref['code'], ref['message'], used=ref['used'], cap=ref['cap'],
+                            resets_at=ref['resets_at'], treats_remaining=d.treats_remaining)
+            if getattr(d, 'empty_or_jammed', False):
+                return _err('dispenser_empty', 'carousel empty or jammed',
+                            treats_remaining=d.treats_remaining)
+            return _err('dispense_blocked', 'dispense refused (busy or hardware)',
                         treats_remaining=d.treats_remaining)
         return {'ok': True, 'treats_remaining': d.treats_remaining,
                 'treats_today': d.treats_dispensed_today}

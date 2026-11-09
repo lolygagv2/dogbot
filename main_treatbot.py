@@ -1293,6 +1293,7 @@ class TreatBotMain:
                         'count': params.get('count', 1)
                     }, timeout=35.0)
                     self.logger.debug(f"Treat dispensed -> {resp.status_code}")
+                    self._report_treat_refusal(command, params, resp)
 
                 elif command == 'led':
                     # LED control per API contract
@@ -2163,6 +2164,36 @@ class TreatBotMain:
             self.logger.error(f"Cloud command failed - API not reachable")
         except Exception as e:
             self.logger.error(f"Cloud command error: {e}", exc_info=True)
+
+    def _report_treat_refusal(self, command: str, params: dict, resp) -> None:
+        """The app's treat button is not checked by the relay, so the robot
+        enforces the cap/rate/windows itself and tells the app why it said no
+        (relay brief 2026-11-09 §5). Reply shape, on the relay socket:
+          command_ack {command, success:false, code, used, cap, resets_at,
+                       message, dog_id, command_id?}
+        plus a 'treat_refused' event with the same fields for the activity
+        feed. code: treat_cap_reached | treat_rate | treat_window_closed |
+        dispenser_empty."""
+        try:
+            body = resp.json() if resp is not None else {}
+        except Exception:
+            return
+        if not isinstance(body, dict) or body.get('success') or not body.get('code'):
+            return
+        detail = {k: body.get(k) for k in ('code', 'used', 'cap', 'resets_at', 'message')}
+        detail['dog_id'] = params.get('dog_id')
+        if params.get('command_id'):
+            detail['command_id'] = params['command_id']
+        self.logger.info(f"[TREAT] refused {detail['code']} used={detail['used']} "
+                         f"cap={detail['cap']} -> telling app")
+        if self.relay_client and self.relay_client.connected:
+            try:
+                self.relay_client.send_message({'type': 'command_ack', 'command': command,
+                                                'success': False, 'error': detail['code'],
+                                                **detail})
+                self.relay_client.send_event('treat_refused', detail)
+            except Exception as e:
+                self.logger.warning(f"treat refusal reply failed: {e}")
 
     def _get_lan_ip(self) -> str:
         """Get the robot's LAN IP address"""

@@ -69,10 +69,19 @@ def classify_reason(reason: Optional[str]) -> str:
 @dataclass
 class Decision:
     allowed: bool
-    code: str                 # ok | daily_cap | window_blocked | cooldown
+    code: str                 # ok | daily_cap | window_blocked | cooldown | max_per_hour
     multiplier: float
     cooldown_s: float
     reason_class: str
+
+
+# Policy code -> wire reason code the app shows (relay brief 2026-11-09 §5).
+WIRE_CODES = {'daily_cap': 'treat_cap_reached', 'cooldown': 'treat_rate',
+              'max_per_hour': 'treat_rate', 'window_blocked': 'treat_window_closed'}
+
+
+def wire_code(policy_code: str) -> str:
+    return WIRE_CODES.get(policy_code, policy_code)
 
 
 def _parse_hhmm(s: str) -> int:
@@ -199,6 +208,7 @@ class TreatPolicy:
         logger.info(f"[TREAT-POLICY] default_multiplier={m}")
 
     def set_max_per_hour(self, n) -> None:
+        """0 or None = no hourly limit (relay default since 2026-11-09)."""
         with self._lock:
             if n is None:
                 self._max_per_hour = None
@@ -206,7 +216,7 @@ class TreatPolicy:
                 n = int(n)
                 if n < 0:
                     raise ValueError("max_per_hour must be >= 0")
-                self._max_per_hour = n
+                self._max_per_hour = n if n > 0 else None
         logger.info(f"[TREAT-POLICY] max_per_hour={self._max_per_hour}")
 
     def set_schedule(self, windows) -> None:
@@ -288,10 +298,38 @@ class TreatPolicy:
     # ------------------------------------------------------------- midnight
 
     @staticmethod
-    def seconds_until_midnight(now: Optional[datetime] = None) -> float:
-        now = now or datetime.now()
-        nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        return max(1.0, (nxt - now).total_seconds())
+    def _tz():
+        """The dog's timezone from the relay settings (key 'timezone'), else
+        the system zone. The day resets at local midnight there, same as the
+        relay's own count."""
+        try:
+            from services.cloud.remote_settings import get_remote_settings
+            name = get_remote_settings().get_timezone()
+            if name:
+                from zoneinfo import ZoneInfo
+                return ZoneInfo(name)
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def now_local(cls) -> datetime:
+        tz = cls._tz()
+        return datetime.now(tz) if tz else datetime.now()
+
+    @classmethod
+    def next_midnight(cls, now: Optional[datetime] = None) -> datetime:
+        now = now or cls.now_local()
+        return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    @classmethod
+    def resets_at_iso(cls) -> str:
+        return cls.next_midnight().isoformat()
+
+    @classmethod
+    def seconds_until_midnight(cls, now: Optional[datetime] = None) -> float:
+        now = now or cls.now_local()
+        return max(1.0, (cls.next_midnight(now) - now).total_seconds())
 
     def start(self) -> None:
         with self._lock:
@@ -313,7 +351,7 @@ class TreatPolicy:
             self._wake.clear()
             if not self._running:
                 break
-            if datetime.now().hour == 0:
+            if self.now_local().hour == 0:
                 self.reset_daily()
 
     def reset_daily(self) -> None:

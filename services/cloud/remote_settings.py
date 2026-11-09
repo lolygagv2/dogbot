@@ -216,8 +216,13 @@ class RemoteSettings:
         if value.get('max_per_hour') is not None and int(value['max_per_hour']) < 0:
             raise ValueError("max_per_hour must be >= 0")
         tp = get_treat_policy()
-        if 'daily_cap' in value or not partial:
-            tp.set_daily_cap(value.get('daily_cap'))
+        if 'daily_cap' in value or 'daily_cap_enabled' in value or not partial:
+            # daily_cap_enabled false = unlimited; daily_cap then only parks
+            # the slider value for when the toggle comes back on.
+            enabled = value.get('daily_cap_enabled', True)
+            if enabled is None:
+                enabled = True
+            tp.set_daily_cap(value.get('daily_cap') if enabled else None)
         if 'default_multiplier' in value or not partial:
             tp.set_default_multiplier(value.get('default_multiplier', 1.0))
         if 'max_per_hour' in value or not partial:
@@ -232,7 +237,9 @@ class RemoteSettings:
         a = a if isinstance(a, dict) else {}
         b = b if isinstance(b, dict) else {}
         def norm(d):
+            en = d.get('daily_cap_enabled', True)
             return (None if d.get('daily_cap') is None else int(d['daily_cap']),
+                    True if en is None else bool(en),
                     None if d.get('max_per_hour') is None else int(d['max_per_hour']))
         return norm(a) == norm(b)
 
@@ -264,10 +271,12 @@ class RemoteSettings:
     @staticmethod
     def _limits_brief(v) -> str:
         v = v if isinstance(v, dict) else {}
-        return f"cap={v.get('daily_cap')} per_hour={v.get('max_per_hour')}"
+        en = v.get('daily_cap_enabled', True)
+        return (f"cap={v.get('daily_cap')}{'' if en in (True, None) else ' (disabled)'} "
+                f"per_hour={v.get('max_per_hour')}")
 
-    def set_treat_limits(self, daily_cap=..., max_per_hour=..., source: str = 'local',
-                         push_upstream: bool = True) -> Dict[str, Any]:
+    def set_treat_limits(self, daily_cap=..., max_per_hour=..., daily_cap_enabled=...,
+                         source: str = 'local', push_upstream: bool = True) -> Dict[str, Any]:
         """THE setter for the treat cap from any non-relay path (app sg_config,
         local API, Xbox, voice). Merges into the current treat_schedule, applies
         it through the normal path (TreatPolicy + dispenser + persisted cache),
@@ -281,6 +290,9 @@ class RemoteSettings:
             merged['daily_cap'] = None if daily_cap is None else int(daily_cap)
         if max_per_hour is not ...:
             merged['max_per_hour'] = None if max_per_hour is None else int(max_per_hour)
+        if daily_cap_enabled is not ...:
+            merged['daily_cap_enabled'] = bool(daily_cap_enabled)
+        merged.setdefault('daily_cap_enabled', True)
         merged.setdefault('default_multiplier', 1.0)
         merged.setdefault('windows', [])
         if self._limits_equal(cur, merged) and isinstance(cur, dict):
