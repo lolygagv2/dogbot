@@ -44,6 +44,14 @@ SG_PROFILES: Dict[str, Dict[str, Any]] = {
 }
 LEVEL_TO_PROFILE = {'low': 'relaxed', 'medium': 'normal', 'med': 'normal', 'high': 'sensitive',
                     'relaxed': 'relaxed', 'normal': 'normal', 'sensitive': 'sensitive'}
+# Settings sources that come FROM the relay (authoritative once it has our
+# write). Anything else is a local setter (app sg_config, local API, Xbox).
+RELAY_SOURCES = ('relay', 'relay_get', 'relay_push', 'cache')
+# How long a locally-set treat_schedule outranks a stale relay push while the
+# upstream PUT is still in flight / retrying.
+LOCAL_OVERRIDE_TTL_S = 600.0
+UPSTREAM_BACKOFF_S = (2, 5, 15, 30, 60, 120, 180, 240)
+
 KNOWN_KEYS = ('treat_schedule', 'sg_sensitivity', 'music_plan', 'quiet_hours', 'notify_rules',
               'missions', 'timezone')
 
@@ -56,6 +64,11 @@ class RemoteSettings:
         self._meta: Dict[str, Any] = {'received_at': None, 'source': None, 'applied_at': None,
                                       'dog_id': None}
         self._store = None
+        self._dog_ids: set = set()             # every dog the relay sent settings for
+        # Local treat_schedule write awaiting the relay's ack (PUT 2xx or an
+        # equal push). {'value': {...}, 'since': mono, 'source': str}
+        self._pending_local: Optional[Dict[str, Any]] = None
+        self._upstream_thread: Optional[threading.Thread] = None
 
     # ------------------------------------------------------------- persistence
 
@@ -132,10 +145,19 @@ class RemoteSettings:
             unwrapped[key] = value
         settings = unwrapped
 
+        if dog_id:
+            with self._lock:
+                self._dog_ids.add(str(dog_id))
+
         # timezone first: the missions loader needs it for the dog's HH:MM
         ordered = sorted(settings.items(), key=lambda kv: 0 if kv[0] == 'timezone' else 1)
         for key, value in ordered:
             try:
+                if key == 'treat_schedule' and source in RELAY_SOURCES:
+                    verdict = self._reconcile_relay_treat_schedule(value, source)
+                    if verdict == 'deferred':
+                        rejected[key] = 'local treat_schedule pending upstream ack'
+                        continue
                 if key == 'treat_schedule':
                     self._apply_treat_schedule(value)
                 elif key == 'daily_cap':            # legacy flat key
@@ -187,8 +209,8 @@ class RemoteSettings:
         # cannot half-apply (e.g. reset the cap and then fail on windows).
         if 'windows' in value and value['windows'] is not None:
             validate_schedule(value['windows'])
-        if value.get('daily_cap') is not None and int(value['daily_cap']) < 1:
-            raise ValueError("daily_cap must be >= 1")
+        if value.get('daily_cap') is not None and int(value['daily_cap']) < 0:
+            raise ValueError("daily_cap must be >= 0")
         if value.get('default_multiplier') is not None and float(value['default_multiplier']) < 0:
             raise ValueError("default_multiplier must be >= 0")
         if value.get('max_per_hour') is not None and int(value['max_per_hour']) < 0:
@@ -202,6 +224,151 @@ class RemoteSettings:
             tp.set_max_per_hour(value.get('max_per_hour'))
         if 'windows' in value or not partial:
             tp.set_schedule(value.get('windows') or [])
+
+    # ------------------------------------------------- treat limits: any source
+
+    @staticmethod
+    def _limits_equal(a, b) -> bool:
+        a = a if isinstance(a, dict) else {}
+        b = b if isinstance(b, dict) else {}
+        def norm(d):
+            return (None if d.get('daily_cap') is None else int(d['daily_cap']),
+                    None if d.get('max_per_hour') is None else int(d['max_per_hour']))
+        return norm(a) == norm(b)
+
+    def _reconcile_relay_treat_schedule(self, value, source: str) -> str:
+        """A relay-sourced treat_schedule arrives while a local write is pending.
+        Equal limits -> the relay has our value: pending cleared ('acked').
+        Different + pending fresh -> 'deferred' (local wins; relay is stale).
+        Different + pending expired -> 'accept' (relay regains authority)."""
+        with self._lock:
+            pend = self._pending_local
+            if not pend:
+                return 'accept'
+            if self._limits_equal(pend['value'], value):
+                self._pending_local = None
+                logger.info(f"[TREAT-SYNC] relay ({source}) now carries the local limits "
+                            f"{self._limits_brief(value)} — pending cleared")
+                return 'acked'
+            if time.monotonic() - pend['since'] > LOCAL_OVERRIDE_TTL_S:
+                self._pending_local = None
+                logger.warning("[TREAT-SYNC] local treat limits never reached the relay "
+                               "within the override window — accepting relay value "
+                               f"{self._limits_brief(value)}")
+                return 'accept'
+            logger.warning(f"[TREAT-SYNC] ignoring stale relay ({source}) treat_schedule "
+                           f"{self._limits_brief(value)}; local {self._limits_brief(pend['value'])} "
+                           f"set by {pend['source']} is awaiting upstream ack")
+            return 'deferred'
+
+    @staticmethod
+    def _limits_brief(v) -> str:
+        v = v if isinstance(v, dict) else {}
+        return f"cap={v.get('daily_cap')} per_hour={v.get('max_per_hour')}"
+
+    def set_treat_limits(self, daily_cap=..., max_per_hour=..., source: str = 'local',
+                         push_upstream: bool = True) -> Dict[str, Any]:
+        """THE setter for the treat cap from any non-relay path (app sg_config,
+        local API, Xbox, voice). Merges into the current treat_schedule, applies
+        it through the normal path (TreatPolicy + dispenser + persisted cache),
+        then writes it back to the relay so the app / relay / other robots agree.
+        Ellipsis = leave that field as it is. Returns the apply() result plus
+        'treat_schedule' (merged) and 'upstream' (pending|skipped|no_change)."""
+        with self._lock:
+            cur = self._settings.get('treat_schedule')
+            merged = dict(cur) if isinstance(cur, dict) else {}
+        if daily_cap is not ...:
+            merged['daily_cap'] = None if daily_cap is None else int(daily_cap)
+        if max_per_hour is not ...:
+            merged['max_per_hour'] = None if max_per_hour is None else int(max_per_hour)
+        merged.setdefault('default_multiplier', 1.0)
+        merged.setdefault('windows', [])
+        if self._limits_equal(cur, merged) and isinstance(cur, dict):
+            return {'applied': [], 'rejected': {}, 'treat_schedule': merged,
+                    'upstream': 'no_change'}
+        result = self.apply({'treat_schedule': merged}, source=source)
+        result['treat_schedule'] = merged
+        if 'treat_schedule' not in result['applied']:
+            result['upstream'] = 'skipped'
+            return result
+        logger.info(f"[TREAT-SYNC] treat limits set by {source}: {self._limits_brief(merged)}")
+        if not push_upstream:
+            result['upstream'] = 'skipped'
+            return result
+        with self._lock:
+            self._pending_local = {'value': dict(merged), 'since': time.monotonic(),
+                                   'source': source}
+            dogs = sorted(self._dog_ids) or ([self._meta['dog_id']] if self._meta['dog_id'] else [])
+        if not dogs:
+            logger.warning("[TREAT-SYNC] no dog_id known yet — cannot write limits to relay; "
+                           "local value holds until the relay pushes")
+            result['upstream'] = 'no_dog'
+            return result
+        self._start_upstream_push(dict(merged), dogs)
+        result['upstream'] = 'pending'
+        return result
+
+    def _start_upstream_push(self, value: Dict[str, Any], dogs: List[str]) -> None:
+        th = threading.Thread(target=self._push_upstream, args=(value, dogs),
+                              name='treat-limit-upstream', daemon=True)
+        with self._lock:
+            self._upstream_thread = th
+        th.start()
+
+    def _push_upstream(self, value: Dict[str, Any], dogs: List[str]) -> None:
+        """PUT /api/dogs/{dog}/settings/treat_schedule for every known dog,
+        retrying with backoff until the relay acks or the override TTL ends.
+        A newer local write supersedes this one (pending value differs)."""
+        try:
+            from services.cloud.relay_client import get_relay_client
+            relay = get_relay_client()
+        except Exception as e:
+            logger.warning(f"[TREAT-SYNC] relay client unavailable, limits stay local: {e}")
+            return
+        remaining = list(dogs)
+        for attempt, delay in enumerate(UPSTREAM_BACKOFF_S, 1):
+            with self._lock:
+                pend = self._pending_local
+            if not pend or not self._limits_equal(pend['value'], value):
+                return  # acked by a relay push, or superseded by a newer local write
+            still = []
+            for dog in remaining:
+                try:
+                    status, body = relay.http_sync(
+                        'PUT', f'/api/dogs/{dog}/settings/treat_schedule',
+                        json_body={'value': value}, timeout=10.0)
+                except Exception as e:
+                    logger.warning(f"[TREAT-SYNC] PUT treat_schedule dog={dog} failed: {e}")
+                    still.append(dog)
+                    continue
+                if 200 <= status < 300:
+                    logger.info(f"[TREAT-SYNC] relay accepted treat limits for dog {dog} "
+                                f"({self._limits_brief(value)})")
+                elif status in (404, 405):
+                    logger.warning(f"[TREAT-SYNC] relay has no PUT treat_schedule yet "
+                                   f"(HTTP {status}) dog={dog} — will retry")
+                    still.append(dog)
+                else:
+                    logger.warning(f"[TREAT-SYNC] PUT treat_schedule dog={dog} -> HTTP {status} "
+                                   f"{str(body)[:160]}")
+                    still.append(dog)
+            remaining = still
+            if not remaining:
+                with self._lock:
+                    if self._pending_local and self._limits_equal(self._pending_local['value'], value):
+                        self._pending_local = None
+                return
+            time.sleep(delay)
+        logger.error(f"[TREAT-SYNC] gave up writing treat limits to relay for dogs {remaining}; "
+                     "local value holds until the override window expires")
+
+    def get_treat_sync_status(self) -> Dict[str, Any]:
+        with self._lock:
+            pend = self._pending_local
+            return {'dog_ids': sorted(self._dog_ids),
+                    'pending_local': None if not pend else {
+                        'value': pend['value'], 'source': pend['source'],
+                        'age_s': round(time.monotonic() - pend['since'], 1)}}
 
     def _apply_sg_sensitivity(self, value) -> None:
         if value is None:

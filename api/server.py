@@ -1220,7 +1220,63 @@ async def update_sg_config(config: Dict[str, Any]):
         sg.config.setdefault('bark_detection', {})['fast_escalation_bpm'] = new_bpm
         updated['fast_escalation_bpm'] = new_bpm
 
+    # Treat limits riding on sg_config (LAN/AP app path) — same seam as the
+    # relay-socket sg_config: apply + write back to the relay.
+    from services.reward.treat_policy import extract_treat_limits
+    limits = extract_treat_limits(config)
+    if limits:
+        from services.cloud.remote_settings import get_remote_settings
+        res = await asyncio.to_thread(
+            get_remote_settings().set_treat_limits,
+            daily_cap=limits.get('daily_cap', ...),
+            max_per_hour=limits.get('max_per_hour', ...),
+            source='local_sg_config')
+        updated['treat_schedule'] = res.get('treat_schedule')
+        updated['treat_upstream'] = res.get('upstream')
+
     return {"success": True, "updated": updated}
+
+
+@app.get("/treat/limit")
+async def treat_limit_get():
+    """Current treat limits (daily cap, per-hour) + relay sync state."""
+    from services.reward.treat_policy import get_treat_policy
+    from services.cloud.remote_settings import get_remote_settings
+    tp = get_treat_policy()
+    dispenser = get_dispenser_service()
+    return {"success": True, "policy": tp.get_settings(),
+            "treats_dispensed_today": getattr(dispenser, 'treats_dispensed_today', None),
+            "dispenser_daily_limit": getattr(dispenser, 'daily_limit', None),
+            "sync": get_remote_settings().get_treat_sync_status()}
+
+
+@app.post("/treat/limit")
+async def treat_limit_set(request: Request):
+    """Set treat limits from anything local (curl, Xbox, dashboard).
+
+    Body: {"daily_cap": int|null, "max_per_hour": int|null} — send only the
+    fields to change; null removes that limit. daily_cap 0 blocks all treats
+    today. Applied immediately to the policy + dispenser, persisted, and
+    written back to the relay so the app agrees (sync.pending_local shows
+    the write in flight)."""
+    from services.cloud.remote_settings import get_remote_settings
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict) or not ({'daily_cap', 'max_per_hour'} & set(body)):
+        return JSONResponse(status_code=400, content={
+            "success": False, "error": "send daily_cap and/or max_per_hour"})
+    try:
+        res = await asyncio.to_thread(
+            get_remote_settings().set_treat_limits,
+            daily_cap=body['daily_cap'] if 'daily_cap' in body else ...,
+            max_per_hour=body['max_per_hour'] if 'max_per_hour' in body else ...,
+            source=str(body.get('source') or 'local_api'))
+    except (TypeError, ValueError) as e:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
+    ok = not res.get('rejected')
+    return {"success": ok, **res}
 
 
 @app.get("/sg/summary")

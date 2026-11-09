@@ -103,6 +103,47 @@ def validate_schedule(windows) -> List[Dict]:
     return out
 
 
+# Field names an app / voice / sg_config message may use for the treat limits.
+# The relay guesses the same set (its [TREAT-SYNC] line). Order = priority.
+DAILY_CAP_KEYS = ('daily_cap', 'max_treats_per_day', 'daily_treat_limit', 'treat_limit',
+                  'treats_per_day', 'max_daily_treats', 'daily_treats', 'treat_cap',
+                  'treats_limit', 'treat_daily_limit', 'daily_limit', 'max_treats')
+MAX_PER_HOUR_KEYS = ('max_per_hour', 'max_treats_per_hour', 'hourly_treat_limit',
+                     'treats_per_hour', 'hourly_cap', 'hourly_limit')
+
+
+def extract_treat_limits(params) -> Dict:
+    """Pull {daily_cap?, max_per_hour?} out of a loosely-named message.
+
+    Looks at the top level and inside a nested 'treat_schedule' / 'treats'
+    object. Returns only the keys that were present (so a partial apply
+    keeps the other value) plus 'matched': the source field names used.
+    Non-numeric values are ignored rather than raised."""
+    out: Dict = {}
+    matched: List[str] = []
+    if not isinstance(params, dict):
+        return out
+    scopes = [params]
+    for nest in ('treat_schedule', 'treats', 'treat_limits'):
+        if isinstance(params.get(nest), dict):
+            scopes.append(params[nest])
+    for target, keys in (('daily_cap', DAILY_CAP_KEYS), ('max_per_hour', MAX_PER_HOUR_KEYS)):
+        for scope in scopes:
+            for k in keys:
+                if k in scope and scope[k] is not None:
+                    try:
+                        out[target] = int(float(scope[k]))
+                        matched.append(k)
+                        break
+                    except (TypeError, ValueError):
+                        continue
+            if target in out:
+                break
+    if matched:
+        out['matched'] = matched
+    return out
+
+
 class TreatPolicy:
     def __init__(self):
         self._lock = threading.RLock()
@@ -131,18 +172,20 @@ class TreatPolicy:
     # ------------------------------------------------------------- settings
 
     def set_daily_cap(self, cap: Optional[int]) -> None:
+        """cap None = no cap (dispenser falls back to its 300 ceiling);
+        cap 0 = block every treat, owner taps included (relay range 0..100)."""
         with self._lock:
             if cap is None:
                 self._daily_cap = None
-                return
-            cap = int(cap)
-            if cap < 1:
-                raise ValueError("daily_cap must be >= 1")
-            self._daily_cap = cap
+            else:
+                cap = int(cap)
+                if cap < 0:
+                    raise ValueError("daily_cap must be >= 0")
+                self._daily_cap = cap
         d = self._get_dispenser()
         if d is not None:
             try:
-                d.set_daily_limit(cap)   # clamps 1..300
+                d.set_daily_limit(300 if cap is None else cap)   # clamps 0..300
             except Exception as e:
                 logger.error(f"set_daily_limit failed: {e}")
         logger.info(f"[TREAT-POLICY] daily_cap={cap}")

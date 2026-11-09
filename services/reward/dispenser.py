@@ -1263,7 +1263,8 @@ class DispenserService:
         publish_reward_event('daily_reset', {'timestamp': time.time()}, 'dispenser_service')
 
     def set_daily_limit(self, limit: int) -> None:
-        self.daily_limit = max(1, min(300, limit))
+        # 0 = block all treats today (relay allows a 0..100 cap)
+        self.daily_limit = max(0, min(300, int(limit)))
         self.logger.info(f"Daily limit set to {self.daily_limit}")
 
     def _load_treat_counter(self):
