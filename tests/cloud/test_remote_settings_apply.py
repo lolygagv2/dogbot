@@ -73,7 +73,9 @@ def main():
                        'on_departure': {'track': 'songs/default/bach.mp3', 'delay_s': 120, 'duration_min': 20},
                        'schedule': []},
         'quiet_hours': {'start': '22:00', 'end': '07:00'},
-        'notify_rules': [{'if': 'bark_episode.severity==high', 'then': 'push'}],
+        'notify_rules': {'rules': [{'id': 'bark_long', 'enabled': True, 'event_type': 'bark_episode',
+                                    'when': {'min_duration_s': 60.0, 'severity_in': ['med', 'high']},
+                                    'cooldown_s': 900, 'attach': 'still', 'app_type': 'bark'}]},
         'future_key': {'x': 1},
     }
     res = rs.apply(doc, source='relay_get', dog_id='dog-1')
@@ -90,6 +92,7 @@ def main():
     snap = rs.get()
     check(snap['music_plan']['on_departure']['duration_min'] == 20 and snap['quiet_hours']['end'] == '07:00'
           and snap['notify_rules'] and snap['future_key'] == {'x': 1}, "music_plan/quiet_hours/notify_rules/unknown stored")
+    check(rs.get_notify_rules()[0]['id'] == 'bark_long', "notify_rules {rules: [...]} unwrapped by getter")
     check(snap['_meta']['dog_id'] == 'dog-1' and snap['_meta']['source'] == 'relay_get', "meta records dog and source")
     check('remote_settings' in store.kv and json.loads(store.kv['remote_settings'])['settings']['treat_schedule']['daily_cap'] == 12,
           "persisted to store")
@@ -107,6 +110,9 @@ def main():
                     'notify_rules': [1]}, source='relay_push')
     check(set(res['rejected']) == {'treat_schedule', 'sg_sensitivity', 'music_plan', 'quiet_hours'}
           and res['applied'] == ['notify_rules'], f"invalid values rejected individually ({res})")
+    res = rs.apply({'notify_rules': {'rules': 'nope'}}, source='relay_push')
+    check('notify_rules' in res['rejected'] and rs.get_notify_rules() == [1],
+          f"notify_rules with non-list rules rejected, previous kept ({res})")
     check(tp.get_settings()['daily_cap'] == 12, "rejected treat_schedule left the previous policy intact")
 
     # load_cached in a fresh instance

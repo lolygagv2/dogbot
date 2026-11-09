@@ -22,7 +22,8 @@ Keys and shapes
                    schedule: [...]}  (stored; SG music helpers read volume,
                    BehaviorEvents plays on_departure; schedule stored only)
   quiet_hours     stored verbatim, exposed via get(); not enforced here.
-  notify_rules    stored verbatim (relay evaluates).
+  notify_rules    {rules: [...]} (relay shape) or a bare list; stored
+                  verbatim (relay evaluates).
 Unknown keys are kept for forward compatibility. Nothing here touches the
 SG escalation state machine.
 """
@@ -169,8 +170,9 @@ class RemoteSettings:
                 elif key == 'quiet_hours':
                     self._validate_quiet_hours(value)
                 elif key == 'notify_rules':
-                    if value is not None and not isinstance(value, list):
-                        raise ValueError("notify_rules must be a list")
+                    rules = value.get('rules') if isinstance(value, dict) else value
+                    if value is not None and not isinstance(rules, list):
+                        raise ValueError("notify_rules must be {rules: [...]} or a list")
                 elif key == 'timezone':
                     self._validate_timezone(value)
                 with self._lock:
@@ -531,6 +533,8 @@ class RemoteSettings:
     def get_notify_rules(self) -> List[Any]:
         with self._lock:
             nr = self._settings.get('notify_rules')
+            if isinstance(nr, dict):
+                nr = nr.get('rules')
             return list(nr) if isinstance(nr, list) else []
 
     def get_quiet_hours(self):
