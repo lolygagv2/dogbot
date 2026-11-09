@@ -16,7 +16,6 @@
 - [x] **Power-button SPOF redesign** — SOLVED (Aug 2026): every robot now has a hardware-direct OFF switch, no software in the kill path.
 - [x] **RTC batteries installed fleet-wide** (Aug 2026) — cross-boot timestamps are now trustworthy; retire the old "never trust cross-boot timestamps" caveat.
 - [x] **treatbot2 dispenser** — root cause was a bad crimp on a stepper coil wire (repaired); the TMC2209 chip was fine.
-- [x] **Treat cap from any source + relay brief 2026-11-09** — SHIPPED tb5 (477e23c, 9d4ee1c). Relay owns `treat_schedule`; robot obeys pushes, never PUTs at boot, writes only on `POST /treat/limit`. `daily_cap_enabled:false` = unlimited, `max_per_hour: 0` = off (was blocking every SG/coach treat), refusal codes `treat_cap_reached {used,cap,resets_at}` / `treat_rate` / `treat_window_closed` on app button (command_ack + `treat_refused` event), tool dispatcher and `/treat/dispense`. **Live verify owed:** slide app limit to 1, press treat twice → second refused in-app.
 
 ### Live verification needed (fixed in code 2026-10-03, service NOT yet restarted — Morgan: `sudo systemctl restart treatbot.service`)
 - [ ] **Video aspect flapping** — ABR Low tier was 640x480 (4:3) + REMB-floor misread flipped tiers every 5-15 s (751fe5b). Verify: live video on LAN, `journalctl -f | grep ABR` settles at high and stays; view keeps one shape. If the app still resizes, ask app Claude whether the video container follows track dimensions (should be a fixed 16:9 letterbox).
