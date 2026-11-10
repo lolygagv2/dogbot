@@ -327,6 +327,10 @@ class ToolDispatcher:
                                            'YAMNet, upload WAV; bark detection keeps running'))
         self.register(ToolSpec('agent_utterance', self._tool_agent_utterance, 60.0,
                                description='Record one utterance (WAV <=30 s), POST /agent/utterance, play reply'))
+        self.register(ToolSpec('smart_plug', self._tool_smart_plug, 15.0,
+                               description='WiFi smart plug: {action: on|off|toggle|status}. on/off/toggle is a '
+                                           'manual override (the robot then never auto-switches it off); '
+                                           'result {on, owner robot|manual, auto_off_in_s}'))
 
     # The relay waits 10 s for a command_result. Capture normally takes
     # <1 s; if it has not finished inside this budget we answer at once with
@@ -527,6 +531,22 @@ class ToolDispatcher:
                         treats_remaining=d.treats_remaining)
         return {'ok': True, 'treats_remaining': d.treats_remaining,
                 'treats_today': d.treats_dispensed_today}
+
+    @staticmethod
+    def _tool_smart_plug(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        """{action: on|off|toggle|status} (also {on: true|false} / {state: ...})."""
+        from services.network.smart_plug import get_smart_plug_service
+        svc = get_smart_plug_service()
+        action = args.get('action', args.get('state'))
+        if action is None and 'on' in args:
+            action = 'on' if args.get('on') in (True, 1, 'on', 'true', '1') else 'off'
+        action = str(action if action is not None else 'status').lower()
+        if action in ('status', 'get'):
+            out = svc.status()
+            if not out.get('configured'):
+                return _err('no_plug', 'no smart plug configured on this robot')
+            return out
+        return svc.set_manual(action, source=str(args.get('source') or 'relay'))
 
     @staticmethod
     def _tool_set_mode(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:

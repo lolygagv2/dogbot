@@ -72,6 +72,21 @@ servo:
 battery:
   calibration_factor: 58.21
 
+# WiFi smart plug (services/network/smart_plug.py) — Kasa HS103 "Wall bearer" at
+# Morgan's house. Silent Guardian turns it ON at an intervention of level >=
+# trigger_level if it was off, and turns it OFF again auto_off_minutes after the
+# last such trigger or exit_grace_s after leaving Silent Guardian. A plug that was
+# already on, or one switched by a manual `smart_plug` command, is never auto-off'd.
+# The plug is matched by device_id; host is only the first address to try.
+smart_plug:
+  enabled: true
+  alias: "Wall bearer"
+  device_id: "80065423BF5CD5582973FF8BA6868208239E7C5D"
+  host: "192.168.50.195"
+  trigger_level: 2
+  auto_off_minutes: 120
+  exit_grace_s: 60
+
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:
   driver: "cytron"        # Selects MotorControllerCytron in services/motion/motor.py dispatch

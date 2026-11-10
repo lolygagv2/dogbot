@@ -1085,6 +1085,26 @@ class RelayClient:
                               'success': status is not None, 'night_mode': status})
             return
 
+        # Smart plug without a command_id (legacy ack path; with a command_id the
+        # ToolDispatcher answered above with command_result).
+        # params: {"action": "on"|"off"|"toggle"|"status"}
+        if command == 'smart_plug':
+            try:
+                from services.cloud.tool_dispatcher import ToolDispatcher
+                import threading as _threading
+                res = await asyncio.to_thread(ToolDispatcher._tool_smart_plug,
+                                              dict(params or {}), _threading.Event())
+            except Exception as e:
+                self.logger.error(f"smart_plug error: {e}")
+                res = {'ok': False, 'error': {'code': 'exception', 'message': str(e)}}
+            err = res.get('error')
+            await self._send({
+                'type': 'command_ack', 'command': command, 'success': bool(res.get('ok')),
+                'smart_plug': {k: v for k, v in res.items() if k not in ('ok', 'error')},
+                'error': (err.get('message') if isinstance(err, dict) else err) if not res.get('ok') else None,
+            })
+            return
+
         if command == 'mood_led':
             action = params.get('action', 'toggle')
             ok = False

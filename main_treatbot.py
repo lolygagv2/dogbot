@@ -665,6 +665,12 @@ class TreatBotMain:
             except Exception as e:
                 self.logger.error(f"Treat policy failed to start: {e}")
             try:
+                from services.network.smart_plug import get_smart_plug_service
+                if get_smart_plug_service().start():
+                    self.logger.info("Smart plug service started (SG level trigger + auto-off)")
+            except Exception as e:
+                self.logger.error(f"Smart plug service failed to start: {e}")
+            try:
                 from services.cloud.behavior_events import get_behavior_event_service
                 get_behavior_event_service().start()
                 self.logger.info("Behavior event service started (bark_episode/intervention/settle/pacing/treat/music/mission_run/status)")
@@ -1016,6 +1022,12 @@ class TreatBotMain:
                         'aggressive_tag': event.data.get('aggressive_tag'),
                         'panic_episodes': event.data.get('panic_episodes'),
                     }
+
+                elif event.subtype == 'smart_plug_state':
+                    # WiFi smart plug switched (SG level trigger, auto-off, or
+                    # manual override) — services/network/smart_plug.py.
+                    event_type = 'smart_plug'
+                    event_data = dict(event.data)
 
                 elif event.subtype == 'sg_summary':
                     # Level-4 escalation summary (once per session) — the app
