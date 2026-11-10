@@ -2,6 +2,12 @@
 """
 Smart plug control (TP-Link Kasa, local LAN protocol) + Silent Guardian rule.
 
+WHY: the plug powers an Adaptil pheromone diffuser (dog-appeasing pheromone
+plug-in). Running it only when the dog is actually distressed — a Silent
+Guardian intervention that has escalated to level 2 — calms the dog when it
+matters and saves the refill instead of diffusing all day. Hence "on at level
+2, off 2 h later", and never switching off a diffuser the owner turned on.
+
 Rule (Morgan, 2026-11-10):
   - Silent Guardian intervention at level >= trigger_level (2):
       plug OFF  -> robot turns it ON and OWNS it (auto-off armed)
@@ -10,6 +16,8 @@ Rule (Morgan, 2026-11-10):
       auto_off_minutes (120) after the last level>=2 trigger, or
       the robot has been out of Silent Guardian mode for exit_grace_s.
   - A plug the robot did NOT turn on is never turned off by the robot.
+  - The plug may simply not be there (unplugged, robot away from home): that is
+    normal, logged once as a note, and Silent Guardian is unaffected.
   - A manual request (relay / app / REST `smart_plug` tool) always wins and
     clears robot ownership: manual ON stays on until someone turns it off,
     manual OFF is off (a later level>=2 trigger may turn it on again).
@@ -17,8 +25,10 @@ Rule (Morgan, 2026-11-10):
 Ownership + deadline are persisted (state/smart_plug.json) so a service
 restart inside the window still turns the plug off.
 
-Config: `smart_plug:` section of the per-unit robot profile. No section or
-enabled: false -> the service is inert (fleet units without a plug).
+Config: `smart_plug:` section of the per-unit robot profile, overridden by
+state/smart_plug_config.json which the owner writes from the app/relay with the
+`smart_plug` command (action scan -> configure / remove). Neither present or
+enabled: false -> the service is inert (units without a plug).
 
 Protocol: Kasa "IOT" local API, TCP 9999, XOR-autokey obfuscated JSON with a
 4-byte big-endian length prefix. No cloud, no extra dependency. If the plug's
@@ -39,6 +49,8 @@ from typing import Any, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
 
 STATE_FILE = Path('/home/morgan/dogbot/state/smart_plug.json')
+USER_CONFIG_FILE = Path('/home/morgan/dogbot/state/smart_plug_config.json')
+USER_KEYS = ('enabled', 'host', 'device_id', 'alias', 'trigger_level', 'auto_off_minutes')
 KASA_PORT = 9999
 
 DEFAULTS = {
@@ -52,6 +64,7 @@ DEFAULTS = {
     'auto_off_minutes': 120,
     'exit_grace_s': 60,
     'retry_s': 30,
+    'give_up_hours': 24,
 }
 
 
@@ -75,6 +88,40 @@ def _kasa_decrypt(data: bytes) -> str:
 
 class PlugError(Exception):
     pass
+
+
+def discover_plugs(timeout_s: float = 3.0) -> list:
+    """Every Kasa plug answering the local protocol on this LAN (UDP broadcast)."""
+    found: Dict[str, Dict[str, Any]] = {}
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.settimeout(0.5)
+        probe = _kasa_encrypt('{"system":{"get_sysinfo":{}}}')
+        deadline = time.time() + timeout_s
+        next_probe = 0.0
+        while time.time() < deadline:
+            if time.time() >= next_probe:          # UDP: ask more than once
+                s.sendto(probe, ('255.255.255.255', KASA_PORT))
+                next_probe = time.time() + 1.0
+            try:
+                data, addr = s.recvfrom(4096)
+                info = json.loads(_kasa_decrypt(data))['system']['get_sysinfo']
+            except socket.timeout:
+                continue
+            except Exception:
+                continue
+            if 'relay_state' not in info or not info.get('deviceId'):
+                continue                            # bulbs, power strips with children, etc.
+            found[info['deviceId']] = {
+                'device_id': info['deviceId'], 'alias': (info.get('alias') or '').strip(),
+                'model': info.get('model'), 'host': addr[0], 'mac': info.get('mac'),
+                'on': bool(info.get('relay_state')), 'rssi': info.get('rssi')}
+    except OSError as e:
+        logger.warning(f"[PLUG] scan failed: {e}")
+    finally:
+        s.close()
+    return sorted(found.values(), key=lambda d: d['alias'].lower())
 
 
 class KasaPlug:
@@ -198,9 +245,21 @@ class SmartPlugService:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, plug: Optional[KasaPlug] = None,
                  state_file: Optional[Path] = None, clock: Callable[[], float] = time.time,
-                 mode_getter: Optional[Callable[[], bool]] = None):
+                 mode_getter: Optional[Callable[[], bool]] = None,
+                 user_config_file: Optional[Path] = None,
+                 scan_fn: Optional[Callable[[], list]] = None,
+                 plug_factory: Optional[Callable[[Dict[str, Any]], KasaPlug]] = None):
+        # Profile (or injected) config, overridden by what the owner set from the app.
+        self.user_config_file = (Path(user_config_file) if user_config_file
+                                 else (USER_CONFIG_FILE if config is None else None))
+        self._base_cfg = dict(config if config is not None else self._profile_config())
+        self._scan = scan_fn or discover_plugs
+        self._plug_factory = plug_factory or (lambda c: KasaPlug(
+            c.get('host'), c.get('device_id'), c.get('alias'),
+            c.get('port') or KASA_PORT, c.get('timeout_s') or 3.0))
         cfg = dict(DEFAULTS)
-        cfg.update(config if config is not None else self._profile_config())
+        cfg.update(self._base_cfg)
+        cfg.update(self._load_user_config())
         self.cfg = cfg
         self.enabled = bool(cfg.get('enabled')) and bool(cfg.get('host') or cfg.get('device_id') or plug)
         self.state_file = Path(state_file) if state_file else STATE_FILE
@@ -223,9 +282,8 @@ class SmartPlugService:
         self._next_off_attempt = 0.0
 
         self._load_state()
-        self.plug = plug or (KasaPlug(self._saved_host or cfg.get('host'), cfg.get('device_id'),
-                                      cfg.get('alias'), cfg.get('port') or KASA_PORT,
-                                      cfg.get('timeout_s') or 3.0) if self.enabled else None)
+        self.plug = plug or (self._plug_factory({**cfg, 'host': self._saved_host or cfg.get('host')})
+                             if self.enabled else None)
 
     # ---------------- config / persistence ----------------
     @staticmethod
@@ -236,6 +294,26 @@ class SmartPlugService:
         except Exception as e:
             logger.warning(f"[PLUG] profile config unavailable: {e}")
             return {}
+
+    def _load_user_config(self) -> Dict[str, Any]:
+        if not self.user_config_file:
+            return {}
+        try:
+            data = json.loads(self.user_config_file.read_text())
+            return {k: data[k] for k in USER_KEYS if k in data}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.warning(f"[PLUG] user config unreadable ({e}); using the profile")
+            return {}
+
+    def _save_user_config(self, data: Dict[str, Any]) -> None:
+        if not self.user_config_file:
+            return
+        self.user_config_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.user_config_file.with_suffix('.tmp')
+        tmp.write_text(json.dumps(data, indent=1))
+        os.replace(tmp, self.user_config_file)
 
     @staticmethod
     def _default_in_sg() -> bool:
@@ -331,7 +409,7 @@ class SmartPlugService:
                 is_on = self.plug.is_on()
             except PlugError as e:
                 self._note_error(e)
-                return 'error'
+                return 'unavailable'      # plug absent: fine, SG carries on without it
             self.last_known_on, self.last_error = is_on, None
             deadline = now + float(self.cfg['auto_off_minutes']) * 60.0
             if not is_on:
@@ -339,14 +417,14 @@ class SmartPlugService:
                     self.plug.set(True)
                 except PlugError as e:
                     self._note_error(e)
-                    return 'error'
+                    return 'unavailable'
                 self.owner, self.auto_off_at, self.turned_on_at = 'robot', deadline, now
                 self.last_known_on = True
                 self._out_of_sg_since = None
                 self._changed(True, 'sg_level', level=level)
                 return 'turned_on'
             if self.owner == 'robot':
-                self.auto_off_at = deadline          # still barking: restart the timer
+                self.auto_off_at, self.turned_on_at = deadline, now   # still barking: restart the timer
                 self._save_state()
                 logger.info(f"[PLUG] SG level {level}: already on (robot-owned), auto-off timer restarted")
                 return 'extended'
@@ -384,7 +462,14 @@ class SmartPlugService:
             except PlugError as e:
                 self._next_off_attempt = now + float(self.cfg['retry_s'])
                 self._note_error(e)
-                return 'error'
+                due = self.auto_off_at or now
+                if now - due > float(self.cfg['give_up_hours']) * 3600.0:
+                    # Gone for good (unplugged): stop trying, nothing left to own.
+                    self.owner = self.auto_off_at = self.turned_on_at = None
+                    self._save_state()
+                    logger.info("[PLUG] note: plug still absent — auto-off dropped")
+                    return 'gave_up'
+                return 'unavailable'
             self.owner, self.auto_off_at, self.turned_on_at = None, None, None
             self.last_known_on, self.last_error = False, None
             self._out_of_sg_since = None
@@ -417,6 +502,91 @@ class SmartPlugService:
             self._changed(want, 'manual', source=source, overrode_robot=was_robot)
             return {'ok': True, **self._status_fields()}
 
+    # ---------------- owner setup (app / relay) ----------------
+    def scan(self) -> Dict[str, Any]:
+        """Plugs this robot can control, for the app's picker."""
+        plugs = self._scan()
+        current = self.cfg.get('device_id') if self.enabled else None
+        for p in plugs:
+            p['selected'] = p['device_id'] == current
+        return {'ok': True, 'plugs': plugs, 'count': len(plugs)}
+
+    def configure(self, device_id: Optional[str] = None, alias: Optional[str] = None,
+                  trigger_level: Any = None, auto_off_minutes: Any = None,
+                  source: str = 'app') -> Dict[str, Any]:
+        """Choose the plug and/or change the rule. Omitted fields keep their value."""
+        def bad(code, msg):
+            return {'ok': False, 'error': {'code': code, 'message': msg}}
+        with self._lock:
+            current = self.cfg.get('device_id') if self.enabled else None
+            device_id = device_id or current
+            if not device_id:
+                return bad('missing_device_id', 'device_id required (get it from action scan)')
+            try:
+                level = int(trigger_level if trigger_level is not None else self.cfg['trigger_level'])
+                minutes = float(auto_off_minutes if auto_off_minutes is not None
+                                else self.cfg['auto_off_minutes'])
+            except (TypeError, ValueError):
+                return bad('invalid_value', 'trigger_level and auto_off_minutes must be numbers')
+            if not 1 <= level <= 4:
+                return bad('invalid_value', 'trigger_level must be 1-4')
+            if not 1 <= minutes <= 1440:
+                return bad('invalid_value', 'auto_off_minutes must be 1-1440')
+            user = {'enabled': True, 'device_id': device_id, 'trigger_level': level,
+                    'auto_off_minutes': int(minutes) if minutes == int(minutes) else minutes}
+            new_device = device_id != current
+            if new_device:
+                match = next((p for p in self._scan() if p['device_id'] == device_id), None)
+                if match is None:
+                    return bad('plug_not_found', 'that plug did not answer on the robot\'s WiFi network')
+                user['host'] = match['host']
+                user['alias'] = alias or match['alias']
+                self._release_owned('plug_changed')
+            else:
+                user['host'] = getattr(self.plug, 'host', None) or self.cfg.get('host')
+                user['alias'] = alias or self.cfg.get('alias')
+            try:
+                self._save_user_config(user)
+            except Exception as e:
+                return bad('save_failed', str(e))
+            cfg = dict(DEFAULTS)
+            cfg.update(self._base_cfg)
+            cfg.update(user)
+            self.cfg, self.enabled = cfg, True
+            if new_device or self.plug is None:
+                self.plug = self._plug_factory(cfg)
+                self.last_known_on = self.last_error = None
+            elif self.owner == 'robot' and self.turned_on_at:
+                self.auto_off_at = self.turned_on_at + minutes * 60.0   # new duration applies now
+            self._save_state()
+            logger.info(f"[PLUG] configured by {source}: {cfg.get('alias')} ({device_id[:8]}…) "
+                        f"level >= {level}, auto-off {minutes:g} min")
+        self.start()
+        return self.status()
+
+    def remove(self, source: str = 'app') -> Dict[str, Any]:
+        """Stop controlling any plug (a robot-owned plug is switched off first)."""
+        with self._lock:
+            self._release_owned('plug_removed')
+            try:
+                self._save_user_config({'enabled': False})
+            except Exception as e:
+                return {'ok': False, 'error': {'code': 'save_failed', 'message': str(e)}}
+            self.enabled = False
+            self.cfg['enabled'] = False
+            logger.info(f"[PLUG] removed by {source}")
+        return {'ok': True, 'configured': False}
+
+    def _release_owned(self, reason: str) -> None:
+        if self.owner == 'robot' and self.plug is not None:
+            try:
+                self.plug.set(False)
+                self._changed(False, reason)
+            except PlugError as e:
+                self._note_error(e)
+        self.owner = self.auto_off_at = self.turned_on_at = None
+        self._save_state()
+
     def status(self, refresh: bool = True) -> Dict[str, Any]:
         if not self.enabled:
             return {'ok': True, 'configured': False}
@@ -434,6 +604,7 @@ class SmartPlugService:
         return {
             'configured': True,
             'alias': self.cfg.get('alias'),
+            'device_id': self.cfg.get('device_id'),
             'host': self.plug.host,
             'on': self.last_known_on,
             'reachable': self.last_error is None,
@@ -447,8 +618,11 @@ class SmartPlugService:
         }
 
     def _note_error(self, e: Exception) -> None:
+        # A plug that is not there is normal (unplugged, moved, robot on another
+        # network) — one info note per outage, never a warning, never repeated.
+        first = self.last_error is None
         self.last_error = str(e)
-        logger.warning(f"[PLUG] {e}")
+        (logger.info if first else logger.debug)(f"[PLUG] note: plug not available right now ({e})")
 
     def _changed(self, on: bool, reason: str, **extra) -> None:
         self.last_change = {'on': on, 'reason': reason, 'time': self._clock(), **extra}

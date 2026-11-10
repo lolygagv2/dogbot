@@ -73,7 +73,8 @@ battery:
   calibration_factor: 58.21
 
 # WiFi smart plug (services/network/smart_plug.py) — Kasa HS103 "Wall bearer" at
-# Morgan's house. Silent Guardian turns it ON at an intervention of level >=
+# Morgan's house. It powers an Adaptil pheromone diffuser: run it only when the dog
+# is actually distressed (calms when it matters, saves the refill). Silent Guardian turns it ON at an intervention of level >=
 # trigger_level if it was off, and turns it OFF again auto_off_minutes after the
 # last such trigger or exit_grace_s after leaving Silent Guardian. A plug that was
 # already on, or one switched by a manual `smart_plug` command, is never auto-off'd.

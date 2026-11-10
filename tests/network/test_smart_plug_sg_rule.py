@@ -199,23 +199,71 @@ def main():
     svc.on_sg_trigger(2)
     clock.t += 7201
     fake.down = True
-    check(svc.tick() == 'error' and svc.owner == 'robot', "plug unreachable at auto-off -> ownership kept")
+    check(svc.tick() == 'unavailable' and svc.owner == 'robot', "plug absent at auto-off -> ownership kept, no error")
     fake.down = False
     check(svc.tick() is None and fake.on is True, "no hammering inside the retry interval")
     clock.t += 31
     check(svc.tick() == 'turned_off' and fake.on is False, "off on the retry once reachable")
     fake.down = True
     check(svc.set_manual('on')['error']['code'] == 'plug_unreachable', "manual command reports unreachable plug")
-    check(svc.on_sg_trigger(2) == 'error' and svc.owner is None, "trigger with unreachable plug takes no ownership")
+    check(svc.on_sg_trigger(2) == 'unavailable' and svc.owner is None, "trigger with absent plug: note only, no ownership")
+    fake.down = False
+    svc.on_sg_trigger(2)
+    fake.down = True
+    clock.t += 7201 + 23 * 3600
+    check(svc.tick() == 'unavailable' and svc.owner == 'robot', "absent plug: still retrying inside 24 h")
+    clock.t += 3600
+    check(svc.tick() == 'gave_up' and svc.owner is None, "absent > 24 h past the deadline: auto-off dropped")
     fake.down = False
     fake.close()
 
     # --- wrong device answering at the address is never switched
     fake = FakeKasa(device_id='SOMEONE_ELSES_PLUG', on=False)
     svc, _ = make(fake, clock, in_sg)
-    check(svc.on_sg_trigger(2) == 'error' and fake.on is False and fake.sets == [],
+    check(svc.on_sg_trigger(2) == 'unavailable' and fake.on is False and fake.sets == [],
           "different device at the configured address is not switched")
     fake.close()
+
+    # --- owner setup from the app: scan -> configure -> change rule -> remove
+    fa, fb = FakeKasa(device_id='PLUG_A', on=False), FakeKasa(device_id='PLUG_B', on=False)
+    ports = {'PLUG_A': fa.port, 'PLUG_B': fb.port}
+    listing = lambda: [{'device_id': k, 'alias': f'plug {k[-1]}', 'model': 'HS103(US)', 'host': '127.0.0.1',
+                        'mac': None, 'on': False, 'rssi': -40} for k in ports]
+
+    def factory(c):
+        p = KasaPlug('127.0.0.1', c['device_id'], c.get('alias'), ports[c['device_id']], 1.0)
+        p.discover = lambda: None
+        return p
+    d = Path(tempfile.mkdtemp(prefix='plugcfg_'))
+    kw = dict(config={}, state_file=d / 'state.json', user_config_file=d / 'user.json', clock=clock,
+              mode_getter=lambda: in_sg['v'], scan_fn=listing, plug_factory=factory)
+    svc = SmartPlugService(**kw)
+    svc.start = lambda: True               # no worker thread / bus in the unit test
+    check(svc.status() == {'ok': True, 'configured': False}, "setup: unconfigured robot reports configured false")
+    check(svc.scan()['count'] == 2 and not any(p['selected'] for p in svc.scan()['plugs']), "setup: scan lists both plugs")
+    check(svc.configure()['error']['code'] == 'missing_device_id', "setup: configure needs a device_id first time")
+    check(svc.configure(device_id='NOPE')['error']['code'] == 'plug_not_found', "setup: unknown plug refused")
+    check(svc.configure(device_id='PLUG_A', trigger_level=9)['error']['code'] == 'invalid_value', "setup: level range checked")
+    res = svc.configure(device_id='PLUG_A', auto_off_minutes=30)
+    check(res['ok'] and res['configured'] and res['alias'] == 'plug A' and res['auto_off_minutes'] == 30
+          and res['trigger_level'] == 2, "setup: configure selects the plug with defaults + 30 min")
+    check([p['selected'] for p in svc.scan()['plugs']] == [True, False], "setup: scan marks the selected plug")
+    check(svc.on_sg_trigger(2) == 'turned_on' and fa.on and svc.status()['auto_off_in_s'] == 1800,
+          "setup: rule runs on the configured plug with the owner's duration")
+    res = svc.configure(auto_off_minutes=60, trigger_level=3)
+    check(res['ok'] and res['auto_off_in_s'] == 3600 and res['owner'] == 'robot',
+          "setup: changing the duration re-times a running auto-off")
+    svc_b = SmartPlugService(**kw)
+    check(svc_b.enabled and svc_b.cfg['device_id'] == 'PLUG_A' and svc_b.cfg['trigger_level'] == 3
+          and svc_b.owner == 'robot', "setup: choice survives a restart")
+    res = svc.configure(device_id='PLUG_B')
+    check(res['ok'] and res['device_id'] == 'PLUG_B' and fa.on is False and res['owner'] == 'manual',
+          "setup: switching plugs turns the robot-owned old plug off")
+    check(svc.on_sg_trigger(2) is None and svc.on_sg_trigger(3) == 'turned_on' and fb.on, "setup: new plug, level 3 rule")
+    res = svc.remove()
+    check(res == {'ok': True, 'configured': False} and fb.on is False, "setup: remove switches a robot-owned plug off")
+    check(svc.on_sg_trigger(4) is None and SmartPlugService(**kw).enabled is False, "setup: removed stays removed after restart")
+    fa.close(); fb.close()
 
     # --- no config -> inert
     inert = SmartPlugService(config={}, state_file=Path(tempfile.mkdtemp()) / 's.json')

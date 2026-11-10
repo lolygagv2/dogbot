@@ -328,9 +328,11 @@ class ToolDispatcher:
         self.register(ToolSpec('agent_utterance', self._tool_agent_utterance, 60.0,
                                description='Record one utterance (WAV <=30 s), POST /agent/utterance, play reply'))
         self.register(ToolSpec('smart_plug', self._tool_smart_plug, 15.0,
-                               description='WiFi smart plug: {action: on|off|toggle|status}. on/off/toggle is a '
-                                           'manual override (the robot then never auto-switches it off); '
-                                           'result {on, owner robot|manual, auto_off_in_s}'))
+                               description='WiFi smart plug (Adaptil diffuser): {action: on|off|toggle|status} — '
+                                           'on/off/toggle is a manual override (the robot then never '
+                                           'auto-switches it off); setup: {action: scan} lists Kasa plugs on '
+                                           'the robot LAN, {action: configure, device_id, alias?, '
+                                           'trigger_level?, auto_off_minutes?}, {action: remove}'))
 
     # The relay waits 10 s for a command_result. Capture normally takes
     # <1 s; if it has not finished inside this budget we answer at once with
@@ -542,10 +544,16 @@ class ToolDispatcher:
             action = 'on' if args.get('on') in (True, 1, 'on', 'true', '1') else 'off'
         action = str(action if action is not None else 'status').lower()
         if action in ('status', 'get'):
-            out = svc.status()
-            if not out.get('configured'):
-                return _err('no_plug', 'no smart plug configured on this robot')
-            return out
+            return svc.status()          # {configured: false} when no plug is set up
+        if action in ('scan', 'discover'):
+            return svc.scan()
+        if action == 'configure':
+            return svc.configure(device_id=args.get('device_id'), alias=args.get('alias'),
+                                 trigger_level=args.get('trigger_level'),
+                                 auto_off_minutes=args.get('auto_off_minutes'),
+                                 source=str(args.get('source') or 'relay'))
+        if action == 'remove':
+            return svc.remove(source=str(args.get('source') or 'relay'))
         return svc.set_manual(action, source=str(args.get('source') or 'relay'))
 
     @staticmethod
