@@ -446,3 +446,5 @@ curl -X POST http://localhost:8000/audio/play/file \
 - `core/hardware/servo_controller.py` — channel 2 is the amp relay now; `rotate_winch()` is a no-op
 - Deprecated (still pulse channel 2 with their own PCA9685 object): `dispense_treat.py`, `treat_loader.py`,
   `tests/integration/test_treat_servo.py`, `tests/integration/test_treat_servo_auto.py`
+- `services/cloud/tool_dispatcher.py` — relay command `ultrasonic` (2026-11-12); relay voice clips queue, treats wait for speech
+- `tests/cloud/test_relay_speech_sequencing.py`, `tests/integration/test_ultrasonic_relay_live.py` (`--fire` plays one mild burst)

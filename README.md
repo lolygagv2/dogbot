@@ -34,6 +34,11 @@ AI-powered dog training robot with treat dispensing
 - Silent Guardian uses it only when the robot profile sets `ultrasonic_enabled: true` (default false):
   a random 20/25 kHz tone of 1-3 s before the level 1 "quiet"; a 3 s tone 10 s before the calming
   music; a 5 s pulsed episode when barking continues through the music. Settings: `ultrasonic:` in the profile.
+- Relay command `ultrasonic` (same flag; replies with `command_result`):
+  `{style: before_quiet|before_music|nonstop_barking}` or
+  `{freq_hz: 20000|25000|32000|40000, level_pct (max 80), duration_s (max 5), pulse_s?, gap_s?, alt_freq_hz?}`,
+  optional `dog_id`; `{action: status}` lists what is available. Errors: `ultrasonic_disabled`, `cooldown`
+  (+ `retry_after_s`; 20 s minimum between bursts), `busy`, `unavailable`, `bad_request`, `play_failed`.
 
 
 ## Features

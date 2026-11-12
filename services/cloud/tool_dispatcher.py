@@ -350,6 +350,11 @@ class ToolDispatcher:
                                            'YAMNet, upload WAV; bark detection keeps running'))
         self.register(ToolSpec('agent_utterance', self._tool_agent_utterance, 60.0,
                                description='Record one utterance (WAV <=30 s), POST /agent/utterance, play reply'))
+        self.register(ToolSpec('ultrasonic', self._tool_ultrasonic, 20.0,
+                               description='Ultrasonic tweeter: {style: before_quiet|before_music|nonstop_barking} '
+                                           'or {freq_hz, level_pct, duration_s, pulse_s?, gap_s?, alt_freq_hz?}; '
+                                           '{action: status}. Needs ultrasonic_enabled on the robot; '
+                                           '>=20 s between bursts (error cooldown + retry_after_s)'))
         self.register(ToolSpec('smart_plug', self._tool_smart_plug, 15.0,
                                description='WiFi smart plug (Adaptil diffuser): {action: on|off|toggle|status} — '
                                            'on/off/toggle is a manual override (the robot then never '
@@ -561,6 +566,50 @@ class ToolDispatcher:
                         treats_remaining=d.treats_remaining)
         return {'ok': True, 'treats_remaining': d.treats_remaining,
                 'treats_today': d.treats_dispensed_today}
+
+    @staticmethod
+    def _tool_ultrasonic(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        """Ultrasonic tweeter (ultrasonic.py). {action: status} | {style} | {freq_hz, ...}.
+
+        Refused unless the robot profile sets ultrasonic_enabled. Explicit bursts are
+        capped at relay_max_level_pct (default 80, the highest level tested) and 5 s.
+        The robot enforces >= 20 s between bursts: error 'cooldown' + retry_after_s.
+        """
+        import ultrasonic as u
+        cfg = u.config()
+        max_level = int(cfg.get('relay_max_level_pct', 80))
+        if str(args.get('action') or '').lower() in ('status', 'get'):
+            return {'ok': True, 'enabled': cfg['enabled'],
+                    'available': Path(f'/proc/asound/{u.ULTRA_CARD}').exists(),
+                    'styles': sorted(u.STYLES), 'freqs_hz': list(u.BURST_FREQS),
+                    'max_level_pct': max_level, 'max_duration_s': u.MAX_DURATION_S,
+                    'cooldown_s': max(u.MIN_COOLDOWN_S, float(cfg.get('cooldown_s', u.MIN_COOLDOWN_S)))}
+        if not cfg['enabled']:
+            return _err('ultrasonic_disabled', 'ultrasonic is switched off on this robot')
+        source = str(args.get('source') or 'relay')
+        who = {'dog_id': args.get('dog_id'), 'dog_name': args.get('dog_name')}
+        try:
+            if args.get('style'):
+                res = u.play_style(str(args['style']), source=source, **who)
+            elif args.get('freq_hz') is not None:
+                res = u.burst(freq_hz=int(args['freq_hz']),
+                              level_pct=min(max_level, int(args.get('level_pct', 40))),
+                              duration_s=float(args.get('duration_s', 1.0)),
+                              pulse_s=float(args.get('pulse_s') or 0.0),
+                              gap_s=float(args.get('gap_s') or 0.2),
+                              alt_freq_hz=args.get('alt_freq_hz'), source=source,
+                              cooldown_s=cfg.get('cooldown_s', u.MIN_COOLDOWN_S), **who)
+            else:
+                return _err('bad_request', 'ultrasonic needs style, freq_hz or action=status',
+                            styles=sorted(u.STYLES))
+        except (TypeError, ValueError) as e:
+            return _err('bad_request', str(e))
+        if res.get('ok'):
+            res.pop('settings', None)
+            return res
+        extra = {k: res[k] for k in ('retry_after_s', 'style') if k in res}
+        code = {'disabled': 'ultrasonic_disabled'}.get(res.get('code'), res.get('code') or 'play_failed')
+        return _err(code, str(res.get('reason')), **extra)
 
     @staticmethod
     def _tool_smart_plug(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:

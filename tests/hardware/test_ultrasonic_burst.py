@@ -128,6 +128,33 @@ def main():
     check(bursts[-1]['level_pct'] == 50 and bursts[-1]['freq_hz'] == 25000, 'SG: per-dog override of a style')
     check(sg._ultrasonic('before_music') is None, 'SG: a style can be disabled on its own')
 
+    # --- relay tool
+    import services.cloud.tool_dispatcher as td
+    tool = td.ToolDispatcher._tool_ultrasonic
+    raw.clear()
+    check(u.play_style('before_quiet')['code'] == 'disabled', 'play_style refuses with code disabled')
+    st = tool({'action': 'status'}, None)
+    check(st['ok'] and st['enabled'] is False and 'nonstop_barking' in st['styles'],
+          'tool: status works while off')
+    check(tool({'style': 'before_quiet'}, None)['error']['code'] == 'ultrasonic_disabled',
+          'tool: refused while ultrasonic_enabled is off')
+    raw['ultrasonic_enabled'] = True
+    n = len(bursts)
+    res = tool({'style': 'nonstop_barking', 'dog_id': 'dog_1'}, None)
+    check(res['ok'] and len(bursts) == n + 1 and bursts[-1]['pulse_s'] == 0.3
+          and bursts[-1]['source'] == 'relay:nonstop_barking', 'tool: plays a named style')
+    tool({'freq_hz': 25000, 'level_pct': 100, 'duration_s': 2}, None)
+    check(bursts[-1]['level_pct'] == 80 and bursts[-1]['duration_s'] == 2.0,
+          'tool: explicit burst, level capped at 80')
+    u.burst = lambda **kw: {'ok': False, 'code': 'cooldown', 'retry_after_s': 12.0,
+                            'reason': 'cooldown (12s left)'}
+    err = tool({'freq_hz': 25000}, None)
+    check(err['error']['code'] == 'cooldown' and err['retry_after_s'] == 12.0,
+          'tool: cooldown reported with retry_after_s')
+    check(tool({}, None)['error']['code'] == 'bad_request'
+          and tool({'style': 'nope'}, None)['error']['code'] == 'bad_request',
+          'tool: bad requests rejected')
+
     print(f"\n{'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED'}")
     return 1 if FAILS else 0
 

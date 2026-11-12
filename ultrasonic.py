@@ -27,6 +27,7 @@ import argparse
 import fcntl
 import logging
 import os
+import random
 import signal
 import subprocess
 import sys
@@ -187,12 +188,12 @@ def burst(freq_hz: int = 25000, level_pct: int = 40, dog_id: Optional[str] = Non
     gap_s = max(0.02, float(gap_s))
     freqs = [freq_hz] + ([int(alt_freq_hz)] if pulse_s and alt_freq_hz else [])
     if any(f not in BURST_FREQS for f in freqs[1:]):
-        return {'ok': False, 'reason': f'no tone for {alt_freq_hz} Hz'}
+        return {'ok': False, 'code': 'bad_request', 'reason': f'no tone for {alt_freq_hz} Hz'}
     wav = tone_path(freq_hz)
     if freq_hz not in ALL_FREQS or not wav.exists():
-        return {'ok': False, 'reason': f'no tone file for {freq_hz} Hz ({wav})'}
+        return {'ok': False, 'code': 'bad_request', 'reason': f'no tone file for {freq_hz} Hz ({wav})'}
     if not Path(f'/proc/asound/{ULTRA_CARD}').exists():
-        return {'ok': False, 'reason': f'sound card "{ULTRA_CARD}" not present'}
+        return {'ok': False, 'code': 'unavailable', 'reason': f'sound card "{ULTRA_CARD}" not present'}
     cooldown_s = 0.0 if freq_hz == TEST_FREQ else max(MIN_COOLDOWN_S, float(cooldown_s))
 
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -200,10 +201,11 @@ def burst(freq_hz: int = 25000, level_pct: int = 40, dog_id: Optional[str] = Non
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            return {'ok': False, 'reason': 'another burst is in progress'}
+            return {'ok': False, 'code': 'busy', 'reason': 'another burst is in progress'}
         since = time.time() - os.path.getmtime(STATE_FILE)
         if freq_hz != TEST_FREQ and os.path.getsize(STATE_FILE) and since < cooldown_s:
-            return {'ok': False, 'reason': f'cooldown ({cooldown_s - since:.0f}s left)'}
+            return {'ok': False, 'code': 'cooldown', 'retry_after_s': round(cooldown_s - since, 1),
+                    'reason': f'cooldown ({cooldown_s - since:.0f}s left)'}
 
         error = None
         try:
@@ -238,6 +240,7 @@ def burst(freq_hz: int = 25000, level_pct: int = 40, dog_id: Optional[str] = Non
         result.update(pulse_s=pulse_s, gap_s=gap_s, freqs=freqs)
     if error:
         result['reason'] = error
+        result['code'] = 'play_failed'
         logger.error(f"Ultrasonic burst failed: {error}")
     else:
         logger.info(f"Ultrasonic burst {freq_hz} Hz @ {level_pct}% "
@@ -247,6 +250,54 @@ def burst(freq_hz: int = 25000, level_pct: int = 40, dog_id: Optional[str] = Non
                 'ok': error is None, 'error': error},
                dog_id, dog_name, session_id, _standalone)
     return result
+
+
+# ------------------------------------------------------------------- styles
+
+# Named styles. Defaults; the robot profile's `ultrasonic:` section overrides per
+# style, and `ultrasonic.dogs.<dog id or name>.<style>` per dog.
+STYLES = {
+    # Silent Guardian level 1: one random tone right before the "quiet" command
+    'before_quiet': {'freqs': [20000, 25000], 'seconds': [1, 2, 3], 'level_pct': 80},
+    # SG top level: 3 s tone, then lead_s of nothing, then quiet + calming music
+    'before_music': {'freqs': [20000, 25000], 'seconds': [3], 'level_pct': 60, 'lead_s': 10},
+    # SG top level, dog keeps barking through the music: 5 s pulsed, alternating freqs
+    'nonstop_barking': {'freqs': [20000, 25000], 'seconds': [5], 'level_pct': 80,
+                        'pulse_s': 0.3, 'gap_s': 0.2},
+}
+
+
+def config() -> Dict[str, Any]:
+    """{'enabled': bool, ...the profile's `ultrasonic:` section}."""
+    from config.config_loader import get_config
+    raw = get_config().raw
+    return {**(raw.get('ultrasonic') or {}), 'enabled': raw.get('ultrasonic_enabled', False) is True}
+
+
+def play_style(style: str, dog_id: Optional[str] = None, dog_name: Optional[str] = None,
+               session_id: Optional[str] = None, source: str = 'manual') -> Dict[str, Any]:
+    """Play a named style. Result is burst()'s, plus 'style' and (when played) 'settings'.
+    Refused with code 'disabled' unless the profile sets `ultrasonic_enabled: true`."""
+    if style not in STYLES:
+        return {'ok': False, 'code': 'bad_request', 'reason': f'unknown style {style!r}'}
+    cfg = config()
+    dogs = cfg.get('dogs') or {}
+    dog = dogs.get(dog_id) or dogs.get(dog_name) or {}
+    st = {**STYLES[style], **(cfg.get(style) or {}), **(dog.get(style) or {})}
+    if not cfg['enabled'] or st.get('enabled', True) is not True:
+        return {'ok': False, 'code': 'disabled', 'style': style, 'reason': 'ultrasonic is switched off'}
+    freqs = list(st['freqs'])
+    pulsed = float(st.get('pulse_s', 0) or 0)
+    res = burst(freq_hz=freqs[0] if pulsed else random.choice(freqs), level_pct=st['level_pct'],
+                duration_s=random.choice(list(st['seconds'])), pulse_s=pulsed,
+                gap_s=st.get('gap_s', 0.2),
+                alt_freq_hz=freqs[1] if pulsed and len(freqs) > 1 else None,
+                dog_id=dog_id, dog_name=dog_name, session_id=session_id,
+                source=f'{source}:{style}', cooldown_s=cfg.get('cooldown_s', MIN_COOLDOWN_S))
+    res['style'] = style
+    if res.get('ok'):
+        res['settings'] = st
+    return res
 
 
 # ---------------------------------------------------------------------- CLI
