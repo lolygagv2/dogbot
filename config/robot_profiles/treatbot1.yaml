@@ -66,9 +66,10 @@ battery:
 #   nonstop_barking - top level, barking continues: 5 s pulsed, freqs alternate
 # Each style can also take `enabled: false`. 20 kHz is audible to some people.
 # tb1 2026-11-12: tweeter card hot-plugged and given ALSA id "ultra"; values
-# replicated from treatbot5. Amp + horn wiring on this unit is NOT yet bench-verified
-# — confirm with `ultrasonic.py --amp on` and `--test` before relying on a burst.
-ultrasonic_enabled: true    # enabled 2026-11-12 (Morgan) for bench testing on tb1
+# replicated from treatbot5. Full chain bench-verified the same day (Morgan):
+# `--amp on` powered the LM386 and `--test` played the audible 2 kHz tone through
+# the horn, so card -> amp -> tweeter is good on this unit.
+ultrasonic_enabled: true    # enabled + bench-verified 2026-11-12 (Morgan)
 ultrasonic:
   cooldown_s: 20        # between any two bursts; floor is 20 s (ultrasonic.py)
   before_quiet:    {freqs: [20000, 25000], seconds: [1, 2, 3], level_pct: 80}
