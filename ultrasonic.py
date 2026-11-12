@@ -4,14 +4,17 @@ ultrasonic.py - ultrasonic burst through the dedicated "ultra" sound card.
 
 Signal chain: UGREEN USB sound card (USB 12d1:0010, ALSA id "ultra", see
 scripts/85-wimz-ultra-audio.rules) -> LM386 amp -> 10-50 kHz piezo horn tweeter.
-The amp's supply (12 V per Morgan, 2026-11-11; not measured) is switched by an XY-MOS module on PCA9685 channel 2
-(full on = amp powered, full off = amp unpowered).
+The amp's +12 V supply (12 V per Morgan; not measured) goes through a relay driven
+by PCA9685 channel 2 (full on = amp powered, full off = amp unpowered). The switch
+must be on the POSITIVE side: a low-side switch (the first XY-MOS wiring) is bypassed
+by the audio cable's ground, so the amp stayed powered and hissed.
 
     burst(freq_hz=25000, level_pct=40)
 
     python -m ultrasonic --freq 25000 --level 40 [--seconds 3]
     python -m ultrasonic --freq 20000 --alt-freq 25000 --seconds 5 --pulse 0.3 --level 80
     python -m ultrasonic --test            # audible 2 kHz file
+    python -m ultrasonic --amp on|off|status   # bench: hold the amp power channel
     python -m ultrasonic --generate        # (re)write the tone WAVs
 
 PCA9685 access: inside the robot service the existing servo driver object is
@@ -257,11 +260,21 @@ def main(argv=None) -> int:
     ap.add_argument('--gap', type=float, default=0.2, help='silence between pulses, s')
     ap.add_argument('--alt-freq', type=int, choices=BURST_FREQS, help='alternate pulses with this')
     ap.add_argument('--test', action='store_true', help='play the audible 2 kHz file')
+    ap.add_argument('--amp', choices=('on', 'off', 'status'),
+                    help='bench test: switch the amp power channel and leave it (no sound)')
     ap.add_argument('--generate', action='store_true', help='(re)write the tone WAV files')
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
     if args.generate:
         generate_tones()
+        return 0
+    if args.amp:
+        if args.amp != 'status':
+            _set_amp_raw(args.amp == 'on')
+        from smbus2 import SMBus
+        with SMBus(PCA9685_I2C_BUS) as bus:
+            on = bool(bus.read_byte_data(PCA9685_ADDR, 0x07 + 4 * AMP_CHANNEL) & 0x10)
+        print(f'PCA9685 channel {AMP_CHANNEL} (amp power): {"ON" if on else "OFF"}')
         return 0
     # A terminated CLI must still run burst()'s finally (amp off).
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))

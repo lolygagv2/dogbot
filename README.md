@@ -16,7 +16,7 @@ AI-powered dog training robot with treat dispensing
 - DFPLayer Pro mp3 player
 - Lavalier Microphone
 
-- Ultrasonic tweeter: UGREEN USB sound card -> LM386 amp -> 10-50 kHz piezo horn (amp power switched by PCA9685 channel 2)
+- Ultrasonic tweeter: UGREEN USB sound card -> LM386 amp -> 10-50 kHz piezo horn (amp +12 V switched by a relay on PCA9685 channel 2; it must switch the positive side, because the audio cable's ground bypasses a low-side switch)
 
 ### Sound cards (matched by USB ID, never by card number)
 | USB ID | Device | ALSA name | Role |
