@@ -54,12 +54,15 @@ class ServoController:
             # Assign channels (from proven test script)
             self.pitch_channel = self.pca.channels[1]  # Camera pitch
             self.pan_channel = self.pca.channels[0]    # Camera pan  
-            self.winch_channel = self.pca.channels[2]  # Continuous rotation winch
+            # Channel 2: the winch servo is gone; it now switches the ultrasonic amp's
+            # power (ultrasonic.py). release_all_servos() below forces it full-off at
+            # every start, so an amp left powered by a hard kill never stays on.
+            self.winch_channel = self.pca.channels[2]
             
             print("PCA9685 servo controller initialized")
             print("Channel 0: Camera Pan")
             print("Channel 1: Camera Pitch")
-            print("Channel 2: Winch/carousel")
+            print("Channel 2: Ultrasonic amp power (forced off)")
             
             # Initialize to safe positions
             self.release_all_servos()
@@ -192,7 +195,10 @@ class ServoController:
             return False
     
     def rotate_winch(self, direction='forward', duration=0.08):
-        """Rotate continuous servo winch (from proven test script)"""
+        """Legacy winch servo (removed). Channel 2 now powers the ultrasonic amp,
+        so this must never pulse it."""
+        print("rotate_winch ignored: PCA9685 channel 2 is the ultrasonic amp switch")
+        return False
         if not self.pca:
             print("Servo controller not initialized")
             return False

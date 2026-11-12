@@ -16,6 +16,25 @@ AI-powered dog training robot with treat dispensing
 - DFPLayer Pro mp3 player
 - Lavalier Microphone
 
+- Ultrasonic tweeter: UGREEN USB sound card -> LM386 amp -> 10-50 kHz piezo horn (amp power switched by PCA9685 channel 2)
+
+### Sound cards (matched by USB ID, never by card number)
+| USB ID | Device | ALSA name | Role |
+|---|---|---|---|
+| `0d8c:0014` | C-Media "USB Audio Device" | `Device` | Speaker + microphone (via PipeWire) |
+| `12d1:0010` | UGREEN 24-bit/96 kHz, shows as "KT USB Audio" | `ultra` (`plughw:ultra,0`) | Ultrasonic tweeter only (`ultrasonic.py`, direct ALSA) |
+
+- `scripts/85-wimz-ultra-audio.rules` -> `/etc/udev/rules.d/` gives the UGREEN the fixed id `ultra`.
+- `scripts/51-wimz-ultra-disable.lua` -> `~/.config/wireplumber/main.lua.d/` keeps PipeWire off it.
+- Speaker/mic card detection skips `12d1:0010`. `aplay -l` on treatbot5 (2026-11-11):
+  `card 2: ultra [KT USB Audio]`, `card 3: Device [USB Audio Device]`.
+- Volume control on `ultra` is `Headphone` (it has no `PCM` control).
+- Test: `python -m ultrasonic --test` (audible 2 kHz), `python -m ultrasonic --freq 25000 --level 40`.
+  Longer / pulsed: `--seconds 3`, `--freq 20000 --alt-freq 25000 --seconds 5 --pulse 0.3`.
+- Silent Guardian uses it only when the robot profile sets `ultrasonic_enabled: true` (default false):
+  a random 20/25 kHz tone of 1-3 s before the level 1 "quiet"; a 3 s tone 10 s before the calming
+  music; a 5 s pulsed episode when barking continues through the music. Settings: `ultrasonic:` in the profile.
+
 
 ## Features
 - Dog pose detection

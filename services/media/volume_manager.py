@@ -45,6 +45,9 @@ DEFAULT_VOLUME = 60
 _SPEAKER_CONTROLS = ("Speaker", "PCM", "Master")
 
 
+from ultrasonic import is_ultra_card as _is_ultra_card
+
+
 def _detect_usb_audio_card() -> Optional[str]:
     """Return the card number of the USB Audio device as a string, or None."""
     try:
@@ -54,7 +57,10 @@ def _detect_usb_audio_card() -> Optional[str]:
         for line in result.stdout.split('\n'):
             if 'USB Audio' in line and 'card' in line:
                 # Parse "card 2: Device [USB Audio Device], device 0: ..."
-                return line.split('card ')[1].split(':')[0].strip()
+                card = line.split('card ')[1].split(':')[0].strip()
+                if _is_ultra_card(card):
+                    continue  # ultrasonic tweeter card, not the speaker/mic
+                return card
     except Exception as e:
         logger.warning(f"Could not detect USB audio card: {e}")
     return None

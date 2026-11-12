@@ -1,0 +1,6 @@
+# WIM-Z ultrasonic sound card (UGREEN 24-bit/96 kHz, KTMicro chip, USB 12d1:0010).
+# Gives the card the stable ALSA id "ultra" (hw:ultra / plughw:ultra) so a reboot
+# or re-plug can never swap it with the main speaker/mic card (C-Media 0d8c:0014).
+# Install: sudo cp scripts/85-wimz-ultra-audio.rules /etc/udev/rules.d/ &&
+#          sudo udevadm control --reload && sudo udevadm trigger -s sound -c change
+SUBSYSTEM=="sound", KERNEL=="card*", ATTRS{idVendor}=="12d1", ATTRS{idProduct}=="0010", ATTR{id}="ultra"

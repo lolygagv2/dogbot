@@ -100,6 +100,7 @@ class SilentGuardianMode:
         self.bark_during_intervention = False
         self.intervention_dog_id = None
         self.intervention_dog_name = None
+        self._ultra_music_at = 0.0  # level 4: when music may start after the ultrasonic tone
         self.quiet_start_time = 0.0  # When dog started being quiet
 
         # Escalation tracking
@@ -767,6 +768,7 @@ class SilentGuardianMode:
             self.intervention_start_time = now
             self.intervention_step = 0
             self.last_step_time = 0.0
+            self._ultra_music_at = 0.0
             self.bark_during_intervention = False
             self.intervention_dog_id = dog_id
             self.intervention_dog_name = dog_name
@@ -961,6 +963,7 @@ class SilentGuardianMode:
             self.bark_during_intervention = False
             self.quiet_start_time = time.time()
             self.quiet_periods_achieved = 0
+            self._maybe_ultrasonic_burst()
 
         # Route to level-specific handler
         if self.current_escalation_level == 1:
@@ -971,6 +974,59 @@ class SilentGuardianMode:
             self._process_level_movement(now)
         else:
             self._process_level_music(now)
+
+    # Ultrasonic styles (ultrasonic.py). Defaults; the robot profile's `ultrasonic:`
+    # section overrides per style, and `ultrasonic.dogs.<id or name>.<style>` per dog.
+    ULTRASONIC_STYLES = {
+        # Level 1: one random tone right before the "quiet" command
+        'before_quiet': {'freqs': [20000, 25000], 'seconds': [1, 2, 3], 'level_pct': 80},
+        # Top level: 3 s tone, then lead_s of nothing, then quiet + calming music
+        'before_music': {'freqs': [20000, 25000], 'seconds': [3], 'level_pct': 60, 'lead_s': 10},
+        # Top level, dog keeps barking through the music: 5 s pulsed, alternating freqs
+        'nonstop_barking': {'freqs': [20000, 25000], 'seconds': [5], 'level_pct': 80,
+                            'pulse_s': 0.3, 'gap_s': 0.2},
+    }
+
+    def _ultrasonic(self, style: str) -> Optional[Dict[str, Any]]:
+        """Fire one ultrasonic style. Returns its settings if it actually played, else
+        None. Does nothing unless the robot profile sets `ultrasonic_enabled: true`;
+        ultrasonic.burst() enforces the >=20 s cooldown. Blocks while the tone plays.
+        """
+        try:
+            from config.config_loader import get_config
+            raw = get_config().raw
+            if raw.get('ultrasonic_enabled', False) is not True:
+                return None
+            cfg = raw.get('ultrasonic') or {}
+            dogs = cfg.get('dogs') or {}
+            dog = dogs.get(self.intervention_dog_id) or dogs.get(self.intervention_dog_name) or {}
+            st = {**self.ULTRASONIC_STYLES[style], **(cfg.get(style) or {}), **(dog.get(style) or {})}
+            if st.get('enabled', True) is not True:
+                return None
+            freqs = list(st['freqs'])
+            pulsed = float(st.get('pulse_s', 0) or 0)
+            freq = freqs[0] if pulsed else random.choice(freqs)
+            import ultrasonic
+            res = ultrasonic.burst(
+                freq_hz=freq, level_pct=st['level_pct'],
+                duration_s=random.choice(list(st['seconds'])),
+                pulse_s=pulsed, gap_s=st.get('gap_s', 0.2),
+                alt_freq_hz=freqs[1] if pulsed and len(freqs) > 1 else None,
+                dog_id=self.intervention_dog_id, dog_name=self.intervention_dog_name,
+                session_id=getattr(self, 'wimz_session_id', None),
+                source=f'silent_guardian:{style}', cooldown_s=cfg.get('cooldown_s', 20))
+            if res.get('ok'):
+                return st
+            logger.info(f"Ultrasonic {style} skipped: {res.get('reason')}")
+        except Exception as e:
+            logger.warning(f"Ultrasonic {style} failed: {e}")
+        return None
+
+    def _maybe_ultrasonic_burst(self):
+        """Dog barked again during the top-level (music) intervention: pulsed episode."""
+        max_level = self.config.get('escalation', {}).get('max_level', 4)
+        if self.current_escalation_level >= max_level and self.intervention_step >= 1:
+            self._ultrasonic('nonstop_barking')
 
     def _process_level_1(self, now: float):
         """
@@ -988,6 +1044,7 @@ class SilentGuardianMode:
                 if self.led:
                     self.led.set_pattern('attention', duration=2.0)
 
+                self._ultrasonic('before_quiet')   # no-op unless ultrasonic_enabled
                 # Just play "quiet" - simple and clear
                 self._play_audio('quiet.mp3')
                 self.last_step_time = now
@@ -1161,6 +1218,14 @@ class SilentGuardianMode:
 
         if self.intervention_step == 0:
             if self.last_step_time == 0.0:
+                # Ultrasonic tone first, then lead_s later the quiet command + music
+                # (no-op unless ultrasonic_enabled).
+                if self._ultra_music_at == 0.0:
+                    st = self._ultrasonic('before_music')
+                    self._ultra_music_at = time.time() + (st.get('lead_s', 10) if st else 0)
+                if time.time() < self._ultra_music_at:
+                    return
+                self._ultra_music_at = 0.0
                 logger.info("Level 4 - Step 0: quiet + starting calming music")
                 if self.led:
                     self.led.set_pattern('calm', duration=60.0)

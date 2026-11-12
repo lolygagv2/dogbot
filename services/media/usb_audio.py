@@ -11,6 +11,9 @@ import threading
 import subprocess
 from typing import Optional, Dict, Any, List
 
+from ultrasonic import is_ultra_card as _is_ultra_card
+
+
 def _detect_usb_audio_card() -> int:
     """Detect which card number the USB Audio Device is on"""
     try:
@@ -19,6 +22,8 @@ def _detect_usb_audio_card() -> int:
             if 'USB Audio' in line and 'card' in line:
                 # Parse "card 2: Device [USB Audio Device]"
                 card_num = int(line.split('card ')[1].split(':')[0])
+                if _is_ultra_card(card_num):
+                    continue  # ultrasonic tweeter card, not the speaker/mic
                 return card_num
     except Exception as e:
         logging.warning(f"Could not detect USB audio card: {e}")
