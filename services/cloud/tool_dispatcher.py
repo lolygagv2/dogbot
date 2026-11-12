@@ -82,6 +82,29 @@ def log_tool_call(name: str, args: Dict[str, Any], call_id: Optional[str],
         logger.debug(f"tool_call wimz row failed: {e}")
 
 
+SPEECH_WAIT_MAX_S = 15.0   # longest a treat waits for a relay voice clip to finish
+
+
+def _relay_speech_active() -> bool:
+    """True while a relay voice clip (play_sound url / PTT queue) is playing or queued."""
+    try:
+        from services.media.push_to_talk import get_push_to_talk_service
+        ptt = get_push_to_talk_service()
+        return bool(ptt.is_playing() or getattr(ptt, '_play_queue', None))
+    except Exception:
+        return False
+
+
+def _wait_for_relay_speech(max_s: float, cancel: Optional[threading.Event] = None) -> float:
+    """Block until relay speech has finished (or max_s / cancel). Returns seconds waited."""
+    t0 = time.time()
+    while _relay_speech_active() and time.time() - t0 < max_s:
+        if cancel is not None and cancel.is_set():
+            break
+        time.sleep(0.1)
+    return time.time() - t0
+
+
 # ------------------------------------------------------------------ dispatcher
 
 class ToolDispatcher:
@@ -296,7 +319,7 @@ class ToolDispatcher:
                                            'deferred via media upload if capture is slow'))
         self.register(ToolSpec('standby', self._tool_standby, 10.0, preemptive=True,
                                description='Stop audio and return to IDLE'))
-        self.register(ToolSpec('dispense_treat', self._tool_dispense_treat, 60.0,   # retry ladder + unjam can take ~45 s
+        self.register(ToolSpec('dispense_treat', self._tool_dispense_treat, 75.0,   # retry ladder + unjam ~45 s, + speech wait
                                description='Dispense one treat (source app|agent|connector)'))
         self.register(ToolSpec('set_mode', self._tool_set_mode, 10.0,
                                description='Switch mode: idle|silent_guardian|coach|manual|night_sentry'))
@@ -518,6 +541,11 @@ class ToolDispatcher:
         source = str(args.get('source') or 'app').lower()
         reason = {'agent': 'agent', 'connector': 'connector', 'schedule': 'schedule'}.get(source, 'cloud_command')
         d = get_dispenser_service()
+        # Let a relay voice clip finish first, so the carousel does not run over
+        # the sentence that announces the treat (bounded; music is not waited for).
+        waited = _wait_for_relay_speech(SPEECH_WAIT_MAX_S, cancel)
+        if waited >= 0.2:
+            logger.info(f"[TOOL] dispense_treat waited {waited:.1f}s for speech to finish")
         ok = d.dispense_treat(dog_id=args.get('dog_id'), dog_name=args.get('dog_name'),
                               reason=reason, command_id=args.get('_command_id'))
         if not ok:
@@ -594,7 +622,14 @@ class ToolDispatcher:
                 fmt = 'mp3'
             from services.media.push_to_talk import get_push_to_talk_service
             ptt = get_push_to_talk_service()
-            if args.get('interrupt', args.get('kind') == 'tts'):
+            # A TTS clip stops music / other audio, but never another relay clip
+            # that is still speaking: it queues behind it (2026-11-11: a second
+            # clip cut the first one off 6 s into a 15 s sentence). Only an
+            # explicit interrupt=true cuts speech.
+            interrupt = args.get('interrupt')
+            if interrupt is None:
+                interrupt = args.get('kind') == 'tts' and not _relay_speech_active()
+            if interrupt:
                 ptt.clear_queue()
                 if audio.is_busy():
                     audio.stop()
