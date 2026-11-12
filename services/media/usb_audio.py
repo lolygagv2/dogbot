@@ -118,6 +118,10 @@ class USBAudioService:
         self._current_index: int = 0  # Start at first song
         self._playlist_track: Optional[str] = None  # Currently selected playlist song
         self._music_playing: bool = False  # Music player state (separate from voice/sfx)
+        # pygame.mixer.music.get_busy() stays True while PAUSED, and voice+music
+        # share the one music stream, so a paused track makes get_busy() useless
+        # as an "is the speaker making sound" test (tb1 2026-11-12).
+        self._paused: bool = False
         self._is_looping: bool = False
         self._loading: bool = False  # Track when we're loading a file (prevents false state sync)
         self._last_play_time: float = 0  # Track when playback started
@@ -315,6 +319,7 @@ class USBAudioService:
             pygame.mixer.music.load(full_path)
             # -1 = loop indefinitely, 0 = play once
             pygame.mixer.music.play(-1 if loop else 0)
+            self._paused = False
 
             # Track current playing file
             self._current_track = os.path.basename(full_path)
@@ -381,6 +386,7 @@ class USBAudioService:
         try:
             was_playing = self._music_playing
             pygame.mixer.music.stop()
+            self._paused = False
             # Keep _playlist_track so we know what song is selected
             self._is_looping = False
             self._music_playing = False
@@ -405,6 +411,7 @@ class USBAudioService:
             if pygame.mixer.music.get_busy():
                 pygame.mixer.music.pause()
                 self._music_playing = False
+                self._paused = True
                 self.logger.info("Audio playback paused")
                 self._send_audio_event('paused', self._playlist_track)
                 return {"success": True, "message": "Audio paused", "track": self._playlist_track}
@@ -422,6 +429,7 @@ class USBAudioService:
         try:
             pygame.mixer.music.unpause()
             self._music_playing = True
+            self._paused = False
             self.logger.info("Audio playback resumed")
             self._send_audio_event('playing', self._playlist_track)
             return {"success": True, "message": "Audio resumed", "track": self._playlist_track}
@@ -760,6 +768,8 @@ class USBAudioService:
             self.logger.error(f"Play command error: {e}")
             return {"success": False, "error": str(e)}
 
+    MAX_BARK_SUPPRESS_S = 30.0  # longest a single voice/sfx clip may suppress barks
+
     def _start_bark_suppression_monitor(self):
         """Suppress bark detection while the speaker is active (echo prevention).
 
@@ -778,11 +788,27 @@ class USBAudioService:
                     return
                 # Initial 1s window covers the gap before this thread loops
                 svc.suppress_detection(1.0)
+                # Hard ceiling: this monitor exists for short voice/sfx clips, so it
+                # must never outlive one. Belt-and-braces against any future state
+                # that leaves the music stream reporting busy forever.
+                deadline = time.time() + self.MAX_BARK_SUPPRESS_S
                 while True:
                     try:
                         if not pygame.mixer.music.get_busy():
                             break
+                        # A PAUSED stream still reports get_busy() True. Without this
+                        # a paused track pinned bark detection off indefinitely while
+                        # the speaker was silent — Silent Guardian went deaf and
+                        # /audio/status still read playing:false (tb1 2026-11-12).
+                        if self._paused:
+                            break
                     except Exception:
+                        break
+                    if time.time() >= deadline:
+                        self.logger.warning(
+                            "Bark suppression monitor hit its %.0fs ceiling with the music "
+                            "stream still busy - releasing suppression",
+                            self.MAX_BARK_SUPPRESS_S)
                         break
                     svc.suppress_detection(0.4)  # 200ms loop + 200ms slack
                     time.sleep(0.2)
