@@ -57,6 +57,25 @@ servo:
 battery:
   calibration_factor: 3.595
 
+# Ultrasonic (ultrasonic.py) in Silent Guardian. Hardware: UGREEN card "ultra" ->
+# LM386 -> piezo tweeter, amp power on PCA9685 ch 2 (the freed winch-servo channel;
+# 0/1 = camera pan/tilt). Off unless set here; not exposed in the app or the AI
+# connector. Three styles (tested with Elsa 2026-11-11 on treatbot5):
+#   before_quiet    - level 1: one random tone right before the "quiet" command
+#   before_music    - top level: 3 s tone, then lead_s later quiet + calming music
+#   nonstop_barking - top level, barking continues: 5 s pulsed, freqs alternate
+# Each style can also take `enabled: false`. 20 kHz is audible to some people.
+# tb1 2026-11-12: tweeter card hot-plugged and given ALSA id "ultra"; values
+# replicated from treatbot5. Amp + horn wiring on this unit is NOT yet bench-verified
+# — confirm with `ultrasonic.py --amp on` and `--test` before relying on a burst.
+ultrasonic_enabled: true    # enabled 2026-11-12 (Morgan) for bench testing on tb1
+ultrasonic:
+  cooldown_s: 20        # between any two bursts; floor is 20 s (ultrasonic.py)
+  before_quiet:    {freqs: [20000, 25000], seconds: [1, 2, 3], level_pct: 80}
+  before_music:    {freqs: [20000, 25000], seconds: [3], level_pct: 60, lead_s: 10}
+  nonstop_barking: {freqs: [20000, 25000], seconds: [5], level_pct: 80, pulse_s: 0.3, gap_s: 0.2}
+  dogs: {}              # per dog id or name, e.g.  Elsa: {before_quiet: {level_pct: 60}}
+
 # Motor/Controller settings (xbox_hybrid_controller.py)
 controller:
   max_speed: 80           # Capped speed percentage
