@@ -41,6 +41,18 @@ AI-powered dog training robot with treat dispensing
   (+ `retry_after_s`; 20 s minimum between bursts), `busy`, `unavailable`, `bad_request`, `play_failed`.
 
 
+### Relay commands added 2026-11-12
+- `look` — one gentle camera step for assistants (photo -> look -> photo):
+  `{action: pan_left|pan_right|tilt_up|tilt_down|center, degrees: 5-45 (default 15)}` ->
+  `{pan, tilt, limit_reached, moved_degrees}`; pan/tilt are degrees from centre, **pan + = right, tilt + = up**.
+  Errors: `gimbal_busy` (owner's joystick used in the last 3 s, another look, or a base `move` running),
+  `invalid_action`, `invalid_value`, `unavailable`. About 30 deg/s; the camera stays where it ends up.
+- One-time missions: `trigger.date` (`YYYY-MM-DD`, dog's timezone) in the `missions` setting fires only on that
+  date at `time` and ignores `days`. After the run has finished the robot deletes it and sends `schedule_deleted`
+  (`mission_id`, `dog_id`, `once: true`, `reason: completed|date_passed`). A date/time more than 60 s in the past
+  is never run late: `schedule_sync` shows `next_fire_at: null`, `reason: "date_passed"` for 30 s, then it is
+  deleted the same way. `schedule_sync` rows carry `once` and `date`.
+
 ## Features
 - Dog pose detection
 - Bark recognition  

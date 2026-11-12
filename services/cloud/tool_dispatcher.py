@@ -343,6 +343,10 @@ class ToolDispatcher:
                                description='Bounded base move: {action: forward|back|turn_left|turn_right|stop, '
                                            'amount cm (cap 50) or deg (cap 90)}; 5 s hard cap, motors off after',
                                group=MOTION))
+        self.register(ToolSpec('look', self._tool_look, 6.0,
+                               description='One gentle camera step: {action: pan_left|pan_right|tilt_up|tilt_down|'
+                                           'center, degrees 5-45 (default 15)} -> {pan, tilt, limit_reached, '
+                                           'moved_degrees}; gimbal_busy while the owner steers or a move runs'))
         self.register(ToolSpec('go_to', self._tool_go_to, 5.0,
                                description='Navigate to a named place (not supported yet)', group=MOTION))
         self.register(ToolSpec('listen', self._tool_listen, self.LISTEN_MAX_S + 15.0,
@@ -566,6 +570,35 @@ class ToolDispatcher:
                         treats_remaining=d.treats_remaining)
         return {'ok': True, 'treats_remaining': d.treats_remaining,
                 'treats_today': d.treats_dispensed_today}
+
+    def _tool_look(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        """look {action, degrees}: one bounded pan/tilt step (photo -> look -> photo).
+        Never starts or touches video; the camera stays where it ends up."""
+        action = str(args.get('action') or '').lower()
+        if action not in ('pan_left', 'pan_right', 'tilt_up', 'tilt_down', 'center'):
+            return _err('invalid_action', 'action must be pan_left|pan_right|tilt_up|tilt_down|center')
+        degrees = 15.0
+        if action != 'center' and args.get('degrees') is not None:
+            try:
+                degrees = float(args['degrees'])
+            except (TypeError, ValueError):
+                return _err('invalid_value', 'degrees must be a number from 5 to 45')
+            if not 5.0 <= degrees <= 45.0:
+                return _err('invalid_value', 'degrees must be from 5 to 45')
+        if self.running(MOTION):
+            return _err('gimbal_busy', 'a base move is running (it holds the camera centred)')
+        try:
+            from services.motion.pan_tilt import get_pantilt_service
+            pt = get_pantilt_service()
+        except Exception as e:
+            return _err('unavailable', f'pan/tilt service not available: {e}')
+        res = pt.look_step(action, degrees)
+        if not res.get('ok'):
+            code = res.get('code') or 'unavailable'
+            msg = {'gimbal_busy': 'the camera is being steered right now',
+                   'unavailable': 'camera servos are not initialised'}.get(code, code)
+            return _err(code, msg)
+        return res
 
     @staticmethod
     def _tool_ultrasonic(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:

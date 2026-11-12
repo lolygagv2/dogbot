@@ -121,6 +121,10 @@ class PanTiltService:
 
         # Manual camera control flag (app drive screen overrides auto-tracking)
         self._manual_camera_control = False
+        # When the owner last steered the camera (joystick / servo commands);
+        # look_step() refuses while that is recent.
+        self._last_manual_move = 0.0
+        self._look_lock = threading.Lock()
 
         # Subscribe to vision events
         self.bus.subscribe('vision', self._on_vision_event)
@@ -676,6 +680,7 @@ class PanTiltService:
         if not self.servo_initialized:
             self.logger.error("Servos not initialized")
             return False
+        self._last_manual_move = time.time()
 
         try:
             # Use current position if not specified
@@ -705,6 +710,64 @@ class PanTiltService:
         except Exception as e:
             self.logger.error(f"Camera movement error: {e}")
             return False
+
+    LOOK_SPEED_DPS = 30.0        # gentle: 45 degrees takes 1.5 s
+    LOOK_JOYSTICK_HOLD_S = 3.0   # a joystick command this recent means "owner is steering"
+
+    def offsets(self) -> Dict[str, float]:
+        """Camera angle relative to the calibrated centre: pan + = right, tilt + = up."""
+        return {'pan': round(self.center_pan - self.current_pan, 1) + 0.0,     # + 0.0: never "-0.0"
+                'tilt': round((self.center_tilt - self.current_tilt) * self._tilt_down_sign, 1) + 0.0}
+
+    def look_step(self, action: str, degrees: float = 15.0) -> Dict[str, Any]:
+        """One bounded, gentle camera step for an assistant (relay `look`):
+        pan_left | pan_right | tilt_up | tilt_down by `degrees`, or center.
+        Clamped at the mechanical limits; the camera stays where it ends up.
+        Returns {'ok': True, pan, tilt, limit_reached, moved_degrees} or
+        {'ok': False, 'code': 'gimbal_busy' | 'invalid_action' | 'unavailable'}.
+        """
+        if action not in ('pan_left', 'pan_right', 'tilt_up', 'tilt_down', 'center'):
+            return {'ok': False, 'code': 'invalid_action'}
+        if not self.servo_initialized or not self.servo:
+            return {'ok': False, 'code': 'unavailable'}
+        if time.time() - self._last_manual_move < self.LOOK_JOYSTICK_HOLD_S:
+            return {'ok': False, 'code': 'gimbal_busy'}
+        if not self._look_lock.acquire(blocking=False):
+            return {'ok': False, 'code': 'gimbal_busy'}
+        was_manual = self._manual_camera_control
+        try:
+            self._manual_camera_control = True       # hold auto-tracking off during the step
+            start_pan, start_tilt = self.current_pan, self.current_tilt
+            want_pan, want_tilt = start_pan, start_tilt
+            if action == 'center':
+                want_pan, want_tilt = self.center_pan, self.center_tilt
+            elif action == 'pan_left':
+                want_pan = start_pan + degrees          # higher pan = left
+            elif action == 'pan_right':
+                want_pan = start_pan - degrees
+            elif action == 'tilt_up':
+                want_tilt = start_tilt - degrees * self._tilt_down_sign
+            else:
+                want_tilt = start_tilt + degrees * self._tilt_down_sign
+            to_pan = max(self.pan_limits[0], min(self.pan_limits[1], want_pan))
+            to_tilt = max(self.tilt_limits[0], min(self.tilt_limits[1], want_tilt))
+            limit_reached = abs(to_pan - want_pan) > 0.01 or abs(to_tilt - want_tilt) > 0.01
+            distance = max(abs(to_pan - start_pan), abs(to_tilt - start_tilt))
+            dt = 0.05
+            steps = max(1, int(distance / (self.LOOK_SPEED_DPS * dt) + 0.999))
+            for i in range(1, steps + 1):
+                if distance < 0.2:
+                    break
+                self._move_to_position(start_pan + (to_pan - start_pan) * i / steps,
+                                       start_tilt + (to_tilt - start_tilt) * i / steps, force=True)
+                if i < steps:
+                    time.sleep(dt)
+            moved = max(abs(self.current_pan - start_pan), abs(self.current_tilt - start_tilt))
+            return {'ok': True, **self.offsets(), 'limit_reached': bool(limit_reached),
+                    'moved_degrees': round(moved, 1)}
+        finally:
+            self._manual_camera_control = was_manual
+            self._look_lock.release()
 
     def set_tracking_enabled(self, enabled: bool) -> None:
         """Enable/disable tracking"""

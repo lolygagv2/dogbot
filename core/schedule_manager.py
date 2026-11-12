@@ -24,7 +24,9 @@ SCHEDULES_DIR = os.environ.get("WIMZ_SCHEDULES_DIR") or "/home/morgan/dogbot/sch
 # Runtime fields the MissionScheduler persists next to the user's fields so
 # timers survive a restart (2026-11-07). They are never set by the app.
 RUNTIME_FIELDS = ("last_fired_at", "last_run_at", "last_run_id", "last_run_end",
-                  "last_result", "missed_at", "next_fire_at")
+                  "last_result", "missed_at", "next_fire_at",
+                  # one-time (date) missions: why it will never run + when to drop it
+                  "expired", "delete_after")
 
 VALID_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
 _DAY_ABBR = {d[:3]: d for d in VALID_DAYS}
@@ -287,6 +289,10 @@ class ScheduleManager:
             # can address the schedule by the id the owner's app knows.
             "mission_id": data.get('mission_id') or None,
             "fire_at": data.get('fire_at') or None,
+            # One-time relay mission (trigger.date, 2026-11-12): YYYY-MM-DD in `tz`;
+            # fires only on that date at its times, then the scheduler deletes it.
+            "date": data.get('date') or None,
+            "once": bool(data.get('date')),
             # How late a fire may be (restart / robot busy) and still run.
             "grace_s": data.get('grace_s'),
             "created_at": datetime.utcnow().isoformat() + "Z",

@@ -50,6 +50,10 @@ _scheduler_lock = threading.Lock()
 DAY_ORDER = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 DEFAULT_ONESHOT_GRACE_S = 3600.0
 MIN_GRACE_S = 60.0
+# A one-time (date) mission that can no longer run stays visible in schedule_sync
+# (reason "date_passed") this long before it is deleted + schedule_deleted is sent.
+ONCE_EXPIRED_LINGER_S = 30.0
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 # ------------------------------------------------------------------ pure timer math
@@ -83,6 +87,8 @@ def grace_seconds(schedule: Dict[str, Any]) -> float:
             pass
     if schedule.get("fire_at"):
         return DEFAULT_ONESHOT_GRACE_S
+    if schedule.get("date"):
+        return MIN_GRACE_S          # one-time mission: never run it late
     sh, sm = _parse_hhmm(schedule.get("start_time"), "00:00")
     eh, em = _parse_hhmm(schedule.get("end_time"), "23:59")
     start_min, end_min = sh * 60 + sm, eh * 60 + em
@@ -119,9 +125,31 @@ def compute_next_fire(schedule: Dict[str, Any], now: datetime,
             return None, missed
         return slot.astimezone(), missed
 
-    days = [str(d).lower() for d in (schedule.get("days_of_week") or [])] if stype == "weekly" else []
     times = schedule.get("times") or [schedule.get("start_time") or "00:00"]
     tz = _tz_of(schedule)
+
+    if schedule.get("date"):
+        # One-time mission: only that date's slots exist; days are ignored.
+        try:
+            y, mo, d = (int(x) for x in str(schedule["date"]).split("-"))
+            slots = []
+            for t in sorted(times):
+                sh, sm = _parse_hhmm(t, "00:00")
+                slots.append(datetime(y, mo, d, sh, sm, tzinfo=tz))
+        except (ValueError, TypeError):
+            return None, missed
+        best = None
+        for slot in slots:
+            if fired(slot):
+                continue
+            if now > slot + grace:
+                missed = [slot]
+                continue
+            if best is None:
+                best = slot
+        return (best.astimezone() if best else None), [m.astimezone() for m in missed]
+
+    days = [str(d).lower() for d in (schedule.get("days_of_week") or [])] if stype == "weekly" else []
     local_now = now.astimezone(tz)
 
     # Walk day by day from yesterday (a slot can still be inside its grace
@@ -188,6 +216,9 @@ class MissionScheduler:
 
         self._mission_engine = None
         self._schedule_manager = None
+        # Called with the schedule_deleted payload when the scheduler itself
+        # deletes a one-time mission; default sends it to the relay.
+        self.deleted_notifier = None
         self._bus_subscribed = False
         self._mode_run: Optional[Dict[str, Any]] = None
 
@@ -314,7 +345,10 @@ class MissionScheduler:
             "tz": s.get("tz"),
             "times": s.get("times") or ([s.get("start_time")] if s.get("start_time") else []),
             "unsupported": s.get("unsupported"),
-            "reason": s.get("unsupported") or (None if s.get("enabled", True) else "disabled"),
+            "reason": s.get("unsupported") or s.get("expired")
+                      or (None if s.get("enabled", True) else "disabled"),
+            "once": bool(s.get("date")),
+            "date": s.get("date"),
             "unsupported_reason": s.get("unsupported"),
             "mission_name": s.get("mission_name"),
             "name": s.get("name"),
@@ -361,6 +395,11 @@ class MissionScheduler:
         if s.get("missed_at") == slot.isoformat():
             return
         fields = {"missed_at": slot.isoformat(), "last_result": "missed"}
+        if s.get("date"):
+            # one-time mission whose moment has gone: never run late; keep it
+            # visible for a moment, then _reap_once deletes it
+            fields.update({"expired": "date_passed", "delete_after": (
+                _now() + timedelta(seconds=ONCE_EXPIRED_LINGER_S)).isoformat()})
         self.logger.warning(f"[SCHED] missed {s['schedule_id']} {s.get('mission_name')} slot {slot.isoformat()} "
                             f"(grace {grace_seconds(s):.0f}s)")
         if s.get("type") == "once":
@@ -377,6 +416,9 @@ class MissionScheduler:
                 continue
             nxt, missed = self._next_for(s, now)
             self._record_missed(s, missed)
+            if nxt is None and s.get("date"):
+                self._reap_once(self.schedule_manager.get_schedule(s["schedule_id"]) or s, now)
+                continue
             if nxt is None:
                 if s.get("type") == "once" and not missed and s.get("enabled", True) and s.get("last_fired_at"):
                     # fired earlier but never disabled (crash between the two writes)
@@ -397,6 +439,58 @@ class MissionScheduler:
             return
         slot, s = due[0]
         self._fire(s, slot, now)
+
+    # ------------------------------------------------------------- one-time missions
+
+    def _reap_once(self, s: Dict[str, Any], now: datetime) -> bool:
+        """Delete a one-time (date) mission that has nothing left to do and tell
+        the relay (schedule_deleted), so it drops it from the missions setting.
+        Finished = its run ended (not merely started: mode missions run for
+        hours). date_passed = its moment went by without a run."""
+        sid = s["schedule_id"]
+        if s.get("expired"):
+            after = _parse_iso(s.get("delete_after"))
+            if after is not None and now < after:
+                return False
+            reason = str(s["expired"])
+        elif s.get("last_fired_at"):
+            mode_run = self.active_mode_run()
+            if mode_run and mode_run.get("schedule_id") == sid:
+                return False
+            if str(s.get("last_result") or "") in ("starting", "running"):
+                # still running, unless the run was lost (service restart)
+                sess = self.mission_engine.active_session
+                if sess is not None and str(getattr(sess, "mission_id", None)) == str(s.get("last_run_id")):
+                    return False
+                fired_at = _parse_iso(s.get("last_fired_at"))
+                if fired_at is not None and (now - fired_at).total_seconds() < 30.0:
+                    return False
+            reason = "completed"
+        else:
+            return False
+        res = self.schedule_manager.delete_schedule(sid)
+        self.last_started.pop(sid, None)
+        if not res.get("success"):
+            return False
+        res.update({"once": True, "reason": reason})
+        if str(res.get("dog_id") or "unknown") == "unknown":
+            res.pop("dog_id", None)
+        self.logger.info(f"[SCHED] one-time mission {s.get('mission_id') or sid} removed ({reason})")
+        self._notify_deleted(res)
+        return True
+
+    def _notify_deleted(self, payload: Dict[str, Any]) -> None:
+        publish_system_event("scheduler.schedule_deleted", dict(payload))
+        try:
+            if self.deleted_notifier is not None:
+                self.deleted_notifier(dict(payload))
+                return
+            import services.cloud.relay_client as rc
+            client = getattr(rc, "_relay_client", None)
+            if client is not None:
+                client.send_event("schedule_deleted", dict(payload))   # buffered while offline
+        except Exception as e:
+            self.logger.error(f"[SCHED] schedule_deleted not sent: {e}")
 
     def _fire(self, s: Dict[str, Any], slot: datetime, now: datetime) -> bool:
         sid = s["schedule_id"]
@@ -670,8 +764,10 @@ class MissionScheduler:
         old = mgr.list_by_source("relay_settings", dog_id) if dog_id else mgr.list_by_source("relay_settings")
         carry = {str(s.get("mission_id")): {k: s.get(k) for k in
                                            ("last_fired_at", "last_run_at", "last_run_id", "last_run_end",
-                                            "last_result", "missed_at")}
+                                            "last_result", "missed_at", "expired", "delete_after")}
                  for s in old if s.get("mission_id")}
+        old_when = {str(s.get("mission_id")): (s.get("date"), list(s.get("times") or []))
+                    for s in old if s.get("mission_id")}
         active = self.active_mode_run()
         for s in old:
             # keep the file of a mission whose mode run is executing so the
@@ -702,6 +798,19 @@ class MissionScheduler:
                 "duration_s": m.get("duration_s"), "reward_treats": m.get("reward_treats"),
                 "grace_s": m.get("grace_s"),
             }
+            # One-time mission: trigger.date (YYYY-MM-DD, dog's local zone) fires
+            # only on that date at its time(s); days are ignored.
+            date = trig.get("date") or m.get("date")
+            bad_date = None
+            if date:
+                date = str(date).strip()
+                try:
+                    if not _DATE_RE.match(date):
+                        raise ValueError(date)
+                    datetime.strptime(date, "%Y-%m-%d")
+                    data.update({"date": date, "type": "daily", "days_of_week": []})
+                except ValueError:
+                    bad_date = f"invalid date {date!r}: use YYYY-MM-DD"
             if mtype in ("silent_guardian", "coach"):
                 data.update({"kind": "mode", "mode": mtype, "reward_treats": 0})
             else:
@@ -716,6 +825,10 @@ class MissionScheduler:
                              "unsupported": "no fire time: trigger needs times [\"HH:MM\"]"})
                 data.setdefault("mission_name", mtype or "unknown")
                 data.pop("mode", None); data["kind"] = "mission"
+            if bad_date:
+                data.update({"allow_unknown_mission": True, "unsupported": bad_date, "kind": "mission"})
+                data.pop("mode", None)
+                data.setdefault("mission_name", mtype or "unknown")
             res = mgr.create_schedule(data)
             if not res.get("success"):
                 # Keep the entry visible in schedule_sync with the reason
@@ -735,7 +848,13 @@ class MissionScheduler:
                     continue
             sid = res["schedule"]["schedule_id"]
             if mid in carry and any(v is not None for v in carry[mid].values()):
-                mgr.set_runtime(sid, {k: v for k, v in carry[mid].items() if v is not None})
+                kept = {k: v for k, v in carry[mid].items() if v is not None}
+                if old_when.get(mid) != (res["schedule"].get("date"), list(res["schedule"].get("times") or [])):
+                    # moved to another date/time: the old "missed" verdict is void
+                    for k in ("expired", "delete_after", "missed_at"):
+                        kept.pop(k, None)
+                if kept:
+                    mgr.set_runtime(sid, kept)
             if active and str(active.get("mission_id")) == mid:
                 with self._lock:
                     if self._mode_run:

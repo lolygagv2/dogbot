@@ -448,3 +448,6 @@ curl -X POST http://localhost:8000/audio/play/file \
   `tests/integration/test_treat_servo.py`, `tests/integration/test_treat_servo_auto.py`
 - `services/cloud/tool_dispatcher.py` — relay command `ultrasonic` (2026-11-12); relay voice clips queue, treats wait for speech
 - `tests/cloud/test_relay_speech_sequencing.py`, `tests/integration/test_ultrasonic_relay_live.py` (`--fire` plays one mild burst)
+- `core/mission_scheduler.py`, `core/schedule_manager.py` — one-time relay missions (`trigger.date`), 2026-11-12
+- `services/motion/pan_tilt.py` — `look_step()` / `offsets()`; relay command `look` in `services/cloud/tool_dispatcher.py`
+- `tests/core/test_one_time_missions.py`, `tests/motion/test_look_step.py`
