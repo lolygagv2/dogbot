@@ -435,3 +435,14 @@ curl -X POST http://localhost:8000/audio/play/file \
 - data/archive/ — decommissioned dogbot.db + missions.db (Phase 4)
 - /home/morgan/wimz/fleet_archive/ — OUTSIDE releases: wimz_fleet.db + fleet_sources tarball + evidence_pack/
 - DEPRECATED (dormant, no importers): core/dog_database.py, core/bark_store.py, missions/ DB layer
+
+## 2026-11-11 additions (ultrasonic tweeter)
+- `ultrasonic.py` (root; `python -m ultrasonic`) — ultrasonic burst: amp relay on PCA9685 ch 2, sound card `ultra`
+- `assets/ultrasonic/tone_*.wav` — 96 kHz tone files (regenerate: `python -m ultrasonic --generate`)
+- `scripts/85-wimz-ultra-audio.rules` — udev: UGREEN card (USB 12d1:0010) gets ALSA id `ultra`
+- `scripts/51-wimz-ultra-disable.lua` — WirePlumber: keep PipeWire off the `ultra` card
+- `tests/hardware/test_ultrasonic_burst.py` — burst safety logic + Silent Guardian styles (no hardware)
+- `modes/silent_guardian.py` — `_ultrasonic(style)`; `config/robot_profiles/treatbot5.yaml` — `ultrasonic_enabled`, `ultrasonic:`
+- `core/hardware/servo_controller.py` — channel 2 is the amp relay now; `rotate_winch()` is a no-op
+- Deprecated (still pulse channel 2 with their own PCA9685 object): `dispense_treat.py`, `treat_loader.py`,
+  `tests/integration/test_treat_servo.py`, `tests/integration/test_treat_servo_auto.py`

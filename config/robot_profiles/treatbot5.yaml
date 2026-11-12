@@ -89,13 +89,13 @@ smart_plug:
   exit_grace_s: 60
 
 # Ultrasonic (ultrasonic.py) in Silent Guardian. Hardware: UGREEN card "ultra" ->
-# LM386 -> piezo tweeter, amp power on PCA9685 ch 2. OFF by default; not exposed in
+# LM386 -> piezo tweeter, amp power on PCA9685 ch 2. Off unless set here; not exposed in
 # the app or the AI connector. Three styles (tested with Elsa 2026-11-11):
 #   before_quiet    - level 1: one random tone right before the "quiet" command
 #   before_music    - top level: 3 s tone, then lead_s later quiet + calming music
 #   nonstop_barking - top level, barking continues: 5 s pulsed, freqs alternate
 # Each style can also take `enabled: false`. 20 kHz is audible to some people.
-ultrasonic_enabled: false
+ultrasonic_enabled: true    # enabled 2026-11-12 (Morgan); other units have no tweeter
 ultrasonic:
   cooldown_s: 20        # between any two bursts; floor is 20 s (ultrasonic.py)
   before_quiet:    {freqs: [20000, 25000], seconds: [1, 2, 3], level_pct: 80}
