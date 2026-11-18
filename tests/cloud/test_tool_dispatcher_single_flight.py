@@ -133,6 +133,65 @@ def main():
     check(f['ok'] is True and frames and frames[0]['result'].get('cancelled') is True,
           "preemptive command cancels the running one and then runs")
 
+    # ---- queueing (2026-11-18): queue=True commands wait their turn, FIFO
+    order = []
+
+    def step(args, cancel):
+        order.append(('start', args['n']))
+        t_end = time.time() + 0.25
+        while time.time() < t_end and not cancel.is_set():
+            time.sleep(0.01)
+        order.append(('end', args['n']))
+        return {'ok': True, 'n': args['n'], 'cut': cancel.is_set()}
+    d.register(ToolSpec('qmove', step, 5.0, group=MOTION, queue=True, busy_code='robot_busy',
+                        urgent=lambda a: a.get('n') == 'stop'))
+    d.register(ToolSpec('qlook', step, 5.0, group=MOTION, queue=True, busy_code='gimbal_busy'))
+    cols = [collect() for _ in range(3)]
+    d.dispatch({'command': 'qmove', 'command_id': 'q-1', 'args': {'n': 1}}, cols[0][2])
+    d.dispatch({'command': 'qmove', 'command_id': 'q-2', 'args': {'n': 2}}, cols[1][2])
+    d.dispatch({'command': 'qlook', 'command_id': 'q-3', 'args': {'n': 3}}, cols[2][2])
+    t0 = time.time()
+    cols[0][1].wait(1)
+    first_done = time.time() - t0
+    check(d.list_tools()['queued'] and not cols[1][0] or len(order) >= 3, "second command is queued, not answered early")
+    for c in cols:
+        c[1].wait(3)
+    check(order == [('start', 1), ('end', 1), ('start', 2), ('end', 2), ('start', 3), ('end', 3)],
+          f"three back-to-back commands run one after the other in arrival order ({order})")
+    check(all(c[0] and c[0][0]['ok'] for c in cols) and first_done >= 0.2
+          and cols[2][0][0]['result'].get('queued_ms', 0) >= 400,
+          f"each command_result only after its own motion ended (3rd queued {cols[2][0][0]['result'].get('queued_ms')}ms)")
+
+    # not queueable behind a long non-queue command -> honest busy codes at once
+    fr, dn, rp = collect()
+    d.dispatch({'command': 'slow2', 'command_id': 'q-4', 'args': {'s': 0.4}}, rp)
+    time.sleep(0.05)
+    t0 = time.time()
+    f1 = d.call('qmove', {'n': 9}, 'q-5')
+    f2 = d.call('qlook', {'n': 9}, 'q-6')
+    check(f1['error']['code'] == 'robot_busy' and f2['error']['code'] == 'gimbal_busy' and time.time() - t0 < 0.2,
+          "behind a non-queueable command: move -> robot_busy, look -> gimbal_busy, immediately")
+    dn.wait(2)
+
+    # queue full -> robot_busy
+    import services.cloud.tool_dispatcher as tdq
+    order.clear()
+    cols = [collect() for _ in range(tdq.QUEUE_MAX_DEPTH + 2)]
+    for i, c in enumerate(cols):
+        d.dispatch({'command': 'qmove', 'command_id': f'q-f{i}', 'args': {'n': i}}, c[2])
+    cols[-1][1].wait(1)
+    check(cols[-1][0] and cols[-1][0][0]['error'] and cols[-1][0][0]['error']['code'] == 'robot_busy',
+          f"queue full ({tdq.QUEUE_MAX_DEPTH} waiting) -> robot_busy")
+    # urgent stop: cuts the running one, drops the queue, runs at once
+    f = d.call('qmove', {'n': 'stop'}, 'q-stop', wait_s=3)
+    for c in cols[:-1]:
+        c[1].wait(2)
+    codes = [(c[0][0]['error'] or {}).get('code') for c in cols[1:-1]]
+    check(f['ok'] and codes.count('cancelled') >= tdq.QUEUE_MAX_DEPTH - 1 and cols[0][0][0]['result'].get('cut') is True,
+          f"stop jumps the queue: running one cut, queued ones answer cancelled ({codes})")
+    time.sleep(0.1)
+    check(d.call('qmove', {'n': 5}, 'q-after')['ok'] and not d.list_tools()['queued'], "slot free again after stop")
+
     check(len(logged) >= 10 and all(len(a) >= 6 for a in logged), f"every call logged ({len(logged)})")
     names = {a[0] for a in logged}
     check({'echo', 'nope', 'fail', 'boom', 'slow', 'stubborn', 'stop'} <= names, "log covers unknown/busy/timeout too")

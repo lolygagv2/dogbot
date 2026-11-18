@@ -18,6 +18,15 @@ Rules
   * Single-flight: one command at a time (a second one answers busy). The
     slot is released only when the handler actually returns, so a timed-out
     run_trick can never overlap a new one. `standby` is preemptive.
+  * Queueing (2026-11-18): `move` and `look` share the motion slot and QUEUE
+    behind each other in arrival order instead of being refused, so
+    turn_right 90, forward 30, tilt_down sent back to back run one after the
+    other and each answers when its own motion has stopped. A command that
+    cannot be queued answers robot_busy (move) / gimbal_busy (look) at once:
+    the slot is held by something long (run_trick), the queue is full, or the
+    wait would exceed QUEUE_MAX_WAIT_S. `move stop` and `standby` jump the
+    queue: they cut the running motion and drop everything still waiting
+    (those answer `cancelled`).
   * Every call is logged: `[TOOL] ...` in journald + a wimz `tool_call`
     event row (spec v0.8) via log_tool_call().
 
@@ -50,9 +59,98 @@ class ToolSpec:
     # take_photo got busy:"command play_sound is running". Only physical
     # motion (move, go_to, run_trick) is exclusive now.
     group: Optional[str] = None
+    # queue=True: wait for the group's slot (FIFO) instead of answering busy.
+    queue: bool = False
+    # error code used when this command is refused because the slot is taken
+    busy_code: str = 'busy'
+    # args -> True when this particular call must jump the queue (move stop)
+    urgent: Optional[Callable[[Dict[str, Any]], bool]] = None
 
 
 MOTION = 'motion'
+QUEUE_MAX_DEPTH = 4        # commands waiting behind the running one
+QUEUE_MAX_WAIT_S = 20.0    # longest a queued command waits for its turn
+
+
+class _Ticket:
+    __slots__ = ('name', 'call_id', 'queue', 'state', 't0')
+
+    def __init__(self, name: str, call_id: Optional[str], queue: bool):
+        self.name, self.call_id, self.queue = name, call_id, queue
+        self.state = 'waiting'          # waiting | granted | refused | flushed
+        self.t0 = time.monotonic()
+
+
+class _Gate:
+    """One exclusive slot per group with a bounded FIFO of waiters."""
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self.holder: Optional[_Ticket] = None
+        self.waiting: list = []
+
+    def enter(self, name: str, call_id: Optional[str], queue: bool) -> _Ticket:
+        """Take the slot, or a place in the queue, or be refused. Never blocks.
+        Called in arrival order (from the socket loop) so the queue is FIFO."""
+        t = _Ticket(name, call_id, queue)
+        with self._cond:
+            if self.holder is None and not self.waiting:
+                self.holder = t
+                t.state = 'granted'
+            elif (queue and self.holder is not None and self.holder.queue
+                  and len(self.waiting) < QUEUE_MAX_DEPTH):
+                self.waiting.append(t)
+            else:
+                t.state = 'refused'
+        return t
+
+    def wait(self, t: _Ticket, max_wait_s: float) -> str:
+        """Block until the ticket is granted, flushed or has waited too long."""
+        deadline = t.t0 + max_wait_s
+        with self._cond:
+            while t.state == 'waiting':
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    self.waiting.remove(t)
+                    t.state = 'refused'
+                    break
+                self._cond.wait(left)
+            return t.state
+
+    def release(self, t: _Ticket) -> None:
+        with self._cond:
+            if self.holder is t:
+                self.holder = None
+                if self.waiting:
+                    nxt = self.waiting.pop(0)
+                    nxt.state = 'granted'
+                    self.holder = nxt
+                self._cond.notify_all()
+
+    def flush(self) -> int:
+        """Drop every waiting command (they answer `cancelled`)."""
+        with self._cond:
+            n = len(self.waiting)
+            for t in self.waiting:
+                t.state = 'flushed'
+            self.waiting = []
+            self._cond.notify_all()
+            return n
+
+    def wait_idle(self, timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
+        with self._cond:
+            while self.holder is not None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                self._cond.wait(left)
+            return True
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._cond:
+            return {'holder': self.holder.name if self.holder else None,
+                    'queued': [{'name': t.name, 'id': t.call_id} for t in self.waiting]}
 
 
 def _err(code: str, message: str, **extra) -> Dict[str, Any]:
@@ -111,7 +209,7 @@ class ToolDispatcher:
     def __init__(self):
         self._tools: Dict[str, ToolSpec] = {}
         self._lock = threading.RLock()
-        self._group_locks: Dict[str, threading.Lock] = {}
+        self._gates: Dict[str, _Gate] = {}
         self._running: Dict[int, Dict[str, Any]] = {}   # run_no -> {name, id, group, cancel, started}
         self._run_no = 0
         self._relay = None
@@ -130,12 +228,12 @@ class ToolDispatcher:
                       group: Optional[str] = None) -> None:
         self.register(ToolSpec(name, handler, timeout_s, preemptive, description, group))
 
-    def _group_lock(self, group: str) -> threading.Lock:
+    def _gate(self, group: str) -> _Gate:
         with self._lock:
-            lk = self._group_locks.get(group)
-            if lk is None:
-                lk = self._group_locks[group] = threading.Lock()
-            return lk
+            g = self._gates.get(group)
+            if g is None:
+                g = self._gates[group] = _Gate()
+            return g
 
     def running(self, group: Optional[str] = None) -> list:
         """Snapshot of running commands (optionally one group), oldest first."""
@@ -157,7 +255,8 @@ class ToolDispatcher:
         return {'tools': sorted(tools, key=lambda t: t['name']),
                 'busy': bool(motion),                       # motion slot held
                 'current': motion[0] if motion else None,   # wire-compat
-                'running': running}
+                'running': running,
+                'queued': self._gate(MOTION).snapshot()['queued']}
 
     def attach(self, relay_client=None) -> None:
         """Wire late-bound tools (run_trick) and remember the relay."""
@@ -183,8 +282,24 @@ class ToolDispatcher:
         args = msg.get('args') or msg.get('arguments') or msg.get('params') or {}
         if not isinstance(args, dict):
             args = {'_raw': args}
-        threading.Thread(target=self._run, args=(name, call_id, args, reply),
+        # Take the place in the motion queue HERE, on the caller's thread, so
+        # commands queue in the order they arrived (threads would race).
+        ticket = self._enter(name, call_id, args)
+        threading.Thread(target=self._run, args=(name, call_id, args, reply, ticket),
                          daemon=True, name=f"ToolCall-{name}").start()
+
+    def _enter(self, name: Optional[str], call_id: Optional[str], args: Dict[str, Any]) -> Optional[_Ticket]:
+        spec = self._tools.get(name) if name else None
+        if spec is None or not spec.group or spec.preemptive or self._is_urgent(spec, args):
+            return None
+        return self._gate(spec.group).enter(name, call_id, spec.queue)
+
+    @staticmethod
+    def _is_urgent(spec: ToolSpec, args: Dict[str, Any]) -> bool:
+        try:
+            return bool(spec.urgent and spec.urgent(args))
+        except Exception:
+            return False
 
     def call(self, name: str, args: Optional[Dict[str, Any]] = None,
              call_id: Optional[str] = None, wait_s: Optional[float] = None) -> Dict[str, Any]:
@@ -200,30 +315,30 @@ class ToolDispatcher:
         done.wait(wait_s or 1.0)
         return box
 
-    def cancel_current(self, wait_s: float = 3.0) -> bool:
-        """Cancel every running command (preemptive standby) and wait for the
-        motion group to drain. Ungrouped commands get the cancel event but
+    def cancel_current(self, wait_s: float = 3.0, group: Optional[str] = None) -> bool:
+        """Cancel every running command (preemptive standby), or only one
+        group's (move stop), drop whatever is queued behind it, and wait for
+        the group(s) to drain. Ungrouped commands get the cancel event but
         are not waited on."""
         with self._lock:
-            rows = list(self._running.values())
-        if not rows:
-            return True
+            gates = {g: gt for g, gt in self._gates.items() if group is None or g == group}
+        for g, gt in gates.items():
+            n = gt.flush()
+            if n:
+                logger.info(f"[TOOL] dropped {n} queued {g} command(s)")
+        with self._lock:
+            rows = [r for r in self._running.values() if group is None or r['group'] == group]
         for r in rows:
             r['cancel'].set()
             logger.info(f"[TOOL] cancel requested for {r['name']} command_id={r['id']}")
-        groups = {r['group'] for r in rows if r['group']}
         ok = True
         deadline = time.monotonic() + wait_s
-        for g in groups:
-            lk = self._group_lock(g)
-            got = lk.acquire(timeout=max(0.0, deadline - time.monotonic()))
-            if got:
-                lk.release()
-            ok = ok and got
+        for gt in gates.values():
+            ok = gt.wait_idle(max(0.0, deadline - time.monotonic())) and ok
         return ok
 
     def _run(self, name: str, call_id: Optional[str], args: Dict[str, Any],
-             reply: Callable[[Dict[str, Any]], None]) -> None:
+             reply: Callable[[Dict[str, Any]], None], ticket: Optional[_Ticket] = None) -> None:
         t0 = time.monotonic()
         spec = self._tools.get(name) if name else None
         result: Dict[str, Any]
@@ -239,14 +354,33 @@ class ToolDispatcher:
         if spec.preemptive:
             self.cancel_current(wait_s=3.0)
 
-        lock = self._group_lock(spec.group) if spec.group else None
-        if lock is not None and not lock.acquire(blocking=False):
-            others = self.running(spec.group)
-            cur = others[0]['name'] if others else '?'
-            result = _err('busy', f"command {cur} is running",
-                          result='busy', running=cur, group=spec.group)
-            self._finish(name, call_id, args, t0, result, result['error']['message'], reply)
-            return
+        gate: Optional[_Gate] = None
+        queued_ms = 0
+        if spec.group and self._is_urgent(spec, args):
+            # e.g. move stop: cut the running motion, drop the queue, run now.
+            self.cancel_current(wait_s=2.0, group=spec.group)
+        elif spec.group:
+            gate = self._gate(spec.group)
+            if ticket is None:
+                ticket = gate.enter(name, call_id, spec.queue)
+            if ticket.state == 'waiting':
+                logger.info(f"[TOOL] {name} command_id={call_id} queued behind "
+                            f"{gate.snapshot()['holder']}")
+            state = gate.wait(ticket, QUEUE_MAX_WAIT_S)
+            queued_ms = int((time.monotonic() - ticket.t0) * 1000)
+            if state == 'flushed':
+                result = _err('cancelled', 'dropped from the queue by stop/standby before it started',
+                              result='cancelled', group=spec.group)
+                self._finish(name, call_id, args, t0, result, result['error']['message'], reply)
+                return
+            if state != 'granted':
+                others = self.running(spec.group)
+                cur = others[0]['name'] if others else '?'
+                why = (f"command {cur} is running" if queued_ms < 50
+                       else f"waited {queued_ms / 1000:.0f}s behind {cur}")
+                result = _err(spec.busy_code, why, result='busy', running=cur, group=spec.group)
+                self._finish(name, call_id, args, t0, result, result['error']['message'], reply)
+                return
 
         cancel = threading.Event()
         with self._lock:
@@ -266,8 +400,8 @@ class ToolDispatcher:
                 self._running.pop(run_no, None)
             if not released.is_set():
                 released.set()
-                if lock is not None:
-                    lock.release()
+                if gate is not None:
+                    gate.release(ticket)
             pool.shutdown(wait=False)
 
         future = pool.submit(spec.handler, args, cancel)
@@ -277,6 +411,8 @@ class ToolDispatcher:
             if not isinstance(out, dict):
                 out = {'ok': True, 'value': out}
             out.setdefault('ok', True)
+            if queued_ms >= 50:
+                out['queued_ms'] = queued_ms       # time spent waiting for the command before it
             result = out
             if not result.get('ok'):
                 e = result.get('error')
@@ -339,14 +475,24 @@ class ToolDispatcher:
                                description='{mission_id}: delete that schedule (schedule_id | relay mission_id | '
                                            'mission_name) and stop its run if executing; "active" stops the '
                                            'running mission'))
-        self.register(ToolSpec('move', self._tool_move, 8.0,   # 5 s hard cap + ramp/center slack
+        self.register(ToolSpec('move', self._tool_move, 12.0,  # 8 s turn budget / 5 s drive cap + settle
                                description='Bounded base move: {action: forward|back|turn_left|turn_right|stop, '
-                                           'amount cm (cap 50) or deg (cap 90)}; 5 s hard cap, motors off after',
-                               group=MOTION))
-        self.register(ToolSpec('look', self._tool_look, 6.0,
+                                           'amount cm (cap 50) or deg (cap 90)}; replies when the robot has '
+                                           'stopped; turns are camera closed-loop and `amount` in the reply is '
+                                           'the degrees actually turned; queues behind a running move/look',
+                               group=MOTION, queue=True, busy_code='robot_busy',
+                               urgent=lambda a: str(a.get('action') or '').strip().lower() == 'stop'))
+        self.register(ToolSpec('turn_calibrate', self._tool_turn_calibrate, 90.0,
+                               description='One full spin to calibrate the camera heading scale: '
+                                           '{surface?: name, direction?: turn_right|turn_left}; needs clear '
+                                           'floor all round; saves state/turn_calibration.json',
+                               group=MOTION, busy_code='robot_busy'))
+        self.register(ToolSpec('look', self._tool_look, 8.0,
                                description='One gentle camera step: {action: pan_left|pan_right|tilt_up|tilt_down|'
                                            'center, degrees 5-45 (default 15)} -> {pan, tilt, limit_reached, '
-                                           'moved_degrees}; gimbal_busy while the owner steers or a move runs'))
+                                           'moved_degrees}; queues behind a running move/look; gimbal_busy '
+                                           'while the owner steers or a trick runs',
+                               group=MOTION, queue=True, busy_code='gimbal_busy'))
         self.register(ToolSpec('go_to', self._tool_go_to, 5.0,
                                description='Navigate to a named place (not supported yet)', group=MOTION))
         self.register(ToolSpec('listen', self._tool_listen, self.LISTEN_MAX_S + 15.0,
@@ -585,8 +731,6 @@ class ToolDispatcher:
                 return _err('invalid_value', 'degrees must be a number from 5 to 45')
             if not 5.0 <= degrees <= 45.0:
                 return _err('invalid_value', 'degrees must be from 5 to 45')
-        if self.running(MOTION):
-            return _err('gimbal_busy', 'a base move is running (it holds the camera centred)')
         try:
             from services.motion.pan_tilt import get_pantilt_service
             pt = get_pantilt_service()
@@ -598,7 +742,21 @@ class ToolDispatcher:
             msg = {'gimbal_busy': 'the camera is being steered right now',
                    'unavailable': 'camera servos are not initialised'}.get(code, code)
             return _err(code, msg)
+        # Reply when the camera has physically arrived, not when the last
+        # servo step was commanded.
+        time.sleep(self.LOOK_SETTLE_S)
         return res
+
+    LOOK_SETTLE_S = 0.25
+
+    @staticmethod
+    def _tool_turn_calibrate(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        from services.motion.relay_move import get_relay_move
+        direction = str(args.get('direction') or 'turn_right').lower()
+        if direction not in ('turn_right', 'turn_left'):
+            return _err('invalid_action', 'direction must be turn_right or turn_left')
+        return get_relay_move().calibrate_turn(cancel, surface=str(args.get('surface') or 'default'),
+                                               direction=direction)
 
     @staticmethod
     def _tool_ultrasonic(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:

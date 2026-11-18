@@ -124,8 +124,12 @@ def main():
           and d._tool_look({'action': 'pan_left', 'degrees': 'far'}, None)['error']['code'] == 'invalid_value',
           'tool: degrees outside 5-45 or not a number -> invalid_value')
     check(d._tool_look({'action': 'center', 'degrees': 999}, None).get('ok'), 'tool: degrees ignored for center')
-    d.running = lambda group=None: [{'name': 'move'}]
-    check(d._tool_look({'action': 'pan_left'}, None)['error']['code'] == 'gimbal_busy', 'tool: gimbal_busy while a base move runs')
+    # 2026-11-18: a look during a base move queues behind it in the dispatcher
+    # (tests/cloud/test_tool_dispatcher_single_flight.py); it is no longer refused here.
+    spec = d._tools['look']
+    check(spec.group == td.MOTION and spec.queue and spec.busy_code == 'gimbal_busy'
+          and d._tools['move'].queue and d._tools['move'].busy_code == 'robot_busy',
+          'tool: look and move share the motion queue; refusals are gimbal_busy / robot_busy')
     del fake
 
     print(f"\n{'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILED'}")
