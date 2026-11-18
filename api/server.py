@@ -4501,6 +4501,57 @@ async def wifi_connect(request: dict):
         return {"success": False, "message": str(e)}
 
 
+@app.get("/system/wifi/saved")
+async def wifi_saved():
+    """Saved WiFi profiles (the robot's own hotspot profile is left out).
+    `active` marks the one in use right now."""
+    try:
+        from services.network.wifi_manager import get_wifi_manager
+        wifi = get_wifi_manager()
+        saved = [c for c in wifi.get_saved_connections() if c['name'] != wifi.HOTSPOT_CONNECTION_NAME]
+        return {"success": True,
+                "connections": [{"name": c['name'], "active": bool(c.get('device'))} for c in saved]}
+    except Exception as e:
+        logger.error(f"WiFi saved-list error: {e}")
+        return {"success": False, "connections": [], "error": str(e)}
+
+
+@app.post("/system/wifi/forget")
+async def wifi_forget(request: dict):
+    """Delete one saved WiFi profile. Body: {"ssid": "<saved profile name>"}.
+
+    Owner-initiated only (dashboard /wifi page): the robot never removes a
+    profile on its own. Forgetting the network in use takes the robot offline;
+    the WiFi monitor then raises the local hotspot as usual."""
+    ssid = str(request.get("ssid", "")).strip()
+    if not ssid:
+        raise HTTPException(status_code=400, detail="ssid is required")
+    try:
+        from services.network.wifi_manager import get_wifi_manager
+        wifi = get_wifi_manager()
+        if ssid == wifi.HOTSPOT_CONNECTION_NAME:
+            return {"success": False, "message": "That is the robot's own hotspot profile; it cannot be removed."}
+        if ssid not in [c['name'] for c in wifi.get_saved_connections()]:
+            return {"success": False, "message": f"'{ssid}' is not a saved network."}
+        logger.info(f"[LOCAL] WiFi profile '{ssid}' forgotten via dashboard")
+        ok, message = await asyncio.get_running_loop().run_in_executor(None, wifi.forget_connection, ssid)
+        return {"success": ok, "message": message}
+    except Exception as e:
+        logger.error(f"WiFi forget error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.get("/wifi", response_class=HTMLResponse)
+async def wifi_page():
+    """WiFi setup page: scan, join, list and forget saved networks.
+    Home WiFi: http://<robot-ip>:8000/wifi   Robot hotspot: http://192.168.4.1:8000/wifi"""
+    try:
+        with open("api/static/wifi.html", "r") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="WiFi page not found")
+
+
 @app.get("/system/wifi/connect/status")
 async def wifi_connect_status():
     """Outcome of the last POST /system/wifi/connect (state: idle|connecting|done)."""
@@ -6025,7 +6076,7 @@ async def tools_call(name: str, request: Request):
         frame = await asyncio.get_running_loop().run_in_executor(
             None, lambda: disp.call(name, args, call_id=f"local-{_uuid.uuid4().hex[:8]}",
                                     wait_s=timeout + 15))
-        if frame.get('error', {}) and frame['error'].get('code') == 'busy':
+        if frame.get('error', {}) and frame['error'].get('code') in ('busy', 'robot_busy', 'gimbal_busy'):
             raise HTTPException(status_code=409, detail=frame)
         return frame
     except HTTPException:

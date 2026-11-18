@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WIM-Z WiFi</title>
+<style>
+  :root { --bg:#10141a; --card:#1b222c; --line:#2c3644; --text:#e8edf3; --dim:#93a1b3; --accent:#4da3ff; --bad:#ff6b6b; --ok:#4cd68a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:16px; }
+  h1 { font-size:22px; margin:8px 0 4px; }
+  h2 { font-size:16px; margin:0 0 10px; color:var(--dim); font-weight:600; }
+  a { color:var(--accent); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin:14px 0; }
+  .row { display:flex; align-items:center; gap:10px; padding:10px 0; border-top:1px solid var(--line); }
+  .row:first-of-type { border-top:0; }
+  .grow { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .dim { color:var(--dim); font-size:14px; }
+  button { font:inherit; border:1px solid var(--line); background:#243043; color:var(--text); border-radius:8px; padding:8px 12px; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#06121f; font-weight:600; }
+  button.danger { color:var(--bad); }
+  button:disabled { opacity:.5; cursor:default; }
+  input { font:inherit; width:100%; padding:10px; border-radius:8px; border:1px solid var(--line); background:#0f141b; color:var(--text); margin:6px 0 10px; }
+  label { font-size:14px; color:var(--dim); }
+  #msg { min-height:22px; margin-top:8px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  .tag { font-size:12px; border:1px solid var(--line); border-radius:999px; padding:2px 8px; color:var(--dim); }
+</style>
+</head>
+<body>
+<main>
+  <p><a href="/dashboard">&larr; Dashboard</a></p>
+  <h1>WiFi</h1>
+  <div class="dim" id="now">Checking connection…</div>
+
+  <div class="card">
+    <h2>Join a network</h2>
+    <button id="scanBtn" onclick="scan()">Scan for networks</button>
+    <span class="dim" id="scanNote"></span>
+    <div id="nets"></div>
+    <div id="join" style="display:none; margin-top:12px">
+      <label for="ssid">Network name</label>
+      <input id="ssid" autocomplete="off" autocapitalize="none">
+      <label for="pw">Password</label>
+      <input id="pw" type="password" autocomplete="off">
+      <button class="primary" id="goBtn" onclick="connect()">Connect</button>
+    </div>
+    <p><a href="#" onclick="showJoin(''); return false;">Enter a network name by hand</a></p>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Saved networks</h2>
+    <div id="saved" class="dim">Loading…</div>
+  </div>
+
+  <p class="dim">On the robot's own hotspot this page is at <b>http://192.168.4.1:8000/wifi</b>.
+  Scanning from the hotspot drops it for about five seconds; rejoin it if your phone lets go.</p>
+</main>
+<script>
+let status = {};
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function say(text, cls) { $('msg').className = cls || ''; $('msg').textContent = text; }
+
+async function loadStatus() {
+  try {
+    status = await (await fetch('/system/network-status')).json();
+    $('now').textContent = status.mode === 'ap'
+      ? 'Robot is running its own hotspot (not on a WiFi network).'
+      : (status.ssid ? `Connected to “${status.ssid}” at ${status.ip || '?'}` +
+         (status.internet === false ? ' (no internet)' : '') : 'Not connected.');
+    $('scanNote').textContent = status.mode === 'ap' ? ' The hotspot drops for ~5 s during a scan.' : '';
+  } catch (e) { $('now').textContent = 'Robot not reachable.'; }
+}
+
+async function loadSaved() {
+  try {
+    const d = await (await fetch('/system/wifi/saved')).json();
+    const list = d.connections || [];
+    if (!list.length) { $('saved').textContent = 'No saved networks.'; return; }
+    $('saved').className = '';
+    $('saved').innerHTML = list.map((c, i) =>
+      `<div class="row"><div class="grow">${esc(c.name)} ${c.active ? '<span class="tag">in use</span>' : ''}</div>
+       <button class="danger" data-i="${i}">Forget</button></div>`).join('');
+    $('saved').querySelectorAll('button').forEach(b => b.onclick = () => forget(list[b.dataset.i]));
+  } catch (e) { $('saved').textContent = 'Could not load saved networks.'; }
+}
+
+async function forget(c) {
+  const warn = c.active
+    ? `“${c.name}” is the network the robot is using right now. Forgetting it takes the robot offline; it will start its own hotspot. Continue?`
+    : `Forget “${c.name}”?`;
+  if (!confirm(warn)) return;
+  try {
+    const d = await (await fetch('/system/wifi/forget', {method:'POST', headers:{'content-type':'application/json'},
+                                 body: JSON.stringify({ssid: c.name})})).json();
+    say(d.message || (d.success ? 'Forgotten.' : 'Could not forget it.'), d.success ? 'ok' : 'bad');
+  } catch (e) { say('Lost contact with the robot.', 'bad'); }
+  loadSaved(); loadStatus();
+}
+
+async function scan() {
+  $('scanBtn').disabled = true; say('Scanning…');
+  try {
+    const d = await (await fetch('/system/wifi/scan')).json();
+    const seen = new Set();
+    const nets = (d.networks || []).filter(n => n.ssid && !seen.has(n.ssid) && seen.add(n.ssid));
+    $('nets').innerHTML = nets.map((n, i) =>
+      `<div class="row"><div class="grow">${esc(n.ssid)} <span class="dim">${n.signal ?? ''}% ${n.secured ? '🔒' : 'open'}</span></div>
+       <button data-i="${i}">Choose</button></div>`).join('') || '<p class="dim">No networks found.</p>';
+    $('nets').querySelectorAll('button').forEach(b => b.onclick = () => showJoin(nets[b.dataset.i].ssid));
+    say(d.success ? '' : (d.error || 'Scan failed.'), d.success ? '' : 'bad');
+  } catch (e) { say('Scan interrupted. If you are on the robot hotspot, rejoin it and scan again.', 'bad'); }
+  $('scanBtn').disabled = false;
+}
+
+function showJoin(ssid) { $('join').style.display = 'block'; $('ssid').value = ssid; $('pw').value = ''; (ssid ? $('pw') : $('ssid')).focus(); }
+
+async function connect() {
+  const ssid = $('ssid').value.trim();
+  if (!ssid) { say('Enter a network name.', 'bad'); return; }
+  $('goBtn').disabled = true;
+  try {
+    const d = await (await fetch('/system/wifi/connect', {method:'POST', headers:{'content-type':'application/json'},
+                                 body: JSON.stringify({ssid, password: $('pw').value})})).json();
+    say(d.message || (d.success ? 'Connecting…' : 'Could not start.'), d.success ? '' : 'bad');
+    if (d.success) poll(ssid, 0);
+  } catch (e) { say('Lost contact with the robot.', 'bad'); }
+  $('goBtn').disabled = false;
+}
+
+async function poll(ssid, n) {
+  if (n > 30) { say(`No answer yet. If the robot joined “${ssid}”, put this phone on that network and open the dashboard at the robot's new address.`); return; }
+  try {
+    const d = await (await fetch('/system/wifi/connect/status')).json();
+    const j = d.job || {};
+    if (j.state === 'done') {
+      const good = j.success !== false && !j.error;
+      say(good ? `Connected to “${ssid}”.` : `Could not join “${ssid}”: ${j.message || j.error || 'password rejected?'}`, good ? 'ok' : 'bad');
+      loadStatus(); loadSaved(); return;
+    }
+  } catch (e) { /* the hotspot drops while the robot switches networks */ }
+  setTimeout(() => poll(ssid, n + 1), 2000);
+}
+
+loadStatus(); loadSaved();
+</script>
+</body>
+</html>
