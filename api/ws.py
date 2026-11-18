@@ -569,37 +569,55 @@ class TreatBotWebSocketServer:
 
             elif command in ("treat", "dispense_treat"):
                 # {"command": "treat", "count": N, "reason": "...", "dog_id": "..."}
-                if self.dispenser:
+                # 2026-11-18: five app taps in AP mode on 2026-11-17 reached this
+                # branch and produced no dispense, no refusal and no log line.
+                # A single treat now goes through the ToolDispatcher, the same
+                # path the relay uses (which dispensed fine the same evening):
+                # every call is logged ([TOOL] name=dispense_treat ...) and the
+                # real outcome, including the refusal code (treat_cap_reached,
+                # treat_rate, dispenser_empty, ...), comes back to this socket as
+                # a command_result frame. command_response below only says the
+                # tap was accepted.
+                from services.reward.dispenser import get_dispenser_service as _get_disp
+                dispenser = self.dispenser or _get_disp()
+                count = max(1, min(10, int(data.get("count") or 1)))
+                reason = data.get("reason", "manual")
+                dog_id = data.get("dog_id")
+                self.logger.info(f"[LOCAL] treat tap: count={count} dog_id={dog_id} reason={reason} "
+                                 f"command_id={data.get('command_id')} dispensing={dispenser.is_dispensing}")
+                if dispenser.is_dispensing:
                     # Double-tap to cancel: a second treat command while one is
                     # still running aborts the retry ladder and skips anti-jam,
                     # for when the operator knows the carousel is empty.
-                    if self.dispenser.is_dispensing:
-                        cancelled = self.dispenser.cancel_dispense()
-                        result = {"success": False, "command": command,
-                                  "cancelled": cancelled,
-                                  "message": "Dispense cancelled"}
-                        return result
-                    count = max(1, min(10, int(data.get("count", 1))))
-                    reason = data.get("reason", "manual")
-                    dog_id = data.get("dog_id")
-                    if count == 1:
-                        # Off-thread like the multi path: a dispense blocks for
-                        # up to ~35s and would otherwise freeze the WS loop,
-                        # making the double-tap cancel impossible to deliver.
-                        threading.Thread(
-                            target=self.dispenser.dispense_treat,
-                            kwargs={"dog_id": dog_id, "reason": reason},
-                            daemon=True, name="TreatDispense",
-                        ).start()
-                    else:
-                        # Multi-dispense blocks ~1.5s per treat — run off the WS thread
-                        threading.Thread(
-                            target=self.dispenser.dispense_multiple,
-                            kwargs={"count": count, "dog_id": dog_id, "reason": reason},
-                            daemon=True, name="TreatMultiDispense",
-                        ).start()
+                    cancelled = dispenser.cancel_dispense()
+                    self.logger.info(f"[LOCAL] treat tap while dispensing -> cancel requested ({cancelled})")
+                    result = {"success": False, "command": command,
+                              "cancelled": cancelled,
+                              "message": "Dispense cancelled"}
+                elif count == 1:
+                    from services.cloud.tool_dispatcher import get_tool_dispatcher
+                    loop = self._main_loop
+                    ws_ref = websocket
+
+                    def _treat_reply(frame, _loop=loop, _ws=ws_ref):
+                        self.logger.info(f"[LOCAL] treat result: ok={frame.get('ok')} error={frame.get('error')}")
+                        if _loop is not None:
+                            asyncio.run_coroutine_threadsafe(self.manager.send_to_one(_ws, frame), _loop)
+
+                    args = {"dog_id": dog_id, "dog_name": data.get("dog_name"),
+                            "source": data.get("source") or "app"}
+                    get_tool_dispatcher().dispatch(
+                        {"name": "dispense_treat", "id": data.get("command_id"), "args": args},
+                        reply=_treat_reply)
+                    result = {"success": True, "command": command, "accepted": True,
+                              "command_id": data.get("command_id")}
                 else:
-                    result = {"success": False, "command": command, "error": "Dispenser not available"}
+                    # Multi-dispense blocks ~1.5s per treat — run off the WS thread
+                    threading.Thread(
+                        target=dispenser.dispense_multiple,
+                        kwargs={"count": count, "dog_id": dog_id, "reason": reason},
+                        daemon=True, name="TreatMultiDispense",
+                    ).start()
 
             elif command == "led":
                 # {"command": "led", "pattern": "celebration"}
