@@ -191,8 +191,8 @@ def test_treat_and_mission_and_status():
 
     d = s.mark_departure('aruco_1')
     a = s.mark_arrival('aruco_1')
-    check(em.of('departure')[0]['data']['method'] == 'app' and em.of('arrival')[0]['data']['method'] == 'app',
-          "departure/arrival carry method=app")
+    check(not em.of('departure') and not em.of('arrival') and d.get('ignored') and a.get('ignored'),
+          "departure/arrival are retired (relay 2026-11-18): nothing emitted")
 
 
 def test_stills():
@@ -234,34 +234,50 @@ def test_music():
 
 
 def test_mode_change_segments():
-    """Relay 2026-11-07: one mode_change row per completed stay in a mode."""
+    """Relay 2026-11-18: one mode_change {mode} on every switch; mode = the mode
+    just entered, ts = the switch, no dog_id."""
     s, em = svc()
     s._mode_seg = {'mode': 'idle', 'start': 1000.0}
-    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'coach', 'reason': 'app', 'timestamp': 1060.0})
+    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'silent_guardian', 'reason': 'app', 'timestamp': 1060.0})
     mc = em.of('mode_change')
-    check(len(mc) == 1 and mc[0]['data'] == {'mode': 'idle', 'start': _iso(1000.0), 'end': _iso(1060.0),
-                                            'duration_s': 60.0, 'next_mode': 'coach', 'reason': 'app'},
-          f"mode_change row for the ended mode {{mode, start, end}} ({mc[0]['data'] if mc else None})")
-    check(mc[0]['kw'].get('resolve_dog') is False, "mode_change is not attributed to a dog")
-    s._on_mode_change({'previous_mode': 'coach', 'new_mode': 'silent_guardian', 'reason': 'dropdown', 'timestamp': 1100.0})
-    s._on_mode_change({'previous_mode': 'silent_guardian', 'new_mode': 'idle', 'reason': 'user', 'timestamp': 1400.0})
+    check(len(mc) == 1 and mc[0]['data']['mode'] == 'silent_guardian' and mc[0]['data']['previous_mode'] == 'idle'
+          and mc[0]['data']['previous_duration_s'] == 60.0 and mc[0]['kw'].get('ts') == 1060.0,
+          f"switch -> mode_change for the mode ENTERED, stamped at the switch ({mc[0]['data'] if mc else None})")
+    check(mc[0]['kw'].get('resolve_dog') is False and not mc[0]['kw'].get('dog_id'),
+          "mode_change is home-wide: no dog_id")
+    s._on_mode_change({'previous_mode': 'silent_guardian', 'new_mode': 'coach', 'reason': 'dropdown', 'timestamp': 1100.0})
+    s._on_mode_change({'previous_mode': 'coach', 'new_mode': 'idle', 'reason': 'user', 'timestamp': 1400.0})
     mc = em.of('mode_change')
-    check([r['data']['mode'] for r in mc] == ['idle', 'coach', 'silent_guardian']
-          and [r['data']['duration_s'] for r in mc] == [60.0, 40.0, 300.0]
-          and mc[1]['data']['start'] == mc[0]['data']['end'] and mc[2]['data']['start'] == mc[1]['data']['end'],
-          "segments are contiguous: each start == previous end, durations add up")
+    check([r['data']['mode'] for r in mc] == ['silent_guardian', 'coach', 'idle']
+          and [r['kw']['ts'] for r in mc] == [1060.0, 1100.0, 1400.0]
+          and [r['data']['previous_duration_s'] for r in mc] == [60.0, 40.0, 300.0],
+          "every switch is sent, in order, each at its own time")
+    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'idle', 'reason': 'dup', 'timestamp': 1410.0})
+    check(len(em.of('mode_change')) == 3, "a repeat of the same mode sends nothing")
     s._close_mode_segment(1450.0, next_mode='shutdown', reason='service_stop')
     mc = em.of('mode_change')
-    check(len(mc) == 4 and mc[3]['data']['mode'] == 'idle' and mc[3]['data']['next_mode'] == 'shutdown'
-          and mc[3]['data']['duration_s'] == 50.0, "service stop closes the open segment with next_mode shutdown")
-    check(s._close_mode_segment(1500.0, 'x', 'y') is None and len(em.of('mode_change')) == 4,
+    check(len(mc) == 4 and mc[3]['data']['mode'] == 'shutdown' and mc[3]['data']['previous_mode'] == 'idle'
+          and mc[3]['kw']['ts'] == 1450.0, "service stop sends mode shutdown")
+    check(s._close_mode_segment(1500.0, 'shutdown', 'y') is None and len(em.of('mode_change')) == 4,
           "closing twice emits nothing")
     s._mode_seg = {'mode': 'idle', 'start': 2000.0}
     s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'shutdown', 'reason': 'System shutdown', 'timestamp': 2010.0})
     s._close_mode_segment(2013.0, next_mode='shutdown', reason='service_stop')
-    mc = em.of('mode_change')
-    check(len(mc) == 5 and mc[4]['data']['mode'] == 'idle' and mc[4]['data']['next_mode'] == 'shutdown',
-          "state -> shutdown then service stop: one idle row, no 'shutdown' segment row")
+    check(len(em.of('mode_change')) == 5, "state -> shutdown then service stop: one shutdown event, not two")
+
+    # outbox: mode_change ships with no dog_id; a pre-2026-11-18 stay row ships at the stay's START
+    from services.cloud.relay_client import RelayClient
+    w = RelayClient._wire_event({'event_id': 'e1', 'type': 'mode_change', 'ts': '2026-11-18T10:00:00Z',
+                                 'data': {'mode': 'silent_guardian'}, 'device_id': 'tb'})
+    check(w is not None and 'dog_id' not in w and w['data']['mode'] == 'silent_guardian',
+          "outbox ships mode_change without a dog_id key (was held forever)")
+    w = RelayClient._wire_event({'event_id': 'e2', 'type': 'mode_change', 'ts': '2026-11-17T22:30:00Z',
+                                 'data': {'mode': 'silent_guardian', 'start': '2026-11-17T21:00:00Z',
+                                          'end': '2026-11-17T22:30:00Z', 'duration_s': 5400.0, 'next_mode': 'idle'}})
+    check(w is not None and w['ts'] == '2026-11-17T21:00:00Z' and w['duration_s'] == 5400.0,
+          "held stay row from an older build -> sent as 'entered mode at start'")
+    check(RelayClient._wire_event({'event_id': 'e3', 'type': 'treat', 'ts': 'x', 'data': {}}) is None,
+          "dog-scoped types without a dog are still held")
 
 
 def test_trick_attempt_and_coach_session():

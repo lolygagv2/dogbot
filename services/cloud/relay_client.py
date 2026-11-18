@@ -2219,7 +2219,9 @@ class RelayClient:
     # the relay only fills a missing dog_id itself when the owner has
     # exactly one dog, otherwise it rejects the row. Optional duration_s,
     # data, device_id. No id_method / timestamp keys.
-    DEVICE_SCOPED_TYPES = frozenset({'status'})
+    # Home-wide types ship with no dog_id key. mode_change joined 2026-11-18
+    # (relay brief: "leave out dog_id when the mode applies to the whole home").
+    DEVICE_SCOPED_TYPES = frozenset({'status', 'mode_change'})
 
     @classmethod
     def _wire_event(cls, ev: dict) -> Optional[dict]:
@@ -2235,10 +2237,16 @@ class RelayClient:
         data = dict(ev.get('data') or {})
         if ev.get('id_method') and 'id_method' not in data:
             data['id_method'] = ev['id_method']
+        ts = ev.get('ts') or ev.get('timestamp')
+        if etype == 'mode_change' and data.get('start') and 'next_mode' in data:
+            # Row queued by a build before 2026-11-18: one per completed stay,
+            # stamped when the stay ENDED. The relay reads mode_change as "the
+            # robot entered `mode` at ts", so ship it at the stay's start.
+            ts = data['start']
         out = {
             'event_id': ev.get('event_id') or ev.get('id'),
             'type': etype,
-            'ts': ev.get('ts') or ev.get('timestamp'),
+            'ts': ts,
             'data': data,
             'device_id': ev.get('device_id'),
         }

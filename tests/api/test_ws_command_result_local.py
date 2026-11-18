@@ -117,9 +117,10 @@ async def main():
     await srv._execute_contract_command(sock, {"command": "mark_departure"})
     await asyncio.sleep(0.2)
     resp = sock.of_type("command_response")
-    check(resp and resp[0]["data"]["success"] and resp[0]["data"]["event"]["data"]["method"] == "app",
-          "mark_departure emits departure method=app")
-    check(sock.events("departure"), "departure broadcast to the local socket")
+    # 2026-11-18 relay brief: departure/arrival are retired; an old app still gets an answer.
+    check(resp and resp[0]["data"]["success"] and resp[0]["data"]["event"].get("ignored") is True,
+          "mark_departure is answered but ignored")
+    check(not sock.events("departure"), "no departure event any more")
 
 
 if __name__ == "__main__":

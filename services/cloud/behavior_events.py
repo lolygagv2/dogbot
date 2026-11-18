@@ -19,9 +19,10 @@ Event `data` per contract:
   mission_run   {mission_id, start, end, result: success|fail|aborted}
   status        {battery, mode, treats_remaining, docked,
                  light_level: mean camera frame brightness 0-255}
-  departure /   {time, method: "app"} — only on app or relay instruction
-  arrival       (mark_departure / mark_arrival), never from sensing.
-  mode_change   {mode, start, end, duration_s, next_mode, reason} per stay
+  departure /   retired 2026-11-18: never sent.
+  arrival
+  mode_change   {mode, previous_mode, previous_duration_s, reason} on every
+                switch; mode = the mode just entered; no dog_id (home-wide)
   trick_attempt {time, cue, result: success|no_dog|wrong_pose|timeout,
                  confidence, source: coach|mission|run_trick, attempt}
                  — one per cue given (2026-11-08)
@@ -186,6 +187,11 @@ class BehaviorEventService:
         self.bus.subscribe('reward', self._on_reward)
         self.bus.subscribe('vision', self._on_vision)
         self._open_mode_segment()
+        try:
+            from services.cloud.music_triggers import get_music_triggers
+            get_music_triggers().start()
+        except Exception as e:
+            logger.error(f"[BEHAVIOR-EVENTS] music triggers not started: {e}")
         self._thread = threading.Thread(target=self._loop, daemon=True, name='BehaviorEvents')
         self._thread.start()
         logger.info("[BEHAVIOR-EVENTS] started")
@@ -201,6 +207,11 @@ class BehaviorEventService:
                 self.bus.unsubscribe(cat, cb)
             except Exception:
                 pass
+        try:
+            from services.cloud.music_triggers import get_music_triggers
+            get_music_triggers().stop()
+        except Exception:
+            pass
         now = time.time()
         self._close_mode_segment(now, next_mode='shutdown', reason='service_stop')
         try:
@@ -289,6 +300,14 @@ class BehaviorEventService:
             if d:
                 self._ep_dogs[d] = self._ep_dogs.get(d, 0) + 1
                 self._ep_dog_names[d] = data.get('dog_name')
+            ep_id, sev = self._ep_id, bark_severity(self._ep_barks, now - self._ep_start)
+        # music_plan.on_bark_episode fires as soon as the running episode is
+        # severe enough; it never waits for the episode to close.
+        try:
+            from services.cloud.music_triggers import get_music_triggers
+            get_music_triggers().on_bark_progress(ep_id, sev)
+        except Exception as e:
+            logger.debug(f"[BEHAVIOR-EVENTS] music trigger hook: {e}")
 
     def current_episode_id(self) -> Optional[str]:
         return self._ep_id if self._ep_start is not None else self._last_episode_id
@@ -352,6 +371,15 @@ class BehaviorEventService:
     def _close_music(self, now: float) -> None:
         if self._music_start is None:
             return
+        try:
+            from services.cloud.music_triggers import get_music_triggers
+            if get_music_triggers().session_active():
+                # A music_plan trigger owns this playback and sends its own
+                # music start/stop events; a second row would double the day's music time.
+                self._music_start = None
+                return
+        except Exception:
+            pass
         data = {'start': _iso(self._music_start), 'end': _iso(now),
                 'track_class': self._music_class, 'track': self._music_track}
         self._music_start = None
@@ -371,8 +399,6 @@ class BehaviorEventService:
                     self._mission_start[d.get('mission_id')] = (now, d.get('dog_id'))
             elif st in ('mission.completed', 'mission.stopped'):
                 self.on_mission_end(st, d, now)
-            elif st == 'owner_departure':
-                self._on_owner_departure(d)
             elif st == 'trick_attempt':
                 self.on_trick_attempt(d, now)
             elif st == 'coaching_started':
@@ -444,14 +470,16 @@ class BehaviorEventService:
             'cues_given': c['cues_given'], 'successes': c['successes'], 'treats': c['treats'],
         }, resolve_dog=False)
 
-    # ------------------------------------------------------------- mode segments
-    # Relay request 2026-11-07: one `mode_change` row per completed stay in
-    # a mode {mode, start, end, duration_s, next_mode, reason}, so time in
-    # each mode is in the event store. The row for a mode is sent when that
-    # mode ENDS (its end is only known then); the open segment is closed on
-    # service stop (clean shutdown/restart) with next_mode "shutdown". A hard
-    # power cut loses the open segment — the next boot's first row then
-    # starts at service start.
+    # ------------------------------------------------------------- mode changes
+    # Relay brief 2026-11-18: time on guard is built ONLY from mode_change
+    # events {mode} sent on every mode switch, where `mode` is the mode the
+    # robot has just ENTERED and ts is the moment of the switch. Home-wide, so
+    # no dog_id (the outbox ships mode_change without one, like status).
+    # Until this date the robot sent one row per completed stay, when the stay
+    # ENDED, and the outbox held every one of them for lack of a dog_id, so
+    # the relay never received a single mode_change.
+    # One is also sent at service start (the mode the robot comes up in) so a
+    # period opens after every boot; `shutdown` is sent on a clean stop.
 
     def _open_mode_segment(self) -> None:
         try:
@@ -465,43 +493,47 @@ class BehaviorEventService:
             mode, start = None, time.time()
         with self._lock:
             self._mode_seg = {'mode': mode, 'start': start}
+        if mode:
+            self._emit_mode_change(mode, start, previous=None, previous_duration_s=None, reason='service_start')
+
+    def _emit_mode_change(self, mode: str, ts: float, previous: Optional[str],
+                          previous_duration_s: Optional[float], reason: Optional[str]) -> Optional[Dict[str, Any]]:
+        row = {'mode': mode, 'previous_mode': previous, 'reason': reason}
+        if previous_duration_s is not None:
+            row['previous_duration_s'] = round(previous_duration_s, 3)
+        try:
+            return self.emitter.emit('mode_change', row, resolve_dog=False, ts=ts)
+        except Exception as e:
+            logger.error(f"[BEHAVIOR-EVENTS] mode_change emit failed: {e}")
+            return None
 
     def _on_mode_change(self, data: Dict[str, Any]) -> None:
         """core.state listener (runs on its own thread)."""
         try:
-            end = float(data.get('timestamp') or time.time())
-            self._close_mode_segment(end, next_mode=data.get('new_mode'), reason=data.get('reason'),
-                                     previous=data.get('previous_mode'))
-            # No segment for the terminal state: the service-stop close that
-            # follows would otherwise add a 3 s "shutdown" row.
-            if data.get('new_mode') != 'shutdown':
-                with self._lock:
-                    self._mode_seg = {'mode': data.get('new_mode'), 'start': end}
+            now = float(data.get('timestamp') or time.time())
+            new_mode = data.get('new_mode')
+            with self._lock:
+                seg = getattr(self, '_mode_seg', None)
+                self._mode_seg = {'mode': new_mode, 'start': now}
+            if not new_mode or (seg and seg.get('mode') == new_mode):
+                return
+            prev = (seg or {}).get('mode') or data.get('previous_mode')
+            prev_dur = max(0.0, now - float(seg['start'])) if seg else None
+            self._emit_mode_change(new_mode, now, prev, prev_dur, data.get('reason'))
         except Exception as e:
             logger.error(f"[BEHAVIOR-EVENTS] mode_change handler: {e}")
 
     def _close_mode_segment(self, end: float, next_mode: Optional[str], reason: Optional[str],
                             previous: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Service stop: tell the relay the robot left its mode (unless the
+        state machine already announced shutdown)."""
         with self._lock:
             seg = getattr(self, '_mode_seg', None)
             self._mode_seg = None
-        if not seg:
+        if not seg or not seg.get('mode') or seg.get('mode') == next_mode:
             return None
-        mode = seg.get('mode') or previous
-        if not mode:
-            return None
-        start = float(seg['start'])
-        if end < start:
-            end = start
-        row = {
-            'mode': mode,
-            'start': _iso(start),
-            'end': _iso(end),
-            'duration_s': round(end - start, 3),
-            'next_mode': next_mode,
-            'reason': reason,
-        }
-        return self.emitter.emit('mode_change', row, resolve_dog=False)
+        return self._emit_mode_change(next_mode or 'shutdown', end, seg['mode'],
+                                      max(0.0, end - float(seg['start'])), reason)
 
     def _open_iv(self, data: Dict[str, Any], now: float) -> None:
         self._iv_open = {'time': now, 'level': int(data.get('escalation_level') or 1),
@@ -805,83 +837,18 @@ class BehaviorEventService:
         return dict(self._last_status or {})
 
     # ------------------------------------------------------------- departure / arrival
+    # Relay brief 2026-11-18: departure / arrival are no longer used. Nothing
+    # is sent to the relay and nothing is triggered (on_departure music is
+    # gone; music runs from services/cloud/music_triggers.py). The methods stay
+    # so an older app build calling mark_departure still gets an answer.
 
     def mark_departure(self, dog_id: Optional[str] = None, method: str = 'app') -> Dict[str, Any]:
-        now = time.time()
-        ev = self.emitter.emit('departure', {'time': _iso(now), 'method': method}, dog_id=dog_id)
-        publish_system_event('owner_departure', {'time': now, 'method': method,
-                                                 'dog_id': ev.get('dog_id')}, 'behavior_events')
-        return ev
+        logger.info("[BEHAVIOR-EVENTS] mark_departure ignored (departure/arrival retired 2026-11-18)")
+        return {'ignored': True, 'reason': 'departure/arrival are no longer used'}
 
     def mark_arrival(self, dog_id: Optional[str] = None, method: str = 'app') -> Dict[str, Any]:
-        now = time.time()
-        ev = self.emitter.emit('arrival', {'time': _iso(now), 'method': method}, dog_id=dog_id)
-        publish_system_event('owner_arrival', {'time': now, 'method': method,
-                                               'dog_id': ev.get('dog_id')}, 'behavior_events')
-        return ev
-
-    def _on_owner_departure(self, data: Dict[str, Any]) -> None:
-        """music_plan.on_departure {track, delay_s, duration_min}."""
-        try:
-            from services.cloud.remote_settings import get_remote_settings
-            plan = get_remote_settings().get_music_plan() or {}
-            od = plan.get('on_departure') if isinstance(plan, dict) else None
-            if plan.get('enabled', True) and isinstance(od, dict) and od:
-                threading.Thread(target=self._play_departure_music, args=(plan, od),
-                                 daemon=True, name='DepartureMusic').start()
-        except Exception as e:
-            logger.debug(f"departure music: {e}")
-
-    def _play_departure_music(self, plan: Dict[str, Any], od: Dict[str, Any]) -> None:
-        try:
-            delay = float(od.get('delay_s') or 0)
-            if delay > 0:
-                time.sleep(delay)
-            if not self._running:
-                return
-            from modes.silent_guardian import get_silent_guardian_mode
-            sg = get_silent_guardian_mode()
-            if getattr(sg, 'calming_music_playing', False):
-                return
-            import os
-            import random
-            from services.media.usb_audio import get_usb_audio_service
-            audio = get_usb_audio_service()
-            playlist, base = sg._get_calming_playlist()
-            tracks = [os.path.join(base, t) for t in playlist if os.path.exists(os.path.join(base, t))]
-            track = od.get('track')
-            if track:
-                cand = track if os.path.isabs(str(track)) else os.path.join(base, str(track))
-                if os.path.exists(cand):
-                    tracks = [cand]
-                else:
-                    try:
-                        from services.media.sound_registry import get_sound_registry
-                        p = get_sound_registry().resolve(str(track))
-                        if p:
-                            tracks = [p]
-                    except Exception:
-                        pass
-            prev_vol = None
-            if plan.get('volume') is not None:
-                from services.media.volume_manager import get_volume_manager
-                vm = get_volume_manager()
-                prev_vol = vm.get_volume()
-                vm.set_volume(int(plan['volume']), persist=False)   # temporary; restored below
-            minutes = float(od.get('duration_min') or 10)
-            deadline = time.time() + minutes * 60
-            while tracks and time.time() < deadline and self._running:
-                audio.play_file(random.choice(tracks))
-                time.sleep(3)
-                while audio.is_busy() and time.time() < deadline and self._running:
-                    time.sleep(1)
-            if time.time() >= deadline and audio.is_busy():
-                audio.stop()
-            if prev_vol is not None:
-                from services.media.volume_manager import get_volume_manager
-                get_volume_manager().set_volume(prev_vol)
-        except Exception as e:
-            logger.error(f"[BEHAVIOR-EVENTS] departure music failed: {e}")
+        logger.info("[BEHAVIOR-EVENTS] mark_arrival ignored (departure/arrival retired 2026-11-18)")
+        return {'ignored': True, 'reason': 'departure/arrival are no longer used'}
 
 
 _instance: Optional[BehaviorEventService] = None

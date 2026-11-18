@@ -18,7 +18,9 @@ Keys and shapes
                   escalate_after_s -> bark window (seconds of barking before
                   an intervention: bark_detection.window_seconds + tracker);
                   min_episode_s -> BehaviorEvents bark_episode_min_s.
-  music_plan      {enabled, volume, on_departure{track, delay_s, duration_min},
+  music_plan      {enabled, volume, on_mode_start, after_treat, on_bark_episode, at_time[]}
+                  -> services/cloud/music_triggers.py runs every trigger (2026-11-18).
+                  Old shape, no longer used: {on_departure{track, delay_s, duration_min},
                    schedule: [...]}  (stored; SG music helpers read volume,
                    BehaviorEvents plays on_departure; schedule stored only)
   quiet_hours     stored verbatim, exposed via get(); not enforced here.
@@ -444,16 +446,49 @@ class RemoteSettings:
             raise ValueError("music_plan must be an object")
         if value.get('volume') is not None and not (0 <= int(value['volume']) <= 100):
             raise ValueError("volume must be 0..100")
-        od = value.get('on_departure')
-        if od is not None:
-            if not isinstance(od, dict):
-                raise ValueError("on_departure must be an object")
-            if od.get('delay_s') is not None and float(od['delay_s']) < 0:
-                raise ValueError("on_departure.delay_s must be >= 0")
-            if od.get('duration_min') is not None and float(od['duration_min']) <= 0:
-                raise ValueError("on_departure.duration_min must be > 0")
-        if value.get('schedule') is not None and not isinstance(value['schedule'], list):
-            raise ValueError("schedule must be a list")
+        # Shape of 2026-11-18 (the robot runs every trigger, see
+        # services/cloud/music_triggers.py). on_departure and schedule are gone:
+        # ignored if an older relay still sends them, never validated.
+        def _obj(name):
+            v = value.get(name)
+            if v is not None and not isinstance(v, dict):
+                raise ValueError(f"{name} must be an object or null")
+            return v or None
+
+        def _rng(name, v, lo, hi):
+            if v is not None and not (lo <= float(v) <= hi):
+                raise ValueError(f"{name} must be {lo}..{hi}")
+
+        def _hhmm(name, v):
+            hh, mm = str(v).split(':')
+            if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+                raise ValueError(f"{name} must be HH:MM")
+
+        t = _obj('on_mode_start')
+        if t:
+            if t.get('mode') not in ('silent_guardian', 'coach'):
+                raise ValueError("on_mode_start.mode must be silent_guardian or coach")
+            _rng('on_mode_start.delay_s', t.get('delay_s'), 0, 3600)
+            _rng('on_mode_start.duration_min', t.get('duration_min'), 1, 480)
+        t = _obj('after_treat')
+        if t:
+            _rng('after_treat.every_n', t.get('every_n'), 1, 50)
+            _rng('after_treat.minutes', t.get('minutes'), 1, 240)
+            _rng('after_treat.duration_min', t.get('duration_min'), 1, 480)
+        t = _obj('on_bark_episode')
+        if t:
+            if t.get('min_severity') not in (None, 'low', 'med', 'high'):
+                raise ValueError("on_bark_episode.min_severity must be low, med or high")
+            _rng('on_bark_episode.duration_min', t.get('duration_min'), 1, 480)
+        at = value.get('at_time')
+        if at is not None:
+            if not isinstance(at, list) or len(at) > 12:
+                raise ValueError("at_time must be a list of at most 12 slots")
+            for slot in at:
+                if not isinstance(slot, dict):
+                    raise ValueError("at_time slots must be objects")
+                _hhmm('at_time.time', slot.get('time'))
+                _rng('at_time.duration_min', slot.get('duration_min'), 1, 480)
 
     @staticmethod
     def _validate_timezone(value) -> None:
