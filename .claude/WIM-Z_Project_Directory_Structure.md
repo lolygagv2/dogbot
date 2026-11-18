@@ -451,3 +451,9 @@ curl -X POST http://localhost:8000/audio/play/file \
 - `core/mission_scheduler.py`, `core/schedule_manager.py` — one-time relay missions (`trigger.date`), 2026-11-12
 - `services/motion/pan_tilt.py` — `look_step()` / `offsets()`; relay command `look` in `services/cloud/tool_dispatcher.py`
 - `tests/core/test_one_time_missions.py`, `tests/motion/test_look_step.py`
+- `services/motion/visual_heading.py` — camera yaw between two still frames (the only heading source on tb3/4/5), 2026-11-18
+- `services/motion/relay_move.py` — closed-loop turns, reply after motion stops, `calibrate_turn()`; calibration in `state/turn_calibration.json`
+- `services/cloud/tool_dispatcher.py` — `move`/`look` FIFO queue, `robot_busy`/`gimbal_busy`, `turn_calibrate` tool (2026-11-18)
+- `services/cloud/music_triggers.py` — runs every relay `music_plan` trigger on the robot (2026-11-18); started by `behavior_events.py`
+- `api/static/wifi.html` — WiFi page at `/wifi` (scan, join, saved, forget); `/system/wifi/saved`, `/system/wifi/forget` in `api/server.py`
+- `tests/cloud/test_music_triggers.py`, `tests/cloud/test_replay_source_not_filtered.py`
