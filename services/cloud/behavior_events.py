@@ -867,7 +867,7 @@ class BehaviorEventService:
                 from services.media.volume_manager import get_volume_manager
                 vm = get_volume_manager()
                 prev_vol = vm.get_volume()
-                vm.set_volume(int(plan['volume']))
+                vm.set_volume(int(plan['volume']), persist=False)   # temporary; restored below
             minutes = float(od.get('duration_min') or 10)
             deadline = time.time() + minutes * 60
             while tracks and time.time() < deadline and self._running:

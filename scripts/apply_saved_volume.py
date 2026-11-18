@@ -38,6 +38,10 @@ def detect_usb_audio_card():
         )
         for line in result.stdout.split('\n'):
             if 'USB Audio' in line and 'card' in line:
+                # "card 2: ultra [KT USB Audio]" is the ultrasonic tweeter card
+                # (fixed ALSA id `ultra`), never the speaker.
+                if line.split(':', 1)[1].strip().startswith('ultra '):
+                    continue
                 return line.split('card ')[1].split(':')[0].strip()
     except Exception as e:
         log(f"card detection error: {e}")

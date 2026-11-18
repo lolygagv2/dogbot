@@ -262,8 +262,9 @@ class SequenceEngine:
         elif command == 'stop':
             self.sfx.stop_sound()
         elif command == 'volume':
-            volume = params.get('volume', 75)
-            self.sfx.set_volume(volume)
+            # Sequences no longer set the system volume: the level the owner last
+            # chose (app, relay, controller, API) is the only one (2026-11-18).
+            self.logger.debug(f"Sequence volume command ignored ({params.get('volume')})")
 
     def _execute_led_command(self, command: str, params: Dict[str, Any]) -> None:
         """Execute LED command"""

@@ -60,8 +60,12 @@ class SfxService:
         self.play_queue = []
         self._play_lock = threading.Lock()
 
-        # Volume settings - 75% is good balance for speaker output
-        self.default_volume = 75
+        # Volume: the last level anyone set (app, relay, controller, API) is
+        # persisted by VolumeManager and restored at start. This service must
+        # never push a default of its own: until 2026-11-18 initialize() called
+        # set_volume(75) on every start, which overwrote the saved level, so the
+        # robot always came back at 75 % whatever it had been turned down to.
+        self.default_volume = 75      # only a fallback for callers that read it
         self.current_volume = 75
 
     def initialize(self) -> bool:
@@ -73,8 +77,13 @@ class SfxService:
                 self.audio_initialized = True
                 self.logger.info("Audio system initialized")
 
-                # Set volume
-                self.set_volume(self.default_volume)
+                # Adopt the restored volume; do NOT set one (see __init__).
+                try:
+                    from services.media.volume_manager import get_volume_manager
+                    self.current_volume = get_volume_manager().get_volume()
+                    self.logger.info(f"Volume restored from last setting: {self.current_volume}%")
+                except Exception as e:
+                    self.logger.warning(f"Could not read saved volume: {e}")
 
                 self.state.update_hardware(audio_initialized=True)
                 return True
@@ -118,9 +127,12 @@ class SfxService:
                 return True
 
             try:
-                # Set volume if specified
+                # A per-sound volume is NOT applied: sequences carry a baked-in
+                # `volume: 75` (startup / shutdown / celebrate), and applying it
+                # went through VolumeManager and overwrote the owner's saved level
+                # at every shutdown (2026-11-18). The owner's last setting wins.
                 if volume is not None:
-                    self.set_volume(volume)
+                    self.logger.debug(f"Ignoring per-sound volume {volume} for {sound_name}")
 
                 # Play sound
                 success = self.audio.play_sound(sound_command)

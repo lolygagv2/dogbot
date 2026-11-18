@@ -185,11 +185,15 @@ class VolumeManager:
 
     # ------------------------------------------------------------------- API
 
-    def set_volume(self, volume: int) -> bool:
+    def set_volume(self, volume: int, persist: bool = True) -> bool:
         """Set system volume (0-100). Applies to hardware AND persists to disk.
 
         This is the ONLY supported way to change volume. Returns True if both
         the hardware apply and the file write succeeded.
+
+        persist=False is for a TEMPORARY level that the caller restores itself
+        (e.g. a music plan's own volume): it is applied but not written, so a
+        power-off in the middle still comes back at the level the owner chose.
         """
         try:
             volume = max(0, min(100, int(volume)))
@@ -199,7 +203,7 @@ class VolumeManager:
 
         with self._lock:
             applied = self._apply(volume)
-            persisted = self._write_state(volume)
+            persisted = self._write_state(volume) if persist else True
             # Update in-memory value if either side succeeded so the API and
             # the file stay consistent with the user's intent.
             if applied or persisted:
