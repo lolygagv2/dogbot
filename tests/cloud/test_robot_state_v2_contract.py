@@ -289,6 +289,21 @@ def main():
     check(r() == (ELSA, 'sole_dog'), "A5 exactly one profile -> that dog, sole_dog")
     profiles.profiles['bezik'] = Prof('Bezik', BEZIK)
 
+    # Coach working with a dog that is not the session dog (Morgan 2026-11-19):
+    # the dog the Coach engine itself named is explicit.
+    reset(selected=BEZIK)
+    d.call('set_mode', {'mode': 'coach', 'dog_id': ELSA, 'source': 'app'}, 'c-coach', 3)
+    st.set_coach_dog('dog_1')
+    check(r(dog_id='dog_1', dog_name='Bezik', id_method='explicit') == (BEZIK, 'explicit'),
+          "Coach session for Elsa, engine working with Bezik -> Bezik, explicit")
+    check(r(dog_id='dog_1', dog_name='Dog', id_method='explicit') == (ELSA, 'session')
+          and r(dog_id='dog_1', dog_name=None, id_method='explicit') == (ELSA, 'session'),
+          "Coach working with a dog it could not name (tracker slot only) -> session dog, session")
+    check(r(dog_id='0a000000-0000-7000-8000-000000000001', id_method='explicit')
+          == ('0a000000-0000-7000-8000-000000000001', 'explicit'),
+          "a command's app UUID with no local profile yet is still explicit, verbatim")
+    st.clear_coach_dog()
+
     from services.reward.dispenser import COMMAND_REASONS
     check({'cloud_command', 'agent', 'connector', 'schedule', 'manual'} <= COMMAND_REASONS
           and not ({'quiet_reward', 'coach', 'mission'} & COMMAND_REASONS),

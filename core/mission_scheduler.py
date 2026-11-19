@@ -496,8 +496,16 @@ class MissionScheduler:
         # ROBOT-STATE v2: a mode change caused by a schedule is stamped
         # source "schedule"; the schedule's dog becomes the session dog (R3).
         from core.state import get_state
-        with get_state().mode_context(source='schedule', reason='schedule', dog_id=s.get("dog_id")):
+        with get_state().mode_context(source='schedule', reason='schedule', dog_id=self._session_dog(s)):
             return self._fire_now(s, slot, now)
+
+    @staticmethod
+    def _session_dog(s: Dict[str, Any]) -> Optional[str]:
+        """Dog a firing schedule hands to StateManager.set_mode as the session
+        dog: mission.data.dog_id when the relay sent that key (None = use the
+        selected dog), else the schedule's own dog_id."""
+        dog = s.get("mission_dog_id") if s.get("mission_dog_set") else s.get("dog_id")
+        return None if (not dog or str(dog).lower() in ("unknown", "none", "null")) else str(dog)
 
     def _fire_now(self, s: Dict[str, Any], slot: datetime, now: datetime) -> bool:
         sid = s["schedule_id"]
@@ -524,7 +532,7 @@ class MissionScheduler:
 
         ok = False
         try:
-            ok = bool(self.mission_engine.start_mission(name, dog_id=s.get("dog_id")))
+            ok = bool(self.mission_engine.start_mission(name, dog_id=self._session_dog(s)))
         except Exception as e:
             self.logger.error(f"[SCHED] start_mission raised: {e}", exc_info=True)
 
@@ -806,6 +814,13 @@ class MissionScheduler:
                 "duration_s": m.get("duration_s"), "reward_treats": m.get("reward_treats"),
                 "grace_s": m.get("grace_s"),
             }
+            # ROBOT-STATE v2: the relay saves the mission's dog as
+            # mission.data.dog_id. When that key is present it is the session
+            # dog (null = the selected dog at fire time, R3).
+            mdata = m.get("data") if isinstance(m.get("data"), dict) else {}
+            if "dog_id" in mdata:
+                data["mission_dog_set"] = True
+                data["mission_dog_id"] = mdata.get("dog_id") or None
             # One-time mission: trigger.date (YYYY-MM-DD, dog's local zone) fires
             # only on that date at its time(s); days are ignored.
             date = trig.get("date") or m.get("date")

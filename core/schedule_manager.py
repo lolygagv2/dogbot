@@ -288,6 +288,10 @@ class ScheduleManager:
             # Relay-side mission id (agent drafts) so cancel_mission/schedule_sync
             # can address the schedule by the id the owner's app knows.
             "mission_id": data.get('mission_id') or None,
+            # ROBOT-STATE v2: mission.data.dog_id from the relay, when it sent
+            # that key (None = selected dog at fire time).
+            "mission_dog_set": bool(data.get('mission_dog_set')),
+            "mission_dog_id": data.get('mission_dog_id') or None,
             "fire_at": data.get('fire_at') or None,
             # One-time relay mission (trigger.date, 2026-11-12): YYYY-MM-DD in `tz`;
             # fires only on that date at its times, then the scheduler deletes it.

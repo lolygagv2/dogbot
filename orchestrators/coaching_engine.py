@@ -864,7 +864,11 @@ class CoachingEngine:
             from services.cloud.behavior_events import publish_trick_attempt
             publish_trick_attempt('coach', s.trick_requested, result, confidence=confidence,
                                   dog_id=s.dog_id, dog_name=s.dog_name, attempt=s.attempt,
-                                  behavior=behavior)
+                                  behavior=behavior,
+                                  # The dog the Coach engine itself named is
+                                  # explicit (Morgan 2026-11-19); an unnamed
+                                  # dog falls through to A2..A6.
+                                  id_method='explicit')
         except Exception as e:
             logger.debug(f"[COACH] trick_attempt publish failed: {e}")
 

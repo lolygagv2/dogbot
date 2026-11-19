@@ -409,6 +409,45 @@ def main():
     check(sched4.active_mode_run() is None, "no active mode run after cancel")
     sched4.disable()
 
+    # --- ROBOT-STATE v2: the relay saves the mission's dog as mission.data.dog_id;
+    # the robot hands it to StateManager.set_mode as the session dog when it fires.
+    from core.state import get_state as _gs, StateManager as _SM
+    eng9 = FakeEngine()
+    fake_me.get_mission_engine = lambda: eng9
+    s9 = new_scheduler(eng9)
+    seen_ctx = []
+    s9._mode_set = lambda mode, dur: (seen_ctx.append(dict(_gs()._current_mode_ctx())), True)[1]
+    s9._new_run_id = lambda name, config: 901
+    far9 = (now() + timedelta(hours=3)).strftime('%H:%M')
+    s9.apply_missions_setting('dogOwner', {"missions": [
+        {"id": "d-sit", "type": "sit", "trigger": {"kind": "schedule", "times": [far9]}, "data": {"dog_id": "ELSA-UUID"}},
+        {"id": "d-coach", "type": "coach", "duration_s": 60, "trigger": {"kind": "schedule", "times": [far9]},
+         "data": {"dog_id": "BEZIK-UUID"}},
+        {"id": "d-null", "type": "sit", "trigger": {"kind": "schedule", "times": [far9]}, "data": {"dog_id": None}},
+        {"id": "d-old", "type": "sit", "trigger": {"kind": "schedule", "times": [far9]}},
+    ]})
+    by = {x.get('mission_id'): x for x in s9.schedule_manager.list_by_source('relay_settings', 'dogOwner')}
+    check(by['d-sit'].get('mission_dog_id') == 'ELSA-UUID' and by['d-sit'].get('mission_dog_set') is True
+          and by['d-sit'].get('dog_id') == 'dogOwner',
+          f"mission.data.dog_id stored on the schedule ({by['d-sit'].get('mission_dog_id')})")
+    check(MissionScheduler._session_dog(by['d-sit']) == 'ELSA-UUID'
+          and MissionScheduler._session_dog(by['d-null']) is None
+          and MissionScheduler._session_dog(by['d-old']) == 'dogOwner',
+          "session dog = mission.data.dog_id; null -> selected dog; key absent -> the schedule's dog as before")
+    s9._fire(by['d-sit'], now(), now())
+    check(eng9.started and eng9.started[-1][:2] == ('sit', 'ELSA-UUID'),
+          f"scheduled mission fires -> start_mission(dog_id = mission.data.dog_id) ({eng9.started[-1:]})")
+    eng9.active_session = None
+    s9._fire(by['d-coach'], now(), now())
+    check(seen_ctx and seen_ctx[-1].get('dog_id') == 'BEZIK-UUID' and seen_ctx[-1].get('source') == 'schedule',
+          f"scheduled coach fires -> mode context dog = mission.data.dog_id, source schedule ({seen_ctx[-1:]})")
+    real_file = _gs()._STATE_FILE
+    with _gs().mode_context(**{k: v for k, v in seen_ctx[-1].items() if k in ('source', 'reason', 'dog_id')}):
+        from core.state import SystemMode as _M
+        _gs().set_mode(_M.COACH, 'User override test')
+    check(_gs().get_session_dog_id() == 'BEZIK-UUID', "that context makes it the session dog in StateManager.set_mode")
+    _gs().set_mode(_M.IDLE, 'user test done', force=True)
+
     print(f"\n{len(FAILS)} failure(s)")
     sys.exit(1 if FAILS else 0)
 

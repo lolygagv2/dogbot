@@ -101,7 +101,7 @@ TRICK_SOURCES = ('coach', 'mission', 'run_trick')
 def publish_trick_attempt(source: str, cue: str, result: str, confidence: Optional[float] = None,
                           dog_id: Optional[str] = None, dog_name: Optional[str] = None,
                           attempt: Optional[int] = None, behavior: Optional[str] = None,
-                          now: Optional[float] = None) -> None:
+                          now: Optional[float] = None, id_method: Optional[str] = None) -> None:
     """Producers (coaching engine, mission engine, trick runner) call this once
     per cue given; BehaviorEventService turns it into the relay `trick_attempt`
     row and counts it into the open `coach_session`. Never raises."""
@@ -111,7 +111,7 @@ def publish_trick_attempt(source: str, cue: str, result: str, confidence: Option
         publish_system_event('trick_attempt', {
             'source': source, 'cue': cue, 'result': result,
             'confidence': None if confidence is None else round(float(confidence), 3),
-            'dog_id': dog_id, 'dog_name': dog_name,
+            'dog_id': dog_id, 'dog_name': dog_name, 'id_method': id_method,
             'attempt': attempt, 'behavior': behavior,
             'time': float(now or time.time()),
         }, source)
@@ -442,7 +442,8 @@ class BehaviorEventService:
                         c['successes'] += 1
                 else:
                     c['other_cues'] += 1
-        self.emitter.emit('trick_attempt', row, dog_id=d.get('dog_id'), dog_name=d.get('dog_name'))
+        self.emitter.emit('trick_attempt', row, dog_id=d.get('dog_id'), dog_name=d.get('dog_name'),
+                          id_method=d.get('id_method'))
 
     def on_coach_started(self, now: float) -> None:
         with self._lock:

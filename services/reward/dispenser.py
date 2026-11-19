@@ -1006,7 +1006,11 @@ class DispenserService:
                     # named a dog is "explicit". Engine rewards (coach / mission
                     # / SG) leave id_method None; the relay boundary then applies
                     # A2..A6 (marker, session dog, selected dog, sole dog, none).
-                    id_method = 'explicit' if (dog_id and reason in COMMAND_REASONS) else None
+                    # A Coach reward goes to the dog the Coach engine itself
+                    # named (Morgan 2026-11-19): explicit when that dog resolves
+                    # to a profile, else the boundary falls through to A2..A6.
+                    id_method = 'explicit' if ((dog_id and reason in COMMAND_REASONS)
+                                               or (reason == 'coaching_reward' and (dog_id or dog_name))) else None
                     try:
                         from services.reward.treat_policy import get_treat_policy
                         get_treat_policy().record_dispense(reason, now)

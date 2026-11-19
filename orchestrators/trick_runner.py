@@ -254,7 +254,8 @@ class TrickRunner:
                     from services.cloud.behavior_events import publish_trick_attempt
                     publish_trick_attempt('run_trick', cue, result_code, confidence=base.get('confidence'),
                                           dog_id=dog_id, attempt=base['attempts'],
-                                          behavior=base.get('behavior_detected'))
+                                          behavior=base.get('behavior_detected'),
+                                          id_method='explicit' if dog_id else None)
                 except Exception as e:
                     logger.debug(f"[TRICK] trick_attempt publish failed: {e}")
             try:

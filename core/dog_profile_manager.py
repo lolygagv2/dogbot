@@ -557,12 +557,16 @@ def get_dog_profile_manager() -> DogProfileManager:
     return _profile_manager
 
 
+_UUID_RE = __import__('re').compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+
+
 def resolve_relay_dog(dog_id=None, dog_name=None, aruco_id=None, id_method=None):
     """(app_dog_id, id_method) for an outgoing relay event.
 
     ROBOT-STATE v2 section 3, first match wins:
-      A1 the command that caused the event carried a dog_id (the producer
-         marks that with id_method="explicit")              -> "explicit"
+      A1 the command that caused the event carried a dog_id, or the Coach
+         engine itself named the dog it is working with (the producer
+         marks both with id_method="explicit")              -> "explicit"
       A2 a marker (ArUco / QR) mapped to a dog profile was read within the
          last 5000 ms                                        -> "qr"
       A3 session_dog_id is not null                          -> "session"
@@ -577,10 +581,15 @@ def resolve_relay_dog(dog_id=None, dog_name=None, aruco_id=None, id_method=None)
     from core.state import get_state
     state = get_state()
 
-    # A1
-    if str(id_method or '').lower() == 'explicit' and dog_id:
-        resolved = mgr.resolve_app_dog_id(dog_id=dog_id, dog_name=dog_name) or str(dog_id)
-        return resolved, 'explicit'
+    # A1. The named dog must be a real one: a known profile (by id or name),
+    # or an app UUID this robot has no profile for yet. A tracker slot id
+    # ("dog_0") with no profile name is not a named dog -> A2..A6.
+    if str(id_method or '').lower() == 'explicit' and (dog_id or dog_name):
+        resolved = mgr.resolve_app_dog_id(dog_id=dog_id, dog_name=dog_name)
+        if resolved is None and dog_id and _UUID_RE.match(str(dog_id)):
+            resolved = str(dog_id)
+        if resolved is not None:
+            return resolved, 'explicit'
 
     # A2: prefer the event's own dog when ITS marker is one of those read in
     # the last 5 s, else the most recently read marker.
