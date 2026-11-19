@@ -308,7 +308,7 @@ class SleepManager:
             from services.reward.dispenser import get_dispenser_service
             d = get_dispenser_service()
             if getattr(d, 'gpio_chip', None) is not None:
-                if d.is_dispensing():
+                if d.is_dispensing:              # property, not a method
                     d.cancel_dispense()
                 d._disable_motor()               # TMC2209 EN high: coils unpowered
                 out['dispenser_driver_disabled'] = True
