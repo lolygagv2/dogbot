@@ -933,11 +933,31 @@ class TreatBotMain:
 
             elif event.type == EventType.SAFETY:
                 if event.subtype == 'alert':
-                    event_type = 'alert'
-                    event_data = {
-                        'alert_type': event.data.get('type'),
+                    # 2026-11-19: the relay pushed these to the owner's phones
+                    # as a bare "Guardian Alert" — it found no reason in the
+                    # frame (it had only top-level alert_type/message). Every
+                    # alert now carries reason + alert_type + level + message,
+                    # top-level AND in `data`, so either reading finds them.
+                    # Brief CPU / memory / disk / runtime WARNINGS are robot
+                    # housekeeping (CPU spikes at every restart and video
+                    # connect): logged here, not sent to the owner. Battery and
+                    # temperature warnings, and everything critical, are sent.
+                    a_type = event.data.get('type') or 'unknown'
+                    a_level = event.data.get('level') or 'warning'
+                    housekeeping = a_type in ('cpu_warning', 'memory_warning',
+                                              'disk_warning', 'runtime_limit')
+                    if a_level == 'warning' and housekeeping:
+                        self.logger.info(f"Safety warning not forwarded to relay: {a_type}")
+                        return
+                    detail = {
+                        'reason': a_type,
+                        'alert_type': a_type,
+                        'level': a_level,
                         'message': event.data.get('message'),
+                        'mode': self.state.get_mode().value if self.state else None,
                     }
+                    event_type = 'alert'
+                    event_data = {**detail, 'data': dict(detail)}
                     # Alerts are not throttled - always send immediately
 
             elif event.type == EventType.REWARD:
