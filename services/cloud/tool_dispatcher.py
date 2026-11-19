@@ -288,7 +288,10 @@ class ToolDispatcher:
         # Take the place in the motion queue HERE, on the caller's thread, so
         # commands queue in the order they arrived (threads would race).
         ticket = self._enter(name, call_id, args)
-        threading.Thread(target=self._run, args=(name, call_id, args, reply, ticket),
+        # Moment of receipt on the monotonic clock (the transport passes the
+        # time the frame arrived; else now).
+        received = msg.get('received_mono') or time.monotonic()
+        threading.Thread(target=self._run, args=(name, call_id, args, reply, ticket, received),
                          daemon=True, name=f"ToolCall-{name}").start()
 
     def _enter(self, name: Optional[str], call_id: Optional[str], args: Dict[str, Any]) -> Optional[_Ticket]:
@@ -341,8 +344,11 @@ class ToolDispatcher:
         return ok
 
     def _run(self, name: str, call_id: Optional[str], args: Dict[str, Any],
-             reply: Callable[[Dict[str, Any]], None], ticket: Optional[_Ticket] = None) -> None:
-        t0 = time.monotonic()
+             reply: Callable[[Dict[str, Any]], None], ticket: Optional[_Ticket] = None,
+             received: Optional[float] = None) -> None:
+        t0 = received or time.monotonic()      # duration_ms counts from receipt
+        if isinstance(args, dict):
+            args['_received_mono'] = t0
         spec = self._tools.get(name) if name else None
         result: Dict[str, Any]
         err: Optional[str] = None
@@ -385,22 +391,38 @@ class ToolDispatcher:
                 self._finish(name, call_id, args, t0, result, result['error']['message'], reply)
                 return
 
-        # Sleep mode: an action command wakes the robot first, then runs.
+        # Command budget: execution must BEGIN within 1500 ms of receipt, or
+        # the command is not executed at all ("expired"); never run late. The
+        # usual cause is a robot that is asleep, going to sleep or still
+        # waking: the wake is started and always completes, so the caller's
+        # retry succeeds. set_sleep has its own budget; a stop (preemptive /
+        # urgent) is never expired; time spent in the motion queue behind
+        # another move is not counted (the queue is how back-to-back moves run).
         woke_s = None
         try:
             from services.power import sleep_manager as _sm
-            if _sm.is_asleep() and _sm.is_action_command(name, args):
-                w0 = time.monotonic()
-                awake = _sm.ensure_awake(f"command {name}")
-                woke_s = round(time.monotonic() - w0, 2)
-                if not awake:
+            exempt = name == 'set_sleep' or spec.preemptive or self._is_urgent(spec, args)
+            deadline = t0 + _sm.COMMAND_START_BUDGET_S + (queued_ms / 1000.0)
+            if not exempt:
+                late_reason = None
+                if not _sm.is_awake() and _sm.is_action_command(name, args):
+                    w0 = time.monotonic()
+                    awake = _sm.awake_within(f"command {name}", deadline)
+                    woke_s = round(time.monotonic() - w0, 2)
+                    if not awake:
+                        late_reason = 'robot asleep; it is waking now, send the command again'
+                elif time.monotonic() > deadline:
+                    late_reason = 'robot was busy'
+                if late_reason:
                     if gate is not None:
                         gate.release(ticket)
-                    result = _err('wake_failed', 'robot is asleep and did not wake', result='asleep')
+                    budget_ms = int(_sm.COMMAND_START_BUDGET_S * 1000)
+                    result = _err('expired', f"not started within {budget_ms} ms of receipt: {late_reason}",
+                                  result='expired', executed=False, asleep=not _sm.is_awake())
                     self._finish(name, call_id, args, t0, result, result['error']['message'], reply)
                     return
         except Exception as e:
-            logger.error(f"[TOOL] wake gate: {e}")
+            logger.error(f"[TOOL] command budget gate: {e}")
 
         cancel = threading.Event()
         with self._lock:
@@ -881,10 +903,10 @@ class ToolDispatcher:
 
     def _tool_set_sleep(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
         """ROBOT-STATE v2 C3. asleep=true forces mode idle and session_dog_id
-        null first (R5); waking leaves the mode idle. The reply is due within
-        2000 ms and the hardware steps take longer (sleep ~3 s, wake ~5 s), so
-        they run on their own thread: the reply states what the robot is now
-        committed to, and the next status event carries the outcome."""
+        null first (R5) and answers at once (the hardware steps finish on
+        their own thread; the next status event carries the outcome).
+        asleep=false answers when the robot is awake, within 5000 ms; the mode
+        stays idle."""
         from core.state import get_state
         from services.power.sleep_manager import get_sleep_manager
         want = args.get('asleep')
@@ -904,7 +926,19 @@ class ToolDispatcher:
         if mgr.is_asleep_target() != want:
             mgr.note_target(want)
             threading.Thread(target=_work, daemon=True, name='SetSleep').start()
-        return {'ok': True, 'asleep': want, 'mode': 'idle' if want else get_state().get_contract_mode()}
+        if want:
+            return {'ok': True, 'asleep': True, 'mode': 'idle'}
+        # set_sleep false answers when the robot IS awake, within 5000 ms of
+        # receipt (a wake sent while the robot is still going to sleep waits
+        # for that to finish first).
+        from services.power import sleep_manager as _sm
+        deadline = float(args.get('_received_mono') or time.monotonic()) + _sm.WAKE_REPLY_BUDGET_S - 0.3
+        while mgr.state != _sm.AWAKE and time.monotonic() < deadline and not cancel.is_set():
+            time.sleep(0.02)
+        if mgr.state == _sm.AWAKE:
+            return {'ok': True, 'asleep': False, 'mode': get_state().get_contract_mode()}
+        return _err('wake_timeout', 'not awake within 5000 ms; the wake is still running',
+                    asleep=True, mode='idle')
 
     @staticmethod
     def _tool_select_dog(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:

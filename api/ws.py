@@ -471,8 +471,14 @@ class TreatBotWebSocketServer:
 
             try:
                 from services.power import sleep_manager as _sm
-                if _sm.is_asleep() and _sm.is_action_command(command, params):
-                    await asyncio.get_running_loop().run_in_executor(None, _sm.ensure_awake, f"local {command}")
+                if not _sm.is_awake() and _sm.is_action_command(command, params):
+                    # Command budget: not begun within 1500 ms -> not executed.
+                    awake = await asyncio.get_running_loop().run_in_executor(
+                        None, _sm.awake_within, f"local {command}", time.monotonic() + _sm.COMMAND_START_BUDGET_S)
+                    if not awake:
+                        await self.manager.send_to_one(websocket, {
+                            "type": "command_response", "command": command, "success": False, "error": "expired"})
+                        return
             except Exception as e:
                 self.logger.error(f"[SLEEP] local wake gate: {e}")
 
@@ -565,8 +571,14 @@ class TreatBotWebSocketServer:
         # (command_id frames go through the ToolDispatcher, which does it.)
         try:
             from services.power import sleep_manager as _sm
-            if _sm.is_asleep() and not data.get("command_id") and _sm.is_action_command(command, data):
-                await asyncio.get_running_loop().run_in_executor(None, _sm.ensure_awake, f"local {command}")
+            if not _sm.is_awake() and not data.get("command_id") and _sm.is_action_command(command, data):
+                # Command budget: not begun within 1500 ms -> not executed.
+                awake = await asyncio.get_running_loop().run_in_executor(
+                    None, _sm.awake_within, f"local {command}", time.monotonic() + _sm.COMMAND_START_BUDGET_S)
+                if not awake:
+                    await self.manager.send_to_one(websocket, {
+                        "type": "command_response", "command": command, "success": False, "error": "expired"})
+                    return
         except Exception as e:
             self.logger.error(f"[SLEEP] local wake gate: {e}")
 
@@ -2065,6 +2077,7 @@ class TreatBotWebSocketServer:
                     "temperature": state.get("hardware", {}).get("cpu_temp", 0),
                     "mode": contract_mode,
                     "asleep": bool(_is_asleep()),
+                    "selected_dog_id": self.state.get_current_dog_id() if hasattr(self.state, 'get_current_dog_id') else None,
                     "is_charging": state.get("hardware", {}).get("is_charging", False),
                     "treats_remaining": self._get_treats_remaining()
                 },

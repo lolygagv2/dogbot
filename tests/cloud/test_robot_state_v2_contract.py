@@ -265,6 +265,52 @@ def main():
           "a session mode on a sleeping robot wakes it first, then enters the mode")
     check(not d.has_tool('sleep') and not d.has_tool('wake') and d.has_tool('set_sleep')
           and d.has_tool('select_dog'), "hard cut: no sleep / wake commands, only set_sleep")
+    # ---------------------------------------------------------------- command budget (2026-11-19)
+    # From receipt on the monotonic clock: a command not BEGUN within 1500 ms
+    # is not executed ("expired") and the wake still completes; set_sleep
+    # false answers when awake, within 5000 ms.
+    reset(selected=BEZIK)
+    slow = fake_sleep_manager()
+    slow._wake_camera = lambda: time.sleep(1.8)          # wake longer than the 1500 ms budget
+    sm._instance = slow
+    slow.sleep('test')
+    changes.clear()
+    t0 = time.monotonic()
+    f = d.call('set_mode', {'mode': 'silent_guardian', 'source': 'connector'}, 'c-exp', 6)
+    dt = time.monotonic() - t0
+    check(f['success'] is False and f['error'] == 'expired' and f['result'].get('executed') is False
+          and 1.45 <= dt <= 1.75 and 1450 <= f['duration_ms'] <= 1750,
+          f"set_mode to a sleeping robot whose wake takes 1.8 s -> expired at {dt * 1000:.0f} ms")
+    check(st.get_contract_mode() == 'idle' and not changes, "the expired command was not executed")
+    check(wait_state(slow, sm.AWAKE, 4.0), "the abandoned command still completed the wake")
+    time.sleep(0.3)
+    check(st.get_contract_mode() == 'idle' and not changes, "and it is never run late after the wake")
+    f = d.call('set_mode', {'mode': 'silent_guardian', 'source': 'connector'}, 'c-retry', 3)
+    check(f['success'] and f['result']['mode'] == 'silent_guardian', "the caller's retry succeeds")
+
+    d.call('set_mode', {'mode': 'idle', 'source': 'app'}, 'c-b0', 3)
+    slow.sleep('test')
+    t0 = time.monotonic()
+    f = d.call('set_sleep', {'asleep': False, 'source': 'app'}, 'c-wake-slow', 8)
+    dt = time.monotonic() - t0
+    check(f['success'] and f['result'] == {'asleep': False, 'mode': 'idle'} and slow.state == sm.AWAKE
+          and 1.7 <= dt < 5.0, f"set_sleep false answers once awake ({dt * 1000:.0f} ms, budget 5000)")
+    slow.sleep('test')
+    t0 = time.monotonic()
+    f = d.call('select_dog', {'dog_id': ELSA, 'source': 'app'}, 'c-passive', 3)
+    check(f['success'] and time.monotonic() - t0 < 0.5 and slow.state == sm.ASLEEP,
+          "select_dog on a sleeping robot runs at once and does not wake it")
+    slow.wake('test', greet=False)
+    stuck = fake_sleep_manager()
+    stuck._wake_camera = lambda: time.sleep(6.0)
+    sm._instance = stuck
+    stuck.sleep('test')
+    t0 = time.monotonic()
+    f = d.call('set_sleep', {'asleep': False, 'source': 'app'}, 'c-wake-stuck', 8)
+    dt = time.monotonic() - t0
+    check(f['success'] is False and f['error'] == 'wake_timeout' and dt < 5.0,
+          f"a wake that does not finish still replies inside 5000 ms ({dt * 1000:.0f} ms, wake_timeout)")
+    wait_state(stuck, sm.AWAKE, 5.0)
     sm._instance = None
 
     # ---------------------------------------------------------------- attribution A1..A6
@@ -329,8 +375,8 @@ def main():
              'data': {'mode': 'coach', 'dog_id': ELSA, 'source': 'agent', 'reason': None,
                       'timestamp': '2026-11-19T18:47:32.551Z'}}
     ok = rc._dispatch_v2_command('set_mode', frame, frame['data'])
-    check(ok and seen and seen[-1] == {'id': 'u-1', 'name': 'set_mode',
-                                       'args': {'mode': 'coach', 'dog_id': ELSA, 'source': 'agent', 'reason': None}},
+    check(ok and seen and (seen[-1]['id'], seen[-1]['name']) == ('u-1', 'set_mode')
+          and seen[-1]['args'] == {'mode': 'coach', 'dog_id': ELSA, 'source': 'agent', 'reason': None},
           f"C1 frame: parameters read from data, timestamp not passed on ({seen[-1:]})")
     frame = {'type': 'command', 'command': 'select_dog', 'command_id': 'u-2', 'data': {'dog_id': None}}
     rc._dispatch_v2_command('select_dog', frame, frame['data'])

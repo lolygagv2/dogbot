@@ -785,6 +785,7 @@ class RelayClient:
         - {"type": "command", "command": "treat", "data": {...}}
         - {"type": "command", "command": "set_mode", "mode": "manual"}  (mode at top level)
         """
+        rx_mono = time.monotonic()     # moment of receipt (command budget clock)
         command = data.get('command')
         params = data.get('data', {})  # Params may be in 'data' field
 
@@ -872,7 +873,7 @@ class RelayClient:
         # CONTRACT v2: command_id present and the dispatcher knows the command
         # -> run it there and answer with command_result (exactly once).
         # (The dispatcher wakes a sleeping robot itself before an action.)
-        if self._dispatch_v2_command(command, data, params):
+        if self._dispatch_v2_command(command, data, params, rx_mono):
             return
 
         # Sleep: set_sleep / set_mode / select_dog were handled by the
@@ -880,9 +881,23 @@ class RelayClient:
         # then runs below.
         try:
             from services.power import sleep_manager as _sm
-            if _sm.is_asleep() and _sm.is_action_command(command, params):
-                await asyncio.get_running_loop().run_in_executor(
-                    None, _sm.ensure_awake, f"relay {command}")
+            if not _sm.is_awake() and _sm.is_action_command(command, params):
+                # Command budget: not begun within 1500 ms of receipt -> not
+                # executed ("expired"). The wake still completes.
+                awake = await asyncio.get_running_loop().run_in_executor(
+                    None, _sm.awake_within, f"relay {command}", rx_mono + _sm.COMMAND_START_BUDGET_S)
+                if not awake:
+                    self.logger.info(f"[CMD] {command} expired (robot asleep, waking); not executed")
+                    if command_id:
+                        self.send_message({'type': 'command_result', 'command_id': command_id,
+                                           'command': command, 'success': False,
+                                           'result': {'executed': False, 'asleep': True},
+                                           'error': 'expired',
+                                           'duration_ms': int((time.monotonic() - rx_mono) * 1000)})
+                    else:
+                        await self._send({'type': 'command_ack', 'command': command,
+                                          'success': False, 'error': 'expired'})
+                    return
         except Exception as e:
             self.logger.error(f"[SLEEP] relay wake gate: {e}")
 
@@ -2352,7 +2367,8 @@ class RelayClient:
             return
         asyncio.run_coroutine_threadsafe(self._send(message), self._loop)
 
-    def _dispatch_v2_command(self, command: str, data: dict, params: dict) -> bool:
+    def _dispatch_v2_command(self, command: str, data: dict, params: dict,
+                             rx_mono: Optional[float] = None) -> bool:
         """CONTRACT v2: a command frame carrying command_id is answered with
         {type:"command_result", command_id, ok, result, error} by the
         ToolDispatcher. Returns True when handled here."""
@@ -2382,9 +2398,10 @@ class RelayClient:
             args.setdefault('source', 'relay')
         if not command_id:
             self.logger.warning(f"[CMD] {command} without command_id: running, no command_result")
-            disp.dispatch({'id': None, 'name': command, 'args': args}, reply=lambda frame: None)
+            disp.dispatch({'id': None, 'name': command, 'args': args, 'received_mono': rx_mono},
+                          reply=lambda frame: None)
             return True
-        disp.dispatch({'id': command_id, 'name': command, 'args': args},
+        disp.dispatch({'id': command_id, 'name': command, 'args': args, 'received_mono': rx_mono},
                       reply=self.send_message)
         return True
 

@@ -671,6 +671,23 @@ class SleepManager:
                 self._state_changed.wait(0.2)
         return self._state == AWAKE
 
+    def awake_within(self, source: str, deadline_mono: float) -> bool:
+        """Command budget gate. Awake -> True at once. Otherwise make sure a
+        wake is under way (it always runs to completion, also when the caller
+        gives up) and wait for it until `deadline_mono` (time.monotonic()).
+        False = still not awake at the deadline: the caller must NOT run its
+        command."""
+        if self._state == AWAKE or self._owner == threading.get_ident():
+            return True
+        self.wake_async(source)          # no-op while a wake is already running
+        with self._state_changed:
+            while self._state != AWAKE:
+                left = deadline_mono - time.monotonic()
+                if left <= 0:
+                    break
+                self._state_changed.wait(min(left, 0.2))
+        return self._state == AWAKE
+
     def wake_async(self, source: str) -> None:
         if self._state in (ENTERING, ASLEEP):
             threading.Thread(target=self.ensure_awake, args=(source,), daemon=True,
@@ -831,6 +848,27 @@ def ensure_awake(source: str = 'command') -> bool:
     if mgr is None or mgr.state == AWAKE:
         return True
     return mgr.ensure_awake(source)
+
+
+# Command budget (Morgan 2026-11-19), on the robot's monotonic clock from the
+# moment a command is received: a command whose execution has not BEGUN
+# within COMMAND_START_BUDGET_S is not executed at all (reply "expired");
+# set_sleep false must reply within WAKE_REPLY_BUDGET_S.
+COMMAND_START_BUDGET_S = 1.5
+WAKE_REPLY_BUDGET_S = 5.0
+
+
+def is_awake() -> bool:
+    """Fully awake (not asleep, not going to sleep, not still waking)."""
+    mgr = _instance
+    return mgr is None or mgr.state == AWAKE
+
+
+def awake_within(source: str, deadline_mono: float) -> bool:
+    mgr = _instance
+    if mgr is None or mgr.state == AWAKE:
+        return True
+    return mgr.awake_within(source, deadline_mono)
 
 
 def is_asleep() -> bool:
