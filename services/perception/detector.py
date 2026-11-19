@@ -522,9 +522,14 @@ class DetectorService:
                 self.logger.warning(f"Unknown mode: {new_mode_str}")
                 return
 
-            # Sleep: the camera is about to be closed; do not reconfigure it.
-            if new_mode == SystemMode.SLEEP:
-                return
+            # Going to sleep (mode drops to idle first): the camera is about
+            # to be closed; do not reconfigure it.
+            try:
+                from services.power.sleep_manager import is_asleep
+                if is_asleep():
+                    return
+            except Exception:
+                pass
 
             # Get target resolution for new mode
             target_resolution = MODE_RESOLUTIONS.get(new_mode, DEFAULT_RESOLUTION)

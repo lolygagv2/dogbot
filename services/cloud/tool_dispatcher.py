@@ -4,11 +4,14 @@ Commands arrive as the existing WS command frame plus a `command_id`:
     {"type":"command", "command":"run_trick", "command_id":"c-123",
      "cue":"sit", "force":false, "timestamp":...}
 and EVERY such command is answered exactly once with
-    {"type":"command_result", "command_id", "ok", "result", "error"}
-(error = {"code","message"} or null). Unknown command, busy, timeout and
-exceptions all produce a command_result.
+    {"type":"command_result", "command_id", "command", "success", "result",
+     "error", "duration_ms"}
+(ROBOT-STATE v2, 2026-11-19: the key is "success", never "ok"; error is the
+error code string or null, its human text is result.message). Unknown
+command, busy, timeout and exceptions all produce a command_result.
 
-Registered commands: dispense_treat, set_mode, play_sound{url|sound_id},
+Registered commands: dispense_treat, set_mode, select_dog, set_sleep,
+play_sound{url|sound_id},
 start_mission, go_to (not supported on this platform), standby, run_trick
 {cue, force?}, take_photo{with_hud}, agent_utterance (record one utterance
 and POST it to /agent/utterance).
@@ -455,12 +458,19 @@ class ToolDispatcher:
             pass
         ok = bool(result.get('ok'))
         log_tool_call(name, args, call_id, duration_ms, ok, err, summary)
-        error = result.get('error') if not ok else None
-        if error is not None and not isinstance(error, dict):
-            error = {'code': 'error', 'message': str(error)}
         payload = {k: v for k, v in result.items() if k not in ('ok', 'error')}
+        error = None
+        if not ok:
+            e = result.get('error')
+            if isinstance(e, dict):
+                error = str(e.get('code') or 'error')
+                if e.get('message'):
+                    payload.setdefault('message', e['message'])
+            else:
+                error = str(e) if e else 'error'
+        # ROBOT-STATE v2 section 4: "success" (never "ok"); error is a string or null.
         frame = {'type': 'command_result', 'command_id': call_id, 'command': name,
-                 'ok': ok, 'result': payload, 'error': error, 'duration_ms': duration_ms}
+                 'success': ok, 'result': payload, 'error': error, 'duration_ms': duration_ms}
         try:
             reply(frame)
         except Exception as e:
@@ -474,18 +484,21 @@ class ToolDispatcher:
                                            'deferred via media upload if capture is slow'))
         self.register(ToolSpec('standby', self._tool_standby, 10.0, preemptive=True,
                                description='Stop audio and return to IDLE'))
-        self.register(ToolSpec('sleep', self._tool_sleep, 30.0, preemptive=True,
-                               description='Sleep mode: stop sessions, motors, gimbal, camera, Hailo, bark '
-                                           'detection, mute audio, dim LEDs; WiFi, relay and commands stay up. '
-                                           'Not a shutdown. Any action command wakes the robot first'))
-        self.register(ToolSpec('wake', self._tool_wake, 30.0, preemptive=True,
-                               description='Leave sleep mode: restore everything, health-check camera/Hailo/audio, '
-                                           'mode idle, boot greeting. Result carries ready_s (measured wake time)'))
+        self.register(ToolSpec('set_sleep', self._tool_set_sleep, 10.0,
+                               description='{asleep: true|false, source, reason}. true: stop sessions (mode idle), '
+                                           'motors, gimbal, camera, Hailo, bark detection, mute audio, dim LEDs; '
+                                           'WiFi, relay and commands stay up; not a shutdown. false: restore '
+                                           'everything, mode stays idle, boot greeting. Answers {asleep, mode} at '
+                                           'once; the hardware steps finish in the background'))
+        self.register(ToolSpec('select_dog', self._tool_select_dog, 5.0,
+                               description='{dog_id: uuid|null, source}: the dog chosen in the app '
+                                           '(selected_dog_id). Answers {selected_dog_id}'))
         self.register(ToolSpec('dispense_treat', self._tool_dispense_treat, 75.0,   # retry ladder + unjam ~45 s, + speech wait
                                description='Dispense one treat (source app|agent|connector)'))
         self.register(ToolSpec('set_mode', self._tool_set_mode, 10.0,
-                               description='Switch mode: idle|silent_guardian|coach|manual|night_sentry|sleep '
-                                           '(sleep = sleep mode; idle while asleep = wake)'))
+                               description='{mode: idle|silent_guardian|coach|mission|manual, dog_id: uuid|null, '
+                                           'source, reason}. Answers {mode, session_dog_id}. Any other mode '
+                                           'value: invalid_mode'))
         self.register(ToolSpec('play_sound', self._tool_play_sound, 60.0,
                                description='Queue a relay-hosted url or a registry sound_id on the audio queue; '
                                            'replies at once (wait:true to block until played)'))
@@ -611,16 +624,16 @@ class ToolDispatcher:
             else:
                 err = str(res.get('error') or 'upload failed')
                 frame = {'type': 'command_result', 'command_id': command_id, 'command': 'take_photo',
-                         'ok': False, 'result': {'photo_id': photo_id},
-                         'error': {'code': 'capture_failed' if not res.get('success') else 'upload_failed',
-                                   'message': err}}
+                         'success': False, 'result': {'photo_id': photo_id, 'message': err},
+                         'error': 'capture_failed' if not res.get('success') else 'upload_failed',
+                         'duration_ms': 0}
             if self._relay is not None:
                 try:
                     self._relay.send_message(frame)
                 except Exception as e:
                     logger.error(f"[TOOL] {frame['type']} send failed: {e}")
             logger.info(f"[TOOL] deferred take_photo {photo_id}: "
-                        f"{'photo_ready ' + url if url else 'failed: ' + frame['error']['message']}")
+                        f"{'photo_ready ' + url if url else 'failed: ' + str(frame['result'].get('message'))}")
 
         threading.Thread(target=_deliver, daemon=True, name=f"PhotoDeliver-{photo_id[:8]}").start()
         # Interim reply: result.deferred=true tells the relay's waiters to
@@ -700,9 +713,10 @@ class ToolDispatcher:
         from core.state import SystemMode, get_state
         from orchestrators.mode_fsm import get_mode_fsm
         fsm = get_mode_fsm()
-        ok = fsm.set_mode_override(SystemMode.IDLE)
-        if not ok:
-            ok = fsm.force_mode(SystemMode.IDLE, 'standby command')
+        with self._mode_ctx(args):
+            ok = fsm.set_mode_override(SystemMode.IDLE)
+            if not ok:
+                ok = fsm.force_mode(SystemMode.IDLE, 'standby command')
         if args.get('announce'):
             try:
                 from services.media.usb_audio import get_usb_audio_service
@@ -714,7 +728,7 @@ class ToolDispatcher:
                     audio.play_file(path)
             except Exception as e:
                 logger.debug(f"standby announce: {e}")
-        return {'ok': bool(ok), 'mode': get_state().get_mode().value, 'stopped': stopped}
+        return {'ok': bool(ok), 'mode': get_state().get_contract_mode(), 'stopped': stopped}
 
     @staticmethod
     def _tool_dispense_treat(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
@@ -852,43 +866,93 @@ class ToolDispatcher:
         return svc.set_manual(action, source=str(args.get('source') or 'relay'))
 
     @staticmethod
-    def _sleep_summary(res: Dict[str, Any]) -> Dict[str, Any]:
-        """Relay-sized view of a sleep/wake result (full detail: GET /system/sleep/status)."""
-        keep = ('ok', 'mode', 'already', 'source', 'enter_s', 'ready_s', 'within_target', 'target_s',
-                'healthy', 'health', 'slept_s', 'failed', 'power_before', 'power_after')
-        return {k: res[k] for k in keep if k in res}
+    def _mode_ctx(args: Dict[str, Any], default_source: str = 'relay'):
+        """state.mode_context() for a command: who caused the mode change
+        (mode_change data.source / reason / command_id) and its dog (R3)."""
+        from core.state import get_state, contract_source
+        dog = args.get('dog_id')
+        if not dog or str(dog).lower() in ('null', 'none', 'unknown'):
+            dog = None
+        reason = args.get('reason')
+        return get_state().mode_context(source=contract_source(args.get('source'), default_source),
+                                        reason=str(reason) if reason else None,
+                                        command_id=args.get('_command_id'),
+                                        dog_id=str(dog) if dog else None)
 
-    def _tool_sleep(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+    def _tool_set_sleep(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        """ROBOT-STATE v2 C3. asleep=true forces mode idle and session_dog_id
+        null first (R5); waking leaves the mode idle. The reply is due within
+        2000 ms and the hardware steps take longer (sleep ~3 s, wake ~5 s), so
+        they run on their own thread: the reply states what the robot is now
+        committed to, and the next status event carries the outcome."""
+        from core.state import get_state
         from services.power.sleep_manager import get_sleep_manager
-        return self._sleep_summary(get_sleep_manager().sleep(source=str(args.get('source') or 'command')))
+        want = args.get('asleep')
+        if not isinstance(want, bool):
+            return _err('bad_request', 'set_sleep needs data.asleep true or false')
+        mgr = get_sleep_manager()
+        ctx_args = dict(args)
 
-    def _tool_wake(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
-        from services.power.sleep_manager import get_sleep_manager
-        return self._sleep_summary(get_sleep_manager().wake(source=str(args.get('source') or 'command')))
+        def _work():
+            try:
+                with self._mode_ctx(ctx_args):
+                    label = str(ctx_args.get('reason') or ctx_args.get('source') or 'command')
+                    (mgr.sleep if want else mgr.wake)(source=label)
+            except Exception as e:
+                logger.error(f"[TOOL] set_sleep {want} failed: {e}")
+
+        if mgr.is_asleep_target() != want:
+            mgr.note_target(want)
+            threading.Thread(target=_work, daemon=True, name='SetSleep').start()
+        return {'ok': True, 'asleep': want, 'mode': 'idle' if want else get_state().get_contract_mode()}
+
+    @staticmethod
+    def _tool_select_dog(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        """ROBOT-STATE v2 C2: the only writer of selected_dog_id."""
+        from core.state import get_state
+        dog = args.get('dog_id')
+        if dog is not None and (not isinstance(dog, str) or not dog.strip()
+                                or dog.strip().lower() in ('null', 'none')):
+            dog = None
+        name = None
+        if dog:
+            dog = dog.strip()
+            try:
+                from core.dog_profile_manager import get_dog_profile_manager
+                for prof in get_dog_profile_manager().get_all_profiles():
+                    if getattr(prof, 'dog_id', None) == dog:
+                        name = getattr(prof, 'name', None)
+                        break
+            except Exception as e:
+                logger.debug(f"[TOOL] select_dog name lookup: {e}")
+        st = get_state()
+        st.set_current_dog(dog, name)
+        return {'ok': True, 'selected_dog_id': st.get_current_dog_id()}
 
     @staticmethod
     def _tool_set_mode(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
-        from core.state import SystemMode, get_state
+        """ROBOT-STATE v2 C1. Exactly the five modes; no aliases. No mode
+        needs a dog (R1). session_dog_id = data.dog_id, else the selected dog,
+        fixed on entry (R3); null in idle / manual (R4)."""
+        from core.state import SystemMode, get_state, CONTRACT_MODES
         from orchestrators.mode_fsm import get_mode_fsm
-        # App build 191: set_mode sleep = sleep, set_mode idle while asleep = wake.
-        from services.power import sleep_manager as _sm
-        intent = _sm.sleep_intent('set_mode', args)
-        if intent:
-            return ToolDispatcher._sleep_summary(_sm.run_intent(intent, f"set_mode {args.get('mode')}"))
-        raw = str(args.get('mode') or '').lower()
-        aliases = {'guardian': 'silent_guardian', 'sg': 'silent_guardian', 'training': 'coach',
-                   'detection': 'coach', 'standby': 'idle'}
-        raw = aliases.get(raw, raw)
-        try:
-            mode = SystemMode(raw)
-        except ValueError:
-            return _err('invalid_mode', f"mode {raw!r} not one of {[m.value for m in SystemMode]}")
+        raw = args.get('mode')
+        st = get_state()
+        if raw not in CONTRACT_MODES:
+            return _err('invalid_mode', f"mode {raw!r} is not one of {list(CONTRACT_MODES)}",
+                        mode=st.get_contract_mode(), session_dog_id=st.get_session_dog_id())
+        mode = SystemMode(raw)
         fsm = get_mode_fsm()
-        duration = args.get('duration')
-        ok = fsm.set_mode_override(mode, float(duration)) if duration else fsm.set_mode_override(mode)
-        if not ok:
-            ok = fsm.force_mode(mode, 'relay set_mode')
-        return {'ok': bool(ok), 'mode': get_state().get_mode().value}
+        with ToolDispatcher._mode_ctx(args):
+            ok = fsm.set_mode_override(mode)
+            if not ok:
+                ok = fsm.force_mode(mode, 'relay set_mode')
+        out = {'ok': bool(ok and st.get_contract_mode() == raw),
+               'mode': st.get_contract_mode(), 'session_dog_id': st.get_session_dog_id()}
+        if not out['ok']:
+            out['error'] = {'code': 'mode_refused',
+                            'message': f"robot stayed in {out['mode']} (mode locked or transition refused)"}
+        return out
 
     def _tool_play_sound(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
         """{url} (relay asset, e.g. agent TTS: kind="tts") or {sound_id}."""
@@ -956,7 +1020,8 @@ class ToolDispatcher:
             return _err('bad_request', 'mission_id required', available=sorted(me.missions))
         if me.active_session:
             return _err('busy', 'a mission is already running')
-        ok = me.start_mission(str(name), dog_id=args.get('dog_id'))
+        with ToolDispatcher._mode_ctx(args):
+            ok = me.start_mission(str(name), dog_id=args.get('dog_id'))
         if not ok:
             return _err('start_failed', f"could not start {name!r}", available=sorted(me.missions))
         return {'ok': True, 'mission_id': name}

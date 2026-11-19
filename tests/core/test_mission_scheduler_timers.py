@@ -249,22 +249,22 @@ def main():
     d = td.ToolDispatcher()
     f = d.call('schedule_mission', {'mission': 'Basic Sit', 'dog_id': 'd2',
                                     'fire_at': (now() + timedelta(hours=1)).isoformat(), 'mission_id': 'relay-m-2'}, 'c-1', 3)
-    check(f.get('type') == 'command_result' and f['ok'] and f['result']['mission_name'] == 'sit'
+    check(f.get('type') == 'command_result' and f['success'] and f['result']['mission_name'] == 'sit'
           and f['result']['mission_id'] == 'relay-m-2' and f['result']['next_fire_at'],
           f"schedule_mission -> command_result ok (alias resolved) {f.get('error')}")
     f = d.call('schedule_mission', {'mission': 'sit', 'dog_id': 'd2', 'start_time': '07:30'}, 'c-2', 3)
-    check(f['ok'] and f['result']['type'] == 'daily', "schedule_mission start_time only -> daily")
+    check(f['success'] and f['result']['type'] == 'daily', "schedule_mission start_time only -> daily")
     f = d.call('schedule_mission', {'mission': 'nope', 'dog_id': 'd2', 'start_time': '07:30'}, 'c-3', 3)
-    check(f['ok'] is False and f['error']['code'] == 'unknown_mission', "schedule_mission unknown mission -> error")
+    check(f['success'] is False and f['error'] == 'unknown_mission', "schedule_mission unknown mission -> error")
     f = d.call('schedule_sync', {}, 'c-4', 3)
     rows = f['result']['missions']
-    check(f['ok'] and f['result']['count'] == len(rows) >= 3
+    check(f['success'] and f['result']['count'] == len(rows) >= 3
           and all({'mission_id', 'next_fire_at', 'last_run_at', 'last_result'} <= set(r) for r in rows),
           f"schedule_sync -> {len(rows)} rows with next_fire_at/last_run_at/last_result")
     f = d.call('cancel_mission', {'mission_id': 'relay-m-2'}, 'c-5', 3)
-    check(f['ok'] and f['result']['cancelled'], "cancel_mission by relay mission_id -> command_result ok")
+    check(f['success'] and f['result']['cancelled'], "cancel_mission by relay mission_id -> command_result ok")
     f = d.call('cancel_mission', {'mission_id': 'relay-m-2'}, 'c-6', 3)
-    check(f['ok'] is False and f['error']['code'] == 'not_found', "cancel_mission again -> not_found")
+    check(f['success'] is False and f['error'] == 'not_found', "cancel_mission again -> not_found")
     sched3.disable()
 
     # ---------------------------------------------------------------- relay `missions` setting
@@ -403,7 +403,7 @@ def main():
         time.sleep(0.05)
     check(modes and modes[0][1] == 'coach', "second coach run started")
     f = td.ToolDispatcher().call('cancel_mission', {'mission_id': 'm-coach'}, 'c-8', 3)
-    check(f['ok'] and f['result']['stopped_run'] and f['result']['run_id'] == 778 and ('clear',) in modes,
+    check(f['success'] and f['result']['stopped_run'] and f['result']['run_id'] == 778 and ('clear',) in modes,
           f"cancel_mission on an executing mode run stops it ({f.get('result')})")
     check(any(st == 'mission.stopped' and d.get('mission_id') == 778 for st, d in events), "mission.stopped -> mission_run aborted")
     check(sched4.active_mode_run() is None, "no active mode run after cancel")

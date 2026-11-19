@@ -59,8 +59,9 @@ def resolve_voice_file(
     Dog priority:
       1. dog_id_override (filtered through is_real_dog_id)
       2. state.get_aruco_dog_within(seconds=5)
-      3. state.get_session_dog_id() - from start_coach/start_mission
-      4. state.get_current_dog_id() - from select_dog/reload_dogs
+      3. state.get_coach_dog_id() - the dog the coach engine is working with
+      4. state.get_session_dog_id() - fixed when the session mode was entered
+      5. state.get_current_dog_id() - selected dog (select_dog)
     """
     if state is None:
         from core.state import get_state
@@ -68,6 +69,7 @@ def resolve_voice_file(
 
     # Get each fallback value for logging
     aruco = state.get_aruco_dog_within(seconds=5)
+    coach = state.get_coach_dog_id() if hasattr(state, 'get_coach_dog_id') else None
     session = state.get_session_dog_id()
     current = state.get_current_dog_id()
 
@@ -77,6 +79,8 @@ def resolve_voice_file(
         candidates.append(dog_id_override)
     if is_real_dog_id(aruco):
         candidates.append(aruco)
+    if is_real_dog_id(coach):
+        candidates.append(coach)
     if is_real_dog_id(session):
         candidates.append(session)
     if is_real_dog_id(current):

@@ -808,25 +808,6 @@ class TreatBotMain:
         except Exception as e:
             self.logger.error(f"Bark feedback error: {e}")
 
-    @staticmethod
-    def _normalize_id_method(method) -> str:
-        """Map an event's local id_method to the app's provenance enum.
-
-        App enum (attribution contract 2026-07-13): qr / vision (identified),
-        owner_selected (command echo), sole_dog / last_dog (fallback). Robot
-        vision methods (aruco / aruco_cached / persistence -> marker-derived ->
-        qr; color -> vision) are translated here. An explicit id with no/unknown
-        provenance is treated as an identification (vision) — the emitter did
-        positively associate a dog with the event.
-        """
-        m = (method or '').lower()
-        if m in ('owner_selected', 'qr', 'vision', 'sole_dog', 'last_dog'):
-            return m
-        if m in ('aruco', 'aruco_cached', 'persistence'):
-            return 'qr'
-        if m == 'color':
-            return 'vision'
-        return 'vision'
 
     def _forward_event_to_relay(self, event) -> None:
         """Forward relevant events to cloud relay for app communication
@@ -995,12 +976,6 @@ class TreatBotMain:
                     }
 
             elif event.type == EventType.SYSTEM:
-                if event.subtype == 'mode_changed':
-                    # Mode changes are already sent via _on_mode_change() with proper
-                    # contract names (guardian, training, etc). Skip duplicate here to
-                    # avoid sending a second event with wrong/None mode values.
-                    pass
-
                 # Silent Guardian lifecycle + interventions. These were published
                 # as SYSTEM events (silent_guardian.py) and persisted locally, but
                 # never forwarded to the relay — so cloud activity history showed
@@ -1008,7 +983,7 @@ class TreatBotMain:
                 # them as a single 'guardian' event discriminated by 'action' so the
                 # app's activity feed can render "intervened / escalated" entries.
                 # Not throttled: low-frequency, discrete events.
-                elif event.subtype == 'sg_escalation':
+                if event.subtype == 'sg_escalation':
                     event_type = 'guardian'
                     event_data = {
                         'action': 'intervention',
@@ -1142,16 +1117,9 @@ class TreatBotMain:
                             pass
 
                     event_type = 'battery'
-                    # Get current mode for telemetry — use contract names
-                    # so the app recognizes them (guardian, training, etc.)
-                    _battery_mode_map = {
-                        "idle": "idle", "silent_guardian": "silent_guardian",
-                        "coach": "coach", "mission": "mission",
-                        "manual": "manual", "photography": "manual",
-                        "emergency": "manual"
-                    }
-                    internal_mode = self.state.get_mode().value if self.state else 'idle'
-                    current_mode = _battery_mode_map.get(internal_mode, internal_mode)
+                    # ROBOT-STATE v2: mode is one of the five (anything else is idle).
+                    from core.state import contract_mode as _contract_mode
+                    current_mode = _contract_mode(self.state.get_mode()) if self.state else 'idle'
                     event_data = {
                         'level': event.data.get('percentage', 0),
                         'charging': event.data.get('charging', False) or event.subtype == 'battery_charging',
@@ -1181,22 +1149,21 @@ class TreatBotMain:
                 # boundary; internal bus payloads keep their local ids.
                 if 'dog_id' in event_data:
                     try:
-                        # Attribution contract 2026-07-13 (always-assign), shared
-                        # with the protocol-v2 emitter: explicit wins (and
-                        # advances last-dog), else sole_dog, else last_dog.
+                        # ROBOT-STATE v2 section 3 (A1..A6), shared with the
+                        # protocol-v2 emitter.
                         from core.dog_profile_manager import resolve_relay_dog
                         resolved, id_method = resolve_relay_dog(
                             dog_id=event_data.get('dog_id'),
                             dog_name=event_data.get('dog_name'),
                             aruco_id=event_data.get('aruco_id'),
-                            id_method=self._normalize_id_method(event_data.get('id_method')),
+                            id_method=event_data.get('id_method'),
                         )
                         event_data['dog_id'] = resolved
-                        event_data['id_method'] = id_method if resolved else None
+                        event_data['id_method'] = id_method
                     except Exception as e:
                         self.logger.debug(f"dog_id resolve failed, sending null: {e}")
                         event_data['dog_id'] = None
-                        event_data['id_method'] = None
+                        event_data['id_method'] = 'none'
 
                 self.relay_client.send_event(event_type, event_data)
                 self.logger.debug(f"Forwarded {event_type} to relay: {event_data}")
@@ -1913,11 +1880,6 @@ class TreatBotMain:
                               or params.get('data', {}).get('dog_id')
                               or event.data.get('dog_id'))
 
-                    # Explicit command dog_id advances the last-dog pointer
-                    # (attribution contract 2026-07-13 req #1).
-                    if dog_id:
-                        self.state.note_dog_attribution(dog_id, params.get('dog_name'))
-
                     if not voice_type:
                         self.logger.warning(f"{command}: no voice_type provided")
                     else:
@@ -2163,17 +2125,6 @@ class TreatBotMain:
                     dispenser.reset_treat_counter()
                     self.logger.info("Treat counter reset via cloud")
 
-                elif command in ('select_dog', 'reload_dogs'):
-                    from core.state import get_state
-                    dog_id = params.get('dog_id') or params.get('id')
-                    dog_name = params.get('dog_name') or params.get('name')
-                    if dog_id:
-                        state = get_state()
-                        state.set_current_dog(dog_id, dog_name)
-                        self.logger.info(f"[SELECT_DOG] Set current dog: {dog_name} ({dog_id})")
-                    else:
-                        self.logger.warning(f"select_dog: no dog_id in params={params}")
-
                 else:
                     # 2026-11-07 08:19: the agent's TTS reply arrived as
                     # play_sound WITHOUT a command_id, so it skipped the
@@ -2295,32 +2246,18 @@ class TreatBotMain:
             caller_info = "".join(traceback.format_stack()[-5:-1]).strip().replace('\n', ' | ')
             self.logger.info(f"MODE CHANGE: {previous_mode} -> {new_mode} [reason: {reason}] [source: {caller_info[:300]}]")
 
-            # Notify app of mode change via relay
-            # Send 'mode_changed' event for app sync
-            if self.relay_client and self.relay_client.connected:
-                # Use contract mode names (must match telemetry mode_map)
-                _mode_map = {
-                    "idle": "idle", "silent_guardian": "silent_guardian",
-                    "coach": "coach", "mission": "mission",
-                    "manual": "manual", "photography": "manual",
-                    "emergency": "manual"
-                }
-                locked = data.get('locked', False)
-                contract_new = _mode_map.get(new_mode, new_mode)
-                contract_prev = _mode_map.get(previous_mode, previous_mode)
-                self.relay_client.send_event('mode_changed', {
-                    'mode': contract_new,
-                    'previous_mode': contract_prev,
-                    'locked': locked,
-                    'reason': reason,
-                    'timestamp': time.time()
-                })
-                self.logger.debug(f"Mode changed event sent: {contract_prev} -> {contract_new} (locked={locked})")
+            # The relay learns of the change from the `mode_change` event
+            # (ROBOT-STATE v2 E1, services/cloud/behavior_events.py).
 
             # Announce mode FIRST so audio fires immediately on click — bark
             # setup below has ~1s of sync sleeps that would otherwise delay it.
-            # (Waking from sleep is announced by the boot greeting instead.)
-            if previous_mode != 'sleep':
+            # Going to sleep drops the mode to idle silently.
+            try:
+                from services.power.sleep_manager import is_asleep as _asleep
+                going_to_sleep = _asleep()
+            except Exception:
+                going_to_sleep = False
+            if not going_to_sleep:
                 self._announce_mode(new_mode)
 
             # Stop Silent Guardian if leaving that mode

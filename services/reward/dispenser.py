@@ -27,6 +27,12 @@ from config.config_loader import get_config
 from config.pins import TreatBotPins
 
 
+# dispense_treat(reason=...) values that come from a command (app / relay /
+# connector / agent / schedule / local API), as opposed to an engine reward.
+COMMAND_REASONS = frozenset({'manual', 'cloud_command', 'agent', 'connector', 'schedule',
+                             'websocket_command', 'connector_trick'})
+
+
 class DispenserService:
     """
     Treat dispensing service using NEMA 17 stepper + TMC2209 driver.
@@ -996,12 +1002,11 @@ class DispenserService:
                         mission_name=self.state.mission.name
                     )
 
-                    # Owner-initiated dispense with an app-supplied dog_id is a
-                    # command echo, not an identification (attribution contract
-                    # 2026-07-13 req #1/#2). Engine rewards (coach/mission/SG)
-                    # leave id_method None so the relay boundary labels them from
-                    # their carried dog / vision provenance or the fallback.
-                    id_method = 'owner_selected' if (dog_id and reason in ('manual', 'cloud_command')) else None
+                    # ROBOT-STATE v2 A1: a dispense caused by a command that
+                    # named a dog is "explicit". Engine rewards (coach / mission
+                    # / SG) leave id_method None; the relay boundary then applies
+                    # A2..A6 (marker, session dog, selected dog, sole dog, none).
+                    id_method = 'explicit' if (dog_id and reason in COMMAND_REASONS) else None
                     try:
                         from services.reward.treat_policy import get_treat_policy
                         get_treat_policy().record_dispense(reason, now)

@@ -604,22 +604,17 @@ async def get_mode():
 async def set_mode(request: ModeRequest):
     """Set system mode"""
     try:
-        # Sleep mode: "sleep" sleeps, "idle" while asleep wakes (app build 191).
-        from services.power import sleep_manager as _sm
-        intent = _sm.sleep_intent('set_mode', {'mode': request.mode})
-        if intent:
-            import asyncio
-            res = await asyncio.get_running_loop().run_in_executor(
-                None, _sm.run_intent, intent, f"api mode {request.mode}")
-            return {"success": bool(res.get("ok")), "mode": res.get("mode"),
-                    "ready_s": res.get("ready_s"), "healthy": res.get("healthy")}
+        # Sleep is not a mode (ROBOT-STATE v2): use POST /system/sleep and
+        # /system/wake. "sleep" here is an invalid mode.
         mode = SystemMode(request.mode)
         mode_fsm = get_mode_fsm()
 
-        if request.duration:
-            success = mode_fsm.set_mode_override(mode, request.duration)
-        else:
-            success = mode_fsm.force_mode(mode, "API request")
+        from core.state import get_state as _get_state
+        with _get_state().mode_context(source='app', reason='local_api'):
+            if request.duration:
+                success = mode_fsm.set_mode_override(mode, request.duration)
+            else:
+                success = mode_fsm.force_mode(mode, "API request")
 
         if success:
             return {"success": True, "mode": mode.value}
@@ -6110,7 +6105,7 @@ async def tools_call(name: str, request: Request):
         frame = await asyncio.get_running_loop().run_in_executor(
             None, lambda: disp.call(name, args, call_id=f"local-{_uuid.uuid4().hex[:8]}",
                                     wait_s=timeout + 15))
-        if frame.get('error', {}) and frame['error'].get('code') in ('busy', 'robot_busy', 'gimbal_busy'):
+        if frame.get('error') in ('busy', 'robot_busy', 'gimbal_busy'):
             raise HTTPException(status_code=409, detail=frame)
         return frame
     except HTTPException:

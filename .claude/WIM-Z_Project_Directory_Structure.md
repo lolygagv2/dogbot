@@ -269,6 +269,7 @@
          test_behavior_events_derivation.py   # + mode_change segments (2026-11-07): {mode,start,end,duration_s,next_mode}, contiguous, shutdown close, no terminal row.
          test_behavior_events_derivation.py   # + trick_attempt rows (coach/mission/run_trick, result clamp) and coach_session aggregation (counts, treats, run_trick-only activation skipped, close on stop) (2026-11-08).
          test_tool_dispatcher_single_flight.py # command_result shape, unknown/busy/timeout/exception, slot held until handler returns, preemptive standby, every call logged, relay interception only with command_id.
+         test_robot_state_v2_contract.py   # ROBOT-STATE v2 (2026-11-19): five modes / sleep flag, session + selected dog rules, set_mode / select_dog / set_sleep command_result (success, error string), mode_change stamping, attribution A1-A6, grep proof.
          test_trick_runner_sequence.py        # run_trick: success (one treat), no_dog/wrong_pose/timeout, invalid cue, SG busy unless force, engine hold/release, mode restored even on dispenser exception.
       reward/
          test_treat_policy_windows.py # TreatPolicy: midnight-wrap windows, m=0 blocks auto allows owner, cooldown 120/m, daily cap blocks all, max_per_hour rolling, default_multiplier, reason classes.

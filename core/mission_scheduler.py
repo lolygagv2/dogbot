@@ -493,6 +493,13 @@ class MissionScheduler:
             self.logger.error(f"[SCHED] schedule_deleted not sent: {e}")
 
     def _fire(self, s: Dict[str, Any], slot: datetime, now: datetime) -> bool:
+        # ROBOT-STATE v2: a mode change caused by a schedule is stamped
+        # source "schedule"; the schedule's dog becomes the session dog (R3).
+        from core.state import get_state
+        with get_state().mode_context(source='schedule', reason='schedule', dog_id=s.get("dog_id")):
+            return self._fire_now(s, slot, now)
+
+    def _fire_now(self, s: Dict[str, Any], slot: datetime, now: datetime) -> bool:
         sid = s["schedule_id"]
         name = s["mission_name"]
         late = (now - slot).total_seconds()
@@ -611,8 +618,9 @@ class MissionScheduler:
             fsm.clear_override("scheduled mode mission ended")
         except Exception:
             pass
-        if not fsm.set_mode_override(SystemMode.IDLE):
-            get_state().set_mode(SystemMode.IDLE, reason="scheduled mode mission ended")
+        with get_state().mode_context(source='schedule', reason='schedule_ended'):
+            if not fsm.set_mode_override(SystemMode.IDLE):
+                get_state().set_mode(SystemMode.IDLE, reason="scheduled mode mission ended")
 
     def _new_run_id(self, name: str, config: Dict[str, Any]) -> Any:
         try:

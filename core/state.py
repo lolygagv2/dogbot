@@ -24,7 +24,8 @@ class SystemMode(Enum):
     MANUAL = "manual"
     EMERGENCY = "emergency"
     SHUTDOWN = "shutdown"
-    SLEEP = "sleep"                       # Low-power: hardware stopped, network + commands alive (services/power/sleep_manager.py)
+    # ROBOT-STATE v2: sleep is NOT a mode. A sleeping robot is in IDLE with
+    # services/power/sleep_manager reporting asleep = true.
 
     # Backward compatibility aliases (deprecated)
     @classmethod
@@ -43,6 +44,25 @@ class SystemMode(Enum):
             )
             return deprecated_map[value]
         return None
+
+
+# ROBOT-STATE v2 (2026-11-19). state.mode on the wire is exactly one of these
+# five. Every other internal mode (night_sentry, photography, emergency,
+# shutdown) is reported as "idle" (R6).
+CONTRACT_MODES = ("idle", "silent_guardian", "coach", "mission", "manual")
+SESSION_MODES = ("silent_guardian", "coach", "mission")
+CONTRACT_SOURCES = ("app", "connector", "agent", "schedule", "robot", "admin", "relay")
+
+
+def contract_mode(mode) -> str:
+    """Internal mode (SystemMode or its value) -> the contract's mode."""
+    value = mode.value if isinstance(mode, SystemMode) else str(mode or "")
+    return value if value in CONTRACT_MODES else "idle"
+
+
+def contract_source(source, default: str = "robot") -> str:
+    s = str(source or "").lower()
+    return s if s in CONTRACT_SOURCES else default
 
 
 class MissionState(Enum):
@@ -187,26 +207,28 @@ class StateManager:
         self._mode_locked = False
         self._mode_lock_reason = None
 
-        # Current dog selection (C3.1 - persisted across restarts)
-        # Priority: ArUco (5s) > session dog_id > select_dog > None
+        # Dog selection (ROBOT-STATE v2).
+        #   _current_dog_id  = the contract's selected_dog_id: the dog chosen
+        #                      in the app. Changes ONLY through select_dog.
+        #                      Persisted across restarts.
+        #   _session_dog_id  = the contract's session_dog_id: fixed when
+        #                      silent_guardian / coach / mission is entered,
+        #                      null in idle / manual (set in set_mode()).
+        #   _coach_dog_id    = the dog the coach engine is working with right
+        #                      now (from vision; used for per-dog voice clips).
+        #   _marker_reads    = last time each dog's ArUco/QR marker was read.
         self._current_dog_id: Optional[str] = None
         self._current_dog_name: Optional[str] = None
         self._last_aruco_dog_id: Optional[str] = None
         self._last_aruco_time: float = 0.0
-        self._session_dog_id: Optional[str] = None  # From start_coach/start_mission
-        # Always-assign last-dog pointer (attribution contract 2026-07-13):
-        # the most-recent EXPLICIT attribution — a live vision/ArUco resolution
-        # or a command dog_id (dispense_treat / start_mission / play_voice /
-        # select_dog). Consumed as the multi-dog fallback (id_method="last_dog")
-        # when nothing else resolves. Reset to the app-selected dog on reboot /
-        # profile reload rather than carrying a stale one.
-        self._last_dog_id: Optional[str] = None
-        self._last_dog_name: Optional[str] = None
+        self._marker_reads: Dict[str, float] = {}
+        self._session_dog_id: Optional[str] = None
+        self._coach_dog_id: Optional[str] = None
+        # Who/what caused the mode change in progress on this thread
+        # (see mode_context()).
+        self._mode_ctx = threading.local()
         self._STATE_FILE = "/home/morgan/dogbot/data/robot_state.json"
         self._load_persisted_state()
-        # Seed the last-dog pointer from the persisted app-selected dog on boot.
-        self._last_dog_id = self._current_dog_id
-        self._last_dog_name = self._current_dog_name
 
     def lock_mode(self, reason: str):
         """Lock mode - only mission system should call this."""
@@ -256,61 +278,42 @@ class StateManager:
         except Exception as e:
             self.logger.warning(f"[STATE] Could not save persisted state: {e}")
 
-    def set_current_dog(self, dog_id: str, dog_name: str = None):
-        """Set current dog from app's select_dog command. Persists across restarts.
-
-        An app selection is an explicit attribution, so it also advances the
-        last-dog pointer (attribution contract 2026-07-13 req #1).
-        """
+    def set_current_dog(self, dog_id: Optional[str], dog_name: str = None):
+        """select_dog (ROBOT-STATE v2 C2): the contract's selected_dog_id.
+        None clears the selection. Persists across restarts. This is the ONLY
+        writer of the selected dog."""
         with self._lock:
-            self._current_dog_id = dog_id
-            self._current_dog_name = dog_name or dog_id
-            if self._is_real_dog_id(dog_id):
-                self._last_dog_id = dog_id
-                self._last_dog_name = dog_name or dog_id
+            self._current_dog_id = dog_id or None
+            self._current_dog_name = (dog_name or dog_id) if dog_id else None
             self._save_persisted_state()
-            self.logger.info(f"[DOG] Selected: {self._current_dog_name} ({dog_id})")
+            self.logger.info(f"[DOG] Selected: {self._current_dog_name} ({self._current_dog_id})")
 
-    def note_dog_attribution(self, dog_id: str, dog_name: str = None):
-        """Advance the last-dog pointer on an explicit attribution.
-
-        Called for live vision/ArUco resolutions and inbound command dog_ids
-        (dispense_treat / start_mission / play_voice). Most-recent wins.
-        Generic tracker ids (dog_0, dog_-1000) are ignored so the fallback only
-        ever points at a real app-canonical dog (attribution contract req #1/#3).
-        """
-        if not self._is_real_dog_id(dog_id):
-            return
+    def set_coach_dog(self, dog_id: str):
+        """Dog the coach engine is working with right now (voice fallback chain)."""
         with self._lock:
-            self._last_dog_id = dog_id
-            if dog_name:
-                self._last_dog_name = dog_name
+            self._coach_dog_id = dog_id
+            self.logger.info(f"[DOG] Coach dog: {dog_id}")
 
-    def get_last_dog(self):
-        """Return (dog_id, dog_name) of the last-dog pointer, or (None, None)."""
+    def clear_coach_dog(self):
         with self._lock:
-            return self._last_dog_id, self._last_dog_name
+            self._coach_dog_id = None
 
-    def reset_last_dog(self):
-        """Reset the last-dog pointer to the app-selected dog (profile reload).
-
-        Prevents a stale last-dog from surviving a reload_dogs that changes the
-        household (attribution contract 2026-07-13).
-        """
+    def get_coach_dog_id(self) -> Optional[str]:
         with self._lock:
-            self._last_dog_id = self._current_dog_id
-            self._last_dog_name = self._current_dog_name
+            return self._coach_dog_id
 
-    def set_session_dog(self, dog_id: str):
-        """Set dog_id for active coach/mission session. Clears on session end."""
-        with self._lock:
-            self._session_dog_id = dog_id
-            self.logger.info(f"[DOG] Session dog: {dog_id}")
+    # === Mode change context (ROBOT-STATE v2 E1) ===
 
-    def clear_session_dog(self):
-        """Clear session dog_id when coach/mission ends."""
-        with self._lock:
-            self._session_dog_id = None
+    def mode_context(self, source: Optional[str] = None, reason: Optional[str] = None,
+                     command_id: Optional[str] = None, dog_id: Optional[str] = None):
+        """Context manager: every set_mode() on this thread inside the block
+        is stamped with who caused it (mode_change data.source / reason /
+        command_id) and, for a session mode, the command's dog_id (R3).
+        Nested blocks inherit what they do not set."""
+        return _ModeContext(self, source, reason, command_id, dog_id)
+
+    def _current_mode_ctx(self) -> Dict[str, Any]:
+        return getattr(self._mode_ctx, 'value', None) or {}
 
     @staticmethod
     def _is_real_dog_id(dog_id: str) -> bool:
@@ -335,40 +338,42 @@ class StateManager:
         return True
 
     def update_aruco_dog(self, dog_id: str):
-        """Update last ArUco-identified dog (called on ArUco detection).
+        """A marker (ArUco / QR) mapped to a dog was read just now.
         Only accepts real profile IDs, not generic tracker IDs like dog_0."""
         if not self._is_real_dog_id(dog_id):
             return  # Ignore generic tracker IDs
         with self._lock:
+            now = time.time()
             self._last_aruco_dog_id = dog_id
-            self._last_aruco_time = time.time()
+            self._last_aruco_time = now
+            self._marker_reads[dog_id] = now
+
+    def marker_dogs_within(self, seconds: float = 5.0) -> list:
+        """Dogs whose marker was read within `seconds`, most recent first
+        (the keys update_aruco_dog() was given: profile names / ids)."""
+        with self._lock:
+            now = time.time()
+            rows = [(t, d) for d, t in self._marker_reads.items() if now - t < seconds]
+        return [d for _, d in sorted(rows, reverse=True)]
 
     def get_active_dog_id(self, aruco_ttl: float = 5.0) -> Optional[str]:
-        """Get the currently active dog_id using fallback chain.
+        """Dog to use for local decisions (voice clips, controller), by
+        fallback chain. NOT the relay attribution rule (that is
+        core.dog_profile_manager.resolve_relay_dog).
 
         Priority (highest wins):
         (a) ArUco-identified dog within aruco_ttl seconds
-        (b) Session dog_id (from start_coach/start_mission)
-        (c) select_dog from app (persisted)
-        (d) None
-
-        Args:
-            aruco_ttl: Seconds ArUco detection remains valid (default 5s)
-
-        Returns:
-            dog_id string or None
+        (b) the coach engine's current dog
+        (c) session_dog_id (fixed at mode entry)
+        (d) selected dog from the app (persisted)
+        (e) None
         """
         with self._lock:
-            # (a) ArUco within TTL (already filtered at write time)
             if self._last_aruco_dog_id and (time.time() - self._last_aruco_time) < aruco_ttl:
                 return self._last_aruco_dog_id
-            # (b) Session dog (filter generic IDs)
-            if self._session_dog_id and self._is_real_dog_id(self._session_dog_id):
-                return self._session_dog_id
-            # (c) App-selected dog (filter generic IDs)
-            if self._current_dog_id and self._is_real_dog_id(self._current_dog_id):
-                return self._current_dog_id
-            # (d) None
+            for d in (self._coach_dog_id, self._session_dog_id, self._current_dog_id):
+                if d and self._is_real_dog_id(d):
+                    return d
             return None
 
     @property
@@ -391,23 +396,32 @@ class StateManager:
             return None
 
     def get_session_dog_id(self) -> Optional[str]:
-        """Get session dog_id (from start_coach/start_mission)."""
+        """Contract session_dog_id: fixed on entering silent_guardian / coach /
+        mission, None in idle / manual."""
         with self._lock:
             return self._session_dog_id
 
     def get_current_dog_id(self) -> Optional[str]:
-        """Get app-selected dog_id (from select_dog/reload_dogs)."""
+        """Contract selected_dog_id (select_dog)."""
         with self._lock:
             return self._current_dog_id
 
-    def set_mode(self, new_mode: SystemMode, reason: str = "", force: bool = False) -> bool:
+    def get_contract_mode(self) -> str:
+        """state.mode as the contract reports it: one of the five."""
+        with self._lock:
+            return contract_mode(self.mode)
+
+    def set_mode(self, new_mode: SystemMode, reason: str = "", force: bool = False,
+                 dog_id: Optional[str] = None) -> bool:
         """
         Change system mode with validation and lock protection.
 
         Args:
             new_mode: New system mode
-            reason: Reason for mode change
+            reason: Reason for mode change (internal trigger text)
             force: Override mode lock (for emergencies only)
+            dog_id: dog named by whatever started a session mode (R3); falls
+                back to the enclosing mode_context(), then to the selected dog
 
         Returns:
             bool: True if mode changed successfully
@@ -452,9 +466,21 @@ class StateManager:
                 self.logger.warning(f"MODE_CHANGE INVALID: {self.mode.value} -> {new_mode.value} | trigger={reason}")
                 return False
 
+            ctx = self._current_mode_ctx()
             self.previous_mode = self.mode
             self.mode = new_mode
             self.mode_changed_time = time.time()
+
+            # ROBOT-STATE v2 R3/R4: session_dog_id is fixed here, on entry.
+            new_contract = contract_mode(new_mode)
+            prev_contract = contract_mode(self.previous_mode)
+            if new_contract in SESSION_MODES:
+                named = dog_id or ctx.get('dog_id')
+                if not named or str(named).lower() in ('unknown', 'none', 'null'):
+                    named = None
+                self._session_dog_id = named or self._current_dog_id or None
+            else:
+                self._session_dog_id = None
 
             # Comprehensive mode change logging with trigger and source
             import traceback
@@ -477,7 +503,14 @@ class StateManager:
                 'new_mode': new_mode.value,
                 'reason': reason,
                 'timestamp': self.mode_changed_time,
-                'locked': self._mode_locked
+                'locked': self._mode_locked,
+                # ROBOT-STATE v2 E1 fields
+                'mode': new_contract,
+                'contract_previous_mode': prev_contract,
+                'session_dog_id': self._session_dog_id,
+                'source': contract_source(ctx.get('source')),
+                'contract_reason': ctx.get('reason') if ctx else (reason or None),
+                'command_id': ctx.get('command_id'),
             })
 
             return True
@@ -642,6 +675,27 @@ class StateManager:
         with self._lock:
             self.detection = DetectionStatus()
             self._notify_listeners('detection_change', self.detection.to_dict())
+
+
+class _ModeContext:
+    """See StateManager.mode_context()."""
+
+    def __init__(self, state, source, reason, command_id, dog_id):
+        self._state = state
+        self._new = {'source': source, 'reason': reason, 'command_id': command_id, 'dog_id': dog_id}
+        self._prev = None
+
+    def __enter__(self):
+        local = self._state._mode_ctx
+        self._prev = getattr(local, 'value', None)
+        merged = dict(self._prev or {})
+        merged.update({k: v for k, v in self._new.items() if v is not None})
+        local.value = merged
+        return self
+
+    def __exit__(self, *exc):
+        self._state._mode_ctx.value = self._prev
+        return False
 
 
 # Global state manager instance

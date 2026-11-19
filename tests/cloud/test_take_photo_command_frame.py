@@ -64,7 +64,7 @@ for _ in range(50):
         break
     time.sleep(0.05)
 res = [m for m in sent if m.get('type') == 'command_result']
-check(len(res) == 1 and res[0]['command_id'] == 'cmd-1' and res[0]['ok'] is True
+check(len(res) == 1 and res[0]['command_id'] == 'cmd-1' and res[0]['success'] is True
       and res[0]['result'].get('jpeg_b64') == 'AAAA',
       f"ISO-timestamp frame -> one command_result ok:true with jpeg_b64 ({res})")
 
@@ -73,8 +73,8 @@ sent.clear()
 old = {'type': 'command', 'command': 'take_photo', 'command_id': 'cmd-old',
        'timestamp': now_ms - 120_000, 'data': {}}
 asyncio.run(rc._handle_command(old))
-check(len(sent) == 1 and sent[0]['type'] == 'command_result' and sent[0]['ok'] is False
-      and sent[0]['error']['code'] == 'stale', f"stale command_id frame -> command_result stale ({sent})")
+check(len(sent) == 1 and sent[0]['type'] == 'command_result' and sent[0]['success'] is False
+      and sent[0]['error'] == 'stale', f"stale command_id frame -> command_result stale ({sent})")
 
 # ---- handler crash -> command_result exception (via the message router)
 sent.clear()
@@ -92,8 +92,8 @@ if router is not None:
     r = router({'type': 'command', 'command': 'take_photo', 'command_id': 'cmd-crash'})
     if asyncio.iscoroutine(r):
         asyncio.run(r)
-    check(len(sent) == 1 and sent[0]['type'] == 'command_result' and sent[0]['ok'] is False
-          and sent[0]['error']['code'] == 'exception', f"handler crash -> command_result exception ({sent})")
+    check(len(sent) == 1 and sent[0]['type'] == 'command_result' and sent[0]['success'] is False
+          and sent[0]['error'] == 'exception', f"handler crash -> command_result exception ({sent})")
 else:
     check(False, "message router not found")
 
@@ -150,8 +150,8 @@ for _ in range(60):
     if fr.events:
         break
     time.sleep(0.05)
-check(fr.events and fr.events[0][0] == 'command_result' and fr.events[0][1]['ok'] is False
-      and fr.events[0][1]['command_id'] == 'c-fail' and fr.events[0][1]['error']['code'] == 'upload_failed'
+check(fr.events and fr.events[0][0] == 'command_result' and fr.events[0][1]['success'] is False
+      and fr.events[0][1]['command_id'] == 'c-fail' and fr.events[0][1]['error'] == 'upload_failed'
       and not any(e[0] == 'photo_ready' for e in fr.events),
       f"deferred upload failure -> command_result upload_failed, no photo_ready ({fr.events})")
 

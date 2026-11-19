@@ -234,43 +234,61 @@ def test_music():
 
 
 def test_mode_change_segments():
-    """Relay 2026-11-18: one mode_change {mode} on every switch; mode = the mode
-    just entered, ts = the switch, no dog_id."""
+    """ROBOT-STATE v2 E1: one mode_change on every change of state.mode; mode =
+    one of the five, ts = the switch, dog_id null, data carries session_dog_id /
+    source / reason / command_id / previous_duration_s."""
     s, em = svc()
     s._mode_seg = {'mode': 'idle', 'start': 1000.0}
-    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'silent_guardian', 'reason': 'app', 'timestamp': 1060.0})
+    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'silent_guardian', 'mode': 'silent_guardian',
+                       'reason': 'User override', 'contract_reason': 'dropdown', 'source': 'connector',
+                       'command_id': 'c-9', 'session_dog_id': 'ELSA', 'timestamp': 1060.0})
     mc = em.of('mode_change')
-    check(len(mc) == 1 and mc[0]['data']['mode'] == 'silent_guardian' and mc[0]['data']['previous_mode'] == 'idle'
-          and mc[0]['data']['previous_duration_s'] == 60.0 and mc[0]['kw'].get('ts') == 1060.0,
-          f"switch -> mode_change for the mode ENTERED, stamped at the switch ({mc[0]['data'] if mc else None})")
+    check(len(mc) == 1 and mc[0]['data'] == {'mode': 'silent_guardian', 'previous_mode': 'idle',
+                                             'session_dog_id': 'ELSA', 'source': 'connector',
+                                             'reason': 'dropdown', 'command_id': 'c-9',
+                                             'previous_duration_s': 60.0}
+          and mc[0]['kw'].get('ts') == 1060.0,
+          f"switch -> mode_change with exactly the E1 data keys ({mc[0]['data'] if mc else None})")
     check(mc[0]['kw'].get('resolve_dog') is False and not mc[0]['kw'].get('dog_id'),
-          "mode_change is home-wide: no dog_id")
-    s._on_mode_change({'previous_mode': 'silent_guardian', 'new_mode': 'coach', 'reason': 'dropdown', 'timestamp': 1100.0})
-    s._on_mode_change({'previous_mode': 'coach', 'new_mode': 'idle', 'reason': 'user', 'timestamp': 1400.0})
+          "mode_change: dog_id null always")
+    s._on_mode_change({'previous_mode': 'silent_guardian', 'new_mode': 'coach', 'mode': 'coach', 'timestamp': 1100.0})
+    s._on_mode_change({'previous_mode': 'coach', 'new_mode': 'idle', 'mode': 'idle', 'timestamp': 1400.0})
     mc = em.of('mode_change')
     check([r['data']['mode'] for r in mc] == ['silent_guardian', 'coach', 'idle']
           and [r['kw']['ts'] for r in mc] == [1060.0, 1100.0, 1400.0]
-          and [r['data']['previous_duration_s'] for r in mc] == [60.0, 40.0, 300.0],
-          "every switch is sent, in order, each at its own time")
-    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'idle', 'reason': 'dup', 'timestamp': 1410.0})
+          and [r['data']['previous_duration_s'] for r in mc] == [60.0, 40.0, 300.0]
+          and mc[2]['data']['source'] == 'robot' and mc[2]['data']['command_id'] is None,
+          "every switch is sent, in order, each at its own time; default source robot")
+    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'idle', 'mode': 'idle', 'timestamp': 1410.0})
     check(len(em.of('mode_change')) == 3, "a repeat of the same mode sends nothing")
-    s._close_mode_segment(1450.0, next_mode='shutdown', reason='service_stop')
+    # R6: internal modes outside the five are "idle" -> nothing from idle
+    for internal in ('night_sentry', 'photography', 'emergency', 'shutdown'):
+        s._on_mode_change({'previous_mode': 'idle', 'new_mode': internal, 'mode': 'idle', 'timestamp': 1420.0})
+    check(len(em.of('mode_change')) == 3, "idle -> night_sentry/photography/emergency/shutdown emits nothing (R6)")
+    check(s._close_mode_segment(1450.0, next_mode='shutdown', reason='service_stop') is None
+          and len(em.of('mode_change')) == 3, "service stop while idle sends nothing")
+    s._mode_seg = {'mode': 'silent_guardian', 'start': 2000.0}
+    s._on_mode_change({'previous_mode': 'silent_guardian', 'new_mode': 'night_sentry', 'mode': 'idle', 'timestamp': 2010.0})
     mc = em.of('mode_change')
-    check(len(mc) == 4 and mc[3]['data']['mode'] == 'shutdown' and mc[3]['data']['previous_mode'] == 'idle'
-          and mc[3]['kw']['ts'] == 1450.0, "service stop sends mode shutdown")
-    check(s._close_mode_segment(1500.0, 'shutdown', 'y') is None and len(em.of('mode_change')) == 4,
-          "closing twice emits nothing")
-    s._mode_seg = {'mode': 'idle', 'start': 2000.0}
-    s._on_mode_change({'previous_mode': 'idle', 'new_mode': 'shutdown', 'reason': 'System shutdown', 'timestamp': 2010.0})
-    s._close_mode_segment(2013.0, next_mode='shutdown', reason='service_stop')
-    check(len(em.of('mode_change')) == 5, "state -> shutdown then service stop: one shutdown event, not two")
+    check(len(mc) == 4 and mc[3]['data']['mode'] == 'idle' and mc[3]['data']['previous_mode'] == 'silent_guardian',
+          "silent_guardian -> night_sentry is reported as the change to idle")
+    s._mode_seg = {'mode': 'coach', 'start': 3000.0}
+    s._close_mode_segment(3013.0, next_mode='shutdown', reason='service_stop')
+    mc = em.of('mode_change')
+    check(len(mc) == 5 and mc[4]['data']['mode'] == 'idle' and mc[4]['data']['reason'] == 'service_stop'
+          and all(r['data']['mode'] in ('idle', 'silent_guardian', 'coach', 'mission', 'manual') for r in mc),
+          "service stop in a session mode -> change to idle; only the five values are ever sent")
 
-    # outbox: mode_change ships with no dog_id; a pre-2026-11-18 stay row ships at the stay's START
+    # outbox: mode_change ships dog_id null; a pre-2026-11-18 stay row ships at the stay's START
     from services.cloud.relay_client import RelayClient
     w = RelayClient._wire_event({'event_id': 'e1', 'type': 'mode_change', 'ts': '2026-11-18T10:00:00Z',
                                  'data': {'mode': 'silent_guardian'}, 'device_id': 'tb'})
-    check(w is not None and 'dog_id' not in w and w['data']['mode'] == 'silent_guardian',
-          "outbox ships mode_change without a dog_id key (was held forever)")
+    check(w is not None and 'dog_id' in w and w['dog_id'] is None and w['data']['mode'] == 'silent_guardian',
+          "outbox ships mode_change with dog_id null")
+    w = RelayClient._wire_event({'event_id': 'e4', 'type': 'treat', 'ts': 'x', 'dog_id': None,
+                                 'id_method': 'none', 'data': {}})
+    check(w is not None and w['dog_id'] is None and w['data']['id_method'] == 'none',
+          "A6: an unattributed row ships with dog_id null, id_method none")
     w = RelayClient._wire_event({'event_id': 'e2', 'type': 'mode_change', 'ts': '2026-11-17T22:30:00Z',
                                  'data': {'mode': 'silent_guardian', 'start': '2026-11-17T21:00:00Z',
                                           'end': '2026-11-17T22:30:00Z', 'duration_s': 5400.0, 'next_mode': 'idle'}})

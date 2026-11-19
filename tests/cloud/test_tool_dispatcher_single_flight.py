@@ -70,32 +70,32 @@ def main():
     d.dispatch({'command': 'echo', 'command_id': 'c-1', 'args': {'x': 42}}, reply)
     done.wait(2)
     f = frames[0]
-    check(f['type'] == 'command_result' and f['command_id'] == 'c-1' and f['ok'] is True
+    check(f['type'] == 'command_result' and f['command_id'] == 'c-1' and f['success'] is True
           and f['result'] == {'echo': 42} and f['error'] is None,
           f"command_result frame shape ({f})")
 
     f = d.call('nope', {}, 'c-2')
-    check(f['ok'] is False and f['error']['code'] == 'unknown_command' and 'echo' in f['result']['available'],
+    check(f['success'] is False and f['error'] == 'unknown_command' and 'echo' in f['result']['available'],
           "unknown command -> command_result with unknown_command")
     f = d.call('fail', {}, 'c-3')
-    check(f['ok'] is False and f['error'] == {'code': 'nope', 'message': 'bad'}, "handler error passes through")
+    check(f['success'] is False and f['error'] == 'nope' and f['result']['message'] == 'bad', "handler error passes through")
     f = d.call('boom', {}, 'c-4')
-    check(f['ok'] is False and f['error']['code'] == 'exception', "exception -> command_result exception")
+    check(f['success'] is False and f['error'] == 'exception', "exception -> command_result exception")
 
     # busy: only within the motion group (2026-11-07: audio must not block photos)
     frames, done, reply = collect()
     d.dispatch({'command': 'slow', 'command_id': 'c-5', 'args': {'s': 0.3}}, reply)
     time.sleep(0.05)
     f = d.call('echo_motion', {}, 'c-6')
-    check(f['ok'] is False and f['error']['code'] == 'busy' and f['result']['running'] == 'slow'
+    check(f['success'] is False and f['error'] == 'busy' and f['result']['running'] == 'slow'
           and f['result']['group'] == MOTION, "second MOTION command while one runs -> busy")
     f = d.call('echo', {'x': 7}, 'c-6b')
-    check(f['ok'] is True and f['result']['echo'] == 7, "ungrouped command runs while a motion command is running")
+    check(f['success'] is True and f['result']['echo'] == 7, "ungrouped command runs while a motion command is running")
     lt = d.list_tools()
     check(lt['busy'] is True and lt['current']['name'] == 'slow' and [r['name'] for r in lt['running']] == ['slow'],
           f"list_tools reports motion busy + running ({lt['running']})")
     done.wait(2)
-    check(frames and frames[0]['ok'] is True and frames[0]['command_id'] == 'c-5', "slow completes normally")
+    check(frames and frames[0]['success'] is True and frames[0]['command_id'] == 'c-5', "slow completes normally")
 
     # two ungrouped slow commands overlap
     def slow_free(args, cancel):
@@ -106,7 +106,7 @@ def main():
     d.dispatch({'command': 'slow_free', 'command_id': 'c-6c'}, rp1)
     d.dispatch({'command': 'slow_free', 'command_id': 'c-6d'}, rp2)
     dn1.wait(2); dn2.wait(2)
-    check(fr1 and fr2 and fr1[0]['ok'] and fr2[0]['ok'] and time.time() - t0 < 0.5,
+    check(fr1 and fr2 and fr1[0]['success'] and fr2[0]['success'] and time.time() - t0 < 0.5,
           f"two ungrouped commands run concurrently ({time.time() - t0:.2f}s)")
 
     # timeout: handler ignores cancel for 1.2 s, spec timeout 0.5 s
@@ -116,13 +116,13 @@ def main():
     d.register(ToolSpec('stubborn', stubborn, 0.5, group=MOTION))
     t0 = time.time()
     f = d.call('stubborn', {}, 'c-7', wait_s=3)
-    check(f['ok'] is False and f['error']['code'] == 'timeout' and time.time() - t0 < 1.0,
+    check(f['success'] is False and f['error'] == 'timeout' and time.time() - t0 < 1.0,
           "timeout answered at 0.5 s without waiting for the handler")
     f2 = d.call('echo_motion', {}, 'c-8')
-    check(f2['ok'] is False and f2['error']['code'] == 'busy', "motion slot stays held until the timed-out handler returns")
+    check(f2['success'] is False and f2['error'] == 'busy', "motion slot stays held until the timed-out handler returns")
     time.sleep(1.0)
     f3 = d.call('echo_motion', {}, 'c-9')
-    check(f3['ok'] is True, "motion slot released after the handler returned")
+    check(f3['success'] is True, "motion slot released after the handler returned")
 
     # preemptive
     frames, done, reply = collect()
@@ -130,7 +130,7 @@ def main():
     time.sleep(0.05)
     f = d.call('stop', {}, 'c-11', wait_s=4)
     done.wait(2)
-    check(f['ok'] is True and frames and frames[0]['result'].get('cancelled') is True,
+    check(f['success'] is True and frames and frames[0]['result'].get('cancelled') is True,
           "preemptive command cancels the running one and then runs")
 
     # ---- queueing (2026-11-18): queue=True commands wait their turn, FIFO
@@ -158,7 +158,7 @@ def main():
         c[1].wait(3)
     check(order == [('start', 1), ('end', 1), ('start', 2), ('end', 2), ('start', 3), ('end', 3)],
           f"three back-to-back commands run one after the other in arrival order ({order})")
-    check(all(c[0] and c[0][0]['ok'] for c in cols) and first_done >= 0.2
+    check(all(c[0] and c[0][0]['success'] for c in cols) and first_done >= 0.2
           and cols[2][0][0]['result'].get('queued_ms', 0) >= 400,
           f"each command_result only after its own motion ended (3rd queued {cols[2][0][0]['result'].get('queued_ms')}ms)")
 
@@ -169,7 +169,7 @@ def main():
     t0 = time.time()
     f1 = d.call('qmove', {'n': 9}, 'q-5')
     f2 = d.call('qlook', {'n': 9}, 'q-6')
-    check(f1['error']['code'] == 'robot_busy' and f2['error']['code'] == 'gimbal_busy' and time.time() - t0 < 0.2,
+    check(f1['error'] == 'robot_busy' and f2['error'] == 'gimbal_busy' and time.time() - t0 < 0.2,
           "behind a non-queueable command: move -> robot_busy, look -> gimbal_busy, immediately")
     dn.wait(2)
 
@@ -180,17 +180,17 @@ def main():
     for i, c in enumerate(cols):
         d.dispatch({'command': 'qmove', 'command_id': f'q-f{i}', 'args': {'n': i}}, c[2])
     cols[-1][1].wait(1)
-    check(cols[-1][0] and cols[-1][0][0]['error'] and cols[-1][0][0]['error']['code'] == 'robot_busy',
+    check(cols[-1][0] and cols[-1][0][0]['error'] and cols[-1][0][0]['error'] == 'robot_busy',
           f"queue full ({tdq.QUEUE_MAX_DEPTH} waiting) -> robot_busy")
     # urgent stop: cuts the running one, drops the queue, runs at once
     f = d.call('qmove', {'n': 'stop'}, 'q-stop', wait_s=3)
     for c in cols[:-1]:
         c[1].wait(2)
-    codes = [(c[0][0]['error'] or {}).get('code') for c in cols[1:-1]]
-    check(f['ok'] and codes.count('cancelled') >= tdq.QUEUE_MAX_DEPTH - 1 and cols[0][0][0]['result'].get('cut') is True,
+    codes = [c[0][0]['error'] for c in cols[1:-1]]
+    check(f['success'] and codes.count('cancelled') >= tdq.QUEUE_MAX_DEPTH - 1 and cols[0][0][0]['result'].get('cut') is True,
           f"stop jumps the queue: running one cut, queued ones answer cancelled ({codes})")
     time.sleep(0.1)
-    check(d.call('qmove', {'n': 5}, 'q-after')['ok'] and not d.list_tools()['queued'], "slot free again after stop")
+    check(d.call('qmove', {'n': 5}, 'q-after')['success'] and not d.list_tools()['queued'], "slot free again after stop")
 
     check(len(logged) >= 10 and all(len(a) >= 6 for a in logged), f"every call logged ({len(logged)})")
     names = {a[0] for a in logged}

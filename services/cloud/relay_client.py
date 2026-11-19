@@ -410,17 +410,9 @@ class RelayClient:
         """Send telemetry (battery, temperature, mode) every 5 seconds while connected"""
         from datetime import datetime
 
-        # Mode mapping (same as api/ws.py)
-        mode_map = {
-            "idle": "idle",
-            "silent_guardian": "silent_guardian",
-            "coach": "coach",
-            "mission": "mission",
-            "manual": "manual",
-            "photography": "manual",
-            "emergency": "manual",
-            "sleep": "sleep"
-        }
+        # ROBOT-STATE v2: mode is one of the five; anything else is "idle".
+        from core.state import contract_mode
+        from services.power.sleep_manager import is_asleep
 
         while self._running and self._connected:
             try:
@@ -438,7 +430,7 @@ class RelayClient:
 
                     # Get mode
                     internal_mode = state_dict.get("mode", "idle")
-                    contract_mode = mode_map.get(internal_mode, "idle")
+                    reported_mode = contract_mode(internal_mode)
 
                     # Get WebRTC connection type (LAN/WAN) for app badge
                     connection_type = None
@@ -467,7 +459,10 @@ class RelayClient:
                         'data': {
                             'battery': round(battery_pct, 1),
                             'temperature': hardware.get("cpu_temp", 0),
-                            'mode': contract_mode,
+                            'mode': reported_mode,
+                            'asleep': bool(is_asleep()),
+                            'selected_dog_id': self.state.get_current_dog_id(),
+                            'session_dog_id': self.state.get_session_dog_id(),
                             'is_charging': hardware.get("is_charging", False),
                             'treats_remaining': self._get_treats_remaining(),
                             'connection_type': connection_type,  # "LAN", "WAN", or null
@@ -537,8 +532,9 @@ class RelayClient:
                     # a crash in the handler must not leave the relay waiting.
                     try:
                         self.send_message({'type': 'command_result', 'command_id': cid,
-                                           'command': data.get('command'), 'ok': False, 'result': None,
-                                           'error': {'code': 'exception', 'message': str(e)}})
+                                           'command': data.get('command'), 'success': False,
+                                           'result': {'message': str(e)},
+                                           'error': 'exception', 'duration_ms': 0})
                     except Exception as e2:
                         self.logger.error(f"[CMD] command_result for {cid} failed: {e2}")
         else:
@@ -806,7 +802,8 @@ class RelayClient:
         # take_photo before it reached the dispatcher, so no command_result
         # was ever sent and the relay timed out). Parse ms/s/numeric
         # string/ISO; an unparseable value skips the check, never crashes.
-        cmd_timestamp = self._parse_cmd_ts_ms(data.get('timestamp'))
+        _inner = data.get('data') if isinstance(data.get('data'), dict) else {}
+        cmd_timestamp = self._parse_cmd_ts_ms(data.get('timestamp') or _inner.get('timestamp'))
         if cmd_timestamp is not None:
             now_ms = int(time.time() * 1000)
             age_sec = (now_ms - cmd_timestamp) / 1000.0
@@ -821,8 +818,9 @@ class RelayClient:
                 )
                 if command_id:
                     self.send_message({'type': 'command_result', 'command_id': command_id,
-                                       'command': command, 'ok': False, 'result': None,
-                                       'error': {'code': 'stale', 'message': f'command too old ({age_sec:.1f}s > {max_age}s)'}})
+                                       'command': command, 'success': False,
+                                       'result': {'message': f'command too old ({age_sec:.1f}s > {max_age}s)'},
+                                       'error': 'stale', 'duration_ms': 0})
                     return
                 await self._send({
                     'type': 'command_ack',
@@ -840,8 +838,9 @@ class RelayClient:
                 )
                 if command_id:
                     self.send_message({'type': 'command_result', 'command_id': command_id,
-                                       'command': command, 'ok': False, 'result': None,
-                                       'error': {'code': 'future_timestamp', 'message': f'command timestamp {-age_sec:.1f}s in the future'}})
+                                       'command': command, 'success': False,
+                                       'result': {'message': f'command timestamp {-age_sec:.1f}s in the future'},
+                                       'error': 'future_timestamp', 'duration_ms': 0})
                     return
                 await self._send({
                     'type': 'command_ack',
@@ -876,19 +875,11 @@ class RelayClient:
         if self._dispatch_v2_command(command, data, params):
             return
 
-        # Sleep mode. `sleep` / `wake` (or the app's set_mode sleep / set_mode
-        # idle-while-asleep) without a command_id get a command_ack;
-        # any other action command wakes the robot first, then runs below.
+        # Sleep: set_sleep / set_mode / select_dog were handled by the
+        # dispatcher above. Any other action command wakes the robot first,
+        # then runs below.
         try:
             from services.power import sleep_manager as _sm
-            intent = _sm.sleep_intent(command, params)
-            if intent:
-                res = await asyncio.get_running_loop().run_in_executor(
-                    None, _sm.run_intent, intent, f"relay {command} {params.get('mode') or ''}".strip())
-                await self._send({'type': 'command_ack', 'command': command,
-                                  'success': bool(res.get('ok')), 'mode': res.get('mode'),
-                                  'ready_s': res.get('ready_s'), 'healthy': res.get('healthy')})
-                return
             if _sm.is_asleep() and _sm.is_action_command(command, params):
                 await asyncio.get_running_loop().run_in_executor(
                     None, _sm.ensure_awake, f"relay {command}")
@@ -905,55 +896,6 @@ class RelayClient:
                     fsm.last_manual_input_time = time.time()
             except Exception:
                 pass
-
-        # Handle set_mode command directly here (app sends this on connect)
-        # API Contract v1.3: Accept source and timestamp fields for diagnostics
-        if command == 'set_mode':
-            mode_name = params.get('mode', '').lower()
-            source = params.get('source', 'unknown')  # v1.3: dropdown, drive_enter, etc.
-            app_timestamp = params.get('timestamp', '')  # v1.3: ISO8601 from app
-
-            if mode_name:
-                try:
-                    from datetime import datetime
-                    from orchestrators.mode_fsm import get_mode_fsm
-                    new_mode = SystemMode(mode_name)
-                    prev_mode = self.state.get_mode()  # HOTFIX: Capture BEFORE changing
-                    server_ts = datetime.utcnow().isoformat() + 'Z'
-
-                    # API Contract v1.3: Log with full context for debugging mode issues
-                    self.logger.info(
-                        f"MODE_CHANGE: {prev_mode.value} -> {mode_name} | "
-                        f"source={source} | app_ts={app_timestamp} | server_ts={server_ts}"
-                    )
-
-                    # Use mode_fsm.set_mode_override() to protect from FSM auto-transitions.
-                    # Without override, the FSM loop can revert SG/Coach back to IDLE
-                    # within seconds (e.g. coach_timeout with no dog detection).
-                    fsm = get_mode_fsm()
-                    if fsm:
-                        if mode_name == 'manual':
-                            fsm.pre_manual_mode = prev_mode
-                        success = fsm.set_mode_override(new_mode)
-                        self.logger.debug(f"Mode override set via FSM: {mode_name} (source={source})")
-                    else:
-                        success = self.state.set_mode(new_mode, f"App command: {mode_name} (source={source})")
-
-                    await self._send({
-                        'type': 'command_ack',
-                        'command': command,
-                        'success': True
-                    })
-                    return
-                except ValueError:
-                    self.logger.warning(f"Invalid mode: {mode_name}")
-                    await self._send({
-                        'type': 'command_ack',
-                        'command': command,
-                        'success': False,
-                        'error': f'Invalid mode: {mode_name}'
-                    })
-                    return
 
         # Handle local_mode command - switch to AP mode for direct control
         if command == 'local_mode':
@@ -1618,30 +1560,11 @@ class RelayClient:
         # Request fresh dog profiles when user connects
         await self.request_profiles()
 
-        # Send current mode + status after a brief delay so the app's
-        # listeners are ready (race condition: mode_changed can arrive
-        # before the app finishes setting up its WebSocket handlers)
+        # The app gets mode / asleep / dogs from the relay's `robot_state`
+        # push on connect (ROBOT-STATE v2 E2).
         await asyncio.sleep(1.0)
-
-        _mode_map = {
-            "idle": "idle", "silent_guardian": "silent_guardian",
-            "coach": "coach", "mission": "mission",
-            "manual": "manual", "photography": "manual",
-            "emergency": "manual"
-        }
-        current_mode = self.state.get_mode().value
-        contract_mode = _mode_map.get(current_mode, current_mode)
-
-        # Send mode_changed event
-        await self._send({
-            'event': 'mode_changed',
-            'device_id': self.config.device_id,
-            'mode': contract_mode,
-            'previous_mode': contract_mode,
-            'locked': False,
-            'reason': 'user_connected sync',
-            'timestamp': time.time()
-        })
+        from core.state import contract_mode as _contract_mode
+        contract_mode = _contract_mode(self.state.get_mode())
 
         # Also send battery telemetry with mode (second chance for app to pick up mode)
         try:
@@ -2253,8 +2176,8 @@ class RelayClient:
     # the relay only fills a missing dog_id itself when the owner has
     # exactly one dog, otherwise it rejects the row. Optional duration_s,
     # data, device_id. No id_method / timestamp keys.
-    # Home-wide types ship with no dog_id key. mode_change joined 2026-11-18
-    # (relay brief: "leave out dog_id when the mode applies to the whole home").
+    # Home-wide types. `status` ships with no dog_id key; `mode_change` ships
+    # "dog_id": null (ROBOT-STATE v2 E1: dog_id = null ALWAYS).
     DEVICE_SCOPED_TYPES = frozenset({'status', 'mode_change'})
 
     @classmethod
@@ -2266,7 +2189,11 @@ class RelayClient:
         ('id'/'timestamp') are rewritten so a restart ships them unchanged."""
         dog_id = ev.get('dog_id')
         etype = ev.get('type')
-        if not dog_id and etype not in cls.DEVICE_SCOPED_TYPES:
+        # ROBOT-STATE v2 A6: a row nothing could attribute ships with
+        # dog_id null and data.id_method "none". Rows queued by older builds
+        # with no dog and no id_method stay held, as before.
+        unattributed = (not dog_id and ev.get('id_method') == 'none')
+        if not dog_id and not unattributed and etype not in cls.DEVICE_SCOPED_TYPES:
             return None
         data = dict(ev.get('data') or {})
         if ev.get('id_method') and 'id_method' not in data:
@@ -2284,8 +2211,12 @@ class RelayClient:
             'data': data,
             'device_id': ev.get('device_id'),
         }
-        if dog_id:
+        if etype == 'mode_change':
+            out['dog_id'] = None
+        elif dog_id:
             out['dog_id'] = str(dog_id)
+        elif unattributed:
+            out['dog_id'] = None
         dur = ev.get('duration_s', data.get('duration_s'))
         if isinstance(dur, (int, float)):
             out['duration_s'] = max(0.0, min(float(dur), 86400.0))
@@ -2426,7 +2357,11 @@ class RelayClient:
         {type:"command_result", command_id, ok, result, error} by the
         ToolDispatcher. Returns True when handled here."""
         command_id = data.get('command_id')
-        if not command_id:
+        # ROBOT-STATE v2 C1-C3 have exactly one implementation (the
+        # dispatcher). One that arrives without a command_id still runs
+        # there; there is nobody to answer, so its result is dropped.
+        state_command = command in ('set_mode', 'select_dog', 'set_sleep')
+        if not command_id and not state_command:
             return False
         try:
             from services.cloud.tool_dispatcher import get_tool_dispatcher
@@ -2439,6 +2374,16 @@ class RelayClient:
         args = dict(params or {})
         args.pop('command_id', None)
         args.pop('timestamp', None)
+        if state_command:
+            # Parameters are inside "data" (contract section 4). A missing
+            # source means the relay did not stamp one.
+            args = dict(data.get('data') or {}) if isinstance(data.get('data'), dict) else {}
+            args.pop('timestamp', None)
+            args.setdefault('source', 'relay')
+        if not command_id:
+            self.logger.warning(f"[CMD] {command} without command_id: running, no command_result")
+            disp.dispatch({'id': None, 'name': command, 'args': args}, reply=lambda frame: None)
+            return True
         disp.dispatch({'id': command_id, 'name': command, 'args': args},
                       reply=self.send_message)
         return True

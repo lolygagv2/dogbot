@@ -263,14 +263,6 @@ class DogProfileManager:
             # Notify DogTracker so ArUco detection picks up new IDs immediately
             self._sync_to_dog_tracker()
 
-        # Household may have changed — reset the always-assign last-dog pointer
-        # to the app-selected dog rather than carrying a stale one (attribution
-        # contract 2026-07-13). Lazy import avoids a circular dependency.
-        try:
-            from core.state import get_state
-            get_state().reset_last_dog()
-        except Exception as e:
-            self.logger.debug(f"reset_last_dog after profile reload failed: {e}")
 
     def identify_dog(
         self,
@@ -568,29 +560,54 @@ def get_dog_profile_manager() -> DogProfileManager:
 def resolve_relay_dog(dog_id=None, dog_name=None, aruco_id=None, id_method=None):
     """(app_dog_id, id_method) for an outgoing relay event.
 
-    Factored from main_treatbot._forward_event_to_relay (attribution contract
-    2026-07-13, always-assign): an explicit, resolvable identity wins and
-    advances the last-dog pointer; otherwise exactly-one-paired-dog
-    (sole_dog), then the most recent explicit dog (last_dog), else None.
-    Shared by the legacy flat events and the protocol-v2 emitter so both
-    paths stamp identical ids.
+    ROBOT-STATE v2 section 3, first match wins:
+      A1 the command that caused the event carried a dog_id (the producer
+         marks that with id_method="explicit")              -> "explicit"
+      A2 a marker (ArUco / QR) mapped to a dog profile was read within the
+         last 5000 ms                                        -> "qr"
+      A3 session_dog_id is not null                          -> "session"
+      A4 selected_dog_id is not null                         -> "owner_selected"
+      A5 exactly one dog profile exists                      -> "sole_dog"
+      A6 otherwise                                           -> (None, "none")
+    A vision-only identification (the dog the event itself carries, with no
+    marker read) is never used. Shared by the legacy flat events and the
+    protocol-v2 emitter so both paths stamp identical ids.
     """
     mgr = get_dog_profile_manager()
-    resolved = mgr.resolve_app_dog_id(dog_id=dog_id, dog_name=dog_name, aruco_id=aruco_id)
     from core.state import get_state
     state = get_state()
-    if resolved is not None:
-        method = id_method or 'explicit'
-        try:
-            state.note_dog_attribution(resolved, dog_name)
-        except Exception:
-            pass
-        return resolved, method
-    resolved = mgr.sole_app_dog_id()
-    if resolved is not None:
-        return resolved, 'sole_dog'
+
+    # A1
+    if str(id_method or '').lower() == 'explicit' and dog_id:
+        resolved = mgr.resolve_app_dog_id(dog_id=dog_id, dog_name=dog_name) or str(dog_id)
+        return resolved, 'explicit'
+
+    # A2: prefer the event's own dog when ITS marker is one of those read in
+    # the last 5 s, else the most recently read marker.
+    fresh = []
     try:
-        resolved, _ = state.get_last_dog()
+        for key in state.marker_dogs_within(5.0):
+            app_id = mgr.resolve_app_dog_id(dog_id=key, dog_name=key)
+            if app_id and app_id not in fresh:
+                fresh.append(app_id)
     except Exception:
-        resolved = None
-    return (resolved, 'last_dog') if resolved else (None, None)
+        fresh = []
+    if fresh:
+        own = None
+        if dog_id or dog_name or aruco_id is not None:
+            own = mgr.resolve_app_dog_id(dog_id=dog_id, dog_name=dog_name, aruco_id=aruco_id)
+        return (own if own in fresh else fresh[0]), 'qr'
+
+    # A3 / A4
+    session = state.get_session_dog_id()
+    if session:
+        return (mgr.resolve_app_dog_id(dog_id=session) or str(session)), 'session'
+    selected = state.get_current_dog_id()
+    if selected:
+        return (mgr.resolve_app_dog_id(dog_id=selected) or str(selected)), 'owner_selected'
+
+    # A5 / A6
+    sole = mgr.sole_app_dog_id()
+    if sole is not None:
+        return sole, 'sole_dog'
+    return None, 'none'

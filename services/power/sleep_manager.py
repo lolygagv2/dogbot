@@ -12,7 +12,8 @@ a real power-off is `battery_shutdown()`, which runs the ordinary
 reaches the safety monitor's emergency threshold while asleep.
 
 Entry order (sleep):
-    1 sessions   mission / Silent Guardian / Coach / Night Sentry stopped, mode -> sleep
+    1 sessions   mission / Silent Guardian / Coach / Night Sentry stopped, mode -> idle
+                 (ROBOT-STATE v2: sleep is not a mode; asleep is its own flag)
     2 motors     drive stopped; dispenser stepper driver disabled (EN high)
     3 gimbal     tracking loop stopped, pan/tilt PWM released
     4 camera     WebRTC sessions closed, capture loop stopped, Picamera2 closed
@@ -21,10 +22,10 @@ Entry order (sleep):
     7 amp        playback stopped, speaker mixer muted, ultrasonic amp relay off
     8 leds       slow dim pulse, blue tube off
     9 governor   CPU governor -> powersave
-Wake runs the same list in reverse, checks camera / Hailo / audio, sets mode
-idle, then runs the boot greeting hook.
+Wake runs the same list in reverse, checks camera / Hailo / audio, leaves the
+mode idle, then runs the boot greeting hook.
 
-Triggers: relay / local commands `sleep` and `wake` (ToolDispatcher), REST
+Triggers: relay / local command `set_sleep {asleep}` (ToolDispatcher), REST
 POST /system/sleep and /system/wake, and `ensure_awake()` which every action
 command path calls before it runs.
 """
@@ -49,7 +50,7 @@ HAILO_PCI_VENDOR = '0x1e60'
 # something that keeps running in sleep (schedules, WiFi, the smart plug).
 # Anything not listed here is an action command: wake first, then run.
 PASSIVE_COMMANDS = frozenset({
-    'sleep', 'wake', 'ping', 'standby', 'stop', 'emergency_stop', 'audio_stop', 'stop_mission', 'cancel_mission',
+    'set_sleep', 'ping', 'standby', 'stop', 'emergency_stop', 'audio_stop', 'stop_mission', 'cancel_mission',
     'stop_recording', 'move_stop',
     'schedule_mission', 'schedule_sync', 'create_schedule', 'update_schedule', 'delete_schedule',
     'get_schedules', 'get_scheduler_status', 'get_mission_status', 'mission_status', 'list_missions',
@@ -61,32 +62,6 @@ PASSIVE_COMMANDS = frozenset({
 })
 
 
-SLEEP_MODE_NAMES = ('sleep', 'sleeping', 'asleep')
-
-
-def sleep_intent(command: Optional[str], args: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """'sleep' / 'wake' when the command asks for one of them, else None.
-
-    The app (build 191) sends `set_mode {mode: sleep}` to sleep and
-    `set_mode {mode: idle}` to wake; `sleep` / `wake` also exist as commands.
-    `set_mode idle` only means wake while the robot is asleep."""
-    command = str(command or '').lower()
-    if command in ('sleep', 'wake'):
-        return command
-    if command in ('set_mode', 'mode'):
-        mode = str((args or {}).get('mode') or '').lower()
-        if mode in SLEEP_MODE_NAMES:
-            return 'sleep'
-        if mode in ('idle', 'standby') and is_asleep():
-            return 'wake'
-    return None
-
-
-def run_intent(intent: str, source: str) -> Dict[str, Any]:
-    mgr = get_sleep_manager()
-    return mgr.sleep(source=source) if intent == 'sleep' else mgr.wake(source=source)
-
-
 def is_action_command(command: Optional[str], args: Optional[Dict[str, Any]] = None) -> bool:
     """True when `command` must wake a sleeping robot before it runs."""
     if not command:
@@ -96,8 +71,8 @@ def is_action_command(command: Optional[str], args: Optional[Dict[str, Any]] = N
     if command in PASSIVE_COMMANDS:
         return False
     if command in ('set_mode', 'mode'):
-        # sleep / idle are handled as sleep_intent(), not as wake-then-run.
-        return str(args.get('mode') or '').lower() not in ('', 'idle', 'standby') + SLEEP_MODE_NAMES
+        # "idle" leaves a sleeping robot asleep (R5); any other mode wakes it first.
+        return args.get('mode') in ('silent_guardian', 'coach', 'mission', 'manual')
     if command == 'move' and str(args.get('action') or '').lower() == 'stop':
         return False
     if command in ('ultrasonic',) and str(args.get('action') or '').lower() == 'status':
@@ -121,6 +96,16 @@ class SleepManager:
         self.last_sleep: Dict[str, Any] = {}
         self.last_wake: Dict[str, Any] = {}
         self.asleep_since: Optional[float] = None
+        self._target_asleep: Optional[bool] = None   # what the last request asked for
+
+    def note_target(self, asleep: bool) -> None:
+        self._target_asleep = bool(asleep)
+
+    def is_asleep_target(self) -> bool:
+        """Asleep, or committed to it by a request still being carried out."""
+        if self._target_asleep is not None:
+            return self._target_asleep
+        return self._state in (ENTERING, ASLEEP)
 
     # ------------------------------------------------------------ wiring
     def attach(self, app=None, greeting_hook: Optional[Callable[[], None]] = None) -> None:
@@ -217,9 +202,10 @@ class SleepManager:
 
     # ------------------------------------------------------------ SLEEP
     def sleep(self, source: str = 'unknown') -> Dict[str, Any]:
+        self._target_asleep = True
         with self._lock:
             if self._state == ASLEEP:
-                return {'ok': True, 'already': True, 'mode': 'sleep'}
+                return {'ok': True, 'already': True, 'asleep': True, 'mode': 'idle'}
             t0 = time.monotonic()
             self._owner = threading.get_ident()
             self._set_state(ENTERING)
@@ -253,7 +239,7 @@ class SleepManager:
             logger.info(f"[SLEEP] asleep after {self.last_sleep['enter_s']}s; failed={self.last_sleep['failed']} "
                         f"power_after={power_after} (no battery current sensor on this robot)")
             self._emit_status()
-            return {'ok': True, 'mode': 'sleep', **self.last_sleep}
+            return {'ok': True, 'asleep': True, 'mode': 'idle', **self.last_sleep}
 
     def _sleep_sessions(self, source: str) -> Dict[str, Any]:
         from core.state import SystemMode, get_state
@@ -279,12 +265,14 @@ class SleepManager:
             fsm.clear_override('sleep')
         except Exception:
             fsm = None
-        # The mode_change listeners (main_treatbot._on_mode_change) stop Silent
-        # Guardian / Coach / Night Sentry and bark detection synchronously, and
-        # BehaviorEventService emits the relay `mode_change` event.
-        ok = st.set_mode(SystemMode.SLEEP, f"user sleep ({source})", force=True)
+        # ROBOT-STATE v2 R5: asleep forces mode idle and session_dog_id null
+        # first. The mode_change listeners (main_treatbot._on_mode_change)
+        # stop Silent Guardian / Coach / Night Sentry and bark detection, and
+        # BehaviorEventService emits the relay `mode_change` event (only when
+        # the robot was not idle already).
+        ok = st.set_mode(SystemMode.IDLE, f"user sleep ({source})", force=True)
         if fsm is not None and ok:
-            fsm.current_mode = SystemMode.SLEEP
+            fsm.current_mode = SystemMode.IDLE
             fsm.mode_start_time = time.time()
         # Belt and braces: the handlers above swallow their own errors.
         app = self._app
@@ -297,7 +285,7 @@ class SleepManager:
             except Exception as e:
                 out[f'{name}_error'] = str(e)
         if not ok:
-            raise RuntimeError(f"mode change to sleep refused (mode={st.get_mode().value})")
+            raise RuntimeError(f"mode change to idle for sleep refused (mode={st.get_mode().value})")
         return out
 
     def _sleep_motors(self) -> Dict[str, Any]:
@@ -457,9 +445,10 @@ class SleepManager:
 
     # ------------------------------------------------------------ WAKE
     def wake(self, source: str = 'unknown', greet: bool = True) -> Dict[str, Any]:
+        self._target_asleep = False
         with self._lock:
             if self._state == AWAKE:
-                return {'ok': True, 'already': True, 'mode': self._mode_value()}
+                return {'ok': True, 'already': True, 'asleep': False, 'mode': self._mode_value()}
             t0 = time.monotonic()
             self._owner = threading.get_ident()
             self._set_state(WAKING)
@@ -504,7 +493,7 @@ class SleepManager:
             self._emit_status()
             if greet and self._greeting_hook:
                 threading.Thread(target=self._run_greeting, daemon=True, name='SleepWakeGreeting').start()
-            return {'ok': True, 'mode': self._mode_value(), **self.last_wake}
+            return {'ok': True, 'asleep': False, 'mode': self._mode_value(), **self.last_wake}
 
     def _run_greeting(self) -> None:
         try:
@@ -516,7 +505,7 @@ class SleepManager:
     def _mode_value() -> Optional[str]:
         try:
             from core.state import get_state
-            return get_state().get_mode().value
+            return get_state().get_contract_mode()
         except Exception:
             return None
 
@@ -592,11 +581,12 @@ class SleepManager:
         return {'centered': True}
 
     def _wake_mode(self, source: str) -> Dict[str, Any]:
+        """Waking leaves the mode where sleep put it: idle (R5). Only the
+        FSM's own bookkeeping is refreshed."""
         from core.state import SystemMode, get_state
         st = get_state()
-        if st.get_mode() != SystemMode.SLEEP:
-            return {'mode': st.get_mode().value, 'detail': 'mode already changed'}
-        ok = st.set_mode(SystemMode.IDLE, f"user wake ({source})", force=True)
+        if st.get_mode() != SystemMode.IDLE:
+            return {'mode': st.get_contract_mode(), 'detail': 'mode already changed'}
         try:
             from orchestrators.mode_fsm import get_mode_fsm
             fsm = get_mode_fsm()
@@ -604,8 +594,6 @@ class SleepManager:
             fsm.mode_start_time = time.time()
         except Exception:
             pass
-        if not ok:
-            raise RuntimeError('mode change to idle refused')
         return {'mode': 'idle', 'previous_session': self._saved.get('previous_mode')}
 
     def _health_check(self) -> Dict[str, Any]:
@@ -689,11 +677,12 @@ class SleepManager:
                              name='SleepWakeAsync').start()
 
     def _on_mode_change(self, data: Dict[str, Any]) -> None:
-        """Safety net: something left sleep mode without going through wake()
-        (a direct state.set_mode). Restore the hardware anyway."""
+        """Safety net: a sleeping robot is idle. Something moved the mode
+        away from idle without going through wake() (a direct
+        state.set_mode). Restore the hardware anyway."""
         try:
-            if data.get('previous_mode') == 'sleep' and self._state == ASLEEP:
-                logger.warning(f"[SLEEP] mode left sleep outside wake() ({data.get('reason')}) — restoring hardware")
+            if data.get('new_mode') != 'idle' and self._state == ASLEEP:
+                logger.warning(f"[SLEEP] mode left idle while asleep ({data.get('reason')}) — restoring hardware")
                 threading.Thread(target=self.wake, kwargs={'source': 'mode_change', 'greet': False},
                                  daemon=True, name='SleepWakeNet').start()
         except Exception as e:

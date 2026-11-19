@@ -471,14 +471,6 @@ class TreatBotWebSocketServer:
 
             try:
                 from services.power import sleep_manager as _sm
-                intent = _sm.sleep_intent(command, params)
-                if intent:
-                    res = await asyncio.get_running_loop().run_in_executor(
-                        None, _sm.run_intent, intent, f"local {command}")
-                    await self.manager.send_to_one(websocket, {
-                        "type": "command_response", "command": command, "success": bool(res.get("ok")),
-                        "mode": res.get("mode"), "ready_s": res.get("ready_s"), "healthy": res.get("healthy")})
-                    return
                 if _sm.is_asleep() and _sm.is_action_command(command, params):
                     await asyncio.get_running_loop().run_in_executor(None, _sm.ensure_awake, f"local {command}")
             except Exception as e:
@@ -545,18 +537,34 @@ class TreatBotWebSocketServer:
         self._get_services()
         result = {"success": True, "command": command}
 
-        # Sleep mode: local `sleep` / `wake`; any other action wakes first.
-        # (command_id frames go through the ToolDispatcher, which does both.)
+        # ROBOT-STATE v2 C1-C3 (set_mode / select_dog / set_sleep): one
+        # implementation, the ToolDispatcher, exactly like the relay path.
+        # Parameters are inside "data"; the app sends "reason", never
+        # "source", so the source here is "app". The result comes back on
+        # this socket as a command_result frame.
+        if command in ("set_mode", "select_dog", "set_sleep"):
+            from services.cloud.tool_dispatcher import get_tool_dispatcher
+            loop = self._main_loop
+            ws_ref = websocket
+
+            def _state_reply(frame, _loop=loop, _ws=ws_ref):
+                if _loop is not None:
+                    asyncio.run_coroutine_threadsafe(self.manager.send_to_one(_ws, frame), _loop)
+
+            inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+            args = {k: v for k, v in inner.items() if k != "timestamp"}
+            args["source"] = "app"
+            get_tool_dispatcher().dispatch(
+                {"name": command, "id": data.get("command_id"), "args": args}, reply=_state_reply)
+            await self.manager.send_to_one(websocket, {
+                "type": "command_response", "success": True, "command": command,
+                "accepted": True, "command_id": data.get("command_id")})
+            return
+
+        # Sleep: any other action command wakes the robot first.
+        # (command_id frames go through the ToolDispatcher, which does it.)
         try:
             from services.power import sleep_manager as _sm
-            intent = None if data.get("command_id") else _sm.sleep_intent(command, data)
-            if intent:
-                res = await asyncio.get_running_loop().run_in_executor(
-                    None, _sm.run_intent, intent, f"local {command}")
-                await self.manager.send_to_one(websocket, {
-                    "type": "command_response", "command": command, "success": bool(res.get("ok")),
-                    "mode": res.get("mode"), "ready_s": res.get("ready_s"), "healthy": res.get("healthy")})
-                return
             if _sm.is_asleep() and not data.get("command_id") and _sm.is_action_command(command, data):
                 await asyncio.get_running_loop().run_in_executor(None, _sm.ensure_awake, f"local {command}")
         except Exception as e:
@@ -632,7 +640,7 @@ class TreatBotWebSocketServer:
                     ws_ref = websocket
 
                     def _treat_reply(frame, _loop=loop, _ws=ws_ref):
-                        self.logger.info(f"[LOCAL] treat result: ok={frame.get('ok')} error={frame.get('error')}")
+                        self.logger.info(f"[LOCAL] treat result: success={frame.get('success')} error={frame.get('error')}")
                         if _loop is not None:
                             asyncio.run_coroutine_threadsafe(self.manager.send_to_one(_ws, frame), _loop)
 
@@ -703,31 +711,6 @@ class TreatBotWebSocketServer:
                 except Exception as e:
                     self.logger.error(f"audio command error: {e}")
                     result = {"success": False, "command": command, "error": str(e)}
-
-            elif command == "mode":
-                # {"command": "mode", "mode": "training"}
-                # Use set_mode_override() for parity with relay_client — protects
-                # SG/Coach from FSM auto-revert (coach_timeout, etc.)
-                mode = data.get("mode")
-                if mode:
-                    from orchestrators.mode_fsm import get_mode_fsm
-                    from core.state import SystemMode
-                    mode_fsm = get_mode_fsm()
-                    # Map contract modes to internal modes (accept both aliases)
-                    mode_map = {
-                        "idle": SystemMode.IDLE,
-                        "silent_guardian": SystemMode.SILENT_GUARDIAN,
-                        "guardian": SystemMode.SILENT_GUARDIAN,  # alias
-                        "coach": SystemMode.COACH,
-                        "training": SystemMode.COACH,  # alias
-                        "mission": SystemMode.MISSION,
-                        "manual": SystemMode.MANUAL,
-                        "docking": SystemMode.IDLE  # No docking mode yet
-                    }
-                    internal_mode = mode_map.get(mode)
-                    if internal_mode:
-                        mode_fsm.set_mode_override(internal_mode)
-                        result["mode"] = mode
 
             elif command == "play_voice":
                 # {"command": "play_voice", "voice_type": "sit", "dog_id": "1"}
@@ -850,31 +833,6 @@ class TreatBotWebSocketServer:
                 except Exception as e:
                     result = {"success": False, "command": command, "error": str(e)}
 
-            elif command == "set_mode":
-                # {"command": "set_mode", "mode": "manual"}
-                # Use set_mode_override() to protect from FSM auto-transitions.
-                # Without override, the FSM loop can revert SG/Coach back to IDLE
-                # within seconds (e.g. coach_timeout with no dog detection).
-                # This matches the relay_client behavior for parity.
-                mode_name = data.get("mode", "").lower()
-                if mode_name:
-                    from orchestrators.mode_fsm import get_mode_fsm
-                    from core.state import SystemMode
-                    mode_fsm = get_mode_fsm()
-                    mode_map = {
-                        "idle": SystemMode.IDLE,
-                        "silent_guardian": SystemMode.SILENT_GUARDIAN,
-                        "guardian": SystemMode.SILENT_GUARDIAN,
-                        "coach": SystemMode.COACH,
-                        "training": SystemMode.COACH,
-                        "mission": SystemMode.MISSION,
-                        "manual": SystemMode.MANUAL,
-                    }
-                    internal_mode = mode_map.get(mode_name)
-                    if internal_mode:
-                        mode_fsm.set_mode_override(internal_mode)
-                        result["mode"] = mode_name
-
             elif command == "force_trick":
                 trick = data.get("trick")
                 if trick:
@@ -945,34 +903,9 @@ class TreatBotWebSocketServer:
 
             elif command == "reload_dogs":
                 # App sends dog profiles on connect — also set current dog for voice playback
+                # ROBOT-STATE v2 R2: the selected dog changes only through select_dog.
                 self.logger.info(f"[RELOAD_DOGS] Received data: {data}")
-                from core.state import get_state
-                dog_data = data.get("data", data)
-                dog_id = dog_data.get("dog_id") or dog_data.get("id")
-                dog_name = dog_data.get("dog_name") or dog_data.get("name")
-                self.logger.info(f"[RELOAD_DOGS] Parsed: dog_id={dog_id} dog_name={dog_name}")
-                if dog_id:
-                    state = get_state()
-                    state.set_current_dog(dog_id, dog_name)
-                    result["selected_dog"] = {"dog_id": dog_id, "dog_name": dog_name}
-                    self.logger.info(f"[RELOAD_DOGS] Set current dog: {dog_name} ({dog_id})")
                 result["reloaded"] = True
-
-            elif command == "select_dog":
-                # {"command": "select_dog", "data": {"dog_id": "dog_123", "dog_name": "Elsa"}}
-                # C3.1: Cache selected dog for per-dog voice playback
-                from core.state import get_state
-                dog_data = data.get("data", data)  # Support both nested and flat format
-                dog_id = dog_data.get("dog_id")
-                dog_name = dog_data.get("dog_name", dog_id)
-                if dog_id:
-                    state = get_state()
-                    state.set_current_dog(dog_id, dog_name)
-                    result["selected_dog"] = {"dog_id": dog_id, "dog_name": dog_name}
-                    self.logger.info(f"[SELECT_DOG] Selected: {dog_name} ({dog_id})")
-                else:
-                    result["success"] = False
-                    result["error"] = "dog_id required"
 
             elif command in ("set_night_mode_override", "set_night_mode", "night_mode_override"):
                 # {"command": "set_night_mode_override", "override": "auto"|"force_day"|"force_night"}
@@ -2119,19 +2052,11 @@ class TreatBotWebSocketServer:
             from services.power.battery_monitor import BatteryMonitorService
             battery_pct = BatteryMonitorService.voltage_to_percentage(battery_voltage)
 
-            # Map internal mode to contract mode
-            mode_map = {
-                "idle": "idle",
-                "silent_guardian": "silent_guardian",
-                "coach": "coach",
-                "mission": "mission",
-                "manual": "manual",
-                "photography": "manual",
-                "emergency": "manual",
-                "sleep": "sleep"
-            }
+            # ROBOT-STATE v2: one of the five modes; sleep is the `asleep` flag.
+            from core.state import contract_mode as _contract_mode
+            from services.power.sleep_manager import is_asleep as _is_asleep
             internal_mode = state.get("mode", "idle")
-            contract_mode = mode_map.get(internal_mode, "idle")
+            contract_mode = _contract_mode(internal_mode)
 
             await self.manager.send_to_all({
                 "event": "status",
@@ -2139,6 +2064,7 @@ class TreatBotWebSocketServer:
                     "battery": round(battery_pct, 1),
                     "temperature": state.get("hardware", {}).get("cpu_temp", 0),
                     "mode": contract_mode,
+                    "asleep": bool(_is_asleep()),
                     "is_charging": state.get("hardware", {}).get("is_charging", False),
                     "treats_remaining": self._get_treats_remaining()
                 },
@@ -2288,27 +2214,11 @@ class TreatBotWebSocketServer:
             "timestamp": time.time()
         })
 
-        # Contract format: mode_changed (same format as relay sends)
-        if event.subtype == "mode_changed":
-            mode_map = {
-                "idle": "idle", "silent_guardian": "silent_guardian",
-                "coach": "coach", "mission": "mission",
-                "manual": "manual", "photography": "manual",
-                "emergency": "manual"
-            }
-            new_mode = event.data.get("to_mode", event.data.get("mode", "idle"))
-            prev_mode = event.data.get("from_mode", event.data.get("previous_mode", "idle"))
-            await self.manager.send_to_all({
-                "event": "mode_changed",
-                "mode": mode_map.get(new_mode, new_mode),
-                "previous_mode": mode_map.get(prev_mode, prev_mode),
-                "locked": event.data.get("locked", False),
-                "reason": event.data.get("reason", "unknown"),
-                "timestamp": time.time()
-            })
+        # (Mode changes reach local clients as the `mode_change` event row,
+        # ROBOT-STATE v2 E1, broadcast by the event emitter.)
 
         # Contract format: battery_status
-        elif event.subtype == "battery_status":
+        if event.subtype == "battery_status":
             voltage = event.data.get("voltage", 0)
             # Prefer the monitor's own number; it is the same curve anyway.
             pct = event.data.get("percentage")

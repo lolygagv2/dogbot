@@ -111,7 +111,7 @@ class RelayEventEmitter:
                                                    aruco_id=aruco_id, id_method=id_method)
             except Exception as e:
                 logger.debug(f"dog resolve failed: {e}")
-                app_id, method = None, None
+                app_id, method = None, 'none'
         else:
             app_id, method = dog_id, id_method
         return {

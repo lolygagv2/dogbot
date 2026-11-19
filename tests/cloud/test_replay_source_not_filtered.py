@@ -70,7 +70,7 @@ for source in ('agent', 'replay'):
     played.clear()
     f = d.call('play_sound', {'url': f'https://relay.example/tts/{source}.mp3', 'kind': 'tts', 'source': source},
                f'c-{source}', wait_s=5)
-    results[source] = (f['ok'], f['result'].get('played'), f['result'].get('kind'), len(played))
+    results[source] = (f['success'], f['result'].get('played'), f['result'].get('kind'), len(played))
 check(results['replay'] == results['agent'] == (True, 'url', 'tts', 1),
       f"play_sound kind=tts source=replay plays exactly like source=agent ({results})")
 
@@ -90,7 +90,7 @@ try:
     t_end = time.time() + 3
     while not sent and time.time() < t_end:
         time.sleep(0.02)
-    check(ok and sent and sent[0]['ok'] is True and sent[0]['command_id'] == 'c-r2',
+    check(ok and sent and sent[0]['success'] is True and sent[0]['command_id'] == 'c-r2',
           f"relay frame with source=replay -> dispatched, command_result ok ({sent[:1] and sent[0].get('error')})")
 finally:
     td._instance = saved

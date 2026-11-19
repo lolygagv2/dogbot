@@ -156,7 +156,7 @@ class MotorService:
 
             # Publish event
             from core.bus import MotionEvent
-            self.bus.publish(MotionEvent('mode_changed', {
+            self.bus.publish(MotionEvent('movement_mode_changed', {
                 'old_mode': old_mode.value,
                 'new_mode': mode.value
             }))

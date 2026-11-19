@@ -32,29 +32,28 @@ def test_action_command_classification():
     for cmd in ('dispense_treat', 'treat', 'move', 'look', 'take_photo', 'play_sound', 'start_mission',
                 'motor_command', 'servo', 'call_dog', 'listen', 'led', 'audio'):
         assert a(cmd, {}), cmd
-    for cmd in ('sleep', 'wake', 'ping', 'standby', 'stop', 'emergency_stop', 'schedule_sync', 'schedule_mission', 'cancel_mission',
+    for cmd in ('set_sleep', 'select_dog', 'ping', 'standby', 'stop', 'emergency_stop', 'schedule_sync', 'schedule_mission', 'cancel_mission',
                 'sg_config', 'audio_volume', 'smart_plug', 'local_mode', 'cloud_mode'):
         assert not a(cmd, {}), cmd
     assert a('set_mode', {'mode': 'coach'}) and a('set_mode', {'mode': 'silent_guardian'})
+    assert a('set_mode', {'mode': 'mission'}) and a('set_mode', {'mode': 'manual'})
     assert not a('set_mode', {'mode': 'idle'}) and not a('set_mode', {'mode': 'sleep'})
     assert not a('move', {'action': 'stop'}) and a('move', {'action': 'forward'})
     assert not a(None)
 
 
-def test_app_set_mode_spelling():
-    """App build 191: set_mode sleep = sleep; set_mode idle = wake, only while asleep."""
-    i = sm.sleep_intent
-    assert i('sleep') == 'sleep' and i('wake') == 'wake'
-    assert i('set_mode', {'mode': 'sleep'}) == 'sleep' and i('set_mode', {'mode': 'Asleep'}) == 'sleep'
-    assert i('set_mode', {'mode': 'coach'}) is None
-    real = sm.is_asleep
-    try:
-        sm.is_asleep = lambda: False
-        assert i('set_mode', {'mode': 'idle'}) is None
-        sm.is_asleep = lambda: True
-        assert i('set_mode', {'mode': 'idle'}) == 'wake'
-    finally:
-        sm.is_asleep = real
+def test_sleep_is_not_a_mode():
+    """ROBOT-STATE v2: sleep is a flag (asleep), never a mode value."""
+    from core.state import SystemMode, CONTRACT_MODES
+    assert 'sleep' not in [m.value for m in SystemMode] and 'sleep' not in CONTRACT_MODES
+    assert not hasattr(sm, 'sleep_intent') and not hasattr(sm, 'run_intent')
+    calls = []
+    m = _manager(calls)
+    res = m.sleep('test')
+    assert res['asleep'] is True and res['mode'] == 'idle' and m.is_asleep_target() is True
+    assert m.sleep('again')['mode'] == 'idle'
+    res = m.wake('test')
+    assert res['asleep'] is False and res['mode'] == 'idle' and m.is_asleep_target() is False
 
 
 def test_sleep_order_then_wake_in_reverse():

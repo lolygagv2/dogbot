@@ -665,10 +665,10 @@ class CoachingEngine:
             trick_requested=trick
         )
 
-        # C3.1: Set session dog in state for voice fallback chain
+        # C3.1: the dog being coached right now, for the voice fallback chain
         try:
             from core.state import get_state
-            get_state().set_session_dog(dog_id)
+            get_state().set_coach_dog(dog_id)
         except Exception:
             pass
 
@@ -690,7 +690,7 @@ class CoachingEngine:
             self.current_session = None
             try:
                 from core.state import get_state
-                get_state().clear_session_dog()
+                get_state().clear_coach_dog()
             except Exception:
                 pass
             return
@@ -1211,7 +1211,7 @@ class CoachingEngine:
             # C3.1: Clear session dog in state
             try:
                 from core.state import get_state
-                get_state().clear_session_dog()
+                get_state().clear_coach_dog()
             except Exception:
                 pass
 

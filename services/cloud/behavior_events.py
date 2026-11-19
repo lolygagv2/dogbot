@@ -21,7 +21,8 @@ Event `data` per contract:
                  light_level: mean camera frame brightness 0-255}
   departure /   retired 2026-11-18: never sent.
   arrival
-  mode_change   {mode, previous_mode, previous_duration_s, reason} on every
+  mode_change   {mode, previous_mode, session_dog_id, source, reason, command_id,
+                previous_duration_s} (ROBOT-STATE v2 E1, dog_id null) on every
                 switch; mode = the mode just entered; no dog_id (home-wide)
   trick_attempt {time, cue, result: success|no_dog|wrong_pose|timeout,
                  confidence, source: coach|mission|run_trick, attempt}
@@ -471,21 +472,25 @@ class BehaviorEventService:
         }, resolve_dog=False)
 
     # ------------------------------------------------------------- mode changes
-    # Relay brief 2026-11-18: time on guard is built ONLY from mode_change
-    # events {mode} sent on every mode switch, where `mode` is the mode the
-    # robot has just ENTERED and ts is the moment of the switch. Home-wide, so
-    # no dog_id (the outbox ships mode_change without one, like status).
-    # Until this date the robot sent one row per completed stay, when the stay
-    # ENDED, and the outbox held every one of them for lack of a dog_id, so
-    # the relay never received a single mode_change.
-    # One is also sent at service start (the mode the robot comes up in) so a
-    # period opens after every boot; `shutdown` is sent on a clean stop.
+    # ROBOT-STATE v2 E1 (2026-11-19, supersedes the 2026-11-18 brief): one
+    # `mode_change` within 1000 ms of every change of state.mode, whatever
+    # caused it. dog_id is null ALWAYS;
+    #   data {mode, previous_mode, session_dog_id, source, reason,
+    #         command_id (or null), previous_duration_s}
+    # `mode` is one of the five contract modes. Internal modes outside the
+    # five (night_sentry, photography, emergency, shutdown) are "idle" (R6):
+    # entering one from idle emits nothing; entering one from a session mode
+    # emits the change to "idle". Sleep is not a mode.
+    # One row is also sent at service start (the mode the robot comes up in,
+    # previous_mode null) so a period opens after every boot.
 
     def _open_mode_segment(self) -> None:
+        session_dog = None
         try:
-            from core.state import get_state
+            from core.state import get_state, contract_mode
             st = get_state()
-            mode = st.get_mode().value
+            mode = contract_mode(st.get_mode())
+            session_dog = st.get_session_dog_id()
             start = float(getattr(st, 'mode_changed_time', 0) or 0) or time.time()
             st.subscribe('mode_change', self._on_mode_change)
         except Exception as e:
@@ -494,13 +499,17 @@ class BehaviorEventService:
         with self._lock:
             self._mode_seg = {'mode': mode, 'start': start}
         if mode:
-            self._emit_mode_change(mode, start, previous=None, previous_duration_s=None, reason='service_start')
+            self._emit_mode_change(mode, start, previous=None, previous_duration_s=None,
+                                   reason='service_start', session_dog_id=session_dog)
 
     def _emit_mode_change(self, mode: str, ts: float, previous: Optional[str],
-                          previous_duration_s: Optional[float], reason: Optional[str]) -> Optional[Dict[str, Any]]:
-        row = {'mode': mode, 'previous_mode': previous, 'reason': reason}
-        if previous_duration_s is not None:
-            row['previous_duration_s'] = round(previous_duration_s, 3)
+                          previous_duration_s: Optional[float], reason: Optional[str],
+                          session_dog_id: Optional[str] = None, source: str = 'robot',
+                          command_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        row = {'mode': mode, 'previous_mode': previous, 'session_dog_id': session_dog_id,
+               'source': source, 'reason': reason, 'command_id': command_id,
+               'previous_duration_s': (round(previous_duration_s, 3)
+                                       if previous_duration_s is not None else None)}
         try:
             return self.emitter.emit('mode_change', row, resolve_dog=False, ts=ts)
         except Exception as e:
@@ -510,29 +519,37 @@ class BehaviorEventService:
     def _on_mode_change(self, data: Dict[str, Any]) -> None:
         """core.state listener (runs on its own thread)."""
         try:
+            from core.state import contract_mode
             now = float(data.get('timestamp') or time.time())
-            new_mode = data.get('new_mode')
+            new_mode = data.get('mode') or contract_mode(data.get('new_mode'))
             with self._lock:
                 seg = getattr(self, '_mode_seg', None)
+                if seg and seg.get('mode') == new_mode:
+                    return                      # internal change, same contract mode (R6)
                 self._mode_seg = {'mode': new_mode, 'start': now}
-            if not new_mode or (seg and seg.get('mode') == new_mode):
-                return
-            prev = (seg or {}).get('mode') or data.get('previous_mode')
+            prev = (seg or {}).get('mode') or data.get('contract_previous_mode')
             prev_dur = max(0.0, now - float(seg['start'])) if seg else None
-            self._emit_mode_change(new_mode, now, prev, prev_dur, data.get('reason'))
+            self._emit_mode_change(new_mode, now, prev, prev_dur,
+                                   data.get('contract_reason', data.get('reason')),
+                                   session_dog_id=data.get('session_dog_id'),
+                                   source=data.get('source') or 'robot',
+                                   command_id=data.get('command_id'))
         except Exception as e:
             logger.error(f"[BEHAVIOR-EVENTS] mode_change handler: {e}")
 
     def _close_mode_segment(self, end: float, next_mode: Optional[str], reason: Optional[str],
                             previous: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Service stop: tell the relay the robot left its mode (unless the
-        state machine already announced shutdown)."""
+        """Service stop: the robot leaves its mode. A stopped robot is not in
+        any of the five modes, so this is reported as the change to "idle"
+        (reason says why); nothing is sent when it already was idle."""
+        from core.state import contract_mode
+        next_mode = contract_mode(next_mode)
         with self._lock:
             seg = getattr(self, '_mode_seg', None)
             self._mode_seg = None
         if not seg or not seg.get('mode') or seg.get('mode') == next_mode:
             return None
-        return self._emit_mode_change(next_mode or 'shutdown', end, seg['mode'],
+        return self._emit_mode_change(next_mode, end, seg['mode'],
                                       max(0.0, end - float(seg['start'])), reason)
 
     def _open_iv(self, data: Dict[str, Any], now: float) -> None:
@@ -810,12 +827,22 @@ class BehaviorEventService:
             treats = int(get_dispenser_service().treats_remaining)
         except Exception:
             pass
+        asleep, selected, session = False, None, None
         try:
             from core.state import get_state
-            mode = get_state().get_mode().value
+            st = get_state()
+            mode = st.get_contract_mode()               # one of the five, never "sleep"
+            selected, session = st.get_current_dog_id(), st.get_session_dog_id()
         except Exception:
             pass
-        return {'battery': battery, 'mode': mode, 'treats_remaining': treats, 'docked': docked,
+        try:
+            from services.power.sleep_manager import is_asleep
+            asleep = bool(is_asleep())
+        except Exception:
+            pass
+        return {'battery': battery, 'mode': mode, 'asleep': asleep,
+                'selected_dog_id': selected, 'session_dog_id': session,
+                'treats_remaining': treats, 'docked': docked,
                 'light_level': self.frame_brightness()}
 
     def _emit_status(self, now: float, force: bool) -> None:
@@ -825,6 +852,9 @@ class BehaviorEventService:
                    or st['docked'] != prev.get('docked')
                    or st['treats_remaining'] != prev.get('treats_remaining')
                    or st['mode'] != prev.get('mode')
+                   or st.get('asleep') != prev.get('asleep')
+                   or st.get('selected_dog_id') != prev.get('selected_dog_id')
+                   or st.get('session_dog_id') != prev.get('session_dog_id')
                    or (st['battery'] is not None and prev.get('battery') is not None
                        and abs(st['battery'] - prev['battery']) >= self.config['status_battery_delta']))
         if not (force or changed):

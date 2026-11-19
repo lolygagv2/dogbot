@@ -367,7 +367,7 @@ class MissionEngine:
                 pass
 
             # Set mode to MISSION and lock it to prevent interruption
-            self.state.set_mode(SystemMode.MISSION, reason=f'Mission: {mission_name}')
+            self.state.set_mode(SystemMode.MISSION, reason=f'Mission: {mission_name}', dog_id=dog_id)
             self.state.lock_mode(f'Mission active: {mission_name}')
 
             self.logger.info(f"[MISSION] Mode set to MISSION, locked={self.state.is_mode_locked}")
