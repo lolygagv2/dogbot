@@ -1017,6 +1017,17 @@ class ToolDispatcher:
             # that is still speaking: it queues behind it (2026-11-11: a second
             # clip cut the first one off 6 s into a 15 s sentence). Only an
             # explicit interrupt=true cuts speech.
+            # Right after a wake the fixed startup clip is still to play (it
+            # starts ~1.5 s after the wake). A clip that arrives in that
+            # window waits for it: otherwise the startup clip would cut the
+            # relay's greeting, or the greeting would cut the startup clip.
+            try:
+                from services.power.sleep_manager import wait_for_greeting
+                held = wait_for_greeting(10.0, cancel)
+                if held >= 0.1:
+                    logger.info(f"[TOOL] play_sound held {held:.1f}s for the wake greeting to finish")
+            except Exception as e:
+                logger.debug(f"[TOOL] greeting wait: {e}")
             interrupt = args.get('interrupt')
             if interrupt is None:
                 interrupt = args.get('kind') == 'tts' and not _relay_speech_active()

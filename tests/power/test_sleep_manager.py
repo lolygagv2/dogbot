@@ -78,6 +78,29 @@ def test_sleep_order_then_wake_in_reverse():
     assert m.wake('again').get('already')
 
 
+def test_relay_speech_waits_for_the_wake_greeting():
+    """A clip that arrives right after waking is held until the startup clip
+    has played; it is not dropped, and neither cuts the other."""
+    import time
+    calls = []
+    m = _manager(calls)
+    order = []
+    def greeting():
+        order.append('startup_clip_start'); time.sleep(0.6); order.append('startup_clip_end')
+    m._greeting_hook = greeting
+    assert m.wait_for_greeting(1.0) < 0.05           # nothing playing: no hold
+    m.sleep('test')
+    m.wake('test')
+    t0 = time.monotonic()
+    waited = m.wait_for_greeting(5.0)                # what play_sound does first
+    order.append('relay_speech')
+    assert 0.4 <= waited <= 1.5, waited
+    assert order == ['startup_clip_start', 'startup_clip_end', 'relay_speech'], order
+    assert m.wait_for_greeting(1.0) < 0.05           # released afterwards
+    m.sleep('test'); m.wake('test', greet=False)
+    assert m.wait_for_greeting(1.0) < 0.05           # no greeting -> no hold
+
+
 def test_failed_step_does_not_stop_the_sequence():
     calls = []
     m = _manager(calls)

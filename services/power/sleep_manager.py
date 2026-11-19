@@ -97,6 +97,10 @@ class SleepManager:
         self.last_wake: Dict[str, Any] = {}
         self.asleep_since: Optional[float] = None
         self._target_asleep: Optional[bool] = None   # what the last request asked for
+        # Set from the moment a wake finishes until its greeting (the fixed
+        # startup clip) has played: relay speech that arrives in that window
+        # waits for the clip instead of being cut by it (or cutting it).
+        self._greeting_active = threading.Event()
 
     def note_target(self, asleep: bool) -> None:
         self._target_asleep = bool(asleep)
@@ -487,6 +491,8 @@ class SleepManager:
             }
             self.asleep_since = None
             self._owner = None
+            if greet and self._greeting_hook:
+                self._greeting_active.set()      # before AWAKE: no gap for a clip to slip into
             self._set_state(AWAKE)
             logger.info(f"[SLEEP] READY in {ready_s}s (target {WAKE_TARGET_S}s) healthy={healthy} "
                         f"failed={self.last_wake['failed']} health={health}")
@@ -500,6 +506,17 @@ class SleepManager:
             self._greeting_hook()
         except Exception as e:
             logger.error(f"[SLEEP] greeting hook failed: {e}")
+        finally:
+            self._greeting_active.clear()
+
+    def wait_for_greeting(self, max_s: float = 10.0, cancel: Optional[threading.Event] = None) -> float:
+        """Block while the wake greeting is playing (bounded). Returns seconds waited."""
+        t0 = time.monotonic()
+        while self._greeting_active.is_set() and time.monotonic() - t0 < max_s:
+            if cancel is not None and cancel.is_set():
+                break
+            time.sleep(0.05)
+        return time.monotonic() - t0
 
     @staticmethod
     def _mode_value() -> Optional[str]:
@@ -856,6 +873,14 @@ def ensure_awake(source: str = 'command') -> bool:
 # set_sleep false must reply within WAKE_REPLY_BUDGET_S.
 COMMAND_START_BUDGET_S = 1.5
 WAKE_REPLY_BUDGET_S = 5.0
+
+
+def wait_for_greeting(max_s: float = 10.0, cancel: Optional[threading.Event] = None) -> float:
+    """Seconds waited for the wake greeting to finish (0 when none is playing)."""
+    mgr = _instance
+    if mgr is None:
+        return 0.0
+    return mgr.wait_for_greeting(max_s, cancel)
 
 
 def is_awake() -> bool:

@@ -617,7 +617,7 @@ class TreatBotMain:
             # handlers above and the boot greeting for wake.
             try:
                 from services.power.sleep_manager import get_sleep_manager
-                get_sleep_manager().attach(app=self, greeting_hook=self._run_startup_sequence)
+                get_sleep_manager().attach(app=self, greeting_hook=self._wake_greeting)
             except Exception as e:
                 self.logger.error(f"Sleep manager attach failed: {e}")
 
@@ -2449,6 +2449,18 @@ class TreatBotMain:
                 self.logger.debug(f"No audio file configured for mode: {mode}")
         except Exception as e:
             self.logger.error(f"Mode announcement error: {e}")
+
+    def _wake_greeting(self) -> None:
+        """Greeting after a wake: the same fixed startup clip as at boot,
+        returning only when it has finished. The sleep manager holds relay
+        speech (the relay's named greeting + recap) until this returns, so the
+        clip and the speech play one after the other, neither cut."""
+        self._run_startup_sequence()
+        try:
+            if self.usb_audio and self.usb_audio.initialized:
+                self.usb_audio.wait_for_completion(8.0)
+        except Exception as e:
+            self.logger.debug(f"wake greeting wait: {e}")
 
     def _run_startup_sequence(self) -> None:
         """Run startup sequence with voice announcement"""

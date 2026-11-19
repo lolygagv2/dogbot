@@ -17,6 +17,10 @@
 - [x] **RTC batteries installed fleet-wide** (Aug 2026) — cross-boot timestamps are now trustworthy; retire the old "never trust cross-boot timestamps" caveat.
 - [x] **treatbot2 dispenser** — root cause was a bad crimp on a stepper coil wire (repaired); the TMC2209 chip was fine.
 
+### ROBOT-STATE v2 (branch `robot-state-v2`, built 2026-11-19, NOT deployed)
+- [ ] **Live checks after deploy** — scheduled missions (one program mission, one timed Silent Guardian) fire with `mission.data.dog_id` as the session dog; `set_sleep false` then the relay's greeting clip right after waking: the startup clip plays, then the relay speech, neither cut (`journalctl -f | grep "held .* for the wake greeting"`); real timings for `set_sleep false` and for an action command sent to a sleeping robot (expect `expired`, then awake).
+- [ ] **Fix intermittent `tests/core/test_mission_scheduler_timers.py`** (after this release, Morgan 2026-11-19) — the check "mission.completed with rewards 0 + schedule_mission_id" reads the event list right after the mode is cleared, before the scheduler has published `mission.completed`; fails about 1 run in 5 on `main` too. Make the test wait for the publish.
+
 ### Live verification needed (fixed in code 2026-10-03, service NOT yet restarted — Morgan: `sudo systemctl restart treatbot.service`)
 - [ ] **Video aspect flapping** — ABR Low tier was 640x480 (4:3) + REMB-floor misread flipped tiers every 5-15 s (751fe5b). Verify: live video on LAN, `journalctl -f | grep ABR` settles at high and stays; view keeps one shape. If the app still resizes, ask app Claude whether the video container follows track dimensions (should be a fixed 16:9 letterbox).
 - [ ] **"Dog"+"Elsa" double box** — tracker dedupe self-defeat + tag-0 falsy bugs (d3d2dc6). Verify in COACH with tag hidden half the time.
