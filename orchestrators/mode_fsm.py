@@ -77,6 +77,7 @@ class ModeFSM:
             SystemMode.PHOTOGRAPHY: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.NIGHT_SENTRY, SystemMode.EMERGENCY, SystemMode.MANUAL],
             SystemMode.NIGHT_SENTRY: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.EMERGENCY, SystemMode.MANUAL],
             SystemMode.MANUAL: [SystemMode.IDLE, SystemMode.SILENT_GUARDIAN, SystemMode.COACH, SystemMode.MISSION, SystemMode.PHOTOGRAPHY, SystemMode.NIGHT_SENTRY, SystemMode.EMERGENCY],
+            SystemMode.SLEEP: [SystemMode.IDLE, SystemMode.EMERGENCY],
             SystemMode.EMERGENCY: [SystemMode.SHUTDOWN]
         }
 
@@ -289,6 +290,14 @@ class ModeFSM:
             self.logger.error(f"Cannot override to mode: {mode.value}")
             return False
 
+        # Sleep mode: "idle" leaves a sleeping robot asleep; any other mode is
+        # an action, so the robot wakes first and the mode is entered after.
+        if self.state.get_mode() == SystemMode.SLEEP and mode != SystemMode.SLEEP:
+            if mode == SystemMode.IDLE:
+                return True
+            from services.power.sleep_manager import ensure_awake
+            ensure_awake(f"mode {mode.value}")
+
         duration = duration or self.timeouts['override_timeout']
 
         # Idempotent: if already overridden to this same mode and the override
@@ -350,6 +359,14 @@ class ModeFSM:
 
     def force_mode(self, mode: SystemMode, reason: str = "manual") -> bool:
         """Force immediate mode change (bypass FSM)"""
+        # Sleep mode: "idle" leaves a sleeping robot asleep; any other mode is
+        # an action, so the robot wakes first and the mode is entered after.
+        if self.state.get_mode() == SystemMode.SLEEP and mode != SystemMode.SLEEP:
+            if mode == SystemMode.IDLE:
+                return True
+            from services.power.sleep_manager import ensure_awake
+            ensure_awake(f"mode {mode.value}")
+
         # CRITICAL: Set manual input time BEFORE mode change to avoid race condition
         # The FSM thread could check timeout between set_mode() and time update
         if mode == SystemMode.MANUAL:

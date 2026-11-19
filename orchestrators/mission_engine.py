@@ -296,6 +296,13 @@ class MissionEngine:
         Returns:
             True if mission started successfully
         """
+        # Sleep mode: a mission start (app, schedule, program) wakes the robot first.
+        try:
+            from services.power.sleep_manager import ensure_awake
+            ensure_awake(f"mission {mission_name}")
+        except Exception as e:
+            self.logger.error(f"sleep wake gate: {e}")
+
         self.logger.info(f"[MISSION] start_mission called: name={mission_name}, dog_id={dog_id}")
         self.logger.info(f"[MISSION] Available missions: {list(self.missions.keys())}")
 

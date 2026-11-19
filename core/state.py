@@ -24,6 +24,7 @@ class SystemMode(Enum):
     MANUAL = "manual"
     EMERGENCY = "emergency"
     SHUTDOWN = "shutdown"
+    SLEEP = "sleep"                       # Low-power: hardware stopped, network + commands alive (services/power/sleep_manager.py)
 
     # Backward compatibility aliases (deprecated)
     @classmethod

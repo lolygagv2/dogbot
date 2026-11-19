@@ -469,6 +469,21 @@ class TreatBotWebSocketServer:
 
             self.logger.info(f"Received command: {command} | raw keys: {list(data.keys())} | type: {data.get('type')}")
 
+            try:
+                from services.power import sleep_manager as _sm
+                intent = _sm.sleep_intent(command, params)
+                if intent:
+                    res = await asyncio.get_running_loop().run_in_executor(
+                        None, _sm.run_intent, intent, f"local {command}")
+                    await self.manager.send_to_one(websocket, {
+                        "type": "command_response", "command": command, "success": bool(res.get("ok")),
+                        "mode": res.get("mode"), "ready_s": res.get("ready_s"), "healthy": res.get("healthy")})
+                    return
+                if _sm.is_asleep() and _sm.is_action_command(command, params):
+                    await asyncio.get_running_loop().run_in_executor(None, _sm.ensure_awake, f"local {command}")
+            except Exception as e:
+                self.logger.error(f"[SLEEP] local wake gate: {e}")
+
             response = await self._execute_command(command, params)
 
             await self.manager.send_to_one(websocket, {
@@ -529,6 +544,23 @@ class TreatBotWebSocketServer:
         command = data.get("command")
         self._get_services()
         result = {"success": True, "command": command}
+
+        # Sleep mode: local `sleep` / `wake`; any other action wakes first.
+        # (command_id frames go through the ToolDispatcher, which does both.)
+        try:
+            from services.power import sleep_manager as _sm
+            intent = None if data.get("command_id") else _sm.sleep_intent(command, data)
+            if intent:
+                res = await asyncio.get_running_loop().run_in_executor(
+                    None, _sm.run_intent, intent, f"local {command}")
+                await self.manager.send_to_one(websocket, {
+                    "type": "command_response", "command": command, "success": bool(res.get("ok")),
+                    "mode": res.get("mode"), "ready_s": res.get("ready_s"), "healthy": res.get("healthy")})
+                return
+            if _sm.is_asleep() and not data.get("command_id") and _sm.is_action_command(command, data):
+                await asyncio.get_running_loop().run_in_executor(None, _sm.ensure_awake, f"local {command}")
+        except Exception as e:
+            self.logger.error(f"[SLEEP] local wake gate: {e}")
 
         try:
             if command == "motor":
@@ -2083,7 +2115,8 @@ class TreatBotWebSocketServer:
                 "mission": "mission",
                 "manual": "manual",
                 "photography": "manual",
-                "emergency": "manual"
+                "emergency": "manual",
+                "sleep": "sleep"
             }
             internal_mode = state.get("mode", "idle")
             contract_mode = mode_map.get(internal_mode, "idle")

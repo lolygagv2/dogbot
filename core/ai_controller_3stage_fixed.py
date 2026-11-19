@@ -1257,6 +1257,68 @@ class AI3StageControllerFixed:
 
         return frame[y1:y2, x1:x2]
 
+    def unload_hailo(self) -> bool:
+        """Sleep mode: stop using the Hailo and release it (network group, HEF,
+        VDevice). With no open VDevice the hailo_pci driver puts the chip in
+        D3. The TorchScript behavior model stays in RAM so wake is quick."""
+        import gc
+        self.model_loaded = False            # inference refuses from here on
+        try:
+            self.active_network_group = None
+            self.active_network_group_params = None
+            self.active_input_vstreams_params = None
+            self.active_output_vstreams_params = None
+            self.active_input_info = None
+            self.active_output_infos = None
+            self.active_hef = None
+            vdev, self.vdevice = self.vdevice, None
+            if vdev is not None:
+                try:
+                    vdev.release()
+                except Exception as e:
+                    logger.warning(f"VDevice release: {e}")
+            del vdev
+            gc.collect()
+            logger.info("Hailo model unloaded, VDevice released")
+            return True
+        except Exception as e:
+            logger.error(f"Hailo unload failed: {e}")
+            return False
+
+    def reload_hailo(self) -> bool:
+        """Wake: open the VDevice again and load the pose model."""
+        if self.model_loaded and self.vdevice is not None:
+            return True
+        try:
+            self.vdevice = hpf.VDevice()
+            ok = self._load_model()
+            if ok:
+                logger.info("Hailo model reloaded")
+            return ok
+        except Exception as e:
+            logger.error(f"Hailo reload failed: {e}")
+            return False
+
+    def self_test(self, frame: np.ndarray) -> bool:
+        """One real inference on `frame`; True when the Hailo answered.
+        (_run_combined_inference swallows driver errors, so this talks to the
+        network group directly.)"""
+        if not self.model_loaded or frame is None:
+            return False
+        try:
+            img = cv2.resize(frame, self.input_size)
+            input_name = list(self.active_input_vstreams_params.keys())[0]
+            data = {input_name: np.expand_dims(img, axis=0).astype(np.uint8)}
+            with self.active_network_group.activate(self.active_network_group_params):
+                with hpf.InferVStreams(self.active_network_group,
+                                       self.active_input_vstreams_params,
+                                       self.active_output_vstreams_params) as pipe:
+                    out = pipe.infer(data)
+            return bool(out) and all(v is not None and np.size(v) > 0 for v in out.values())
+        except Exception as e:
+            logger.error(f"Hailo self-test failed: {e}")
+            return False
+
     def cleanup(self):
         """Clean up resources"""
         try:

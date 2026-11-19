@@ -483,6 +483,32 @@ class DetectorService:
             return result
         return self.camera_initialized
 
+    def suspend_for_sleep(self) -> Dict[str, Any]:
+        """Sleep mode: stop the capture/detection loop and close the camera.
+        `_camera_paused` keeps anything from re-opening it until wake."""
+        out = {'detection_was_running': bool(self.running),
+               'camera_was_initialized': bool(self.camera_initialized)}
+        self.stop_detection()
+        if self.detection_thread and self.detection_thread.is_alive():
+            self.detection_thread.join(timeout=3.0)     # a slow frame must not outlive the camera
+        if self.camera_initialized:
+            self._release_camera()
+        out['camera_closed'] = self.camera is None
+        self.state.update_hardware(camera_initialized=False)
+        self.logger.info(f"Suspended for sleep: {out}")
+        return out
+
+    def resume_from_sleep(self, start_detection: bool = True) -> Dict[str, Any]:
+        """Wake: re-open the camera and restart the capture/detection loop."""
+        ok = self._reacquire_camera()
+        if not ok:
+            self._camera_paused = False                  # let the loop's periodic retry take over
+        self.state.update_hardware(camera_initialized=self.camera_initialized)
+        started = bool(self.start_detection()) if (ok and start_detection) else False
+        out = {'camera': bool(ok), 'detection': started, 'error_reason': self._camera_error_reason if not ok else None}
+        self.logger.info(f"Resumed from sleep: {out}")
+        return out
+
     def _on_mode_change(self, data: Dict[str, Any]) -> None:
         """Handle mode change for resolution switching"""
         try:
@@ -494,6 +520,10 @@ class DetectorService:
                 new_mode = SystemMode(new_mode_str)
             except ValueError:
                 self.logger.warning(f"Unknown mode: {new_mode_str}")
+                return
+
+            # Sleep: the camera is about to be closed; do not reconfigure it.
+            if new_mode == SystemMode.SLEEP:
                 return
 
             # Get target resolution for new mode

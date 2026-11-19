@@ -613,6 +613,14 @@ class TreatBotMain:
             # Subscribe to mode changes to manage mode handlers
             self.state.subscribe('mode_change', self._on_mode_change)
 
+            # Sleep mode (services/power/sleep_manager.py): needs the mode
+            # handlers above and the boot greeting for wake.
+            try:
+                from services.power.sleep_manager import get_sleep_manager
+                get_sleep_manager().attach(app=self, greeting_hook=self._run_startup_sequence)
+            except Exception as e:
+                self.logger.error(f"Sleep manager attach failed: {e}")
+
             # Subscribe to controller events for mode transitions
             self.bus.subscribe('system', self._on_system_event)
 
@@ -2291,7 +2299,9 @@ class TreatBotMain:
 
             # Announce mode FIRST so audio fires immediately on click — bark
             # setup below has ~1s of sync sleeps that would otherwise delay it.
-            self._announce_mode(new_mode)
+            # (Waking from sleep is announced by the boot greeting instead.)
+            if previous_mode != 'sleep':
+                self._announce_mode(new_mode)
 
             # Stop Silent Guardian if leaving that mode
             if previous_mode == 'silent_guardian':
@@ -3158,6 +3168,15 @@ class TreatBotMain:
     def _emergency_shutdown(self, reason: str, data: Dict[str, Any]) -> None:
         """Emergency shutdown callback"""
         self.logger.critical(f"EMERGENCY SHUTDOWN: {reason}")
+        # Asleep and the battery hit the shutdown threshold: nobody is watching
+        # a sleeping robot, so do the normal real shutdown (OS halt -> the
+        # usual systemd power-off hook) instead of only stopping this service.
+        try:
+            if 'battery' in str(reason).lower():
+                from services.power.sleep_manager import get_sleep_manager
+                get_sleep_manager().battery_shutdown(reason, data)
+        except Exception as e:
+            self.logger.error(f"Sleep battery shutdown failed: {e}")
         self.shutdown_requested = True
 
         # Immediate hardware stops

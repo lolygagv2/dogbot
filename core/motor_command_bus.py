@@ -235,6 +235,17 @@ class MotorCommandBus:
         if not self.running or self.motor_controller is None:
             return False
 
+        # Sleep mode: a drive command (any source, incl. the Xbox controller)
+        # starts a wake and is dropped; driving resumes once the robot is awake.
+        if command.left_speed or command.right_speed:
+            try:
+                from services.power import sleep_manager as _sm
+                if _sm.is_asleep():
+                    _sm.get_sleep_manager().wake_async(f"motor {getattr(command.source, 'name', command.source)}")
+                    return False
+            except Exception as e:
+                self.logger.error(f"sleep wake gate: {e}")
+
         try:
             with self.lock:
                 # Store last command

@@ -418,7 +418,8 @@ class RelayClient:
             "mission": "mission",
             "manual": "manual",
             "photography": "manual",
-            "emergency": "manual"
+            "emergency": "manual",
+            "sleep": "sleep"
         }
 
         while self._running and self._connected:
@@ -553,6 +554,13 @@ class RelayClient:
         ice_servers = data.get('ice_servers', {})
 
         self.logger.info(f"WebRTC request received: session={session_id}")
+        # Live video is an action: a sleeping robot wakes (camera back) first.
+        try:
+            from services.power import sleep_manager as _sm
+            if _sm.is_asleep():
+                await asyncio.get_running_loop().run_in_executor(None, _sm.ensure_awake, "webrtc_request")
+        except Exception as e:
+            self.logger.error(f"[SLEEP] webrtc wake gate: {e}")
         # [RTC-TIMING] step4 — robot is the offerer; relay's inbound msg is a
         # webrtc_request (not an SDP offer). Robot will build+send the offer next.
         _ice_in = data.get('ice_servers')
@@ -858,8 +866,28 @@ class RelayClient:
 
         # CONTRACT v2: command_id present and the dispatcher knows the command
         # -> run it there and answer with command_result (exactly once).
+        # (The dispatcher wakes a sleeping robot itself before an action.)
         if self._dispatch_v2_command(command, data, params):
             return
+
+        # Sleep mode. `sleep` / `wake` (or the app's set_mode sleep / set_mode
+        # idle-while-asleep) without a command_id get a command_ack;
+        # any other action command wakes the robot first, then runs below.
+        try:
+            from services.power import sleep_manager as _sm
+            intent = _sm.sleep_intent(command, params)
+            if intent:
+                res = await asyncio.get_running_loop().run_in_executor(
+                    None, _sm.run_intent, intent, f"relay {command} {params.get('mode') or ''}".strip())
+                await self._send({'type': 'command_ack', 'command': command,
+                                  'success': bool(res.get('ok')), 'mode': res.get('mode'),
+                                  'ready_s': res.get('ready_s'), 'healthy': res.get('healthy')})
+                return
+            if _sm.is_asleep() and _sm.is_action_command(command, params):
+                await asyncio.get_running_loop().run_in_executor(
+                    None, _sm.ensure_awake, f"relay {command}")
+        except Exception as e:
+            self.logger.error(f"[SLEEP] relay wake gate: {e}")
 
         # HOTFIX: Reset manual timeout on ANY app command while in MANUAL mode
         # This prevents 5-minute timeout when app is actively controlling

@@ -61,6 +61,7 @@ class LedService:
             'pulse': self._pattern_pulse,       # Generic pulse (uses fire as fallback)
             'solid': self._pattern_solid,       # Solid blue
             'ambient': self._pattern_ambient,   # Gentle breathing effect
+            'sleep': self._pattern_sleep,       # Sleep mode: slow dim pulse
             # Solid color patterns for app
             'solid_blue': self._pattern_solid_blue,
             'solid_red': self._pattern_solid_red,
@@ -790,6 +791,22 @@ class LedService:
     def _pattern_solid_white(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
         """Solid white pattern for app"""
         self._pattern_solid(duration, 'white', **kwargs)
+
+    def _pattern_sleep(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
+        """Sleep mode: slow dim blue pulse (6 s per breath, peak ~10 % of the
+        strip brightness), updated 10x a second to keep the CPU idle."""
+        if not self.led.pixels:
+            return
+        import math
+        base = self.colors.get(color or '', (0, 0, 255))
+        period, floor, peak = 6.0, 0.01, 0.10
+        start = time.time()
+        while not self._should_stop() and (duration is None or time.time() - start < duration):
+            phase = ((time.time() - start) % period) / period
+            level = floor + (peak - floor) * 0.5 * (1 - math.cos(2 * math.pi * phase))
+            self.led.pixels.fill(tuple(max(1, int(c * level)) if c else 0 for c in base))
+            self.led.pixels.show()
+            time.sleep(0.1)
 
     def _pattern_ambient(self, duration: Optional[float], color: Optional[str], **kwargs) -> None:
         """

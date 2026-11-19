@@ -382,6 +382,23 @@ class ToolDispatcher:
                 self._finish(name, call_id, args, t0, result, result['error']['message'], reply)
                 return
 
+        # Sleep mode: an action command wakes the robot first, then runs.
+        woke_s = None
+        try:
+            from services.power import sleep_manager as _sm
+            if _sm.is_asleep() and _sm.is_action_command(name, args):
+                w0 = time.monotonic()
+                awake = _sm.ensure_awake(f"command {name}")
+                woke_s = round(time.monotonic() - w0, 2)
+                if not awake:
+                    if gate is not None:
+                        gate.release(ticket)
+                    result = _err('wake_failed', 'robot is asleep and did not wake', result='asleep')
+                    self._finish(name, call_id, args, t0, result, result['error']['message'], reply)
+                    return
+        except Exception as e:
+            logger.error(f"[TOOL] wake gate: {e}")
+
         cancel = threading.Event()
         with self._lock:
             self._run_no += 1
@@ -413,6 +430,8 @@ class ToolDispatcher:
             out.setdefault('ok', True)
             if queued_ms >= 50:
                 out['queued_ms'] = queued_ms       # time spent waiting for the command before it
+            if woke_s is not None:
+                out['woke_from_sleep_s'] = woke_s  # robot was asleep; this command woke it first
             result = out
             if not result.get('ok'):
                 e = result.get('error')
@@ -455,10 +474,18 @@ class ToolDispatcher:
                                            'deferred via media upload if capture is slow'))
         self.register(ToolSpec('standby', self._tool_standby, 10.0, preemptive=True,
                                description='Stop audio and return to IDLE'))
+        self.register(ToolSpec('sleep', self._tool_sleep, 30.0, preemptive=True,
+                               description='Sleep mode: stop sessions, motors, gimbal, camera, Hailo, bark '
+                                           'detection, mute audio, dim LEDs; WiFi, relay and commands stay up. '
+                                           'Not a shutdown. Any action command wakes the robot first'))
+        self.register(ToolSpec('wake', self._tool_wake, 30.0, preemptive=True,
+                               description='Leave sleep mode: restore everything, health-check camera/Hailo/audio, '
+                                           'mode idle, boot greeting. Result carries ready_s (measured wake time)'))
         self.register(ToolSpec('dispense_treat', self._tool_dispense_treat, 75.0,   # retry ladder + unjam ~45 s, + speech wait
                                description='Dispense one treat (source app|agent|connector)'))
         self.register(ToolSpec('set_mode', self._tool_set_mode, 10.0,
-                               description='Switch mode: idle|silent_guardian|coach|manual|night_sentry'))
+                               description='Switch mode: idle|silent_guardian|coach|manual|night_sentry|sleep '
+                                           '(sleep = sleep mode; idle while asleep = wake)'))
         self.register(ToolSpec('play_sound', self._tool_play_sound, 60.0,
                                description='Queue a relay-hosted url or a registry sound_id on the audio queue; '
                                            'replies at once (wait:true to block until played)'))
@@ -825,9 +852,29 @@ class ToolDispatcher:
         return svc.set_manual(action, source=str(args.get('source') or 'relay'))
 
     @staticmethod
+    def _sleep_summary(res: Dict[str, Any]) -> Dict[str, Any]:
+        """Relay-sized view of a sleep/wake result (full detail: GET /system/sleep/status)."""
+        keep = ('ok', 'mode', 'already', 'source', 'enter_s', 'ready_s', 'within_target', 'target_s',
+                'healthy', 'health', 'slept_s', 'failed', 'power_before', 'power_after')
+        return {k: res[k] for k in keep if k in res}
+
+    def _tool_sleep(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        from services.power.sleep_manager import get_sleep_manager
+        return self._sleep_summary(get_sleep_manager().sleep(source=str(args.get('source') or 'command')))
+
+    def _tool_wake(self, args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
+        from services.power.sleep_manager import get_sleep_manager
+        return self._sleep_summary(get_sleep_manager().wake(source=str(args.get('source') or 'command')))
+
+    @staticmethod
     def _tool_set_mode(args: Dict[str, Any], cancel: threading.Event) -> Dict[str, Any]:
         from core.state import SystemMode, get_state
         from orchestrators.mode_fsm import get_mode_fsm
+        # App build 191: set_mode sleep = sleep, set_mode idle while asleep = wake.
+        from services.power import sleep_manager as _sm
+        intent = _sm.sleep_intent('set_mode', args)
+        if intent:
+            return ToolDispatcher._sleep_summary(_sm.run_intent(intent, f"set_mode {args.get('mode')}"))
         raw = str(args.get('mode') or '').lower()
         aliases = {'guardian': 'silent_guardian', 'sg': 'silent_guardian', 'training': 'coach',
                    'detection': 'coach', 'standby': 'idle'}

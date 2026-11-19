@@ -139,6 +139,7 @@
          gui.py                     # GUI monitoring service
       power/
          battery_monitor.py         # Battery + charging detection
+         sleep_manager.py           # Sleep mode (2026-11-18): ordered power-down/restore, wake gate for action commands, health check; never touches the power latch
          wimz_power_button.py       # Soft power button watcher (root, installed to /usr/local/bin — NOT OTA). Release <5s = shutdown; hold 5s = NETWORK CANCEL → POST /system/network-cancel (fallback flag /run/wimz/net-cancel) raises the sticky AP.
       input/
          gamepad.py                 # Input handling
@@ -280,6 +281,7 @@
          test_pan_tilt_framing.py   # Coach framing: no top/bottom limit cycle, fit check, one step per new bbox, target selection (2026-10-03). Fake servo; standalone.
       power/
          test_battery_soc_curve.py  # 4S Li-ion SoC table endpoints/midpoints/monotonic (2026-10-03). Standalone.
+         test_sleep_manager.py      # Sleep mode: command classification, step order, wake gate, asleep-only battery shutdown (2026-11-18). Standalone.
       test_behavior_fusion.py
       test_bark_quiet_training.py
       test_bark_classifier.py

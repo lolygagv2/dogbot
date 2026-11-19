@@ -604,6 +604,15 @@ async def get_mode():
 async def set_mode(request: ModeRequest):
     """Set system mode"""
     try:
+        # Sleep mode: "sleep" sleeps, "idle" while asleep wakes (app build 191).
+        from services.power import sleep_manager as _sm
+        intent = _sm.sleep_intent('set_mode', {'mode': request.mode})
+        if intent:
+            import asyncio
+            res = await asyncio.get_running_loop().run_in_executor(
+                None, _sm.run_intent, intent, f"api mode {request.mode}")
+            return {"success": bool(res.get("ok")), "mode": res.get("mode"),
+                    "ready_s": res.get("ready_s"), "healthy": res.get("healthy")}
         mode = SystemMode(request.mode)
         mode_fsm = get_mode_fsm()
 
@@ -4240,6 +4249,31 @@ def _local_ap_info(wifi) -> dict:
         "api": f"http://{wifi.HOTSPOT_IP}:8000",
         "ws": f"ws://{wifi.HOTSPOT_IP}:8000/ws/local",
     }
+
+
+@app.post("/system/sleep")
+async def system_sleep():
+    """Enter sleep mode (not a shutdown; the power latch is never touched)."""
+    import asyncio
+    from services.power.sleep_manager import get_sleep_manager
+    return await asyncio.get_running_loop().run_in_executor(
+        None, lambda: get_sleep_manager().sleep(source="api"))
+
+
+@app.post("/system/wake")
+async def system_wake():
+    """Leave sleep mode; the result carries ready_s (measured wake time) and the health checks."""
+    import asyncio
+    from services.power.sleep_manager import get_sleep_manager
+    return await asyncio.get_running_loop().run_in_executor(
+        None, lambda: get_sleep_manager().wake(source="api"))
+
+
+@app.get("/system/sleep/status")
+async def system_sleep_status():
+    """Sleep state plus the full step-by-step record of the last sleep and wake."""
+    from services.power.sleep_manager import get_sleep_manager
+    return get_sleep_manager().status()
 
 
 @app.post("/system/network-cancel")
