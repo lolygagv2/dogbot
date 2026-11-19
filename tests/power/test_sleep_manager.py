@@ -32,7 +32,7 @@ def test_action_command_classification():
     for cmd in ('dispense_treat', 'treat', 'move', 'look', 'take_photo', 'play_sound', 'start_mission',
                 'motor_command', 'servo', 'call_dog', 'listen', 'led', 'audio'):
         assert a(cmd, {}), cmd
-    for cmd in ('sleep', 'wake', 'ping', 'standby', 'schedule_sync', 'schedule_mission', 'cancel_mission',
+    for cmd in ('sleep', 'wake', 'ping', 'standby', 'stop', 'emergency_stop', 'schedule_sync', 'schedule_mission', 'cancel_mission',
                 'sg_config', 'audio_volume', 'smart_plug', 'local_mode', 'cloud_mode'):
         assert not a(cmd, {}), cmd
     assert a('set_mode', {'mode': 'coach'}) and a('set_mode', {'mode': 'silent_guardian'})

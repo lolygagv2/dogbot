@@ -1768,6 +1768,18 @@ class TreatBotWebSocketServer:
         session_id = data.get("session_id", "local")
         self.logger.info(f"[LOCAL] WebRTC request via /ws: session={session_id}")
 
+        # Asleep: camera is off and a video request is not a wake (the app
+        # re-requests video by itself). Decline until an explicit wake.
+        try:
+            from services.power import sleep_manager as _sm
+            if _sm.is_asleep():
+                self.logger.info(f"[SLEEP] local webrtc_request declined while asleep: session={session_id}")
+                await self.manager.send_to_one(websocket, {
+                    "type": "webrtc_error", "session_id": session_id, "error": "robot_asleep"})
+                return
+        except Exception as e:
+            self.logger.error(f"[SLEEP] local webrtc sleep gate: {e}")
+
         try:
             from services.streaming.webrtc import get_webrtc_service
             webrtc = get_webrtc_service()

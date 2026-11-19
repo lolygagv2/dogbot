@@ -554,13 +554,19 @@ class RelayClient:
         ice_servers = data.get('ice_servers', {})
 
         self.logger.info(f"WebRTC request received: session={session_id}")
-        # Live video is an action: a sleeping robot wakes (camera back) first.
+        # Asleep: the camera is off. The app re-requests video by itself
+        # whenever its stream drops (observed 2026-11-18: that woke the robot
+        # seconds after every Sleep tap), so a video request is NOT a wake.
+        # Decline it; the app gets video again after an explicit wake.
         try:
             from services.power import sleep_manager as _sm
             if _sm.is_asleep():
-                await asyncio.get_running_loop().run_in_executor(None, _sm.ensure_awake, "webrtc_request")
+                self.logger.info(f"[SLEEP] webrtc_request declined while asleep: session={session_id}")
+                await self._send({'type': 'webrtc_error', 'device_id': self.config.device_id,
+                                  'session_id': session_id, 'error': 'robot_asleep'})
+                return
         except Exception as e:
-            self.logger.error(f"[SLEEP] webrtc wake gate: {e}")
+            self.logger.error(f"[SLEEP] webrtc sleep gate: {e}")
         # [RTC-TIMING] step4 — robot is the offerer; relay's inbound msg is a
         # webrtc_request (not an SDP offer). Robot will build+send the offer next.
         _ice_in = data.get('ice_servers')

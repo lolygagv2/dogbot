@@ -49,7 +49,7 @@ HAILO_PCI_VENDOR = '0x1e60'
 # something that keeps running in sleep (schedules, WiFi, the smart plug).
 # Anything not listed here is an action command: wake first, then run.
 PASSIVE_COMMANDS = frozenset({
-    'sleep', 'wake', 'ping', 'standby', 'stop', 'audio_stop', 'stop_mission', 'cancel_mission',
+    'sleep', 'wake', 'ping', 'standby', 'stop', 'emergency_stop', 'audio_stop', 'stop_mission', 'cancel_mission',
     'stop_recording', 'move_stop',
     'schedule_mission', 'schedule_sync', 'create_schedule', 'update_schedule', 'delete_schedule',
     'get_schedules', 'get_scheduler_status', 'get_mission_status', 'mission_status', 'list_missions',
