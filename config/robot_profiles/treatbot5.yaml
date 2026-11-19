@@ -69,8 +69,14 @@ servo:
 # THIRD recal in 5 months, always upward: the divider/sense path IS drifting —
 # inspect/replace the resistors + sense connector on this unit. Raw adc now
 # logged every minute (journal "adc=") so the next check needs no DMM.
+# Re-calibrated 2026-11-19: Morgan measured 14.6V while the robot read 12.2-12.4V
+# (A0 0.205-0.214V, median 0.211V) -> factor = 69.19 (+18.9% since October).
+# FOURTH recal, and the drift is accelerating (+8.4%, +4.7%, now +18.9%). The
+# reading also wanders ~4% within 30 s. This is a failing divider / sense
+# connection, not a calibration problem: until it is repaired, treat the
+# percentage on this unit as approximate.
 battery:
-  calibration_factor: 58.21
+  calibration_factor: 69.19
 
 # WiFi smart plug (services/network/smart_plug.py) — Kasa HS103 "Wall bearer" at
 # Morgan's house. It powers an Adaptil pheromone diffuser: run it only when the dog
