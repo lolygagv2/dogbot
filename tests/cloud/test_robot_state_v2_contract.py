@@ -29,6 +29,7 @@ import core.state as state_mod  # noqa: E402
 from core.state import StateManager, SystemMode, CONTRACT_MODES, contract_mode  # noqa: E402
 
 # Never read or write the robot's real persisted selection.
+_ORIG_LOAD = StateManager._load_persisted_state
 StateManager._load_persisted_state = lambda self: None
 st = state_mod.get_state()
 st._STATE_FILE = os.path.join(TMP, 'robot_state.json')
@@ -335,20 +336,60 @@ def main():
     check(r() == (ELSA, 'sole_dog'), "A5 exactly one profile -> that dog, sole_dog")
     profiles.profiles['bezik'] = Prof('Bezik', BEZIK)
 
-    # Coach working with a dog that is not the session dog (Morgan 2026-11-19):
-    # the dog the Coach engine itself named is explicit.
+    # Inside Coach the order is the contract order: command dog_id, then a
+    # marker read within 5000 ms, then the session dog. The Coach engine's own
+    # name for a dog (colour / vision-only) never attributes.
     reset(selected=BEZIK)
     d.call('set_mode', {'mode': 'coach', 'dog_id': ELSA, 'source': 'app'}, 'c-coach', 3)
     st.set_coach_dog('dog_1')
-    check(r(dog_id='dog_1', dog_name='Bezik', id_method='explicit') == (BEZIK, 'explicit'),
-          "Coach session for Elsa, engine working with Bezik -> Bezik, explicit")
-    check(r(dog_id='dog_1', dog_name='Dog', id_method='explicit') == (ELSA, 'session')
-          and r(dog_id='dog_1', dog_name=None, id_method='explicit') == (ELSA, 'session'),
-          "Coach working with a dog it could not name (tracker slot only) -> session dog, session")
+    check(r(dog_id='dog_1', dog_name='Bezik') == (ELSA, 'session')
+          and r(dog_id='dog_1', dog_name='Bezik', id_method='color') == (ELSA, 'session'),
+          "Coach session for Elsa, engine named its dog Bezik by colour -> Elsa, session")
+    check(r(dog_id='dog_1', dog_name='Bezik', id_method='explicit') == (ELSA, 'session'),
+          "a dog NAME marked explicit is not a command dog_id -> still the session dog")
+    st.update_aruco_dog('bezik')
+    check(r(dog_id='dog_1', dog_name='Bezik') == (BEZIK, 'qr'),
+          "Coach's dog identified by a marker read within 5000 ms -> Bezik, qr")
+    check(r(dog_id=ELSA, id_method='explicit') == (ELSA, 'explicit'),
+          "run_trick / command dog_id inside Coach -> explicit (beats the marker)")
     check(r(dog_id='0a000000-0000-7000-8000-000000000001', id_method='explicit')
           == ('0a000000-0000-7000-8000-000000000001', 'explicit'),
           "a command's app UUID with no local profile yet is still explicit, verbatim")
+    st.set_coach_dog('bezik')
+    check(st.get_coach_dog_id() == 'bezik' and st.get_active_dog_id(aruco_ttl=0) == 'bezik'
+          and st.get_session_dog_id() == ELSA,
+          "Coach keeps _coach_dog_id for voice clips and spoken names (session dog untouched)")
     st.clear_coach_dog()
+    from services.reward.dispenser import COMMAND_REASONS as _CR
+    check('coaching_reward' not in _CR, "a Coach reward is never stamped explicit by the dispenser")
+
+    # ---------------------------------------------------------------- selected_dog_changed_locally
+    reset(selected=None)
+    check(st.selected_dog_changed_locally() is False, "flag starts false")
+    d.dispatch({'name': 'select_dog', 'id': None, 'args': {'dog_id': BEZIK, 'source': 'app'}, 'transport': 'local'},
+               reply=lambda f: None)
+    time.sleep(0.3)
+    check(st.get_current_dog_id() == BEZIK and st.selected_dog_changed_locally() is True
+          and json.load(open(st._STATE_FILE)).get('selected_dog_changed_locally') is True,
+          "select_dog over the local / AP connection -> flag true, persisted")
+    real_load = state_mod.StateManager._load_persisted_state
+    state_mod.StateManager._load_persisted_state = _ORIG_LOAD
+    reborn = state_mod.StateManager.__new__(state_mod.StateManager)
+    import threading as _th, logging as _lg
+    reborn._lock, reborn.logger = _th.RLock(), _lg.getLogger('reborn')
+    reborn._current_dog_id = reborn._current_dog_name = None
+    reborn._selected_dog_changed_locally = False
+    reborn._STATE_FILE = st._STATE_FILE
+    reborn._load_persisted_state()
+    state_mod.StateManager._load_persisted_state = real_load
+    check(reborn._current_dog_id == BEZIK and reborn._selected_dog_changed_locally is True,
+          "after a restart following a local select_dog -> selection and flag true are restored")
+    d.dispatch({'name': 'select_dog', 'id': 'r-1', 'args': {'dog_id': BEZIK, 'source': 'app'}, 'transport': 'relay'},
+               reply=lambda f: None)
+    time.sleep(0.3)
+    check(st.selected_dog_changed_locally() is False
+          and json.load(open(st._STATE_FILE)).get('selected_dog_changed_locally') is False,
+          "select_dog from the relay (same value) -> flag false, persisted")
 
     from services.reward.dispenser import COMMAND_REASONS
     check({'cloud_command', 'agent', 'connector', 'schedule', 'manual'} <= COMMAND_REASONS

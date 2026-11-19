@@ -291,6 +291,9 @@ class ToolDispatcher:
         # Moment of receipt on the monotonic clock (the transport passes the
         # time the frame arrived; else now).
         received = msg.get('received_mono') or time.monotonic()
+        # Which connection the frame came in on: 'relay' | 'local' (AP / LAN).
+        if msg.get('transport'):
+            args['_transport'] = msg['transport']
         threading.Thread(target=self._run, args=(name, call_id, args, reply, ticket, received),
                          daemon=True, name=f"ToolCall-{name}").start()
 
@@ -960,7 +963,10 @@ class ToolDispatcher:
             except Exception as e:
                 logger.debug(f"[TOOL] select_dog name lookup: {e}")
         st = get_state()
-        st.set_current_dog(dog, name)
+        # selected_dog_changed_locally: true for a select_dog over the local /
+        # AP connection, false for one from the relay (whatever the value).
+        transport = args.get('_transport')
+        st.set_current_dog(dog, name, changed_locally={'local': True, 'relay': False}.get(transport))
         return {'ok': True, 'selected_dog_id': st.get_current_dog_id()}
 
     @staticmethod

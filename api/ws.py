@@ -561,7 +561,8 @@ class TreatBotWebSocketServer:
             args = {k: v for k, v in inner.items() if k != "timestamp"}
             args["source"] = "app"
             get_tool_dispatcher().dispatch(
-                {"name": command, "id": data.get("command_id"), "args": args}, reply=_state_reply)
+                {"name": command, "id": data.get("command_id"), "args": args, "transport": "local"},
+                reply=_state_reply)
             await self.manager.send_to_one(websocket, {
                 "type": "command_response", "success": True, "command": command,
                 "accepted": True, "command_id": data.get("command_id")})
@@ -2077,7 +2078,8 @@ class TreatBotWebSocketServer:
                     "temperature": state.get("hardware", {}).get("cpu_temp", 0),
                     "mode": contract_mode,
                     "asleep": bool(_is_asleep()),
-                    "selected_dog_id": self.state.get_current_dog_id() if hasattr(self.state, 'get_current_dog_id') else None,
+                    "selected_dog_id": self.state.get_current_dog_id(),
+                    "selected_dog_changed_locally": self.state.selected_dog_changed_locally(),
                     "is_charging": state.get("hardware", {}).get("is_charging", False),
                     "treats_remaining": self._get_treats_remaining()
                 },

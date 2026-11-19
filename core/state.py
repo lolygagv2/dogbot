@@ -219,6 +219,10 @@ class StateManager:
         #   _marker_reads    = last time each dog's ArUco/QR marker was read.
         self._current_dog_id: Optional[str] = None
         self._current_dog_name: Optional[str] = None
+        # True when the last select_dog came over the local / AP connection
+        # (the relay has not seen it); False after any select_dog from the
+        # relay. Persisted with the selection. Starts False.
+        self._selected_dog_changed_locally: bool = False
         self._last_aruco_dog_id: Optional[str] = None
         self._last_aruco_time: float = 0.0
         self._marker_reads: Dict[str, float] = {}
@@ -259,6 +263,7 @@ class StateManager:
                 data = json.load(f)
                 self._current_dog_id = data.get('current_dog_id')
                 self._current_dog_name = data.get('current_dog_name')
+                self._selected_dog_changed_locally = bool(data.get('selected_dog_changed_locally', False))
                 if self._current_dog_id:
                     self.logger.info(f"[STATE] Loaded persisted dog: {self._current_dog_name} ({self._current_dog_id})")
         except FileNotFoundError:
@@ -272,21 +277,34 @@ class StateManager:
             data = {
                 'current_dog_id': self._current_dog_id,
                 'current_dog_name': self._current_dog_name,
+                'selected_dog_changed_locally': bool(self._selected_dog_changed_locally),
             }
             with open(self._STATE_FILE, 'w') as f:
                 json.dump(data, f)
         except Exception as e:
             self.logger.warning(f"[STATE] Could not save persisted state: {e}")
 
-    def set_current_dog(self, dog_id: Optional[str], dog_name: str = None):
+    def set_current_dog(self, dog_id: Optional[str], dog_name: str = None,
+                        changed_locally: Optional[bool] = None):
         """select_dog (ROBOT-STATE v2 C2): the contract's selected_dog_id.
         None clears the selection. Persists across restarts. This is the ONLY
-        writer of the selected dog."""
+        writer of the selected dog.
+
+        changed_locally: True = arrived over the local / AP connection,
+        False = arrived from the relay (whatever the value), None = leave the
+        flag as it is."""
         with self._lock:
             self._current_dog_id = dog_id or None
             self._current_dog_name = (dog_name or dog_id) if dog_id else None
+            if changed_locally is not None:
+                self._selected_dog_changed_locally = bool(changed_locally)
             self._save_persisted_state()
-            self.logger.info(f"[DOG] Selected: {self._current_dog_name} ({self._current_dog_id})")
+            self.logger.info(f"[DOG] Selected: {self._current_dog_name} ({self._current_dog_id}) "
+                             f"changed_locally={self._selected_dog_changed_locally}")
+
+    def selected_dog_changed_locally(self) -> bool:
+        with self._lock:
+            return bool(self._selected_dog_changed_locally)
 
     def set_coach_dog(self, dog_id: str):
         """Dog the coach engine is working with right now (voice fallback chain)."""

@@ -828,12 +828,13 @@ class BehaviorEventService:
             treats = int(get_dispenser_service().treats_remaining)
         except Exception:
             pass
-        asleep, selected, session = False, None, None
+        asleep, selected, session, local = False, None, None, False
         try:
             from core.state import get_state
             st = get_state()
             mode = st.get_contract_mode()               # one of the five, never "sleep"
             selected, session = st.get_current_dog_id(), st.get_session_dog_id()
+            local = st.selected_dog_changed_locally()
         except Exception:
             pass
         try:
@@ -842,7 +843,8 @@ class BehaviorEventService:
         except Exception:
             pass
         return {'battery': battery, 'mode': mode, 'asleep': asleep,
-                'selected_dog_id': selected, 'session_dog_id': session,
+                'selected_dog_id': selected, 'selected_dog_changed_locally': local,
+                'session_dog_id': session,
                 'treats_remaining': treats, 'docked': docked,
                 'light_level': self.frame_brightness()}
 
@@ -855,6 +857,7 @@ class BehaviorEventService:
                    or st['mode'] != prev.get('mode')
                    or st.get('asleep') != prev.get('asleep')
                    or st.get('selected_dog_id') != prev.get('selected_dog_id')
+                   or st.get('selected_dog_changed_locally') != prev.get('selected_dog_changed_locally')
                    or st.get('session_dog_id') != prev.get('session_dog_id')
                    or (st['battery'] is not None and prev.get('battery') is not None
                        and abs(st['battery'] - prev['battery']) >= self.config['status_battery_delta']))

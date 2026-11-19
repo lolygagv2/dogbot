@@ -6100,6 +6100,7 @@ async def tools_call(name: str, request: Request):
         disp = get_tool_dispatcher()
         if not disp.has_tool(name):
             raise HTTPException(status_code=404, detail=f"unknown command {name!r}")
+        args['_transport'] = 'local'       # this REST endpoint is the local API
         timeout = next((t['timeout_s'] for t in disp.list_tools()['tools'] if t['name'] == name), 30.0)
         import uuid as _uuid
         frame = await asyncio.get_running_loop().run_in_executor(

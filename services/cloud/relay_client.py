@@ -462,6 +462,7 @@ class RelayClient:
                             'mode': reported_mode,
                             'asleep': bool(is_asleep()),
                             'selected_dog_id': self.state.get_current_dog_id(),
+                            'selected_dog_changed_locally': self.state.selected_dog_changed_locally(),
                             'session_dog_id': self.state.get_session_dog_id(),
                             'is_charging': hardware.get("is_charging", False),
                             'treats_remaining': self._get_treats_remaining(),
@@ -2398,11 +2399,11 @@ class RelayClient:
             args.setdefault('source', 'relay')
         if not command_id:
             self.logger.warning(f"[CMD] {command} without command_id: running, no command_result")
-            disp.dispatch({'id': None, 'name': command, 'args': args, 'received_mono': rx_mono},
-                          reply=lambda frame: None)
+            disp.dispatch({'id': None, 'name': command, 'args': args, 'received_mono': rx_mono,
+                           'transport': 'relay'}, reply=lambda frame: None)
             return True
-        disp.dispatch({'id': command_id, 'name': command, 'args': args, 'received_mono': rx_mono},
-                      reply=self.send_message)
+        disp.dispatch({'id': command_id, 'name': command, 'args': args, 'received_mono': rx_mono,
+                       'transport': 'relay'}, reply=self.send_message)
         return True
 
     def send_event(self, event_type: str, data: dict):
