@@ -56,8 +56,12 @@ class FakeEmitter:
 
 def svc(stills=False):
     em = FakeEmitter()
-    s = BehaviorEventService(emitter=em, config={'status_period_s': 10_000, 'stills_enabled': stills,
-                                                 'treat_still_delay_s': 0.05})
+    import tempfile
+    s = BehaviorEventService(emitter=em, config={
+        'status_period_s': 10_000, 'stills_enabled': stills, 'treat_still_delay_s': 0.05,
+        'coach_open_file': os.path.join(tempfile.mkdtemp(prefix='coachsess_'), 'coach_session_open.json')})
+    s.read_session_dog = lambda: 'dog-elsa'
+    s.read_coach_end_reason = lambda: 'app'
     s.read_status = lambda: {'battery': 80, 'mode': 'idle', 'treats_remaining': 12, 'docked': False, 'light_level': 90}
     s.capture_still_url = lambda: 'https://relay/media/still.jpg'
     return s, em
@@ -344,11 +348,21 @@ def test_trick_attempt_and_coach_session():
     check(len(em.of('coach_session')) == 0, "coach_session is not sent before the activation ends")
     s._on_system(sysev('coaching_stopped', {}, 3600.0))
     cs = em.of('coach_session')
-    check(len(cs) == 1 and cs[0]['data']['start'] == _iso(3000.0) and cs[0]['data']['end'] == _iso(3600.0)
-          and cs[0]['data']['cues_given'] == 3 and cs[0]['data']['successes'] == 2
-          and cs[0]['data']['treats'] == 2 and cs[0]['data']['duration_s'] == 600.0,
-          f"coach_session {{start, end, cues_given 3, successes 2, treats 2}} ({cs[0]['data'] if cs else None})")
-    check(cs[0]['kw'].get('resolve_dog') is False, "coach_session is per activation, not attributed to one dog")
+    check(len(cs) == 1 and cs[0]['data']['end'] == _iso(3600.0)
+          and cs[0]['data']['cues'] == 3 and cs[0]['data']['successes'] == 2
+          and cs[0]['data']['treats'] == 2 and cs[0]['data']['duration_s'] == 600.0
+          and cs[0]['data']['tricks'] == ['sit', 'speak'] and cs[0]['data']['end_reason'] == 'app',
+          f"coach_session {{cues 3, successes 2, tricks, end_reason, duration_s 600}} ({cs[0]['data'] if cs else None})")
+    check(cs[0]['kw'].get('dog_id') == 'dog-elsa' and cs[0]['kw'].get('resolve_dog') is False
+          and cs[0]['kw'].get('id_method') == 'session',
+          "coach_session dog_id is the session dog (session_dog_id), sent as is")
+    check(cs[0]['kw'].get('ts') == 3000.0, "coach_session ts is the session START")
+    sid = cs[0]['kw'].get('event_id')
+    coach_rows = [t for t in em.of('trick_attempt') if t['data']['source'] == 'coach']
+    check(bool(sid) and len(coach_rows) == 3 and all(t['data'].get('session_id') == sid for t in coach_rows),
+          "every Coach cue of the session carries data.session_id = the coach_session event_id")
+    check(all('session_id' not in t['data'] for t in em.of('trick_attempt') if t['data']['source'] != 'coach'),
+          "run_trick / mission cues carry no session_id")
     check(len(em.of('trick_attempt')) == 5 and em.of('trick_attempt')[-1]['data']['result'] == 'no_dog'
           and em.of('trick_attempt')[-1]['data']['source'] == 'mission',
           "mission cue -> trick_attempt source=mission result=no_dog")
@@ -357,8 +371,9 @@ def test_trick_attempt_and_coach_session():
     s._on_system(sysev('coaching_started', {}, 4000.0))
     s._on_system(sysev('coaching_stopped', {}, 4100.0))
     cs = em.of('coach_session')
-    check(len(cs) == 2 and cs[1]['data']['cues_given'] == 0 and cs[1]['data']['treats'] == 0,
-          "Coach activation with no cues at all -> coach_session row with zero counts")
+    check(len(cs) == 2 and cs[1]['data']['cues'] == 0 and cs[1]['data']['treats'] == 0
+          and cs[1]['data']['duration_s'] == 100.0 and cs[1]['kw']['event_id'] != sid,
+          "Coach session with no cues at all -> coach_session row with zero counts, its own event_id")
 
     # Unknown result string is clamped to the contract set
     s._on_system(sysev('trick_attempt', {'source': 'coach', 'cue': 'sit', 'result': 'weird', 'time': 4200.0}, 4200.0))
@@ -368,7 +383,39 @@ def test_trick_attempt_and_coach_session():
     s._on_system(sysev('coaching_started', {}, 5000.0))
     s._running = True
     s.stop()
-    check(len(em.of('coach_session')) == 3, "service stop closes the open coach activation")
+    check(len(em.of('coach_session')) == 3 and em.of('coach_session')[-1]['data']['end_reason'] == 'shutdown',
+          "service stop closes the open coach session (end_reason shutdown)")
+    check(not os.path.exists(s._coach_open_path()), "a closed session leaves no session file")
+
+    # No session dog: the row still ships, dog null + id_method none (not held)
+    s._on_system(sysev('coaching_started', {}, 5500.0))
+    s.read_session_dog = lambda: None
+    s._on_system(sysev('coaching_started', {}, 5600.0))      # restart without a stop closes the first
+    s._on_system(sysev('coaching_stopped', {}, 5700.0))
+    cs = em.of('coach_session')
+    check(len(cs) == 5 and cs[3]['kw']['dog_id'] == 'dog-elsa' and cs[4]['kw']['dog_id'] is None
+          and cs[4]['kw']['id_method'] == 'none',
+          "Coach with no session dog -> coach_session dog_id null, id_method none")
+
+    # Crash / power loss with Coach open: the next start sends that session, same event_id
+    s2, em2 = svc()
+    s2._on_system(sysev('coaching_started', {}, 6000.0))
+    s2._on_system(sysev('trick_attempt', {'source': 'coach', 'cue': 'spin', 'result': 'success',
+                                          'time': 6040.0}, 6040.0))
+    open_id = em2.of('trick_attempt')[0]['data']['session_id']
+    s2.tick(6100.0)                                            # last "still running" stamp
+    check(os.path.exists(s2._coach_open_path()), "an open session is kept on disk")
+    s3, em3 = svc()
+    s3.config['coach_open_file'] = s2._coach_open_path()       # the process that comes up after the crash
+    s3._recover_coach_session()
+    cs = em3.of('coach_session')
+    check(len(cs) == 1 and cs[0]['kw']['event_id'] == open_id and cs[0]['kw']['ts'] == 6000.0
+          and cs[0]['data']['duration_s'] == 100.0 and cs[0]['data']['cues'] == 1
+          and cs[0]['data']['successes'] == 1 and cs[0]['data']['end_reason'] == 'reboot'
+          and cs[0]['kw']['dog_id'] == 'dog-elsa',
+          f"session left open by a crash is sent at the next start with the same event_id ({cs[0] if cs else None})")
+    s3._recover_coach_session()
+    check(len(em3.of('coach_session')) == 1, "recovery sends it once")
 
 
 if __name__ == '__main__':

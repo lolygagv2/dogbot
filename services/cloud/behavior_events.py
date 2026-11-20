@@ -27,10 +27,14 @@ Event `data` per contract:
   trick_attempt {time, cue, result: success|no_dog|wrong_pose|timeout,
                  confidence, source: coach|mission|run_trick, attempt}
                  — one per cue given (2026-11-08)
-  coach_session {start, end, duration_s, cues_given, successes, treats}
-                 — one per Coach activation (2026-11-08)
+                 + session_id (the coach_session event_id) on Coach cues
+  coach_session {cues, successes, tricks, end_reason, treats, end, duration_s}
+                 — one per Coach session, for the session dog; ts = session
+                 start, event_id made at session start (relay brief 2026-11-20)
 """
+import json
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -54,6 +58,10 @@ CONFIG: Dict[str, Any] = {
     'status_period_s': 60.0,
     'status_battery_delta': 5,
     'tick_s': 1.0,
+    # The open Coach session is kept on disk so a crash / power loss still
+    # yields its coach_session row (same event_id) at the next start.
+    'coach_open_file': None,            # None = <data root>/coach_session_open.json
+    'coach_open_save_s': 15.0,
     # Stills: capture (HUD off) + upload via the relay media store, attached
     # as data.image_url. Treat: ~2 s after the dispense. bark_episode: on
     # close when severity is high.
@@ -189,6 +197,10 @@ class BehaviorEventService:
         self.bus.subscribe('vision', self._on_vision)
         self._open_mode_segment()
         try:
+            self._recover_coach_session()
+        except Exception as e:
+            logger.error(f"[BEHAVIOR-EVENTS] coach_session recovery failed: {e}")
+        try:
             from services.cloud.music_triggers import get_music_triggers
             get_music_triggers().start()
         except Exception as e:
@@ -216,7 +228,7 @@ class BehaviorEventService:
         now = time.time()
         self._close_mode_segment(now, next_mode='shutdown', reason='service_stop')
         try:
-            self.on_coach_stopped(now)
+            self.on_coach_stopped(now, end_reason='shutdown')
         except Exception as e:
             logger.debug(f"coach_session close-on-stop failed: {e}")
         try:
@@ -259,6 +271,9 @@ class BehaviorEventService:
                     self._close_pacing(dog_id, now)
             if now - self._last_status_t >= self.config['status_period_s']:
                 self._emit_status(now, force=True)
+            c = self._coach
+            if c is not None and now - c.get('saved_at', 0.0) >= self.config['coach_open_save_s']:
+                self._save_coach_open(c, now)
 
     # ------------------------------------------------------------- bus: audio
 
@@ -410,14 +425,106 @@ class BehaviorEventService:
             logger.error(f"[BEHAVIOR-EVENTS] system handler: {e}")
 
     # ------------------------------------------------------------- coach / cues
-    # Relay request 2026-11-08: `trick_attempt` {cue, result: success|no_dog|
-    # wrong_pose|timeout, confidence} on EVERY cue given — Coach mode, a
-    # mission stage, or the agent's run_trick (data.source says which) — and
-    # `coach_session` {start, end, cues_given, successes, treats} once per
-    # Coach activation (coaching_started -> coaching_stopped). Treats are the
-    # coaching_reward dispenses inside that window. run_trick enters COACH
-    # for its own cue with the engine held; that activation gives no coach
-    # cues and is not reported as a coach_session.
+    # `trick_attempt` {cue, result: success|no_dog|wrong_pose|timeout,
+    # confidence} on EVERY cue given — Coach mode, a mission stage, or the
+    # agent's run_trick (data.source says which).
+    #
+    # `coach_session` (relay brief 2026-11-20): one per Coach session
+    # (coaching_started -> coaching_stopped), for ONE dog = session_dog_id:
+    #   event_id  made at session START, kept across retries / a reboot
+    #   dog_id    the session dog          ts  session start
+    #   duration_s (top level on the wire, lifted from data by the outbox pump)
+    #   data {cues, successes, tricks, end_reason, treats, end}
+    # Every Coach cue of the session carries data.session_id = that event_id.
+    # However Coach stops (mode change, sleep, mission, service stop, crash)
+    # exactly one row is sent; the relay sums these durations into the day's
+    # coach time, so short and empty sessions are sent too. The session dog
+    # is fixed on entering Coach (R3), so "another dog" always arrives as a
+    # stop followed by a start, i.e. two rows.
+    # run_trick enters COACH for its own cue with the engine held; that
+    # activation gives no coach cues and is not a coach session (no row).
+
+    def read_session_dog(self) -> Optional[str]:
+        try:
+            from core.state import get_state
+            return get_state().get_session_dog_id()
+        except Exception:
+            return None
+
+    def read_coach_end_reason(self) -> str:
+        """Why Coach just stopped: sleep | mission | timeout | app | connector
+        | agent | schedule | relay | admin | robot."""
+        try:
+            from services.power.sleep_manager import get_sleep_manager
+            if get_sleep_manager().is_asleep_target():
+                return 'sleep'
+        except Exception:
+            pass
+        try:
+            from core.state import get_state
+            lm = get_state().get_last_mode_change() or {}
+        except Exception:
+            lm = {}
+        if lm.get('contract_previous_mode') != 'coach':
+            return 'robot'
+        text = f"{lm.get('contract_reason') or ''} {lm.get('reason') or ''}".lower()
+        if 'sleep' in text:
+            return 'sleep'
+        if lm.get('mode') == 'mission':
+            return 'mission'
+        if 'timeout' in text:
+            return 'timeout'
+        return str(lm.get('source') or 'robot')
+
+    def _coach_open_path(self) -> str:
+        p = self.config.get('coach_open_file')
+        if p:
+            return p
+        root = os.environ.get('WIMZ_DATA_ROOT') or '/home/morgan/dogbot/data'
+        return os.path.join(root, 'coach_session_open.json')
+
+    def _save_coach_open(self, c: Dict[str, Any], now: float) -> None:
+        c['saved_at'] = now
+        try:
+            path = self._coach_open_path()
+            tmp = path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump({**c, 'alive_at': now}, f)
+            os.replace(tmp, path)
+        except Exception as e:
+            logger.debug(f"[BEHAVIOR-EVENTS] coach session save failed: {e}")
+
+    def _clear_coach_open(self) -> None:
+        try:
+            os.remove(self._coach_open_path())
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.debug(f"[BEHAVIOR-EVENTS] coach session file not removed: {e}")
+
+    def _recover_coach_session(self) -> None:
+        """Service start: a session file left behind means the last run died
+        with Coach open. Send that session now (same event_id), ending at the
+        last time it was known to be running."""
+        path = self._coach_open_path()
+        try:
+            with open(path, 'r') as f:
+                c = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            logger.warning(f"[BEHAVIOR-EVENTS] unreadable coach session file dropped: {e}")
+            self._clear_coach_open()
+            return
+        if not isinstance(c, dict) or not c.get('event_id') or c.get('start') is None:
+            self._clear_coach_open()
+            return
+        for k, v in (('cues', 0), ('successes', 0), ('treats', 0), ('other_cues', 0), ('tricks', [])):
+            c.setdefault(k, v)
+        end = float(c.get('alive_at') or c['start'])
+        logger.info(f"[BEHAVIOR-EVENTS] recovering coach session {c['event_id']} left open by the last run")
+        self._emit_coach_session(c, end, 'reboot')
+        self._clear_coach_open()
 
     def on_trick_attempt(self, d: Dict[str, Any], now: float) -> None:
         result = d.get('result') if d.get('result') in TRICK_RESULTS else 'timeout'
@@ -437,40 +544,57 @@ class BehaviorEventService:
             c = self._coach
             if c is not None:
                 if source == 'coach':
-                    c['cues_given'] += 1
+                    c['cues'] += 1
                     if result == 'success':
                         c['successes'] += 1
+                    if d.get('cue') and d.get('cue') not in c['tricks']:
+                        c['tricks'].append(d.get('cue'))
+                    row['session_id'] = c['event_id']
+                    self._save_coach_open(c, now)
                 else:
                     c['other_cues'] += 1
         self.emitter.emit('trick_attempt', row, dog_id=d.get('dog_id'), dog_name=d.get('dog_name'),
                           id_method=d.get('id_method'))
 
     def on_coach_started(self, now: float) -> None:
+        from core.data.ids import uuid7
+        new = {'event_id': uuid7(), 'start': now, 'dog_id': self.read_session_dog(),
+               'cues': 0, 'successes': 0, 'treats': 0, 'other_cues': 0, 'tricks': []}
         with self._lock:
             prev = self._coach
-            self._coach = {'start': now, 'cues_given': 0, 'successes': 0, 'treats': 0, 'other_cues': 0}
+            self._coach = new
+            self._save_coach_open(new, now)
         if prev is not None:
-            self._emit_coach_session(prev, now)
+            self._emit_coach_session(prev, now, 'robot')
 
-    def on_coach_stopped(self, now: float) -> None:
+    def on_coach_stopped(self, now: float, end_reason: Optional[str] = None) -> None:
         with self._lock:
             c = self._coach
             self._coach = None
         if c is not None:
-            self._emit_coach_session(c, now)
+            try:
+                self._emit_coach_session(c, now, end_reason or self.read_coach_end_reason())
+            finally:
+                self._clear_coach_open()
 
-    def _emit_coach_session(self, c: Dict[str, Any], end: float) -> Optional[Dict[str, Any]]:
-        if c['cues_given'] == 0 and c['other_cues'] > 0:
+    def _emit_coach_session(self, c: Dict[str, Any], end: float,
+                            end_reason: str) -> Optional[Dict[str, Any]]:
+        if c['cues'] == 0 and c['other_cues'] > 0:
             logger.debug("[BEHAVIOR-EVENTS] coach activation served only run_trick/mission cues; no coach_session row")
             return None
         start = float(c['start'])
         if end < start:
             end = start
+        dog = c.get('dog_id') or None
+        # No session dog (Coach started with no dog selected): the row still
+        # ships, dog_id null + id_method "none" (ROBOT-STATE v2 A6), instead
+        # of being held in the outbox.
         return self.emitter.emit('coach_session', {
-            'start': _iso(start), 'end': _iso(end),
-            'duration_s': round(end - start, 3),
-            'cues_given': c['cues_given'], 'successes': c['successes'], 'treats': c['treats'],
-        }, resolve_dog=False)
+            'cues': c['cues'], 'successes': c['successes'], 'tricks': list(c['tricks']),
+            'end_reason': end_reason, 'treats': c['treats'],
+            'end': _iso(end), 'duration_s': round(min(end - start, 86400.0), 3),
+        }, dog_id=dog, id_method='session' if dog else 'none', resolve_dog=False,
+            ts=start, event_id=c['event_id'])
 
     # ------------------------------------------------------------- mode changes
     # ROBOT-STATE v2 E1 (2026-11-19, supersedes the 2026-11-18 brief): one

@@ -419,6 +419,13 @@ class StateManager:
         with self._lock:
             return self._session_dog_id
 
+    def get_last_mode_change(self) -> Optional[Dict[str, Any]]:
+        """The most recent mode change: {mode, contract_previous_mode, source,
+        contract_reason, reason, timestamp}; None before the first one."""
+        with self._lock:
+            lm = getattr(self, '_last_mode_change', None)
+            return dict(lm) if lm else None
+
     def get_current_dog_id(self) -> Optional[str]:
         """Contract selected_dog_id (select_dog)."""
         with self._lock:
@@ -514,6 +521,15 @@ class StateManager:
                 f"trigger={reason} | source={caller_str} | "
                 f"timestamp={self.mode_changed_time:.3f}"
             )
+
+            # Kept for consumers that need "what was the last change" without
+            # racing the listener threads (coach_session end_reason).
+            self._last_mode_change = {
+                'mode': new_contract, 'contract_previous_mode': prev_contract,
+                'source': contract_source(ctx.get('source')),
+                'contract_reason': ctx.get('reason') if ctx else (reason or None),
+                'reason': reason, 'timestamp': self.mode_changed_time,
+            }
 
             # Notify listeners
             self._notify_listeners('mode_change', {
