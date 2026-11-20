@@ -87,6 +87,11 @@ class VolumeManager:
         # service restart where the hardware mixer may have drifted).
         self._apply(self._volume)
 
+        # The robot always starts awake, so the speaker must not be muted.
+        # Sleep mutes the mixer switch and PipeWire persists it; a shutdown
+        # while asleep would otherwise leave every later boot silent.
+        self._unmute()
+
         # Pin pygame's software volume to 1.0 so the software layer can never
         # attenuate output -- amixer hardware volume is the only control.
         self._neutralize_pygame()
@@ -171,6 +176,27 @@ class VolumeManager:
             except Exception as e:
                 logger.debug(f"amixer '{control}' failed: {e}")
         logger.error(f"amixer could not apply volume on card {self._card}")
+        return False
+
+    def _unmute(self) -> bool:
+        """Clear the speaker mute switch at startup (volume is not touched)."""
+        if self._card is None:
+            return False
+        controls = (self._control,) if self._control else _SPEAKER_CONTROLS
+        for control in controls:
+            try:
+                result = subprocess.run(
+                    ['amixer', '-c', str(self._card), 'sset', control, 'unmute'],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if result.returncode == 0 and '[off]' not in result.stdout:
+                    logger.info(
+                        f"Speaker unmuted at startup (card {self._card}, control '{control}')"
+                    )
+                    return True
+            except Exception as e:
+                logger.debug(f"amixer unmute '{control}' failed: {e}")
+        logger.error(f"Could not unmute the speaker on card {self._card}")
         return False
 
     def _neutralize_pygame(self) -> None:
